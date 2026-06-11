@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
+use clap::Parser;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -9,9 +10,54 @@ use crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 mod aliases;
+
+// ---------------------------------------------------------------------------
+// CLI
+// ---------------------------------------------------------------------------
+
+#[derive(Parser)]
+struct Args {
+    /// Path to save/load inventory JSON
+    #[arg(long)]
+    inventory: Option<String>,
+
+    /// Path to save/load market cache JSON
+    #[arg(long)]
+    market_cache: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Persistence types
+// ---------------------------------------------------------------------------
+
+#[derive(Serialize, Deserialize)]
+struct SavedInventoryRow {
+    commodity: String,
+    restock: String,
+    stock: String,
+    booty: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedInventory {
+    rows: Vec<SavedInventoryRow>,
+    panel: Vec<String>,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedCommodity {
+    id: u64,
+    name: String,
+}
+
+#[derive(Serialize, Deserialize)]
+struct SavedMarketCache {
+    commodities: Vec<SavedCommodity>,
+    offers: HashMap<String, CachedOffers>,
+}
 
 // ---------------------------------------------------------------------------
 // API types
@@ -45,7 +91,7 @@ struct RawOffer {
     sellqty: u64,
 }
 
-#[derive(Clone)]
+#[derive(Clone, Serialize, Deserialize)]
 struct Offer {
     stallname: String,
     islandname: String,
@@ -68,6 +114,7 @@ impl From<RawOffer> for Offer {
     }
 }
 
+#[derive(Serialize, Deserialize)]
 struct CachedOffers {
     offers: Vec<Offer>,
     fetched_at: u64,
@@ -978,59 +1025,99 @@ fn spawn_fetch(
     let tx = tx.clone();
     tokio::spawn(async move {
         let client = reqwest::Client::new();
-        let mut map: HashMap<String, CachedOffers> = HashMap::new();
-
-        for name in names {
-            let mut url = reqwest::Url::parse(
-                "https://api.plunderly.app/buysells/by-commodity",
-            )
-            .unwrap();
-            url.query_pairs_mut()
-                .append_pair("ocean", "Emerald")
-                .append_pair("commodity", &name);
-
-            let resp = match client.get(url).send().await {
-                Ok(r) => r,
-                Err(e) => {
-                    let _ = tx.send(Err(format!("Fetch error: {}", e)));
-                    return;
-                }
-            };
-
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .unwrap_or_default()
-                .as_secs();
-
-            match resp.json::<BuySellResponse>().await {
-                Ok(data) => {
-                    let offers = data.offers.into_iter().map(Offer::from).collect();
-                    map.insert(name, CachedOffers {
-                        offers,
-                        fetched_at: now,
-                    });
-                }
-                Err(e) => {
-                    let _ = tx.send(Err(format!("Parse error: {}", e)));
-                    return;
-                }
-            }
-        }
-
-        let _ = tx.send(Ok(map));
+        let result = fetch_offers_for(&client, &names).await;
+        let _ = tx.send(result);
     });
+}
+
+async fn fetch_offers_for(
+    client: &reqwest::Client,
+    names: &[String],
+) -> Result<HashMap<String, CachedOffers>, String> {
+    let mut map = HashMap::new();
+    for name in names {
+        let mut url =
+            reqwest::Url::parse("https://api.plunderly.app/buysells/by-commodity").unwrap();
+        url.query_pairs_mut()
+            .append_pair("ocean", "Emerald")
+            .append_pair("commodity", name);
+
+        let resp = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|e| format!("Fetch error: {}", e))?;
+
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+
+        let data: BuySellResponse = resp
+            .json()
+            .await
+            .map_err(|e| format!("Parse error: {}", e))?;
+
+        let offers = data.offers.into_iter().map(Offer::from).collect();
+        map.insert(name.clone(), CachedOffers { offers, fetched_at: now });
+    }
+    Ok(map)
 }
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
-    eprintln!("Fetching commodities from market...");
-    let mut commodities: Vec<Commodity> = reqwest::get("https://api.plunderly.app/commods")
-        .await
-        .expect("failed to fetch commodities")
-        .json()
-        .await
-        .expect("failed to parse commodities");
-    commodities.sort_by_key(|c| c.id);
+    let args = Args::parse();
+
+    // -- Load market cache or fetch commodities from API --
+    let mut cached_offers: HashMap<String, CachedOffers> = HashMap::new();
+
+    let commodities: Vec<Commodity> = if let Some(ref path) = args.market_cache {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            match serde_json::from_str::<SavedMarketCache>(&data) {
+                Ok(cache) => {
+                    eprintln!("Loaded market cache from {}", path);
+                    cached_offers = cache.offers;
+                    cache
+                        .commodities
+                        .into_iter()
+                        .map(|c| Commodity { id: c.id, name: c.name })
+                        .collect()
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to parse market cache: {}", e);
+                    eprintln!("Fetching commodities from market...");
+                    let mut c: Vec<Commodity> = reqwest::get("https://api.plunderly.app/commods")
+                        .await
+                        .expect("failed to fetch commodities")
+                        .json()
+                        .await
+                        .expect("failed to parse commodities");
+                    c.sort_by_key(|c| c.id);
+                    c
+                }
+            }
+        } else {
+            eprintln!("Fetching commodities from market...");
+            let mut c: Vec<Commodity> = reqwest::get("https://api.plunderly.app/commods")
+                .await
+                .expect("failed to fetch commodities")
+                .json()
+                .await
+                .expect("failed to parse commodities");
+            c.sort_by_key(|c| c.id);
+            c
+        }
+    } else {
+        eprintln!("Fetching commodities from market...");
+        let mut c: Vec<Commodity> = reqwest::get("https://api.plunderly.app/commods")
+            .await
+            .expect("failed to fetch commodities")
+            .json()
+            .await
+            .expect("failed to parse commodities");
+        c.sort_by_key(|c| c.id);
+        c
+    };
 
     // Validate alias targets against commodity list.
     for (&alias, &target) in aliases::get().iter() {
@@ -1045,11 +1132,88 @@ async fn main() -> io::Result<()> {
         }
     }
 
+    let mut app = App::new(commodities);
+    app.cached_offers = cached_offers;
+
+    // -- Load inventory --
+    if let Some(ref path) = args.inventory {
+        if let Ok(data) = std::fs::read_to_string(path) {
+            match serde_json::from_str::<SavedInventory>(&data) {
+                Ok(inv) => {
+                    eprintln!("Loaded inventory from {}", path);
+                    for saved_row in inv.rows {
+                        if let Some(c) = app
+                            .commodities
+                            .iter()
+                            .find(|c| c.name.eq_ignore_ascii_case(&saved_row.commodity))
+                        {
+                            let id = c.id;
+                            if !app.rows.iter().any(|r| r.commod_id == id) {
+                                let pos = app
+                                    .rows
+                                    .binary_search_by_key(&id, |r| r.commod_id)
+                                    .unwrap_err();
+                                app.rows.insert(
+                                    pos,
+                                    InventoryRow {
+                                        commod_id: id,
+                                        restock: saved_row.restock,
+                                        stock: saved_row.stock,
+                                        booty: saved_row.booty,
+                                    },
+                                );
+                            }
+                        } else {
+                            eprintln!(
+                                "warning: unknown commodity '{}' in inventory, skipping",
+                                saved_row.commodity
+                            );
+                        }
+                    }
+                    for (i, val) in inv.panel.into_iter().enumerate() {
+                        if i < PANEL_COUNT {
+                            app.panel[i].value = val.clone();
+                            app.panel[i].cursor = val.len();
+                        }
+                    }
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to parse inventory: {}", e);
+                }
+            }
+        }
+    }
+
+    // -- Auto-fetch missing market data --
+    if !app.rows.is_empty() {
+        let missing: Vec<String> = app
+            .rows
+            .iter()
+            .map(|r| app.commod_name(r.commod_id).to_owned())
+            .filter(|name| !app.cached_offers.contains_key(name.as_str()))
+            .collect();
+
+        if !missing.is_empty() {
+            eprintln!(
+                "Fetching market data for {} missing commodities...",
+                missing.len()
+            );
+            let client = reqwest::Client::new();
+            match fetch_offers_for(&client, &missing).await {
+                Ok(new_offers) => {
+                    app.cached_offers.extend(new_offers);
+                }
+                Err(e) => {
+                    eprintln!("warning: failed to fetch missing market data: {}", e);
+                }
+            }
+        }
+    }
+
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let mut app = App::new(commodities);
     let (tx, mut rx) =
         tokio::sync::mpsc::unbounded_channel::<Result<HashMap<String, CachedOffers>, String>>();
 
@@ -1220,5 +1384,58 @@ async fn main() -> io::Result<()> {
 
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
+
+    // -- Save inventory --
+    if let Some(ref path) = args.inventory {
+        let saved = SavedInventory {
+            rows: app
+                .rows
+                .iter()
+                .map(|r| SavedInventoryRow {
+                    commodity: app.commod_name(r.commod_id).to_owned(),
+                    restock: r.restock.clone(),
+                    stock: r.stock.clone(),
+                    booty: r.booty.clone(),
+                })
+                .collect(),
+            panel: app.panel.iter().map(|f| f.value.clone()).collect(),
+        };
+        match serde_json::to_string_pretty(&saved) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, json) {
+                    eprintln!("error: failed to write inventory to {}: {}", path, e);
+                } else {
+                    eprintln!("Saved inventory to {}", path);
+                }
+            }
+            Err(e) => eprintln!("error: failed to serialize inventory: {}", e),
+        }
+    }
+
+    // -- Save market cache --
+    if let Some(ref path) = args.market_cache {
+        let saved = SavedMarketCache {
+            commodities: app
+                .commodities
+                .iter()
+                .map(|c| SavedCommodity {
+                    id: c.id,
+                    name: c.name.clone(),
+                })
+                .collect(),
+            offers: app.cached_offers,
+        };
+        match serde_json::to_string_pretty(&saved) {
+            Ok(json) => {
+                if let Err(e) = std::fs::write(path, json) {
+                    eprintln!("error: failed to write market cache to {}: {}", path, e);
+                } else {
+                    eprintln!("Saved market cache to {}", path);
+                }
+            }
+            Err(e) => eprintln!("error: failed to serialize market cache: {}", e),
+        }
+    }
+
     Ok(())
 }
