@@ -462,14 +462,14 @@ impl App {
             };
 
             // Goods Value: sell booty at best buy prices
-            if booty > 0 {
+            if restock < booty + stock {
                 let mut buy_offers: Vec<_> = offers
                     .iter()
                     .filter(|o| o.buyprice > 0 && o.buyqty > 0)
                     .collect();
                 buy_offers.sort_by(|a, b| b.buyprice.cmp(&a.buyprice));
 
-                let mut remaining = booty;
+                let mut remaining = booty + stock - restock;
                 for offer in &buy_offers {
                     if remaining == 0 {
                         break;
@@ -480,9 +480,8 @@ impl App {
                 }
             }
 
-            // Restock Value: buy deficit at cheapest sell prices
-            let need = restock.saturating_sub(stock + booty);
-            if need > 0 {
+            else {
+                let need = restock - stock - booty;
                 let mut sell_offers: Vec<_> = offers
                     .iter()
                     .filter(|o| o.sellprice > 0 && o.sellqty > 0)
@@ -507,13 +506,13 @@ impl App {
         let restocking_rate = Self::parse_rate(&self.panel[3]);
 
         let base = (goods_value as f64 + booty_money - restock_value as f64).max(0.0);
-        let denom = 1.0 + co_rate + donation_rate;
+        let denom = 1. + co_rate + donation_rate;
 
         let co_cut = (base * co_rate / denom).ceil() as u64;
         let crew_donation = (base * donation_rate / denom).floor() as u64;
 
         let undistributed =
-            booty_money * (2.0 * (1.0 - restocking_rate)) + goods_value as f64 - restock_value as f64;
+            booty_money * (2. * (1. - restocking_rate) - 1.) + goods_value as f64 - restock_value as f64;
         let add_to_booty = (undistributed - co_cut as f64 - crew_donation as f64).max(0.0).floor() as u64;
 
         ProfitResult {
