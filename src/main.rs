@@ -7,6 +7,54 @@ use crossterm::terminal::{
 };
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use serde::Deserialize;
+
+// ---------------------------------------------------------------------------
+// API types
+// ---------------------------------------------------------------------------
+
+#[derive(Deserialize)]
+struct Commodity {
+    id: u64,
+    #[serde(rename = "commodname")]
+    name: String,
+}
+
+struct InventoryRow {
+    commod_id: u64,
+    restock: String,
+    stock: String,
+    booty: String,
+}
+
+impl InventoryRow {
+    fn new(commod_id: u64) -> Self {
+        Self {
+            commod_id,
+            restock: String::new(),
+            stock: String::new(),
+            booty: String::new(),
+        }
+    }
+
+    fn field(&self, col: usize) -> &str {
+        match col {
+            1 => &self.restock,
+            2 => &self.stock,
+            3 => &self.booty,
+            _ => "",
+        }
+    }
+
+    fn field_mut(&mut self, col: usize) -> Option<&mut String> {
+        match col {
+            1 => Some(&mut self.restock),
+            2 => Some(&mut self.stock),
+            3 => Some(&mut self.booty),
+            _ => None,
+        }
+    }
+}
 
 // ---------------------------------------------------------------------------
 // Field types & validation
@@ -111,7 +159,8 @@ enum Focus {
 }
 
 struct App {
-    rows: Vec<Vec<String>>,
+    commodities: Vec<Commodity>,
+    rows: Vec<InventoryRow>,
     input: String,
     cursor: usize,
     focus: Focus,
@@ -119,14 +168,13 @@ struct App {
     panel: [PromptField; PANEL_COUNT],
 }
 
-/// Editable table columns (indices into each row's Vec<String>).
-/// Column 0 (item) is not editable/highlightable.
 const FIRST_COL: usize = 1;
 const LAST_COL: usize = 3;
 
 impl App {
-    fn new() -> Self {
+    fn new(commodities: Vec<Commodity>) -> Self {
         Self {
+            commodities,
             rows: Vec::new(),
             input: String::new(),
             cursor: 0,
@@ -140,6 +188,14 @@ impl App {
                 PromptField::new("Pre-restocking", FieldKind::PositiveInt),
             ],
         }
+    }
+
+    fn commod_name(&self, commod_id: u64) -> &str {
+        self.commodities
+            .iter()
+            .find(|c| c.id == commod_id)
+            .map(|c| c.name.as_str())
+            .unwrap_or("???")
     }
 
     // -- focus transitions --
@@ -169,15 +225,31 @@ impl App {
     // -- input prompt helpers --
 
     fn submit(&mut self) {
-        let name = self.input.trim().to_string();
-        if !name.is_empty() {
-            self.rows.push(vec![
-                name,
-                String::new(),
-                String::new(),
-                String::new(),
-            ]);
+        let query = self.input.trim().to_lowercase();
+        if query.is_empty() {
+            self.input.clear();
+            self.cursor = 0;
+            return;
         }
+
+        // Find the closest commodity by Levenshtein distance.
+        let matched = self
+            .commodities
+            .iter()
+            .min_by_key(|c| levenshtein::levenshtein(&query, &c.name.to_lowercase()));
+
+        if let Some(commod) = matched {
+            let id = commod.id;
+            // Don't add duplicates.
+            if !self.rows.iter().any(|r| r.commod_id == id) {
+                let pos = self
+                    .rows
+                    .binary_search_by_key(&id, |r| r.commod_id)
+                    .unwrap_err();
+                self.rows.insert(pos, InventoryRow::new(id));
+            }
+        }
+
         self.input.clear();
         self.cursor = 0;
     }
@@ -271,13 +343,17 @@ impl App {
 
     fn table_insert_digit(&mut self, d: char) {
         if let Some((row, col)) = self.selected_cell() {
-            self.rows[row][col].push(d);
+            if let Some(field) = self.rows[row].field_mut(col) {
+                field.push(d);
+            }
         }
     }
 
     fn table_delete_digit(&mut self) {
         if let Some((row, col)) = self.selected_cell() {
-            self.rows[row][col].pop();
+            if let Some(field) = self.rows[row].field_mut(col) {
+                field.pop();
+            }
         }
     }
 }
@@ -291,10 +367,23 @@ fn ui(frame: &mut Frame, app: &mut App) {
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
 
     // -- Table --
-    let item_width = app
+    // Resolve names up front to avoid borrowing app in the row-building closure.
+    let row_data: Vec<(String, String, String, String)> = app
         .rows
         .iter()
-        .map(|r| r[0].chars().count())
+        .map(|r| {
+            (
+                app.commod_name(r.commod_id).to_owned(),
+                r.restock.clone(),
+                r.stock.clone(),
+                r.booty.clone(),
+            )
+        })
+        .collect();
+
+    let item_width = row_data
+        .iter()
+        .map(|(name, ..)| name.chars().count())
         .max()
         .unwrap_or(0)
         .max("item".len()) as u16;
@@ -303,15 +392,14 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .style(Style::default().bold())
         .bottom_margin(1);
 
-    let rows: Vec<Row> = app
-        .rows
+    let rows: Vec<Row> = row_data
         .iter()
-        .map(|r| {
+        .map(|(name, restock, stock, booty)| {
             Row::new(vec![
-                Cell::new(r[0].as_str()),
-                Cell::new(Line::from(r[1].as_str()).right_aligned()),
-                Cell::new(Line::from(r[2].as_str()).right_aligned()),
-                Cell::new(Line::from(r[3].as_str()).right_aligned()),
+                Cell::new(name.as_str()),
+                Cell::new(Line::from(restock.as_str()).right_aligned()),
+                Cell::new(Line::from(stock.as_str()).right_aligned()),
+                Cell::new(Line::from(booty.as_str()).right_aligned()),
             ])
         })
         .collect();
@@ -424,11 +512,20 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
+    eprintln!("Fetching commodities from market...");
+    let mut commodities: Vec<Commodity> = reqwest::get("https://api.plunderly.app/commods")
+        .await
+        .expect("failed to fetch commodities")
+        .json()
+        .await
+        .expect("failed to parse commodities");
+    commodities.sort_by_key(|c| c.id);
+
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let mut app = App::new();
+    let mut app = App::new(commodities);
 
     loop {
         terminal.draw(|frame| ui(frame, &mut app))?;
