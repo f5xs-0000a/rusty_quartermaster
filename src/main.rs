@@ -9,7 +9,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, TableState};
 use serde::{Deserialize, Serialize};
 
 mod aliases;
@@ -689,9 +689,9 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .map(|(name, ..)| name.chars().count())
         .max()
         .unwrap_or(0)
-        .max("item".len()) as u16;
+        .max("Item".len()) as u16;
 
-    let header = Row::new(vec!["item", "restock", "stock", "booty"])
+    let header = Row::new(vec!["Item", "Restock", "Stock", "Booty"])
         .style(Style::default().bold())
         .bottom_margin(1);
 
@@ -714,8 +714,8 @@ fn ui(frame: &mut Frame, app: &mut App) {
         Constraint::Length(5),
     ];
 
-    // 2 = left + right border, 3 = spacing between 4 columns
-    let table_width = item_width + 7 + 5 + 5 + 3 + 2;
+    // 2 = left + right border, 2 = horizontal padding, 3 = spacing between 4 columns
+    let table_width = item_width + 7 + 5 + 5 + 3 + 2 + 2;
 
     let highlight = Style::default().bg(Color::White).fg(Color::Black);
     let table = Table::new(rows, widths)
@@ -723,7 +723,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .column_spacing(1)
         .row_highlight_style(Style::default())
         .cell_highlight_style(highlight)
-        .block(Block::default().borders(Borders::ALL).title("Inventory"));
+        .block(Block::default().borders(Borders::ALL).padding(Padding::horizontal(1)).title("─── Inventory "));
 
     // -- Panel --
     let panel_label_width = app
@@ -734,7 +734,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .unwrap_or(0) as u16;
     // border (1) + padding-left (1) + label + padding-right (1) + border (1)
     let panel_inner_width = panel_label_width;
-    let panel_width = panel_inner_width + 2;
+    let panel_width = panel_inner_width + 4; // +2 borders +2 padding
 
     // -- Horizontal layout: table + gap + panel, centered --
     let hchunks = Layout::horizontal([
@@ -758,7 +758,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     ])
     .split(hchunks[3]);
 
-    let panel_block = Block::default().borders(Borders::ALL).title("Parameters");
+    let panel_block = Block::default().borders(Borders::ALL).padding(Padding::horizontal(1)).title("─── Parameters ");
     let panel_inner = panel_block.inner(panel_vchunks[1]);
     frame.render_widget(panel_block, panel_vchunks[1]);
 
@@ -814,7 +814,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     ])
     .split(vchunks[1]);
 
-    let bottom_block = Block::default().borders(Borders::ALL).title("Search");
+    let bottom_block = Block::default().borders(Borders::ALL).padding(Padding::horizontal(1)).title("─── Search ");
     let bottom_inner = bottom_block.inner(bottom_hchunks[1]);
     frame.render_widget(bottom_block, bottom_hchunks[1]);
 
@@ -825,7 +825,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     .split(bottom_inner);
 
     // -- Input prompt --
-    let label = "add item: ";
+    let label = "Add Commodity: ";
     let input_style = if app.focus == Focus::Input {
         Style::default().bg(Color::White).fg(Color::Black)
     } else {
@@ -909,7 +909,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
 
     match popup {
         PopupKind::ReQueryConfirm { yes_focused } => {
-            let w: u16 = 38;
+            let w: u16 = 40;
             let h: u16 = 6;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
@@ -918,7 +918,8 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
             frame.render_widget(Clear, popup_area);
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title("Re-query?");
+                .padding(Padding::horizontal(1))
+                .title("─── Re-query? ");
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -965,7 +966,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
         PopupKind::DeleteConfirm { row_idx: _, name, yes_focused } => {
             // "Delete row " + quotes + name + "?" + border padding
             let text_len = "Delete row \"\"?".len() + name.len();
-            let w: u16 = (text_len as u16 + 4).max(20); // +4 for borders + padding
+            let w: u16 = (text_len as u16 + 6).max(22); // +2 borders +2 padding +2 margin
             let h: u16 = 5;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
@@ -974,7 +975,8 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
             frame.render_widget(Clear, popup_area);
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title("Delete row");
+                .padding(Padding::horizontal(1))
+                .title("─── Delete row ");
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -1013,7 +1015,28 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
             );
         }
         PopupKind::ProfitResult(result) => {
-            let w: u16 = 40;
+            let labels = [
+                "Goods Value",
+                "Restock Value",
+                "C. Officer Cut",
+                "Crew Donation",
+                "Add to Booty",
+            ];
+            let val_strs: [String; 5] = [
+                format!("{}", result.goods_value),
+                format!("{}", result.restock_value),
+                format!("{}", result.co_cut),
+                format!("{}", result.crew_donation),
+                format!("{}", result.add_to_booty),
+            ];
+            let max_content = labels
+                .iter()
+                .zip(val_strs.iter())
+                .map(|(l, v)| l.len() + 4 + v.len())
+                .max()
+                .unwrap_or(0);
+            // +2 borders +2 padding; min 24 to fit title
+            let w: u16 = (max_content as u16 + 4).max(24);
             let h: u16 = 9;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
@@ -1022,7 +1045,8 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
             frame.render_widget(Clear, popup_area);
             let block = Block::default()
                 .borders(Borders::ALL)
-                .title("Profit Breakdown");
+                .padding(Padding::horizontal(1))
+                .title("─── Profit Breakdown ");
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -1037,24 +1061,9 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
             ])
             .split(inner);
 
-            let labels = [
-                "Goods Value",
-                "Restock Value",
-                "C. Officer Cut",
-                "Crew Donation",
-                "Add to Booty",
-            ];
-            let values: [u64; 5] = [
-                result.goods_value,
-                result.restock_value,
-                result.co_cut,
-                result.crew_donation,
-                result.add_to_booty,
-            ];
             let avail = inner.width as usize;
 
-            for (i, (lbl, val)) in labels.iter().zip(values.iter()).enumerate() {
-                let val_str = format!("{}", val);
+            for (i, (lbl, val_str)) in labels.iter().zip(val_strs.iter()).enumerate() {
                 let pad = avail.saturating_sub(lbl.len()).saturating_sub(val_str.len());
                 let line = format!("{}{:>w$}", lbl, val_str, w = pad + val_str.len());
                 frame.render_widget(Paragraph::new(line), rows[i]);
