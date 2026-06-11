@@ -9,6 +9,8 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 use serde::Deserialize;
 
+mod aliases;
+
 // ---------------------------------------------------------------------------
 // API types
 // ---------------------------------------------------------------------------
@@ -166,6 +168,7 @@ struct App {
     focus: Focus,
     table_state: TableState,
     panel: [PromptField; PANEL_COUNT],
+    submit_failed: bool,
 }
 
 const FIRST_COL: usize = 1;
@@ -187,6 +190,7 @@ impl App {
                 PromptField::new("Restocking Rate", FieldKind::Rate),
                 PromptField::new("Pre-restocking", FieldKind::PositiveInt),
             ],
+            submit_failed: false,
         }
     }
 
@@ -222,7 +226,64 @@ impl App {
         self.table_state.select_column(None);
     }
 
-    // -- input prompt helpers --
+    // -- suggestion & submit --
+
+    fn suggest(&self) -> Option<u64> {
+        let query = self.input.trim().to_lowercase();
+        if query.is_empty() {
+            return None;
+        }
+
+        // 1. Alias lookup
+        if let Some(&target) = aliases::get().get(query.as_str()) {
+            if let Some(c) = self
+                .commodities
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(target))
+            {
+                return Some(c.id);
+            }
+        }
+
+        // 2. Exact match
+        if let Some(c) = self
+            .commodities
+            .iter()
+            .find(|c| c.name.eq_ignore_ascii_case(&query))
+        {
+            return Some(c.id);
+        }
+
+        // 3. Unique prefix
+        let prefix_matches: Vec<_> = self
+            .commodities
+            .iter()
+            .filter(|c| c.name.to_lowercase().starts_with(&query))
+            .collect();
+        if prefix_matches.len() == 1 {
+            return Some(prefix_matches[0].id);
+        }
+
+        // 4. Levenshtein (threshold <= 4, unique winner)
+        let mut best_dist = usize::MAX;
+        let mut best_id = None;
+        let mut tie = false;
+        for c in &self.commodities {
+            let dist = text_similarity(&query, &c.name.to_lowercase());
+            if dist < best_dist {
+                best_dist = dist;
+                best_id = Some(c.id);
+                tie = false;
+            } else if dist == best_dist {
+                tie = true;
+            }
+        }
+        if best_dist <= 4 && !tie {
+            return best_id;
+        }
+
+        None
+    }
 
     fn submit(&mut self) {
         let query = self.input.trim().to_lowercase();
@@ -232,21 +293,19 @@ impl App {
             return;
         }
 
-        // Find the closest commodity by Levenshtein distance.
-        let matched = self
-            .commodities
-            .iter()
-            .min_by_key(|c| levenshtein::levenshtein(&query, &c.name.to_lowercase()));
-
-        if let Some(commod) = matched {
-            let id = commod.id;
-            // Don't add duplicates.
-            if !self.rows.iter().any(|r| r.commod_id == id) {
-                let pos = self
-                    .rows
-                    .binary_search_by_key(&id, |r| r.commod_id)
-                    .unwrap_err();
-                self.rows.insert(pos, InventoryRow::new(id));
+        match self.suggest() {
+            Some(id) => {
+                if !self.rows.iter().any(|r| r.commod_id == id) {
+                    let pos = self
+                        .rows
+                        .binary_search_by_key(&id, |r| r.commod_id)
+                        .unwrap_err();
+                    self.rows.insert(pos, InventoryRow::new(id));
+                }
+                self.submit_failed = false;
+            }
+            None => {
+                self.submit_failed = true;
             }
         }
 
@@ -257,6 +316,7 @@ impl App {
     fn input_insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
+        self.submit_failed = false;
     }
 
     fn input_delete_char_before(&mut self) {
@@ -268,12 +328,14 @@ impl App {
                 .unwrap_or(0);
             self.input.remove(prev);
             self.cursor = prev;
+            self.submit_failed = false;
         }
     }
 
     fn input_delete_char_at(&mut self) {
         if self.cursor < self.input.len() {
             self.input.remove(self.cursor);
+            self.submit_failed = false;
         }
     }
 
@@ -359,12 +421,24 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
+// Text similarity
+// ---------------------------------------------------------------------------
+
+fn text_similarity(a: &str, b: &str) -> usize {
+    levenshtein::levenshtein(a, b)
+}
+
+// ---------------------------------------------------------------------------
 // UI
 // ---------------------------------------------------------------------------
 
 fn ui(frame: &mut Frame, app: &mut App) {
-    let vchunks =
-        Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
+    let vchunks = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(frame.area());
 
     // -- Table --
     // Resolve names up front to avoid borrowing app in the row-building closure.
@@ -504,6 +578,37 @@ fn ui(frame: &mut Frame, app: &mut App) {
         let cursor_y = vchunks[1].y;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+
+    // -- Suggestion / error line --
+    let suggestion = app.suggest();
+    let query_lower = app.input.trim().to_lowercase();
+    let suggestion_widget: Option<Paragraph> = match suggestion {
+        Some(id) => {
+            let name = app.commod_name(id);
+            if name.eq_ignore_ascii_case(&query_lower) {
+                // Exact match — no suggestion shown
+                None
+            } else {
+                Some(Paragraph::new(Span::styled(
+                    format!("  {}", name),
+                    Style::default().fg(Color::DarkGray),
+                )))
+            }
+        }
+        None => {
+            if app.submit_failed {
+                Some(Paragraph::new(Span::styled(
+                    "  no match",
+                    Style::default().fg(Color::Red),
+                )))
+            } else {
+                None
+            }
+        }
+    };
+    if let Some(w) = suggestion_widget {
+        frame.render_widget(w, vchunks[2]);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -520,6 +625,19 @@ async fn main() -> io::Result<()> {
         .await
         .expect("failed to parse commodities");
     commodities.sort_by_key(|c| c.id);
+
+    // Validate alias targets against commodity list.
+    for (&alias, &target) in aliases::get().iter() {
+        if !commodities
+            .iter()
+            .any(|c| c.name.eq_ignore_ascii_case(target))
+        {
+            eprintln!(
+                "warning: alias '{}' targets unknown commodity '{}'",
+                alias, target
+            );
+        }
+    }
 
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
