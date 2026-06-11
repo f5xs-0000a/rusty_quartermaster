@@ -505,15 +505,30 @@ impl App {
         let donation_rate = Self::parse_rate(&self.panel[2]);
         let restocking_rate = Self::parse_rate(&self.panel[3]);
 
-        let base = (goods_value as f64 + booty_money - restock_value as f64).max(0.0);
-        let denom = 1. + co_rate + donation_rate;
+        // Back-compute total money reward: booty_money = M * (1-R) / 2
+        let total_money = if restocking_rate < 1.0 {
+            2.0 * booty_money / (1.0 - restocking_rate)
+        } else {
+            0.0
+        };
+        let ship_hold = total_money * restocking_rate;
 
-        let co_cut = (base * co_rate / denom).ceil() as u64;
-        let crew_donation = (base * donation_rate / denom).floor() as u64;
+        // Goods revenue available for booty after covering restocking overflow.
+        // Payment chain: ship hold first, then goods revenue, then CO's pocket.
+        let restock_overflow = (restock_value as f64 - ship_hold).max(0.0);
+        let goods_to_booty = (goods_value as f64 - restock_overflow).max(0.0);
 
-        let undistributed =
-            booty_money * (2. * (1. - restocking_rate) - 1.) + goods_value as f64 - restock_value as f64;
-        let add_to_booty = (undistributed - co_cut as f64 - crew_donation as f64).max(0.0).floor() as u64;
+        // Total adventure earnings (base for CO cut and donations)
+        let total_earnings = (total_money + goods_value as f64 - restock_value as f64).max(0.0);
+
+        // Straight percentages of total earnings
+        let co_cut = (total_earnings * co_rate).ceil() as u64;
+        let crew_donation = (total_earnings * donation_rate).floor() as u64;
+
+        // Amount added to booty chest
+        let add_to_booty = (goods_to_booty - co_cut as f64 - crew_donation as f64)
+            .max(0.0)
+            .floor() as u64;
 
         ProfitResult {
             goods_value,
