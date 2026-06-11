@@ -127,6 +127,8 @@ struct ProfitResult {
     restock_value: u64,
     co_cut: u64,
     crew_donation: u64,
+    subtotal: u64,
+    stocking: u64,
     add_to_booty: u64,
 }
 
@@ -318,7 +320,7 @@ impl App {
                 PromptField::new("Commanding Officer Rate", FieldKind::Rate),
                 PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
                 PromptField::new("Restocking Rate", FieldKind::Rate),
-                PromptField::new("Pre-restocking", FieldKind::PositiveInt),
+                PromptField::new("Stocking", FieldKind::PositiveInt),
             ],
             submit_failed: None,
             popup: None,
@@ -631,16 +633,21 @@ impl App {
         let co_cut = (total_earnings * co_rate).ceil() as u64;
         let crew_donation = (total_earnings * donation_rate).floor() as u64;
 
-        // Amount added to booty chest
-        let add_to_booty = (goods_to_booty - co_cut as f64 - crew_donation as f64)
+        // Subtotal before stocking deduction
+        let subtotal = (goods_to_booty - co_cut as f64 - crew_donation as f64)
             .max(0.0)
             .floor() as u64;
+
+        let stocking = self.panel[5].value.parse::<u64>().unwrap_or(0);
+        let add_to_booty = subtotal.saturating_sub(stocking);
 
         ProfitResult {
             goods_value,
             restock_value,
             co_cut,
             crew_donation,
+            subtotal,
+            stocking,
             add_to_booty,
         }
     }
@@ -1187,13 +1194,17 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 "Restock Value",
                 "C. Officer Cut",
                 "Crew Donation",
+                "Subtotal",
+                "Stocking",
                 "Add to Booty",
             ];
-            let val_strs: [String; 5] = [
+            let val_strs: [String; 7] = [
                 format!("{}", result.goods_value),
                 format!("{}", result.restock_value),
                 format!("{}", result.co_cut),
                 format!("{}", result.crew_donation),
+                format!("{}", result.subtotal),
+                format!("{}", result.stocking),
                 format!("{}", result.add_to_booty),
             ];
             let max_content = labels
@@ -1204,7 +1215,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 .unwrap_or(0);
             // +2 borders +2 padding; min 24 to fit title
             let w: u16 = (max_content as u16 + 4).max(24);
-            let h: u16 = 9;
+            let h: u16 = 11;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
             let popup_area = Rect::new(x, y, w, h);
@@ -1225,6 +1236,8 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
             ])
             .split(inner);
 
@@ -1238,7 +1251,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
 
             let ok_style = Style::default().bg(Color::White).fg(Color::Black).bold();
             let ok_btn = Line::from(Span::styled(" Ok ", ok_style));
-            frame.render_widget(Paragraph::new(ok_btn).centered(), rows[6]);
+            frame.render_widget(Paragraph::new(ok_btn).centered(), rows[8]);
         }
     }
 }
