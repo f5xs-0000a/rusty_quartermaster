@@ -6,13 +6,26 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+
+#[derive(PartialEq)]
+enum Focus {
+    Input,
+    Table,
+}
 
 struct App {
     rows: Vec<Vec<String>>,
     input: String,
     cursor: usize,
+    focus: Focus,
+    table_state: TableState,
 }
+
+/// Editable table columns (indices into each row's Vec<String>).
+/// Column 0 (item) is not editable/highlightable.
+const FIRST_COL: usize = 1;
+const LAST_COL: usize = 3;
 
 impl App {
     fn new() -> Self {
@@ -20,8 +33,27 @@ impl App {
             rows: Vec::new(),
             input: String::new(),
             cursor: 0,
+            focus: Focus::Input,
+            table_state: TableState::default(),
         }
     }
+
+    fn focus_table_bottom(&mut self) {
+        if self.rows.is_empty() {
+            return;
+        }
+        self.focus = Focus::Table;
+        self.table_state.select(Some(self.rows.len() - 1));
+        self.table_state.select_column(Some(FIRST_COL));
+    }
+
+    fn focus_input(&mut self) {
+        self.focus = Focus::Input;
+        self.table_state.select(None);
+        self.table_state.select_column(None);
+    }
+
+    // -- input helpers --
 
     fn submit(&mut self) {
         let name = self.input.trim().to_string();
@@ -60,7 +92,7 @@ impl App {
         }
     }
 
-    fn move_left(&mut self) {
+    fn move_cursor_left(&mut self) {
         if self.cursor > 0 {
             self.cursor = self.input[..self.cursor]
                 .char_indices()
@@ -70,14 +102,67 @@ impl App {
         }
     }
 
-    fn move_right(&mut self) {
+    fn move_cursor_right(&mut self) {
         if self.cursor < self.input.len() {
-            self.cursor += self.input[self.cursor..].chars().next().map_or(0, |c| c.len_utf8());
+            self.cursor +=
+                self.input[self.cursor..].chars().next().map_or(0, |c| c.len_utf8());
+        }
+    }
+
+    // -- table helpers --
+
+    fn selected_cell(&self) -> Option<(usize, usize)> {
+        Some((self.table_state.selected()?, self.table_state.selected_column()?))
+    }
+
+    fn table_up(&mut self) {
+        if let Some(row) = self.table_state.selected() {
+            if row > 0 {
+                self.table_state.select(Some(row - 1));
+            }
+        }
+    }
+
+    fn table_down(&mut self) {
+        if let Some(row) = self.table_state.selected() {
+            if row + 1 < self.rows.len() {
+                self.table_state.select(Some(row + 1));
+            } else {
+                self.focus_input();
+            }
+        }
+    }
+
+    fn table_left(&mut self) {
+        if let Some(col) = self.table_state.selected_column() {
+            if col > FIRST_COL {
+                self.table_state.select_column(Some(col - 1));
+            }
+        }
+    }
+
+    fn table_right(&mut self) {
+        if let Some(col) = self.table_state.selected_column() {
+            if col < LAST_COL {
+                self.table_state.select_column(Some(col + 1));
+            }
+        }
+    }
+
+    fn table_insert_digit(&mut self, d: char) {
+        if let Some((row, col)) = self.selected_cell() {
+            self.rows[row][col].push(d);
+        }
+    }
+
+    fn table_delete_digit(&mut self) {
+        if let Some((row, col)) = self.selected_cell() {
+            self.rows[row][col].pop();
         }
     }
 }
 
-fn ui(frame: &mut Frame, app: &App) {
+fn ui(frame: &mut Frame, app: &mut App) {
     let vchunks =
         Layout::vertical([Constraint::Min(0), Constraint::Length(1)]).split(frame.area());
 
@@ -117,9 +202,11 @@ fn ui(frame: &mut Frame, app: &App) {
     // 2 = left + right border, 3 = spacing between 4 columns
     let table_width = item_width + 7 + 5 + 5 + 3 + 2;
 
+    let highlight = Style::default().bg(Color::White).fg(Color::Black);
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
+        .cell_highlight_style(highlight)
         .block(Block::default().borders(Borders::ALL).title("Inventory"));
 
     let hchunks = Layout::horizontal([
@@ -129,7 +216,7 @@ fn ui(frame: &mut Frame, app: &App) {
     ])
     .split(vchunks[0]);
 
-    frame.render_widget(table, hchunks[1]);
+    frame.render_stateful_widget(table, hchunks[1], &mut app.table_state);
 
     // -- Input prompt --
     let label = "add item: ";
@@ -139,10 +226,13 @@ fn ui(frame: &mut Frame, app: &App) {
     ]));
     frame.render_widget(prompt, vchunks[1]);
 
-    let cursor_x =
-        vchunks[1].x + label.len() as u16 + app.input[..app.cursor].chars().count() as u16;
-    let cursor_y = vchunks[1].y;
-    frame.set_cursor_position((cursor_x, cursor_y));
+    if app.focus == Focus::Input {
+        let cursor_x = vchunks[1].x
+            + label.len() as u16
+            + app.input[..app.cursor].chars().count() as u16;
+        let cursor_y = vchunks[1].y;
+        frame.set_cursor_position((cursor_x, cursor_y));
+    }
 }
 
 #[tokio::main]
@@ -154,23 +244,37 @@ async fn main() -> io::Result<()> {
     let mut app = App::new();
 
     loop {
-        terminal.draw(|frame| ui(frame, &app))?;
+        terminal.draw(|frame| ui(frame, &mut app))?;
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
-            match key.code {
-                KeyCode::Esc => break,
-                KeyCode::Enter => app.submit(),
-                KeyCode::Backspace => app.delete_char_before(),
-                KeyCode::Delete => app.delete_char_at(),
-                KeyCode::Left => app.move_left(),
-                KeyCode::Right => app.move_right(),
-                KeyCode::Home => app.cursor = 0,
-                KeyCode::End => app.cursor = app.input.len(),
-                KeyCode::Char(c) => app.insert_char(c),
-                _ => {}
+            if key.code == KeyCode::Esc {
+                break;
+            }
+            match app.focus {
+                Focus::Input => match key.code {
+                    KeyCode::Enter => app.submit(),
+                    KeyCode::Backspace => app.delete_char_before(),
+                    KeyCode::Delete => app.delete_char_at(),
+                    KeyCode::Left => app.move_cursor_left(),
+                    KeyCode::Right => app.move_cursor_right(),
+                    KeyCode::Home => app.cursor = 0,
+                    KeyCode::End => app.cursor = app.input.len(),
+                    KeyCode::Up => app.focus_table_bottom(),
+                    KeyCode::Char(c) => app.insert_char(c),
+                    _ => {}
+                },
+                Focus::Table => match key.code {
+                    KeyCode::Up => app.table_up(),
+                    KeyCode::Down => app.table_down(),
+                    KeyCode::Left => app.table_left(),
+                    KeyCode::Right => app.table_right(),
+                    KeyCode::Char(d) if d.is_ascii_digit() => app.table_insert_digit(d),
+                    KeyCode::Backspace => app.table_delete_digit(),
+                    _ => {}
+                },
             }
         }
     }
