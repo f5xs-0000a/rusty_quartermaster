@@ -26,23 +26,59 @@ struct Commodity {
 
 #[derive(Deserialize)]
 struct BuySellResponse {
-    offers: Vec<Offer>,
+    commodity: String,
+    offers: Vec<RawOffer>,
 }
 
-#[derive(Deserialize, Clone)]
+#[derive(Deserialize)]
+struct RawOfferIsland {
+    islandname: String,
+}
+
+#[derive(Deserialize)]
+struct RawOffer {
+    stallname: String,
+    island: RawOfferIsland,
+    buyprice: u64,
+    sellprice: u64,
+    buyqty: u64,
+    sellqty: u64,
+}
+
+#[derive(Clone)]
 struct Offer {
-    buyprice: i64,
-    sellprice: i64,
-    buyqty: i64,
-    sellqty: i64,
+    stallname: String,
+    islandname: String,
+    buyprice: u64,
+    sellprice: u64,
+    buyqty: u64,
+    sellqty: u64,
+}
+
+impl From<RawOffer> for Offer {
+    fn from(r: RawOffer) -> Self {
+        Self {
+            stallname: r.stallname,
+            islandname: r.island.islandname,
+            buyprice: r.buyprice,
+            sellprice: r.sellprice,
+            buyqty: r.buyqty,
+            sellqty: r.sellqty,
+        }
+    }
+}
+
+struct CachedOffers {
+    offers: Vec<Offer>,
+    fetched_at: u64,
 }
 
 struct ProfitResult {
-    goods_value: i64,
-    restock_value: i64,
-    co_cut: i64,
-    crew_donation: i64,
-    add_to_booty: i64,
+    goods_value: u64,
+    restock_value: u64,
+    co_cut: u64,
+    crew_donation: u64,
+    add_to_booty: u64,
 }
 
 enum PopupKind {
@@ -202,7 +238,7 @@ struct App {
     popup: Option<PopupKind>,
     loading: bool,
     calc_error: Option<String>,
-    cached_offers: HashMap<String, Vec<Offer>>,
+    cached_offers: HashMap<String, CachedOffers>,
 }
 
 const FIRST_COL: usize = 1;
@@ -364,17 +400,17 @@ impl App {
     }
 
     fn calculate_profits(&self) -> ProfitResult {
-        let mut goods_value: i64 = 0;
-        let mut restock_value: i64 = 0;
+        let mut goods_value: u64 = 0;
+        let mut restock_value: u64 = 0;
 
         for row in &self.rows {
             let name = self.commod_name(row.commod_id);
-            let restock = row.restock.parse::<i64>().unwrap_or(0);
-            let stock = row.stock.parse::<i64>().unwrap_or(0);
-            let booty = row.booty.parse::<i64>().unwrap_or(0);
+            let restock = row.restock.parse::<u64>().unwrap_or(0);
+            let stock = row.stock.parse::<u64>().unwrap_or(0);
+            let booty = row.booty.parse::<u64>().unwrap_or(0);
 
             let offers = match self.cached_offers.get(name) {
-                Some(o) => o,
+                Some(cached) => &cached.offers,
                 None => continue,
             };
 
@@ -387,8 +423,8 @@ impl App {
                 buy_offers.sort_by(|a, b| b.buyprice.cmp(&a.buyprice));
 
                 let mut remaining = booty;
-                for offer in buy_offers {
-                    if remaining <= 0 {
+                for offer in &buy_offers {
+                    if remaining == 0 {
                         break;
                     }
                     let qty = remaining.min(offer.buyqty);
@@ -398,7 +434,7 @@ impl App {
             }
 
             // Restock Value: buy deficit at cheapest sell prices
-            let need = restock - stock - booty;
+            let need = restock.saturating_sub(stock + booty);
             if need > 0 {
                 let mut sell_offers: Vec<_> = offers
                     .iter()
@@ -407,8 +443,8 @@ impl App {
                 sell_offers.sort_by(|a, b| a.sellprice.cmp(&b.sellprice));
 
                 let mut remaining = need;
-                for offer in sell_offers {
-                    if remaining <= 0 {
+                for offer in &sell_offers {
+                    if remaining == 0 {
                         break;
                     }
                     let qty = remaining.min(offer.sellqty);
@@ -426,12 +462,12 @@ impl App {
         let base = (goods_value as f64 + booty_money - restock_value as f64).max(0.0);
         let denom = 1.0 + co_rate + donation_rate;
 
-        let co_cut = (base * co_rate / denom).ceil() as i64;
-        let crew_donation = (base * donation_rate / denom).floor() as i64;
+        let co_cut = (base * co_rate / denom).ceil() as u64;
+        let crew_donation = (base * donation_rate / denom).floor() as u64;
 
         let undistributed =
             booty_money * (2.0 * (1.0 - restocking_rate)) + goods_value as f64 - restock_value as f64;
-        let add_to_booty = (undistributed - co_cut as f64 - crew_donation as f64).floor() as i64;
+        let add_to_booty = (undistributed - co_cut as f64 - crew_donation as f64).max(0.0).floor() as u64;
 
         ProfitResult {
             goods_value,
@@ -896,7 +932,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 "Crew Donation",
                 "Add to Booty",
             ];
-            let values = [
+            let values: [u64; 5] = [
                 result.goods_value,
                 result.restock_value,
                 result.co_cut,
@@ -925,15 +961,15 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
 
 fn spawn_fetch(
     app: &App,
-    tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, Vec<Offer>>, String>>,
+    tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
 ) {
     let names: Vec<String> = app
         .rows
         .iter()
         .filter(|r| {
-            let restock = r.restock.parse::<i64>().unwrap_or(0);
-            let stock = r.stock.parse::<i64>().unwrap_or(0);
-            let booty = r.booty.parse::<i64>().unwrap_or(0);
+            let restock = r.restock.parse::<u64>().unwrap_or(0);
+            let stock = r.stock.parse::<u64>().unwrap_or(0);
+            let booty = r.booty.parse::<u64>().unwrap_or(0);
             restock != 0 || stock != 0 || booty != 0
         })
         .map(|r| app.commod_name(r.commod_id).to_owned())
@@ -942,7 +978,7 @@ fn spawn_fetch(
     let tx = tx.clone();
     tokio::spawn(async move {
         let client = reqwest::Client::new();
-        let mut map: HashMap<String, Vec<Offer>> = HashMap::new();
+        let mut map: HashMap<String, CachedOffers> = HashMap::new();
 
         for name in names {
             let mut url = reqwest::Url::parse(
@@ -961,9 +997,18 @@ fn spawn_fetch(
                 }
             };
 
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_secs();
+
             match resp.json::<BuySellResponse>().await {
                 Ok(data) => {
-                    map.insert(name, data.offers);
+                    let offers = data.offers.into_iter().map(Offer::from).collect();
+                    map.insert(name, CachedOffers {
+                        offers,
+                        fetched_at: now,
+                    });
                 }
                 Err(e) => {
                     let _ = tx.send(Err(format!("Parse error: {}", e)));
@@ -1006,7 +1051,7 @@ async fn main() -> io::Result<()> {
 
     let mut app = App::new(commodities);
     let (tx, mut rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<HashMap<String, Vec<Offer>>, String>>();
+        tokio::sync::mpsc::unbounded_channel::<Result<HashMap<String, CachedOffers>, String>>();
 
     loop {
         terminal.draw(|frame| ui(frame, &mut app))?;
