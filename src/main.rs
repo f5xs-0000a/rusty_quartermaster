@@ -264,21 +264,21 @@ impl App {
             return Some(prefix_matches[0].id);
         }
 
-        // 4. Levenshtein (threshold <= 4, unique winner)
-        let mut best_dist = usize::MAX;
+        // 4. Jaro-Winkler (minimum 0.75, unique winner)
+        let mut best_score = f64::NEG_INFINITY;
         let mut best_id = None;
         let mut tie = false;
         for c in &self.commodities {
-            let dist = text_similarity(&query, &c.name.to_lowercase());
-            if dist < best_dist {
-                best_dist = dist;
+            let score = text_similarity(&query, &c.name.to_lowercase());
+            if score > best_score {
+                best_score = score;
                 best_id = Some(c.id);
                 tie = false;
-            } else if dist == best_dist {
+            } else if score == best_score {
                 tie = true;
             }
         }
-        if best_dist <= 4 && !tie {
+        if best_score >= 0.75 && !tie {
             return best_id;
         }
 
@@ -424,8 +424,8 @@ impl App {
 // Text similarity
 // ---------------------------------------------------------------------------
 
-fn text_similarity(a: &str, b: &str) -> usize {
-    levenshtein::levenshtein(a, b)
+fn text_similarity(a: &str, b: &str) -> f64 {
+    strsim::jaro_winkler(a, b)
 }
 
 // ---------------------------------------------------------------------------
