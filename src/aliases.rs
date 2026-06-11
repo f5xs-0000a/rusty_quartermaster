@@ -12,6 +12,19 @@ static ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(||
     entries.iter().copied().collect()
 });
 
+static ISLAND_ALIASES: LazyLock<HashMap<&'static str, &'static str>> = LazyLock::new(|| {
+    let entries: &[(&str, &str)] = &[
+        ("addy", "admiral island"),
+        ("aim", "aimuari island"),
+        ("scrim", "scrimshaw island"),
+    ];
+    entries.iter().copied().collect()
+});
+
 pub fn get() -> &'static HashMap<&'static str, &'static str> {
     &ALIASES
+}
+
+pub fn get_islands() -> &'static HashMap<&'static str, &'static str> {
+    &ISLAND_ALIASES
 }

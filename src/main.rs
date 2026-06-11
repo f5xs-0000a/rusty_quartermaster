@@ -45,6 +45,8 @@ struct SavedInventoryRow {
 struct SavedInventory {
     rows: Vec<SavedInventoryRow>,
     panel: Vec<String>,
+    #[serde(default)]
+    restocking_island: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -178,6 +180,7 @@ impl InventoryRow {
 enum FieldKind {
     PositiveInt,
     Rate,
+    Text,
 }
 
 struct PromptField {
@@ -211,6 +214,7 @@ impl PromptField {
                     false
                 }
             }
+            FieldKind::Text => !c.is_control(),
         }
     }
 
@@ -263,7 +267,12 @@ impl PromptField {
 // App
 // ---------------------------------------------------------------------------
 
-const PANEL_COUNT: usize = 5;
+const PANEL_COUNT: usize = 6;
+
+enum FetchPurpose {
+    Islands,
+    Profits,
+}
 
 #[derive(PartialEq)]
 enum Focus {
@@ -287,6 +296,8 @@ struct App {
     loading: bool,
     calc_error: Option<String>,
     cached_offers: HashMap<String, CachedOffers>,
+    available_islands: Vec<String>,
+    fetch_purpose: FetchPurpose,
 }
 
 const FIRST_COL: usize = 1;
@@ -302,6 +313,7 @@ impl App {
             focus: Focus::Input,
             table_state: TableState::default(),
             panel: [
+                PromptField::new("Restocking Island", FieldKind::Text),
                 PromptField::new("Money in Booty", FieldKind::PositiveInt),
                 PromptField::new("Commanding Officer Rate", FieldKind::Rate),
                 PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
@@ -313,6 +325,8 @@ impl App {
             loading: false,
             calc_error: None,
             cached_offers: HashMap::new(),
+            available_islands: Vec::new(),
+            fetch_purpose: FetchPurpose::Profits,
         }
     }
 
@@ -322,6 +336,84 @@ impl App {
             .find(|c| c.id == commod_id)
             .map(|c| c.name.as_str())
             .unwrap_or("???")
+    }
+
+    fn rebuild_island_list(&mut self) {
+        let inventory_names: Vec<String> = self
+            .rows
+            .iter()
+            .map(|r| self.commod_name(r.commod_id).to_owned())
+            .collect();
+
+        let mut islands = Vec::new();
+        for name in &inventory_names {
+            if let Some(cached) = self.cached_offers.get(name.as_str()) {
+                for offer in &cached.offers {
+                    if offer.sellprice > 0 && offer.sellqty > 0 && !islands.contains(&offer.islandname) {
+                        islands.push(offer.islandname.clone());
+                    }
+                }
+            }
+        }
+        islands.sort();
+        self.available_islands = islands;
+    }
+
+    fn suggest_island(&self) -> Option<&str> {
+        let query = self.panel[0].value.trim().to_lowercase();
+        if query.is_empty() {
+            return None;
+        }
+
+        // Alias lookup
+        if let Some(&target) = aliases::get_islands().get(query.as_str()) {
+            if let Some(island) = self
+                .available_islands
+                .iter()
+                .find(|i| i.eq_ignore_ascii_case(target))
+            {
+                return Some(island);
+            }
+        }
+
+        // Exact match
+        if let Some(island) = self
+            .available_islands
+            .iter()
+            .find(|i| i.eq_ignore_ascii_case(&query))
+        {
+            return Some(island);
+        }
+
+        // Unique prefix
+        let prefix_matches: Vec<_> = self
+            .available_islands
+            .iter()
+            .filter(|i| i.to_lowercase().starts_with(&query))
+            .collect();
+        if prefix_matches.len() == 1 {
+            return Some(prefix_matches[0]);
+        }
+
+        // Jaro-Winkler (minimum 0.75, unique winner)
+        let mut best_score = f64::NEG_INFINITY;
+        let mut best = None;
+        let mut tie = false;
+        for island in &self.available_islands {
+            let score = text_similarity(&query, &island.to_lowercase());
+            if score > best_score {
+                best_score = score;
+                best = Some(island.as_str());
+                tie = false;
+            } else if score == best_score {
+                tie = true;
+            }
+        }
+        if best_score >= 0.75 && !tie {
+            return best;
+        }
+
+        None
     }
 
     // -- focus transitions --
@@ -423,6 +515,7 @@ impl App {
                         .binary_search_by_key(&id, |r| r.commod_id)
                         .unwrap_err();
                     self.rows.insert(pos, InventoryRow::new(id));
+                    self.rebuild_island_list();
                 }
                 self.submit_failed = None;
             }
@@ -448,6 +541,13 @@ impl App {
     }
 
     fn calculate_profits(&self) -> ProfitResult {
+        // Resolve restocking island filter
+        let restock_island = if self.panel[0].value.trim().is_empty() {
+            None
+        } else {
+            self.suggest_island().map(|s| s.to_owned())
+        };
+
         let mut goods_value: u64 = 0;
         let mut restock_value: u64 = 0;
 
@@ -462,7 +562,7 @@ impl App {
                 None => continue,
             };
 
-            // Goods Value: sell booty at best buy prices
+            // Goods Value: sell booty at best buy prices (ocean-wide)
             if restock < booty + stock {
                 let mut buy_offers: Vec<_> = offers
                     .iter()
@@ -486,6 +586,11 @@ impl App {
                 let mut sell_offers: Vec<_> = offers
                     .iter()
                     .filter(|o| o.sellprice > 0 && o.sellqty > 0)
+                    .filter(|o| {
+                        restock_island
+                            .as_ref()
+                            .map_or(true, |island| o.islandname.eq_ignore_ascii_case(island))
+                    })
                     .collect();
                 sell_offers.sort_by(|a, b| a.sellprice.cmp(&b.sellprice));
 
@@ -501,10 +606,10 @@ impl App {
             }
         }
 
-        let booty_money = self.panel[0].value.parse::<f64>().unwrap_or(0.0);
-        let co_rate = Self::parse_rate(&self.panel[1]);
-        let donation_rate = Self::parse_rate(&self.panel[2]);
-        let restocking_rate = Self::parse_rate(&self.panel[3]);
+        let booty_money = self.panel[1].value.parse::<f64>().unwrap_or(0.0);
+        let co_rate = Self::parse_rate(&self.panel[2]);
+        let donation_rate = Self::parse_rate(&self.panel[3]);
+        let restocking_rate = Self::parse_rate(&self.panel[4]);
 
         // Back-compute total money reward: booty_money = M * (1-R) / 2
         let total_money = if restocking_rate < 1.0 {
@@ -782,15 +887,52 @@ fn ui(frame: &mut Frame, app: &mut App) {
         } else {
             Style::default()
         };
-        let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
-            .style(value_style);
-        frame.render_widget(value, value_area);
 
-        if is_focused {
-            let cx = value_area.x + value_area.width
-                - (field.value.chars().count() - field.value[..field.cursor].chars().count())
-                    as u16;
-            frame.set_cursor_position((cx, value_area.y));
+        if i == 0 {
+            // Island field: button when no market data, text field otherwise
+            if app.cached_offers.is_empty() {
+                let btn_style = if is_focused {
+                    Style::default().bg(Color::White).fg(Color::Black).bold()
+                } else {
+                    Style::default().fg(Color::DarkGray).italic()
+                };
+                let value = Paragraph::new(Span::styled("Query Market first", btn_style));
+                frame.render_widget(value, value_area);
+            } else if field.value.is_empty() {
+                let ph_style = if is_focused {
+                    Style::default().fg(Color::DarkGray).bg(Color::White).italic()
+                } else {
+                    Style::default().fg(Color::DarkGray).italic()
+                };
+                let value = Paragraph::new(Line::from(Span::styled("Ocean-wide", ph_style)).right_aligned());
+                frame.render_widget(value, value_area);
+                if is_focused {
+                    frame.set_cursor_position((value_area.x, value_area.y));
+                }
+            } else {
+                let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
+                    .style(value_style);
+                frame.render_widget(value, value_area);
+                if is_focused {
+                    let cx = value_area.x + value_area.width
+                        - (field.value.chars().count()
+                            - field.value[..field.cursor].chars().count())
+                            as u16;
+                    frame.set_cursor_position((cx, value_area.y));
+                }
+            }
+        } else {
+            // Numeric fields: right-aligned
+            let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
+                .style(value_style);
+            frame.render_widget(value, value_area);
+
+            if is_focused {
+                let cx = value_area.x + value_area.width
+                    - (field.value.chars().count() - field.value[..field.cursor].chars().count())
+                        as u16;
+                frame.set_cursor_position((cx, value_area.y));
+            }
         }
     }
 
@@ -856,6 +998,31 @@ fn ui(frame: &mut Frame, app: &mut App) {
             err.as_str(),
             Style::default().fg(Color::Red),
         )))
+    } else if app.focus == Focus::Panel(0) && !app.cached_offers.is_empty() {
+        // Island suggestion
+        let query = app.panel[0].value.trim();
+        if query.is_empty() {
+            None
+        } else {
+            match app.suggest_island() {
+                Some(name) if name.eq_ignore_ascii_case(query) => None,
+                Some(name) => Some(Line::from(vec![
+                    Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        name,
+                        Style::default().bold().italic().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        "\"? Press enter to accept.",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ])),
+                None => Some(Line::from(Span::styled(
+                    "No matching island",
+                    Style::default().fg(Color::Red),
+                ))),
+            }
+        }
     } else {
         let suggestion = app.suggest();
         let query_lower = app.input.trim().to_lowercase();
@@ -1104,6 +1271,24 @@ fn spawn_fetch(
     });
 }
 
+fn spawn_island_fetch(
+    app: &App,
+    tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+) {
+    let names: Vec<String> = app
+        .rows
+        .iter()
+        .map(|r| app.commod_name(r.commod_id).to_owned())
+        .collect();
+
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let result = fetch_offers_for(&client, &names).await;
+        let _ = tx.send(result);
+    });
+}
+
 async fn fetch_offers_for(
     client: &reqwest::Client,
     names: &[String],
@@ -1244,10 +1429,14 @@ async fn main() -> io::Result<()> {
                             );
                         }
                     }
+                    // Restore island field separately
+                    app.panel[0].value = inv.restocking_island.clone();
+                    app.panel[0].cursor = inv.restocking_island.len();
+                    // Restore numeric fields (shifted by 1)
                     for (i, val) in inv.panel.into_iter().enumerate() {
-                        if i < PANEL_COUNT {
-                            app.panel[i].value = val.clone();
-                            app.panel[i].cursor = val.len();
+                        if i + 1 < PANEL_COUNT {
+                            app.panel[i + 1].value = val.clone();
+                            app.panel[i + 1].cursor = val.len();
                         }
                     }
                 }
@@ -1284,6 +1473,8 @@ async fn main() -> io::Result<()> {
         }
     }
 
+    app.rebuild_island_list();
+
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -1299,10 +1490,19 @@ async fn main() -> io::Result<()> {
             app.loading = false;
             match result {
                 Ok(offers_map) => {
-                    app.cached_offers = offers_map;
-                    let profit = app.calculate_profits();
-                    app.popup = Some(PopupKind::ProfitResult(profit));
-                    app.focus = Focus::Popup;
+                    match app.fetch_purpose {
+                        FetchPurpose::Islands => {
+                            app.cached_offers.extend(offers_map);
+                            app.rebuild_island_list();
+                        }
+                        FetchPurpose::Profits => {
+                            app.cached_offers = offers_map;
+                            app.rebuild_island_list();
+                            let profit = app.calculate_profits();
+                            app.popup = Some(PopupKind::ProfitResult(profit));
+                            app.focus = Focus::Popup;
+                        }
+                    }
                 }
                 Err(msg) => {
                     app.calc_error = Some(msg);
@@ -1378,6 +1578,29 @@ async fn main() -> io::Result<()> {
                     _ => {}
                 },
                 Focus::Panel(idx) => match key.code {
+                    KeyCode::Enter if idx == 0 => {
+                        if app.cached_offers.is_empty() {
+                            // Button mode: trigger island fetch
+                            app.calc_error = None;
+                            if app.rows.is_empty() {
+                                app.calc_error =
+                                    Some("Add commodities first".to_owned());
+                            } else {
+                                app.loading = true;
+                                app.fetch_purpose = FetchPurpose::Islands;
+                                spawn_island_fetch(&app, &tx);
+                            }
+                        } else {
+                            // Text mode: auto-fill suggestion and advance
+                            let suggestion =
+                                app.suggest_island().map(|s| s.to_owned());
+                            if let Some(island) = suggestion {
+                                app.panel[0].value = island;
+                                app.panel[0].cursor = app.panel[0].value.len();
+                            }
+                            app.focus = Focus::Panel(1);
+                        }
+                    }
                     KeyCode::Up => {
                         if idx > 0 {
                             app.focus = Focus::Panel(idx - 1);
@@ -1391,21 +1614,44 @@ async fn main() -> io::Result<()> {
                         }
                     }
                     KeyCode::Left => {
-                        if !app.rows.is_empty() {
+                        if idx == 0 && app.panel[0].cursor > 0 {
+                            app.panel[0].move_left();
+                        } else if !app.rows.is_empty() {
                             app.focus = Focus::Table;
                             app.table_state
                                 .select(Some(app.rows.len() - 1));
                             app.table_state.select_column(Some(LAST_COL));
                         }
                     }
-                    KeyCode::Backspace => app.panel[idx].delete_char_before(),
-                    KeyCode::Delete => app.panel[idx].delete_char_at(),
+                    KeyCode::Right if idx == 0 && !app.cached_offers.is_empty() => {
+                        app.panel[0].move_right();
+                    }
+                    KeyCode::Backspace => {
+                        if idx == 0 && app.cached_offers.is_empty() {
+                            // Button mode: ignore
+                        } else {
+                            app.panel[idx].delete_char_before();
+                        }
+                    }
+                    KeyCode::Delete => {
+                        if idx == 0 && app.cached_offers.is_empty() {
+                            // Button mode: ignore
+                        } else {
+                            app.panel[idx].delete_char_at();
+                        }
+                    }
                     KeyCode::Home => app.panel[idx].cursor = 0,
                     KeyCode::End => {
                         let len = app.panel[idx].value.len();
                         app.panel[idx].cursor = len;
                     }
-                    KeyCode::Char(c) => app.panel[idx].insert_char(c),
+                    KeyCode::Char(c) => {
+                        if idx == 0 && app.cached_offers.is_empty() {
+                            // Button mode: ignore typing
+                        } else {
+                            app.panel[idx].insert_char(c);
+                        }
+                    }
                     _ => {}
                 },
                 Focus::Button => match key.code {
@@ -1413,9 +1659,15 @@ async fn main() -> io::Result<()> {
                         app.calc_error = None;
                         if app.rows.is_empty() {
                             app.calc_error = Some("Add commodities first".to_owned());
+                        } else if !app.panel[0].value.trim().is_empty()
+                            && app.suggest_island().is_none()
+                        {
+                            app.calc_error =
+                                Some("Unknown restocking island".to_owned());
                         } else if app.cached_offers.is_empty() {
                             // First time: fetch immediately
                             app.loading = true;
+                            app.fetch_purpose = FetchPurpose::Profits;
                             spawn_fetch(&app, &tx);
                         } else {
                             // Has cached data: ask to re-query
@@ -1453,6 +1705,7 @@ async fn main() -> io::Result<()> {
                                     app.popup = None;
                                     app.focus = Focus::Button;
                                     app.loading = true;
+                                    app.fetch_purpose = FetchPurpose::Profits;
                                     spawn_fetch(&app, &tx);
                                 } else {
                                     // Use cached data
@@ -1471,6 +1724,7 @@ async fn main() -> io::Result<()> {
                             KeyCode::Enter => {
                                 if *yes_focused {
                                     app.rows.remove(row_idx);
+                                    app.rebuild_island_list();
                                     app.popup = None;
                                     if app.rows.is_empty() {
                                         app.focus_input();
@@ -1520,7 +1774,8 @@ async fn main() -> io::Result<()> {
                     booty: r.booty.clone(),
                 })
                 .collect(),
-            panel: app.panel.iter().map(|f| f.value.clone()).collect(),
+            restocking_island: app.panel[0].value.clone(),
+            panel: app.panel[1..].iter().map(|f| f.value.clone()).collect(),
         };
         match serde_json::to_string_pretty(&saved) {
             Ok(json) => {
