@@ -8,10 +8,106 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
 
+// ---------------------------------------------------------------------------
+// Field types & validation
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+enum FieldKind {
+    PositiveInt,
+    Rate,
+}
+
+struct PromptField {
+    label: &'static str,
+    kind: FieldKind,
+    value: String,
+    cursor: usize,
+}
+
+impl PromptField {
+    fn new(label: &'static str, kind: FieldKind) -> Self {
+        Self {
+            label,
+            kind,
+            value: String::new(),
+            cursor: 0,
+        }
+    }
+
+    fn accepts(&self, c: char) -> bool {
+        match self.kind {
+            FieldKind::PositiveInt => c.is_ascii_digit(),
+            FieldKind::Rate => {
+                if c.is_ascii_digit() {
+                    true
+                } else if c == '.' {
+                    !self.value.contains('.')
+                } else if c == '%' {
+                    !self.value.contains('%') && self.cursor == self.value.len()
+                } else {
+                    false
+                }
+            }
+        }
+    }
+
+    fn insert_char(&mut self, c: char) {
+        if self.accepts(c) {
+            self.value.insert(self.cursor, c);
+            self.cursor += c.len_utf8();
+        }
+    }
+
+    fn delete_char_before(&mut self) {
+        if self.cursor > 0 {
+            let prev = self.value[..self.cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+            self.value.remove(prev);
+            self.cursor = prev;
+        }
+    }
+
+    fn delete_char_at(&mut self) {
+        if self.cursor < self.value.len() {
+            self.value.remove(self.cursor);
+        }
+    }
+
+    fn move_left(&mut self) {
+        if self.cursor > 0 {
+            self.cursor = self.value[..self.cursor]
+                .char_indices()
+                .next_back()
+                .map(|(i, _)| i)
+                .unwrap_or(0);
+        }
+    }
+
+    fn move_right(&mut self) {
+        if self.cursor < self.value.len() {
+            self.cursor += self.value[self.cursor..]
+                .chars()
+                .next()
+                .map_or(0, |c| c.len_utf8());
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// App
+// ---------------------------------------------------------------------------
+
+const PANEL_COUNT: usize = 5;
+
 #[derive(PartialEq)]
 enum Focus {
     Input,
     Table,
+    Panel(usize),
 }
 
 struct App {
@@ -20,6 +116,7 @@ struct App {
     cursor: usize,
     focus: Focus,
     table_state: TableState,
+    panel: [PromptField; PANEL_COUNT],
 }
 
 /// Editable table columns (indices into each row's Vec<String>).
@@ -35,11 +132,21 @@ impl App {
             cursor: 0,
             focus: Focus::Input,
             table_state: TableState::default(),
+            panel: [
+                PromptField::new("Money in Booty", FieldKind::PositiveInt),
+                PromptField::new("Commanding Officer Rate", FieldKind::Rate),
+                PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
+                PromptField::new("Restocking Rate", FieldKind::Rate),
+                PromptField::new("Pre-restocking", FieldKind::PositiveInt),
+            ],
         }
     }
 
+    // -- focus transitions --
+
     fn focus_table_bottom(&mut self) {
         if self.rows.is_empty() {
+            self.focus_panel(PANEL_COUNT - 1);
             return;
         }
         self.focus = Focus::Table;
@@ -53,7 +160,13 @@ impl App {
         self.table_state.select_column(None);
     }
 
-    // -- input helpers --
+    fn focus_panel(&mut self, idx: usize) {
+        self.focus = Focus::Panel(idx);
+        self.table_state.select(None);
+        self.table_state.select_column(None);
+    }
+
+    // -- input prompt helpers --
 
     fn submit(&mut self) {
         let name = self.input.trim().to_string();
@@ -69,12 +182,12 @@ impl App {
         self.cursor = 0;
     }
 
-    fn insert_char(&mut self, c: char) {
+    fn input_insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
     }
 
-    fn delete_char_before(&mut self) {
+    fn input_delete_char_before(&mut self) {
         if self.cursor > 0 {
             let prev = self.input[..self.cursor]
                 .char_indices()
@@ -86,13 +199,13 @@ impl App {
         }
     }
 
-    fn delete_char_at(&mut self) {
+    fn input_delete_char_at(&mut self) {
         if self.cursor < self.input.len() {
             self.input.remove(self.cursor);
         }
     }
 
-    fn move_cursor_left(&mut self) {
+    fn input_move_left(&mut self) {
         if self.cursor > 0 {
             self.cursor = self.input[..self.cursor]
                 .char_indices()
@@ -102,17 +215,22 @@ impl App {
         }
     }
 
-    fn move_cursor_right(&mut self) {
+    fn input_move_right(&mut self) {
         if self.cursor < self.input.len() {
-            self.cursor +=
-                self.input[self.cursor..].chars().next().map_or(0, |c| c.len_utf8());
+            self.cursor += self.input[self.cursor..]
+                .chars()
+                .next()
+                .map_or(0, |c| c.len_utf8());
         }
     }
 
     // -- table helpers --
 
     fn selected_cell(&self) -> Option<(usize, usize)> {
-        Some((self.table_state.selected()?, self.table_state.selected_column()?))
+        Some((
+            self.table_state.selected()?,
+            self.table_state.selected_column()?,
+        ))
     }
 
     fn table_up(&mut self) {
@@ -145,6 +263,8 @@ impl App {
         if let Some(col) = self.table_state.selected_column() {
             if col < LAST_COL {
                 self.table_state.select_column(Some(col + 1));
+            } else {
+                self.focus_panel(0);
             }
         }
     }
@@ -161,6 +281,10 @@ impl App {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// UI
+// ---------------------------------------------------------------------------
 
 fn ui(frame: &mut Frame, app: &mut App) {
     let vchunks =
@@ -209,14 +333,73 @@ fn ui(frame: &mut Frame, app: &mut App) {
         .cell_highlight_style(highlight)
         .block(Block::default().borders(Borders::ALL).title("Inventory"));
 
+    // -- Panel --
+    let panel_label_width = app
+        .panel
+        .iter()
+        .map(|f| f.label.chars().count())
+        .max()
+        .unwrap_or(0) as u16;
+    // border (1) + padding-left (1) + label + padding-right (1) + border (1)
+    let panel_inner_width = panel_label_width;
+    let panel_width = panel_inner_width + 2;
+
+    // -- Horizontal layout: table + gap + panel, centered --
     let hchunks = Layout::horizontal([
         Constraint::Fill(1),
         Constraint::Length(table_width),
+        Constraint::Length(1),
+        Constraint::Length(panel_width),
         Constraint::Fill(1),
     ])
     .split(vchunks[0]);
 
     frame.render_stateful_widget(table, hchunks[1], &mut app.table_state);
+
+    // Vertically center the panel: 2 rows per field (label + value), + 2 for border
+    let panel_content_height = (PANEL_COUNT as u16) * 2;
+    let panel_block_height = panel_content_height + 2;
+    let panel_vchunks = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(panel_block_height),
+        Constraint::Fill(1),
+    ])
+    .split(hchunks[3]);
+
+    let panel_block = Block::default().borders(Borders::ALL).title("Parameters");
+    let panel_inner = panel_block.inner(panel_vchunks[1]);
+    frame.render_widget(panel_block, panel_vchunks[1]);
+
+    // Each prompt takes 2 rows: label + value
+    let panel_constraints: Vec<Constraint> = (0..PANEL_COUNT)
+        .flat_map(|_| [Constraint::Length(1), Constraint::Length(1)])
+        .collect();
+    let panel_rows = Layout::vertical(panel_constraints).split(panel_inner);
+
+    for (i, field) in app.panel.iter().enumerate() {
+        let label_area = panel_rows[i * 2];
+        let value_area = panel_rows[i * 2 + 1];
+
+        let label = Paragraph::new(Span::styled(field.label, Style::default().bold()));
+        frame.render_widget(label, label_area);
+
+        let is_focused = app.focus == Focus::Panel(i);
+        let value_style = if is_focused {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+        let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
+            .style(value_style);
+        frame.render_widget(value, value_area);
+
+        if is_focused {
+            let cx = value_area.x + value_area.width
+                - (field.value.chars().count() - field.value[..field.cursor].chars().count())
+                    as u16;
+            frame.set_cursor_position((cx, value_area.y));
+        }
+    }
 
     // -- Input prompt --
     let label = "add item: ";
@@ -234,6 +417,10 @@ fn ui(frame: &mut Frame, app: &mut App) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 }
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -256,14 +443,14 @@ async fn main() -> io::Result<()> {
             match app.focus {
                 Focus::Input => match key.code {
                     KeyCode::Enter => app.submit(),
-                    KeyCode::Backspace => app.delete_char_before(),
-                    KeyCode::Delete => app.delete_char_at(),
-                    KeyCode::Left => app.move_cursor_left(),
-                    KeyCode::Right => app.move_cursor_right(),
+                    KeyCode::Backspace => app.input_delete_char_before(),
+                    KeyCode::Delete => app.input_delete_char_at(),
+                    KeyCode::Left => app.input_move_left(),
+                    KeyCode::Right => app.input_move_right(),
                     KeyCode::Home => app.cursor = 0,
                     KeyCode::End => app.cursor = app.input.len(),
                     KeyCode::Up => app.focus_table_bottom(),
-                    KeyCode::Char(c) => app.insert_char(c),
+                    KeyCode::Char(c) => app.input_insert_char(c),
                     _ => {}
                 },
                 Focus::Table => match key.code {
@@ -273,6 +460,38 @@ async fn main() -> io::Result<()> {
                     KeyCode::Right => app.table_right(),
                     KeyCode::Char(d) if d.is_ascii_digit() => app.table_insert_digit(d),
                     KeyCode::Backspace => app.table_delete_digit(),
+                    _ => {}
+                },
+                Focus::Panel(idx) => match key.code {
+                    KeyCode::Up => {
+                        if idx > 0 {
+                            app.focus = Focus::Panel(idx - 1);
+                        }
+                    }
+                    KeyCode::Down => {
+                        if idx + 1 < PANEL_COUNT {
+                            app.focus = Focus::Panel(idx + 1);
+                        } else {
+                            app.focus_input();
+                        }
+                    }
+                    KeyCode::Left => {
+                        // Back to table, booty column, last row (or stay if empty)
+                        if !app.rows.is_empty() {
+                            app.focus = Focus::Table;
+                            app.table_state
+                                .select(Some(app.rows.len() - 1));
+                            app.table_state.select_column(Some(LAST_COL));
+                        }
+                    }
+                    KeyCode::Backspace => app.panel[idx].delete_char_before(),
+                    KeyCode::Delete => app.panel[idx].delete_char_at(),
+                    KeyCode::Home => app.panel[idx].cursor = 0,
+                    KeyCode::End => {
+                        let len = app.panel[idx].value.len();
+                        app.panel[idx].cursor = len;
+                    }
+                    KeyCode::Char(c) => app.panel[idx].insert_char(c),
                     _ => {}
                 },
             }
