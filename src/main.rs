@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::io;
+use std::time::Duration;
 
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
 use crossterm::execute;
@@ -6,7 +8,7 @@ use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table, TableState};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table, TableState};
 use serde::Deserialize;
 
 mod aliases;
@@ -20,6 +22,32 @@ struct Commodity {
     id: u64,
     #[serde(rename = "commodname")]
     name: String,
+}
+
+#[derive(Deserialize)]
+struct BuySellResponse {
+    offers: Vec<Offer>,
+}
+
+#[derive(Deserialize, Clone)]
+struct Offer {
+    buyprice: i64,
+    sellprice: i64,
+    buyqty: i64,
+    sellqty: i64,
+}
+
+struct ProfitResult {
+    goods_value: i64,
+    restock_value: i64,
+    co_cut: i64,
+    crew_donation: i64,
+    add_to_booty: i64,
+}
+
+enum PopupKind {
+    ReQueryConfirm { yes_focused: bool },
+    ProfitResult(ProfitResult),
 }
 
 struct InventoryRow {
@@ -158,6 +186,8 @@ enum Focus {
     Input,
     Table,
     Panel(usize),
+    Button,
+    Popup,
 }
 
 struct App {
@@ -169,6 +199,10 @@ struct App {
     table_state: TableState,
     panel: [PromptField; PANEL_COUNT],
     submit_failed: Option<String>,
+    popup: Option<PopupKind>,
+    loading: bool,
+    calc_error: Option<String>,
+    cached_offers: HashMap<String, Vec<Offer>>,
 }
 
 const FIRST_COL: usize = 1;
@@ -191,6 +225,10 @@ impl App {
                 PromptField::new("Pre-restocking", FieldKind::PositiveInt),
             ],
             submit_failed: None,
+            popup: None,
+            loading: false,
+            calc_error: None,
+            cached_offers: HashMap::new(),
         }
     }
 
@@ -206,7 +244,7 @@ impl App {
 
     fn focus_table_bottom(&mut self) {
         if self.rows.is_empty() {
-            self.focus_panel(PANEL_COUNT - 1);
+            self.focus = Focus::Button;
             return;
         }
         self.focus = Focus::Table;
@@ -313,10 +351,102 @@ impl App {
         self.cursor = 0;
     }
 
+    fn parse_rate(field: &PromptField) -> f64 {
+        let s = field.value.trim();
+        if s.is_empty() {
+            return 0.0;
+        }
+        if let Some(stripped) = s.strip_suffix('%') {
+            stripped.parse::<f64>().unwrap_or(0.0) / 100.0
+        } else {
+            s.parse::<f64>().unwrap_or(0.0)
+        }
+    }
+
+    fn calculate_profits(&self) -> ProfitResult {
+        let mut goods_value: i64 = 0;
+        let mut restock_value: i64 = 0;
+
+        for row in &self.rows {
+            let name = self.commod_name(row.commod_id);
+            let restock = row.restock.parse::<i64>().unwrap_or(0);
+            let stock = row.stock.parse::<i64>().unwrap_or(0);
+            let booty = row.booty.parse::<i64>().unwrap_or(0);
+
+            let offers = match self.cached_offers.get(name) {
+                Some(o) => o,
+                None => continue,
+            };
+
+            // Goods Value: sell booty at best buy prices
+            if booty > 0 {
+                let mut buy_offers: Vec<_> = offers
+                    .iter()
+                    .filter(|o| o.buyprice > 0 && o.buyqty > 0)
+                    .collect();
+                buy_offers.sort_by(|a, b| b.buyprice.cmp(&a.buyprice));
+
+                let mut remaining = booty;
+                for offer in buy_offers {
+                    if remaining <= 0 {
+                        break;
+                    }
+                    let qty = remaining.min(offer.buyqty);
+                    goods_value += qty * offer.buyprice;
+                    remaining -= qty;
+                }
+            }
+
+            // Restock Value: buy deficit at cheapest sell prices
+            let need = restock - stock - booty;
+            if need > 0 {
+                let mut sell_offers: Vec<_> = offers
+                    .iter()
+                    .filter(|o| o.sellprice > 0 && o.sellqty > 0)
+                    .collect();
+                sell_offers.sort_by(|a, b| a.sellprice.cmp(&b.sellprice));
+
+                let mut remaining = need;
+                for offer in sell_offers {
+                    if remaining <= 0 {
+                        break;
+                    }
+                    let qty = remaining.min(offer.sellqty);
+                    restock_value += qty * offer.sellprice;
+                    remaining -= qty;
+                }
+            }
+        }
+
+        let booty_money = self.panel[0].value.parse::<f64>().unwrap_or(0.0);
+        let co_rate = Self::parse_rate(&self.panel[1]);
+        let donation_rate = Self::parse_rate(&self.panel[2]);
+        let restocking_rate = Self::parse_rate(&self.panel[3]);
+
+        let base = (goods_value as f64 + booty_money - restock_value as f64).max(0.0);
+        let denom = 1.0 + co_rate + donation_rate;
+
+        let co_cut = (base * co_rate / denom).ceil() as i64;
+        let crew_donation = (base * donation_rate / denom).floor() as i64;
+
+        let undistributed =
+            booty_money * (2.0 * (1.0 - restocking_rate)) + goods_value as f64 - restock_value as f64;
+        let add_to_booty = (undistributed - co_cut as f64 - crew_donation as f64).floor() as i64;
+
+        ProfitResult {
+            goods_value,
+            restock_value,
+            co_cut,
+            crew_donation,
+            add_to_booty,
+        }
+    }
+
     fn input_insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
         self.submit_failed = None;
+        self.calc_error = None;
     }
 
     fn input_delete_char_before(&mut self) {
@@ -329,6 +459,7 @@ impl App {
             self.input.remove(prev);
             self.cursor = prev;
             self.submit_failed = None;
+            self.calc_error = None;
         }
     }
 
@@ -336,6 +467,7 @@ impl App {
         if self.cursor < self.input.len() {
             self.input.remove(self.cursor);
             self.submit_failed = None;
+            self.calc_error = None;
         }
     }
 
@@ -518,8 +650,8 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
     frame.render_stateful_widget(table, hchunks[1], &mut app.table_state);
 
-    // Vertically center the panel: 2 rows per field (label + value), + 2 for border
-    let panel_content_height = (PANEL_COUNT as u16) * 2;
+    // Vertically center the panel: 2 rows per field (label + value), + 1 spacer + 1 button + 2 border
+    let panel_content_height = (PANEL_COUNT as u16) * 2 + 2;
     let panel_block_height = panel_content_height + 2;
     let panel_vchunks = Layout::vertical([
         Constraint::Fill(1),
@@ -532,9 +664,10 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let panel_inner = panel_block.inner(panel_vchunks[1]);
     frame.render_widget(panel_block, panel_vchunks[1]);
 
-    // Each prompt takes 2 rows: label + value
+    // Each prompt takes 2 rows: label + value, then spacer + button
     let panel_constraints: Vec<Constraint> = (0..PANEL_COUNT)
         .flat_map(|_| [Constraint::Length(1), Constraint::Length(1)])
+        .chain([Constraint::Length(1), Constraint::Length(1)])
         .collect();
     let panel_rows = Layout::vertical(panel_constraints).split(panel_inner);
 
@@ -562,6 +695,17 @@ fn ui(frame: &mut Frame, app: &mut App) {
             frame.set_cursor_position((cx, value_area.y));
         }
     }
+
+    // "Calculate profits!" button
+    let button_area = panel_rows[PANEL_COUNT * 2 + 1]; // skip spacer row
+    let button_focused = app.focus == Focus::Button;
+    let button_style = if button_focused {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else {
+        Style::default().bold()
+    };
+    let button = Paragraph::new(Line::from(Span::styled("Calculate profits!", button_style)).centered());
+    frame.render_widget(button, button_area);
 
     // -- Bottom box (input + suggestion), centered to match table+panel width --
     let bottom_width = table_width + 1 + panel_width;
@@ -603,45 +747,234 @@ fn ui(frame: &mut Frame, app: &mut App) {
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 
-    // -- Suggestion / error line --
-    let suggestion = app.suggest();
-    let query_lower = app.input.trim().to_lowercase();
-    let suggestion_line: Option<Line> = match suggestion {
-        Some(id) => {
-            let name = app.commod_name(id);
-            if name.eq_ignore_ascii_case(&query_lower) {
-                None
-            } else {
-                Some(Line::from(vec![
-                    Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
-                    Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
-                    Span::styled(
-                        "\"? Press enter if yes.",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]))
+    // -- Suggestion / error line (priority: loading > calc_error > suggestion/submit_failed) --
+    let status_line: Option<Line> = if app.loading {
+        Some(Line::from(Span::styled(
+            "Fetching prices from market...",
+            Style::default().fg(Color::Yellow),
+        )))
+    } else if let Some(ref err) = app.calc_error {
+        Some(Line::from(Span::styled(
+            err.as_str(),
+            Style::default().fg(Color::Red),
+        )))
+    } else {
+        let suggestion = app.suggest();
+        let query_lower = app.input.trim().to_lowercase();
+        match suggestion {
+            Some(id) => {
+                let name = app.commod_name(id);
+                if name.eq_ignore_ascii_case(&query_lower) {
+                    None
+                } else {
+                    Some(Line::from(vec![
+                        Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            name,
+                            Style::default().bold().italic().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            "\"? Press enter if yes.",
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ]))
+                }
             }
-        }
-        None => {
-            if let Some(ref query) = app.submit_failed {
-                Some(Line::from(vec![
-                    Span::styled("No \"", Style::default().fg(Color::Red)),
-                    Span::styled(query.as_str(), Style::default().bold().italic().fg(Color::Red)),
-                    Span::styled("\" found", Style::default().fg(Color::Red)),
-                ]))
-            } else {
-                None
+            None => {
+                if let Some(ref query) = app.submit_failed {
+                    Some(Line::from(vec![
+                        Span::styled("No \"", Style::default().fg(Color::Red)),
+                        Span::styled(
+                            query.as_str(),
+                            Style::default().bold().italic().fg(Color::Red),
+                        ),
+                        Span::styled("\" found", Style::default().fg(Color::Red)),
+                    ]))
+                } else {
+                    None
+                }
             }
         }
     };
-    if let Some(line) = suggestion_line {
+    if let Some(line) = status_line {
         frame.render_widget(Paragraph::new(line), bottom_rows[1]);
+    }
+
+    // -- Popup overlay --
+    if let Some(ref popup) = app.popup {
+        render_popup(frame, popup);
+    }
+}
+
+fn render_popup(frame: &mut Frame, popup: &PopupKind) {
+    let area = frame.area();
+
+    match popup {
+        PopupKind::ReQueryConfirm { yes_focused } => {
+            let w: u16 = 38;
+            let h: u16 = 6;
+            let x = area.width.saturating_sub(w) / 2;
+            let y = area.height.saturating_sub(h) / 2;
+            let popup_area = Rect::new(x, y, w, h);
+
+            frame.render_widget(Clear, popup_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Re-query?");
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+            frame.render_widget(
+                Paragraph::new("Re-query Market?"),
+                rows[0],
+            );
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "This may take some time.",
+                    Style::default().fg(Color::DarkGray),
+                )),
+                rows[1],
+            );
+
+            let no_style = if !yes_focused {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else {
+                Style::default()
+            };
+            let yes_style = if *yes_focused {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else {
+                Style::default()
+            };
+            let buttons = Line::from(vec![
+                Span::styled(" No ", no_style),
+                Span::raw("  "),
+                Span::styled(" Yes ", yes_style),
+            ]);
+            frame.render_widget(
+                Paragraph::new(buttons).centered(),
+                rows[3],
+            );
+        }
+        PopupKind::ProfitResult(result) => {
+            let w: u16 = 40;
+            let h: u16 = 9;
+            let x = area.width.saturating_sub(w) / 2;
+            let y = area.height.saturating_sub(h) / 2;
+            let popup_area = Rect::new(x, y, w, h);
+
+            frame.render_widget(Clear, popup_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Profit Breakdown");
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+            let labels = [
+                "Goods Value",
+                "Restock Value",
+                "C. Officer Cut",
+                "Crew Donation",
+                "Add to Booty",
+            ];
+            let values = [
+                result.goods_value,
+                result.restock_value,
+                result.co_cut,
+                result.crew_donation,
+                result.add_to_booty,
+            ];
+            let avail = inner.width as usize;
+
+            for (i, (lbl, val)) in labels.iter().zip(values.iter()).enumerate() {
+                let val_str = format!("{}", val);
+                let pad = avail.saturating_sub(lbl.len()).saturating_sub(val_str.len());
+                let line = format!("{}{:>w$}", lbl, val_str, w = pad + val_str.len());
+                frame.render_widget(Paragraph::new(line), rows[i]);
+            }
+
+            let ok_style = Style::default().bg(Color::White).fg(Color::Black).bold();
+            let ok_btn = Line::from(Span::styled(" Ok ", ok_style));
+            frame.render_widget(Paragraph::new(ok_btn).centered(), rows[6]);
+        }
     }
 }
 
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
+
+fn spawn_fetch(
+    app: &App,
+    tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, Vec<Offer>>, String>>,
+) {
+    let names: Vec<String> = app
+        .rows
+        .iter()
+        .filter(|r| {
+            let restock = r.restock.parse::<i64>().unwrap_or(0);
+            let stock = r.stock.parse::<i64>().unwrap_or(0);
+            let booty = r.booty.parse::<i64>().unwrap_or(0);
+            restock != 0 || stock != 0 || booty != 0
+        })
+        .map(|r| app.commod_name(r.commod_id).to_owned())
+        .collect();
+
+    let tx = tx.clone();
+    tokio::spawn(async move {
+        let client = reqwest::Client::new();
+        let mut map: HashMap<String, Vec<Offer>> = HashMap::new();
+
+        for name in names {
+            let mut url = reqwest::Url::parse(
+                "https://api.plunderly.app/buysells/by-commodity",
+            )
+            .unwrap();
+            url.query_pairs_mut()
+                .append_pair("ocean", "Emerald")
+                .append_pair("commodity", &name);
+
+            let resp = match client.get(url).send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Fetch error: {}", e)));
+                    return;
+                }
+            };
+
+            match resp.json::<BuySellResponse>().await {
+                Ok(data) => {
+                    map.insert(name, data.offers);
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(format!("Parse error: {}", e)));
+                    return;
+                }
+            }
+        }
+
+        let _ = tx.send(Ok(map));
+    });
+}
 
 #[tokio::main]
 async fn main() -> io::Result<()> {
@@ -672,17 +1005,54 @@ async fn main() -> io::Result<()> {
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let mut app = App::new(commodities);
+    let (tx, mut rx) =
+        tokio::sync::mpsc::unbounded_channel::<Result<HashMap<String, Vec<Offer>>, String>>();
 
     loop {
         terminal.draw(|frame| ui(frame, &mut app))?;
+
+        // Check for completed API results
+        if let Ok(result) = rx.try_recv() {
+            app.loading = false;
+            match result {
+                Ok(offers_map) => {
+                    app.cached_offers = offers_map;
+                    let profit = app.calculate_profits();
+                    app.popup = Some(PopupKind::ProfitResult(profit));
+                    app.focus = Focus::Popup;
+                }
+                Err(msg) => {
+                    app.calc_error = Some(msg);
+                }
+            }
+        }
+
+        if !event::poll(Duration::from_millis(100))? {
+            continue;
+        }
 
         if let Event::Key(key) = event::read()? {
             if key.kind != KeyEventKind::Press {
                 continue;
             }
+
+            // Esc: dismiss popup if open, otherwise exit
             if key.code == KeyCode::Esc {
-                break;
+                if app.popup.is_some() {
+                    // For ReQueryConfirm, Esc = use cached data
+                    if let Some(PopupKind::ReQueryConfirm { .. }) = app.popup {
+                        let profit = app.calculate_profits();
+                        app.popup = Some(PopupKind::ProfitResult(profit));
+                    } else {
+                        app.popup = None;
+                        app.focus = Focus::Input;
+                    }
+                } else {
+                    break;
+                }
+                continue;
             }
+
             match app.focus {
                 Focus::Input => match key.code {
                     KeyCode::Enter => app.submit(),
@@ -715,11 +1085,10 @@ async fn main() -> io::Result<()> {
                         if idx + 1 < PANEL_COUNT {
                             app.focus = Focus::Panel(idx + 1);
                         } else {
-                            app.focus_input();
+                            app.focus = Focus::Button;
                         }
                     }
                     KeyCode::Left => {
-                        // Back to table, booty column, last row (or stay if empty)
                         if !app.rows.is_empty() {
                             app.focus = Focus::Table;
                             app.table_state
@@ -736,6 +1105,69 @@ async fn main() -> io::Result<()> {
                     }
                     KeyCode::Char(c) => app.panel[idx].insert_char(c),
                     _ => {}
+                },
+                Focus::Button => match key.code {
+                    KeyCode::Enter => {
+                        app.calc_error = None;
+                        if app.rows.is_empty() {
+                            app.calc_error = Some("Add commodities first".to_owned());
+                        } else if app.cached_offers.is_empty() {
+                            // First time: fetch immediately
+                            app.loading = true;
+                            spawn_fetch(&app, &tx);
+                        } else {
+                            // Has cached data: ask to re-query
+                            app.popup = Some(PopupKind::ReQueryConfirm {
+                                yes_focused: false,
+                            });
+                            app.focus = Focus::Popup;
+                        }
+                    }
+                    KeyCode::Up => {
+                        app.focus = Focus::Panel(PANEL_COUNT - 1);
+                    }
+                    KeyCode::Down => {
+                        app.focus_input();
+                    }
+                    KeyCode::Left => {
+                        if !app.rows.is_empty() {
+                            app.focus = Focus::Table;
+                            app.table_state
+                                .select(Some(app.rows.len() - 1));
+                            app.table_state.select_column(Some(LAST_COL));
+                        }
+                    }
+                    _ => {}
+                },
+                Focus::Popup => match app.popup {
+                    Some(PopupKind::ReQueryConfirm { ref mut yes_focused }) => {
+                        match key.code {
+                            KeyCode::Left | KeyCode::Right => {
+                                *yes_focused = !*yes_focused;
+                            }
+                            KeyCode::Enter => {
+                                if *yes_focused {
+                                    // Re-query
+                                    app.popup = None;
+                                    app.focus = Focus::Button;
+                                    app.loading = true;
+                                    spawn_fetch(&app, &tx);
+                                } else {
+                                    // Use cached data
+                                    let profit = app.calculate_profits();
+                                    app.popup = Some(PopupKind::ProfitResult(profit));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(PopupKind::ProfitResult(_)) => {
+                        if key.code == KeyCode::Enter {
+                            app.popup = None;
+                            app.focus = Focus::Input;
+                        }
+                    }
+                    None => {}
                 },
             }
         }
