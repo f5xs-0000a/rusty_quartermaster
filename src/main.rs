@@ -168,7 +168,7 @@ struct App {
     focus: Focus,
     table_state: TableState,
     panel: [PromptField; PANEL_COUNT],
-    submit_failed: bool,
+    submit_failed: Option<String>,
 }
 
 const FIRST_COL: usize = 1;
@@ -190,7 +190,7 @@ impl App {
                 PromptField::new("Restocking Rate", FieldKind::Rate),
                 PromptField::new("Pre-restocking", FieldKind::PositiveInt),
             ],
-            submit_failed: false,
+            submit_failed: None,
         }
     }
 
@@ -302,10 +302,10 @@ impl App {
                         .unwrap_err();
                     self.rows.insert(pos, InventoryRow::new(id));
                 }
-                self.submit_failed = false;
+                self.submit_failed = None;
             }
             None => {
-                self.submit_failed = true;
+                self.submit_failed = Some(self.input.trim().to_owned());
             }
         }
 
@@ -316,7 +316,7 @@ impl App {
     fn input_insert_char(&mut self, c: char) {
         self.input.insert(self.cursor, c);
         self.cursor += c.len_utf8();
-        self.submit_failed = false;
+        self.submit_failed = None;
     }
 
     fn input_delete_char_before(&mut self) {
@@ -328,14 +328,14 @@ impl App {
                 .unwrap_or(0);
             self.input.remove(prev);
             self.cursor = prev;
-            self.submit_failed = false;
+            self.submit_failed = None;
         }
     }
 
     fn input_delete_char_at(&mut self) {
         if self.cursor < self.input.len() {
             self.input.remove(self.cursor);
-            self.submit_failed = false;
+            self.submit_failed = None;
         }
     }
 
@@ -435,8 +435,7 @@ fn text_similarity(a: &str, b: &str) -> f64 {
 fn ui(frame: &mut Frame, app: &mut App) {
     let vchunks = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(4), // border(1) + input(1) + suggestion(1) + border(1)
     ])
     .split(frame.area());
 
@@ -492,6 +491,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
+        .row_highlight_style(Style::default())
         .cell_highlight_style(highlight)
         .block(Block::default().borders(Borders::ALL).title("Inventory"));
 
@@ -547,7 +547,7 @@ fn ui(frame: &mut Frame, app: &mut App) {
 
         let is_focused = app.focus == Focus::Panel(i);
         let value_style = if is_focused {
-            Style::default().bg(Color::DarkGray)
+            Style::default().bg(Color::White).fg(Color::Black)
         } else {
             Style::default()
         };
@@ -563,51 +563,79 @@ fn ui(frame: &mut Frame, app: &mut App) {
         }
     }
 
+    // -- Bottom box (input + suggestion), centered to match table+panel width --
+    let bottom_width = table_width + 1 + panel_width;
+    let bottom_hchunks = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(bottom_width),
+        Constraint::Fill(1),
+    ])
+    .split(vchunks[1]);
+
+    let bottom_block = Block::default().borders(Borders::ALL).title("Search");
+    let bottom_inner = bottom_block.inner(bottom_hchunks[1]);
+    frame.render_widget(bottom_block, bottom_hchunks[1]);
+
+    let bottom_rows = Layout::vertical([
+        Constraint::Length(1), // input
+        Constraint::Length(1), // suggestion / error
+    ])
+    .split(bottom_inner);
+
     // -- Input prompt --
     let label = "add item: ";
+    let input_style = if app.focus == Focus::Input {
+        Style::default().bg(Color::White).fg(Color::Black)
+    } else {
+        Style::default()
+    };
     let prompt = Paragraph::new(Line::from(vec![
         Span::styled(label, Style::default().bold()),
-        Span::raw(&app.input),
+        Span::styled(&app.input, input_style),
     ]));
-    frame.render_widget(prompt, vchunks[1]);
+    frame.render_widget(prompt, bottom_rows[0]);
 
     if app.focus == Focus::Input {
-        let cursor_x = vchunks[1].x
+        let cursor_x = bottom_rows[0].x
             + label.len() as u16
             + app.input[..app.cursor].chars().count() as u16;
-        let cursor_y = vchunks[1].y;
+        let cursor_y = bottom_rows[0].y;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
 
     // -- Suggestion / error line --
     let suggestion = app.suggest();
     let query_lower = app.input.trim().to_lowercase();
-    let suggestion_widget: Option<Paragraph> = match suggestion {
+    let suggestion_line: Option<Line> = match suggestion {
         Some(id) => {
             let name = app.commod_name(id);
             if name.eq_ignore_ascii_case(&query_lower) {
-                // Exact match — no suggestion shown
                 None
             } else {
-                Some(Paragraph::new(Span::styled(
-                    format!("  {}", name),
-                    Style::default().fg(Color::DarkGray),
-                )))
+                Some(Line::from(vec![
+                    Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+                    Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
+                    Span::styled(
+                        "\"? Press enter if yes.",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
             }
         }
         None => {
-            if app.submit_failed {
-                Some(Paragraph::new(Span::styled(
-                    "  no match",
-                    Style::default().fg(Color::Red),
-                )))
+            if let Some(ref query) = app.submit_failed {
+                Some(Line::from(vec![
+                    Span::styled("No \"", Style::default().fg(Color::Red)),
+                    Span::styled(query.as_str(), Style::default().bold().italic().fg(Color::Red)),
+                    Span::styled("\" found", Style::default().fg(Color::Red)),
+                ]))
             } else {
                 None
             }
         }
     };
-    if let Some(w) = suggestion_widget {
-        frame.render_widget(w, vchunks[2]);
+    if let Some(line) = suggestion_line {
+        frame.render_widget(Paragraph::new(line), bottom_rows[1]);
     }
 }
 
