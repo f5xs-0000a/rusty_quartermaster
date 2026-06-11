@@ -130,6 +130,7 @@ struct ProfitResult {
 
 enum PopupKind {
     ReQueryConfirm { yes_focused: bool },
+    DeleteConfirm { row_idx: usize, name: String, yes_focused: bool },
     ProfitResult(ProfitResult),
 }
 
@@ -961,6 +962,56 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 rows[3],
             );
         }
+        PopupKind::DeleteConfirm { row_idx: _, name, yes_focused } => {
+            // "Delete row " + quotes + name + "?" + border padding
+            let text_len = "Delete row \"\"?".len() + name.len();
+            let w: u16 = (text_len as u16 + 4).max(20); // +4 for borders + padding
+            let h: u16 = 5;
+            let x = area.width.saturating_sub(w) / 2;
+            let y = area.height.saturating_sub(h) / 2;
+            let popup_area = Rect::new(x, y, w, h);
+
+            frame.render_widget(Clear, popup_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title("Delete row");
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let rows = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .split(inner);
+
+            let prompt = Line::from(vec![
+                Span::raw("Delete row \""),
+                Span::styled(name.as_str(), Style::default().bold().italic()),
+                Span::raw("\"?"),
+            ]);
+            frame.render_widget(Paragraph::new(prompt), rows[0]);
+
+            let no_style = if !yes_focused {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else {
+                Style::default()
+            };
+            let yes_style = if *yes_focused {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else {
+                Style::default()
+            };
+            let buttons = Line::from(vec![
+                Span::styled(" No ", no_style),
+                Span::raw("  "),
+                Span::styled(" Yes ", yes_style),
+            ]);
+            frame.render_widget(
+                Paragraph::new(buttons).centered(),
+                rows[2],
+            );
+        }
         PopupKind::ProfitResult(result) => {
             let w: u16 = 40;
             let h: u16 = 9;
@@ -1262,13 +1313,21 @@ async fn main() -> io::Result<()> {
             // Esc: dismiss popup if open, otherwise exit
             if key.code == KeyCode::Esc {
                 if app.popup.is_some() {
-                    // For ReQueryConfirm, Esc = use cached data
-                    if let Some(PopupKind::ReQueryConfirm { .. }) = app.popup {
-                        let profit = app.calculate_profits();
-                        app.popup = Some(PopupKind::ProfitResult(profit));
-                    } else {
-                        app.popup = None;
-                        app.focus = Focus::Input;
+                    match app.popup {
+                        Some(PopupKind::ReQueryConfirm { .. }) => {
+                            // Esc = use cached data
+                            let profit = app.calculate_profits();
+                            app.popup = Some(PopupKind::ProfitResult(profit));
+                        }
+                        Some(PopupKind::DeleteConfirm { .. }) => {
+                            // Esc = cancel delete, return to table
+                            app.popup = None;
+                            app.focus = Focus::Table;
+                        }
+                        _ => {
+                            app.popup = None;
+                            app.focus = Focus::Input;
+                        }
                     }
                 } else {
                     break;
@@ -1296,6 +1355,17 @@ async fn main() -> io::Result<()> {
                     KeyCode::Right => app.table_right(),
                     KeyCode::Char(d) if d.is_ascii_digit() => app.table_insert_digit(d),
                     KeyCode::Backspace => app.table_delete_digit(),
+                    KeyCode::Delete => {
+                        if let Some(row) = app.table_state.selected() {
+                            let name = app.commod_name(app.rows[row].commod_id).to_owned();
+                            app.popup = Some(PopupKind::DeleteConfirm {
+                                row_idx: row,
+                                name,
+                                yes_focused: false,
+                            });
+                            app.focus = Focus::Popup;
+                        }
+                    }
                     _ => {}
                 },
                 Focus::Panel(idx) => match key.code {
@@ -1379,6 +1449,35 @@ async fn main() -> io::Result<()> {
                                     // Use cached data
                                     let profit = app.calculate_profits();
                                     app.popup = Some(PopupKind::ProfitResult(profit));
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(PopupKind::DeleteConfirm { row_idx, name: _, ref mut yes_focused }) => {
+                        match key.code {
+                            KeyCode::Left | KeyCode::Right => {
+                                *yes_focused = !*yes_focused;
+                            }
+                            KeyCode::Enter => {
+                                if *yes_focused {
+                                    app.rows.remove(row_idx);
+                                    app.popup = None;
+                                    if app.rows.is_empty() {
+                                        app.focus_input();
+                                    } else {
+                                        app.focus = Focus::Table;
+                                        let new_sel = if row_idx >= app.rows.len() {
+                                            app.rows.len() - 1
+                                        } else {
+                                            row_idx
+                                        };
+                                        app.table_state.select(Some(new_sel));
+                                        app.table_state.select_column(Some(FIRST_COL));
+                                    }
+                                } else {
+                                    app.popup = None;
+                                    app.focus = Focus::Table;
                                 }
                             }
                             _ => {}
