@@ -323,7 +323,8 @@ fn render_ship_popup(frame: &mut Frame, popup: &super::ShipSelectPopup) {
             Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Select Ship "),
+                .title("─── Select Ship ")
+                .title_bottom(" v: View "),
         )
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
         .highlight_symbol("> ");

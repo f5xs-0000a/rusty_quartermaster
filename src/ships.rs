@@ -38,6 +38,7 @@ pub struct Ship {
     pub ram_damage: u32,
     pub ship_size_class: ShipClass,
     pub move_tokens: u8,
+    pub image_data: &'static [u8],
 }
 
 const SLOOP: Ship = Ship {
@@ -55,6 +56,7 @@ const SLOOP: Ship = Ship {
     ram_damage: 480,
     ship_size_class: ShipClass::Small,
     move_tokens: 4,
+    image_data: include_bytes!("../assets/sloop.png"),
 };
 
 const CUTTER: Ship = Ship {
@@ -72,6 +74,7 @@ const CUTTER: Ship = Ship {
     ram_damage: 480,
     ship_size_class: ShipClass::Small,
     move_tokens: 4,
+    image_data: include_bytes!("../assets/cutter.png"),
 };
 
 const DHOW: Ship = Ship {
@@ -89,6 +92,7 @@ const DHOW: Ship = Ship {
     ram_damage: 480,
     ship_size_class: ShipClass::Small,
     move_tokens: 4,
+    image_data: include_bytes!("../assets/dhow.png"),
 };
 
 const FANCHUAN: Ship = Ship {
@@ -106,6 +110,7 @@ const FANCHUAN: Ship = Ship {
     ram_damage: 480,
     ship_size_class: ShipClass::Small,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/fanchuan.png"),
 };
 
 const LONGSHIP: Ship = Ship {
@@ -123,6 +128,7 @@ const LONGSHIP: Ship = Ship {
     ram_damage: 480,
     ship_size_class: ShipClass::Medium,
     move_tokens: 4,
+    image_data: include_bytes!("../assets/longship.png"),
 };
 
 const BAGHLAH: Ship = Ship {
@@ -140,6 +146,7 @@ const BAGHLAH: Ship = Ship {
     ram_damage: 960,
     ship_size_class: ShipClass::Medium,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/baghlah.png"),
 };
 
 const JUNK: Ship = Ship {
@@ -157,6 +164,7 @@ const JUNK: Ship = Ship {
     ram_damage: 960,
     ship_size_class: ShipClass::Medium,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/junk.png"),
 };
 
 const MERCHANT_BRIG: Ship = Ship {
@@ -174,6 +182,7 @@ const MERCHANT_BRIG: Ship = Ship {
     ram_damage: 1440,
     ship_size_class: ShipClass::Medium,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/merchant_brig.png"),
 };
 
 const WAR_BRIG: Ship = Ship {
@@ -191,6 +200,7 @@ const WAR_BRIG: Ship = Ship {
     ram_damage: 1920,
     ship_size_class: ShipClass::Medium,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/war_brig.png"),
 };
 
 const MERCHANT_GALLEON: Ship = Ship {
@@ -208,6 +218,7 @@ const MERCHANT_GALLEON: Ship = Ship {
     ram_damage: 2400,
     ship_size_class: ShipClass::Large,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/merchant_galleon.png"),
 };
 
 const WAR_GALLEON: Ship = Ship {
@@ -225,6 +236,7 @@ const WAR_GALLEON: Ship = Ship {
     ram_damage: 2400, // NOTE: unknown
     ship_size_class: ShipClass::Large,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/war_galleon.png"),
 };
 
 const XEBEC: Ship = Ship {
@@ -242,6 +254,7 @@ const XEBEC: Ship = Ship {
     ram_damage: 2400,
     ship_size_class: ShipClass::Large,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/xebec.png"),
 };
 
 const WAR_FRIGATE: Ship = Ship {
@@ -259,6 +272,7 @@ const WAR_FRIGATE: Ship = Ship {
     ram_damage: 2880,
     ship_size_class: ShipClass::Large,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/war_frigate.png"),
 };
 
 const GRAND_FRIGATE: Ship = Ship {
@@ -276,6 +290,7 @@ const GRAND_FRIGATE: Ship = Ship {
     ram_damage: 3840,
     ship_size_class: ShipClass::Large,
     move_tokens: 3,
+    image_data: include_bytes!("../assets/grand_frigate.png"),
 };
 
 pub static SHIPS: &[Ship] = &[

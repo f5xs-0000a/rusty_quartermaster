@@ -1,5 +1,8 @@
 pub mod ui;
 
+use std::path::PathBuf;
+use std::process::Command;
+
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::InputResult;
@@ -60,6 +63,7 @@ pub struct DamageApp {
     pub popup: Option<ShipSelectPopup>,
     pub button_focused: bool,
     pub button_index: usize,
+    pub temp_images: Vec<Option<PathBuf>>,
 }
 
 impl DamageApp {
@@ -75,6 +79,7 @@ impl DamageApp {
             popup: None,
             button_focused: false,
             button_index: 0,
+            temp_images: vec![None; SHIPS.len()],
         }
     }
 
@@ -128,6 +133,37 @@ impl DamageApp {
         let idx = self.focus_row - 1;
         let vals = self.values_mut(self.focus_side);
         vals[idx] = vals[idx].saturating_sub(1);
+    }
+
+    // -- ship image viewing --
+
+    fn view_ship(&mut self, idx: usize) {
+        let path = if let Some(ref path) = self.temp_images[idx] {
+            path.clone()
+        } else {
+            let name = SHIPS[idx].name.to_lowercase().replace(' ', "_");
+            let path = std::env::temp_dir().join(format!("ratatui-ship-{}.png", name));
+            if std::fs::write(&path, SHIPS[idx].image_data).is_err() {
+                return;
+            }
+            self.temp_images[idx] = Some(path.clone());
+            path
+        };
+
+        Command::new("xdg-open")
+            .arg(&path)
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn()
+            .ok();
+    }
+
+    pub fn cleanup_temp_images(&mut self) {
+        for slot in &mut self.temp_images {
+            if let Some(path) = slot.take() {
+                let _ = std::fs::remove_file(path);
+            }
+        }
     }
 
     // -- key handling --
@@ -268,6 +304,10 @@ impl DamageApp {
                     Side::Right => self.right_ship = idx,
                 }
                 self.popup = None;
+            }
+            KeyCode::Char('v') => {
+                let idx = popup.selected;
+                self.view_ship(idx);
             }
             _ => {}
         }

@@ -152,6 +152,9 @@ async fn main() -> io::Result<()> {
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
 
+    // -- Cleanup temp images --
+    shell.damage.cleanup_temp_images();
+
     // -- Save inventory --
     if let Some(ref path) = args.inventory {
         profits::persistence::save_inventory(
