@@ -135,6 +135,7 @@ struct ProfitResult {
 enum PopupKind {
     ReQueryConfirm { yes_focused: bool },
     DeleteConfirm { row_idx: usize, name: String, yes_focused: bool },
+    RestockWarning { missing: Vec<String>, ocean_wide_focused: bool },
     ProfitResult(ProfitResult),
 }
 
@@ -418,6 +419,25 @@ impl App {
         None
     }
 
+    /// Check for missing restock supply on the selected island and either
+    /// show a warning popup or proceed straight to the profit result.
+    fn calculate_or_warn(&mut self) {
+        if let Some(island) = self.suggest_island().map(|s| s.to_owned()) {
+            let missing = self.missing_restock_on_island(&island);
+            if !missing.is_empty() {
+                self.popup = Some(PopupKind::RestockWarning {
+                    missing,
+                    ocean_wide_focused: false,
+                });
+                self.focus = Focus::Popup;
+                return;
+            }
+        }
+        let profit = self.calculate_profits();
+        self.popup = Some(PopupKind::ProfitResult(profit));
+        self.focus = Focus::Popup;
+    }
+
     // -- focus transitions --
 
     fn focus_table_bottom(&mut self) {
@@ -540,6 +560,38 @@ impl App {
         } else {
             s.parse::<f64>().unwrap_or(0.0)
         }
+    }
+
+    /// Returns names of commodities that need restocking but have no sell
+    /// offers on the given island.
+    fn missing_restock_on_island(&self, island: &str) -> Vec<String> {
+        let mut missing = Vec::new();
+        for row in &self.rows {
+            let name = self.commod_name(row.commod_id);
+            let restock = row.restock.parse::<u64>().unwrap_or(0);
+            let stock = row.stock.parse::<u64>().unwrap_or(0);
+            let booty = row.booty.parse::<u64>().unwrap_or(0);
+
+            // Only care about commodities that actually need restocking
+            if restock <= stock + booty {
+                continue;
+            }
+
+            let has_supply = self
+                .cached_offers
+                .get(name)
+                .map_or(false, |cached| {
+                    cached.offers.iter().any(|o| {
+                        o.sellprice > 0
+                            && o.sellqty > 0
+                            && o.islandname.eq_ignore_ascii_case(island)
+                    })
+                });
+            if !has_supply {
+                missing.push(name.to_owned());
+            }
+        }
+        missing
     }
 
     fn calculate_profits(&self) -> ProfitResult {
@@ -1188,6 +1240,85 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 rows[2],
             );
         }
+        PopupKind::RestockWarning { missing, ocean_wide_focused } => {
+            // List commodities, capped to avoid overflow
+            let max_shown = 5;
+            let shown: Vec<&str> = missing.iter().take(max_shown).map(|s| s.as_str()).collect();
+            let extra = if missing.len() > max_shown {
+                missing.len() - max_shown
+            } else {
+                0
+            };
+
+            // Height: 1 header + shown.len() + optional extra line + 1 blank + 1 buttons + 2 border
+            let list_lines = shown.len() + if extra > 0 { 1 } else { 0 };
+            let h: u16 = (3 + list_lines + 2) as u16; // header + list + blank + buttons + border
+            let w: u16 = 46;
+            let x = area.width.saturating_sub(w) / 2;
+            let y = area.height.saturating_sub(h) / 2;
+            let popup_area = Rect::new(x, y, w, h);
+
+            frame.render_widget(Clear, popup_area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
+                .title("─── Restock warning ");
+            let inner = block.inner(popup_area);
+            frame.render_widget(block, popup_area);
+
+            let mut constraints: Vec<Constraint> = Vec::new();
+            constraints.push(Constraint::Length(1)); // header
+            for _ in 0..list_lines {
+                constraints.push(Constraint::Length(1));
+            }
+            constraints.push(Constraint::Length(1)); // blank
+            constraints.push(Constraint::Length(1)); // buttons
+
+            let rows = Layout::vertical(constraints).split(inner);
+
+            frame.render_widget(
+                Paragraph::new("No supply on this island for:"),
+                rows[0],
+            );
+            for (i, name) in shown.iter().enumerate() {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        format!("  \u{2022} {}", name),
+                        Style::default().fg(Color::Yellow),
+                    )),
+                    rows[1 + i],
+                );
+            }
+            if extra > 0 {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(
+                        format!("  ...and {} more", extra),
+                        Style::default().fg(Color::DarkGray),
+                    )),
+                    rows[1 + shown.len()],
+                );
+            }
+
+            let ocean_style = if *ocean_wide_focused {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else {
+                Style::default()
+            };
+            let change_style = if !ocean_wide_focused {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else {
+                Style::default()
+            };
+            let buttons = Line::from(vec![
+                Span::styled(" Change Island ", change_style),
+                Span::raw("  "),
+                Span::styled(" Ocean-wide ", ocean_style),
+            ]);
+            frame.render_widget(
+                Paragraph::new(buttons).centered(),
+                rows[rows.len() - 1],
+            );
+        }
         PopupKind::ProfitResult(result) => {
             let labels = [
                 "Goods Value",
@@ -1511,9 +1642,7 @@ async fn main() -> io::Result<()> {
                         FetchPurpose::Profits => {
                             app.cached_offers = offers_map;
                             app.rebuild_island_list();
-                            let profit = app.calculate_profits();
-                            app.popup = Some(PopupKind::ProfitResult(profit));
-                            app.focus = Focus::Popup;
+                            app.calculate_or_warn();
                         }
                     }
                 }
@@ -1538,13 +1667,17 @@ async fn main() -> io::Result<()> {
                     match app.popup {
                         Some(PopupKind::ReQueryConfirm { .. }) => {
                             // Esc = use cached data
-                            let profit = app.calculate_profits();
-                            app.popup = Some(PopupKind::ProfitResult(profit));
+                            app.calculate_or_warn();
                         }
                         Some(PopupKind::DeleteConfirm { .. }) => {
                             // Esc = cancel delete, return to table
                             app.popup = None;
                             app.focus = Focus::Table;
+                        }
+                        Some(PopupKind::RestockWarning { .. }) => {
+                            // Esc = change island
+                            app.popup = None;
+                            app.focus = Focus::Panel(0);
                         }
                         _ => {
                             app.popup = None;
@@ -1644,6 +1777,7 @@ async fn main() -> io::Result<()> {
                             // Button mode: ignore
                         } else {
                             app.panel[idx].delete_char_before();
+                            app.calc_error = None;
                         }
                     }
                     KeyCode::Delete => {
@@ -1651,6 +1785,7 @@ async fn main() -> io::Result<()> {
                             // Button mode: ignore
                         } else {
                             app.panel[idx].delete_char_at();
+                            app.calc_error = None;
                         }
                     }
                     KeyCode::Home => app.panel[idx].cursor = 0,
@@ -1663,6 +1798,7 @@ async fn main() -> io::Result<()> {
                             // Button mode: ignore typing
                         } else {
                             app.panel[idx].insert_char(c);
+                            app.calc_error = None;
                         }
                     }
                     _ => {}
@@ -1722,8 +1858,7 @@ async fn main() -> io::Result<()> {
                                     spawn_fetch(&app, &tx);
                                 } else {
                                     // Use cached data
-                                    let profit = app.calculate_profits();
-                                    app.popup = Some(PopupKind::ProfitResult(profit));
+                                    app.calculate_or_warn();
                                 }
                             }
                             _ => {}
@@ -1754,6 +1889,27 @@ async fn main() -> io::Result<()> {
                                 } else {
                                     app.popup = None;
                                     app.focus = Focus::Table;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    Some(PopupKind::RestockWarning { missing: _, ref mut ocean_wide_focused }) => {
+                        match key.code {
+                            KeyCode::Left | KeyCode::Right => {
+                                *ocean_wide_focused = !*ocean_wide_focused;
+                            }
+                            KeyCode::Enter => {
+                                if *ocean_wide_focused {
+                                    // Ocean-wide: clear island, calculate
+                                    app.panel[0].value.clear();
+                                    app.panel[0].cursor = 0;
+                                    let profit = app.calculate_profits();
+                                    app.popup = Some(PopupKind::ProfitResult(profit));
+                                } else {
+                                    // Change island: go back to island field
+                                    app.popup = None;
+                                    app.focus = Focus::Panel(0);
                                 }
                             }
                             _ => {}
