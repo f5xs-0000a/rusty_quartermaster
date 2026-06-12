@@ -32,6 +32,8 @@ pub const ROW_DAMAGE: usize = 6;
 pub const ROW_COUNT: usize = 7;
 const LAST_INTERACTIVE_ROW: usize = 4;
 
+pub const BUTTON_LABELS: &[&str] = &["Reset values"];
+
 /// Labels for the center column. Head-on Collisions is rendered separately.
 pub const CENTER_LABELS: &[&str] = &[
     "Ship",
@@ -56,6 +58,8 @@ pub struct DamageApp {
     pub focus_row: usize,
     pub focus_side: Side,
     pub popup: Option<ShipSelectPopup>,
+    pub button_focused: bool,
+    pub button_index: usize,
 }
 
 impl DamageApp {
@@ -69,6 +73,8 @@ impl DamageApp {
             focus_row: 0,
             focus_side: Side::Left,
             popup: None,
+            button_focused: false,
+            button_index: 0,
         }
     }
 
@@ -135,6 +141,10 @@ impl DamageApp {
             return self.handle_popup_key(key);
         }
 
+        if self.button_focused {
+            return self.handle_button_key(key);
+        }
+
         match key.code {
             KeyCode::Up => {
                 if 0 < self.focus_row {
@@ -144,6 +154,8 @@ impl DamageApp {
             KeyCode::Down => {
                 if self.focus_row < LAST_INTERACTIVE_ROW {
                     self.focus_row += 1;
+                } else {
+                    self.button_focused = true;
                 }
             }
             KeyCode::Left => {
@@ -195,6 +207,42 @@ impl DamageApp {
             return InputResult::Consumed;
         }
         InputResult::Exit
+    }
+
+    fn handle_button_key(&mut self, key: KeyEvent) -> InputResult {
+        match key.code {
+            KeyCode::Up => {
+                self.button_focused = false;
+            }
+            KeyCode::Left => {
+                if 0 < self.button_index {
+                    self.button_index -= 1;
+                } else {
+                    return InputResult::Exit;
+                }
+            }
+            KeyCode::Right => {
+                if self.button_index + 1 < BUTTON_LABELS.len() {
+                    self.button_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                self.activate_button();
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    fn activate_button(&mut self) {
+        match self.button_index {
+            0 => {
+                self.left = [0; 3];
+                self.right = [0; 3];
+                self.headon = 0;
+            }
+            _ => {}
+        }
     }
 
     fn handle_popup_key(&mut self, key: KeyEvent) -> InputResult {

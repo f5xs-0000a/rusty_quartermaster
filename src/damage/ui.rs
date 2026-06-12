@@ -3,7 +3,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding
 
 use crate::ships::SHIPS;
 use super::{
-    DamageApp, Side, CENTER_LABELS, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON, ROW_SHIP,
+    BUTTON_LABELS, CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON,
+    ROW_SHIP, Side,
 };
 
 const COL_GAP: u16 = 3;
@@ -19,11 +20,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
     let inner_width = max_ship_name + COL_GAP + center_width + COL_GAP + max_ship_name;
     let box_width = inner_width + 4; // +2 borders +2 padding
     let box_height = ROW_COUNT as u16 + 2; // rows + borders
+    let button_box_height = BUTTON_LABELS.len() as u16 + 2; // rows + borders
 
-    // Center vertically: box + hint
+    // Center vertically: box + button box + hint
     let vchunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(box_height),
+        Constraint::Length(button_box_height),
         Constraint::Length(1),
         Constraint::Fill(1),
     ])
@@ -71,12 +74,43 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
         }
     }
 
+    // -- Button box --
+    let button_inner_w = BUTTON_LABELS.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
+    let button_box_w = button_inner_w + 4; // +2 borders +2 padding
+    let button_hchunks = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(button_box_w),
+        Constraint::Fill(1),
+    ])
+    .split(vchunks[2]);
+
+    let button_box_area = button_hchunks[1];
+    let button_block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1));
+    let button_inner = button_block.inner(button_box_area);
+    frame.render_widget(button_block, button_box_area);
+
+    for (i, label) in BUTTON_LABELS.iter().enumerate() {
+        let btn_rect = Rect::new(button_inner.x, button_inner.y + i as u16, button_inner.width, 1);
+        let style = if no_popup && app.button_focused && app.button_index == i {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else {
+            Style::default()
+        };
+        frame.render_widget(Paragraph::new(*label).centered().style(style), btn_rect);
+    }
+
     // -- Hint --
     if app.popup.is_none() {
-        let hint = match app.focus_row {
-            ROW_SHIP => Some("Press Enter to select a different ship"),
-            ROW_DAMAGE => None,
-            _ => Some("Space/Enter to increment, Backspace to decrement"),
+        let hint = if app.button_focused {
+            Some("Press Enter to activate")
+        } else {
+            match app.focus_row {
+                ROW_SHIP => Some("Press Enter to select a different ship"),
+                ROW_DAMAGE => None,
+                _ => Some("Space/Enter to increment, Backspace to decrement"),
+            }
         };
         if let Some(text) = hint {
             let hint_hchunks = Layout::horizontal([
@@ -84,7 +118,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
                 Constraint::Length(box_width),
                 Constraint::Fill(1),
             ])
-            .split(vchunks[2]);
+            .split(vchunks[3]);
 
             frame.render_widget(
                 Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray))),
