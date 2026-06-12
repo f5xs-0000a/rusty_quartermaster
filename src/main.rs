@@ -14,6 +14,7 @@ mod aliases;
 mod api;
 mod app;
 mod profits;
+mod ships;
 mod utils;
 
 use api::{CachedOffers, Commodity, SavedCommodity, SavedMarketCache};
