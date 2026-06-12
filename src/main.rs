@@ -13,6 +13,7 @@ use ratatui::prelude::*;
 mod aliases;
 mod api;
 mod app;
+mod damage;
 mod profits;
 mod ships;
 mod utils;

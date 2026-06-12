@@ -6,7 +6,7 @@ use ratatui::widgets::TableState;
 
 use crate::aliases;
 use crate::api::Commodity;
-use crate::app::{self, SharedState};
+use crate::app::{self, FetchPurpose, InputResult, SharedState};
 use crate::utils::{text_similarity, parse_rate, FieldKind, PromptField};
 
 // ---------------------------------------------------------------------------
@@ -68,19 +68,6 @@ pub enum Focus {
     Panel(usize),
     Button,
     Popup,
-}
-
-#[derive(Clone, Copy)]
-pub enum FetchPurpose {
-    Islands,
-    Profits,
-}
-
-pub enum InputResult {
-    Consumed,
-    Exit,
-    StartFetch(FetchPurpose),
-    RebuildIslands,
 }
 
 // ---------------------------------------------------------------------------
@@ -310,14 +297,6 @@ impl ProfitsApp {
                 self.table_state.select(Some(row + 1));
             } else {
                 self.focus_input();
-            }
-        }
-    }
-
-    pub fn table_left(&mut self) {
-        if let Some(col) = self.table_state.selected_column() {
-            if FIRST_COL < col {
-                self.table_state.select_column(Some(col - 1));
             }
         }
     }
@@ -568,7 +547,15 @@ impl ProfitsApp {
         match key.code {
             KeyCode::Up => self.table_up(),
             KeyCode::Down => self.table_down(),
-            KeyCode::Left => self.table_left(),
+            KeyCode::Left => {
+                if let Some(col) = self.table_state.selected_column() {
+                    if FIRST_COL < col {
+                        self.table_state.select_column(Some(col - 1));
+                    } else {
+                        return InputResult::Exit;
+                    }
+                }
+            }
             KeyCode::Right => self.table_right(),
             KeyCode::Char(d) if d.is_ascii_digit() => self.table_insert_digit(d),
             KeyCode::Backspace => self.table_delete_digit(),

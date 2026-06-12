@@ -1,12 +1,60 @@
 use std::collections::HashMap;
 
-use crossterm::event::KeyEvent;
+use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::prelude::*;
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
-use crate::profits::{FetchPurpose, InputResult, ProfitsApp};
+use crate::damage::DamageApp;
+use crate::profits::ProfitsApp;
 use crate::utils::text_similarity;
+
+// ---------------------------------------------------------------------------
+// App routing
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy, PartialEq)]
+pub enum AppId {
+    Profits,
+    Damage,
+}
+
+impl AppId {
+    pub fn label(self) -> &'static str {
+        match self {
+            AppId::Profits => "Profits",
+            AppId::Damage => "Damage",
+        }
+    }
+}
+
+pub const APP_LIST: &[AppId] = &[AppId::Profits, AppId::Damage];
+
+const SIDEBAR_WIDTH: u16 = 14;
+
+#[derive(PartialEq)]
+enum GlobalFocus {
+    Sidebar,
+    Content,
+}
+
+// ---------------------------------------------------------------------------
+// InputResult — sub-app → AppShell communication
+// ---------------------------------------------------------------------------
+
+#[derive(Clone, Copy)]
+pub enum FetchPurpose {
+    Islands,
+    Profits,
+}
+
+pub enum InputResult {
+    Consumed,
+    Exit,
+    StartFetch(FetchPurpose),
+    RebuildIslands,
+}
 
 // ---------------------------------------------------------------------------
 // Shared state bundle (passed to sub-app methods)
@@ -116,7 +164,12 @@ pub struct AppShell {
     pub cached_offers: HashMap<String, CachedOffers>,
     pub available_islands: Vec<String>,
     pub loading: bool,
+    // app routing
+    sidebar_index: usize,
+    global_focus: GlobalFocus,
+    // per-app state
     pub profits: ProfitsApp,
+    pub damage: DamageApp,
 }
 
 impl AppShell {
@@ -126,7 +179,10 @@ impl AppShell {
             cached_offers: HashMap::new(),
             available_islands: Vec::new(),
             loading: false,
+            sidebar_index: 0,
+            global_focus: GlobalFocus::Content,
             profits: ProfitsApp::new(),
+            damage: DamageApp::new(),
         }
     }
 
@@ -140,16 +196,64 @@ impl AppShell {
         self.available_islands = rebuild_island_list(&self.cached_offers, &commod_names);
     }
 
+    // -- rendering --
+
     pub fn render(&mut self, frame: &mut Frame) {
         let area = frame.area();
-        let shared = SharedState {
-            commodities: &self.commodities,
-            cached_offers: &self.cached_offers,
-            available_islands: &self.available_islands,
-            loading: self.loading,
-        };
-        crate::profits::ui::render(frame, area, &mut self.profits, &shared);
+
+        let chunks = Layout::horizontal([
+            Constraint::Length(SIDEBAR_WIDTH),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+        self.render_sidebar(frame, chunks[0]);
+
+        let content_area = chunks[1];
+        match APP_LIST[self.sidebar_index] {
+            AppId::Profits => {
+                let shared = SharedState {
+                    commodities: &self.commodities,
+                    cached_offers: &self.cached_offers,
+                    available_islands: &self.available_islands,
+                    loading: self.loading,
+                };
+                crate::profits::ui::render(frame, content_area, &mut self.profits, &shared);
+            }
+            AppId::Damage => {
+                crate::damage::ui::render(frame, content_area, &mut self.damage);
+            }
+        }
     }
+
+    fn render_sidebar(&self, frame: &mut Frame, area: Rect) {
+        let focused = self.global_focus == GlobalFocus::Sidebar;
+
+        let items: Vec<ListItem> = APP_LIST
+            .iter()
+            .map(|app_id| ListItem::new(app_id.label()))
+            .collect();
+
+        let highlight_style = if focused {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else {
+            Style::default().bold()
+        };
+
+        let list = List::new(items)
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .padding(Padding::horizontal(1))
+                    .title("─── Apps "),
+            )
+            .highlight_style(highlight_style);
+
+        let mut state = ListState::default().with_selected(Some(self.sidebar_index));
+        frame.render_stateful_widget(list, area, &mut state);
+    }
+
+    // -- key handling --
 
     /// Returns true if the app should exit.
     pub fn handle_key(
@@ -157,19 +261,28 @@ impl AppShell {
         key: KeyEvent,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
     ) -> bool {
-        let result = {
-            let shared = SharedState {
-                commodities: &self.commodities,
-                cached_offers: &self.cached_offers,
-                available_islands: &self.available_islands,
-                loading: self.loading,
-            };
-            self.profits.handle_key(key, &shared)
+        if self.global_focus == GlobalFocus::Sidebar {
+            return self.handle_sidebar_key(key);
+        }
+
+        let result = match APP_LIST[self.sidebar_index] {
+            AppId::Profits => {
+                let shared = SharedState {
+                    commodities: &self.commodities,
+                    cached_offers: &self.cached_offers,
+                    available_islands: &self.available_islands,
+                    loading: self.loading,
+                };
+                self.profits.handle_key(key, &shared)
+            }
+            AppId::Damage => self.damage.handle_key(key),
         };
 
         match result {
             InputResult::Consumed => {}
-            InputResult::Exit => return true,
+            InputResult::Exit => {
+                self.global_focus = GlobalFocus::Sidebar;
+            }
             InputResult::StartFetch(purpose) => {
                 self.loading = true;
                 self.spawn_fetch(purpose, tx);
@@ -180,6 +293,29 @@ impl AppShell {
         }
         false
     }
+
+    fn handle_sidebar_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Esc => return true,
+            KeyCode::Up => {
+                if 0 < self.sidebar_index {
+                    self.sidebar_index -= 1;
+                }
+            }
+            KeyCode::Down => {
+                if self.sidebar_index + 1 < APP_LIST.len() {
+                    self.sidebar_index += 1;
+                }
+            }
+            KeyCode::Enter | KeyCode::Right => {
+                self.global_focus = GlobalFocus::Content;
+            }
+            _ => {}
+        }
+        false
+    }
+
+    // -- fetch handling --
 
     pub fn handle_fetch_result(
         &mut self,

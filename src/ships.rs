@@ -5,6 +5,16 @@ pub enum CannonSize {
     Large,
 }
 
+impl CannonSize {
+    pub fn damage(self) -> u32 {
+        match self {
+            CannonSize::Small => 960,
+            CannonSize::Medium => 1440,
+            CannonSize::Large => 1920,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ShipClass {
     Small,
