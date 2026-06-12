@@ -27,8 +27,9 @@ pub const ROW_SHOTS: usize = 1;
 pub const ROW_ROCKS: usize = 2;
 pub const ROW_RAMS: usize = 3;
 pub const ROW_HEADON: usize = 4;
-pub const ROW_DAMAGE: usize = 5;
-pub const ROW_COUNT: usize = 6;
+pub const ROW_GAP: usize = 5;
+pub const ROW_DAMAGE: usize = 6;
+pub const ROW_COUNT: usize = 7;
 const LAST_INTERACTIVE_ROW: usize = 4;
 
 /// Labels for the center column. Head-on Collisions is rendered separately.
@@ -37,6 +38,7 @@ pub const CENTER_LABELS: &[&str] = &[
     "Shots Taken",
     "Rocks Banged",
     "Times Rammed",
+    "",
     "",
     "Damage",
 ];

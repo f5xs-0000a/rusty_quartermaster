@@ -3,7 +3,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding
 
 use crate::ships::SHIPS;
 use super::{
-    DamageApp, Side, CENTER_LABELS, ROW_COUNT, ROW_DAMAGE, ROW_HEADON, ROW_SHIP,
+    DamageApp, Side, CENTER_LABELS, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON, ROW_SHIP,
 };
 
 const COL_GAP: u16 = 3;
@@ -54,7 +54,9 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
     let no_popup = app.popup.is_none();
 
     for i in 0..ROW_COUNT {
-        if i == ROW_HEADON {
+        if i == ROW_GAP {
+            continue;
+        } else if i == ROW_HEADON {
             render_headon_row(frame, rows[i], app, max_ship_name, center_width, no_popup);
         } else {
             render_standard_row(
@@ -164,17 +166,21 @@ fn render_standard_row(
             row_cols[4],
         );
     } else {
-        // Damage row: view-only, calculated
+        // Damage row: view-only, calculated, with colored bars
         let (left_morale, left_hull) = app.calculate_damage(Side::Left);
         let (right_morale, right_hull) = app.calculate_damage(Side::Right);
+
         frame.render_widget(
             Paragraph::new(format!("{}%/{}%", left_morale, left_hull)).centered(),
             row_cols[0],
         );
+        apply_damage_bar(frame, row_cols[0], left_morale, left_hull, false);
+
         frame.render_widget(
             Paragraph::new(format!("{}%/{}%", right_morale, right_hull)).centered(),
             row_cols[4],
         );
+        apply_damage_bar(frame, row_cols[4], right_morale, right_hull, true);
     }
 }
 
@@ -218,6 +224,46 @@ fn render_headon_row(
             .style(style),
         row_cols[2],
     );
+}
+
+/// Paint a damage bar onto the buffer after the text has been rendered.
+///
+/// From the starting edge (`from_right=false` → left, `true` → right):
+///   0 … hull%  → orange background (hull damage, higher priority)
+///   hull% … morale%  → yellow background (morale-only damage)
+///   morale% … 100%  → untouched
+///
+/// Text on the coloured portion gets a black foreground.
+fn apply_damage_bar(
+    frame: &mut Frame,
+    area: Rect,
+    morale_pct: u32,
+    hull_pct: u32,
+    from_right: bool,
+) {
+    let w = area.width as u32;
+    if w == 0 {
+        return;
+    }
+    let hull_w = hull_pct * w / 100;
+    let morale_w = morale_pct * w / 100;
+
+    let buf = frame.buffer_mut();
+    for x in area.left()..area.right() {
+        let rel = if from_right {
+            (area.right() - 1 - x) as u32
+        } else {
+            (x - area.left()) as u32
+        };
+
+        if let Some(cell) = buf.cell_mut(Position::new(x, area.y)) {
+            if rel < hull_w {
+                cell.set_style(Style::default().bg(Color::Rgb(255, 165, 0)).fg(Color::Black));
+            } else if rel < morale_w {
+                cell.set_style(Style::default().bg(Color::Yellow).fg(Color::Black));
+            }
+        }
+    }
 }
 
 fn render_ship_popup(frame: &mut Frame, popup: &super::ShipSelectPopup) {
