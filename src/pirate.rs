@@ -307,11 +307,37 @@ const SPECIAL_NAMES: &[&str] = &[
     "The Widow Queen",
 ];
 
+/// Whether `name` is a real player-pirate name (as opposed to an NPC such as a
+/// swabbie or one of the special characters in [`SPECIAL_NAMES`]).
+///
+/// Player names match `[a-zA-Z]+(-[a-zA-Z]+)?`: ASCII letters with at most one
+/// internal dash, and crucially *no spaces*. NPC names always contain a space —
+/// swabbies are either "A swabbie" or named ones like "Tony Ironsides" and
+/// "Master Hogan", and special characters look like "Mother o' Nyght" — so the
+/// space is the tell, and anything with one is rejected here. Leading/trailing
+/// whitespace is ignored; interior whitespace is not.
+pub fn is_player_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // At most one dash, every part non-empty and all ASCII letters. A space (or
+    // any non-letter/non-dash byte) lands inside a part and fails the check.
+    let lower = trimmed.to_ascii_lowercase();
+    let parts: Vec<&str> = lower.split('-').collect();
+    if parts.len() > 2 {
+        return false;
+    }
+    parts
+        .iter()
+        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
+}
+
 /// Normalize a pirate name for use in yoweb URLs.
 ///
 /// Special NPC names are matched case-insensitively and returned as-is.
-/// Regular names must match `[a-zA-Z]+(-[a-zA-Z]+)?` and are normalized
-/// to capitalize the first letter (and the letter after a dash) with
+/// Regular names must be a valid player name ([`is_player_name`]) and are
+/// normalized to capitalize the first letter (and the letter after a dash) with
 /// everything else lowercased.
 pub fn normalize_name(input: &str) -> Result<String, String> {
     let trimmed = input.trim();
@@ -326,17 +352,13 @@ pub fn normalize_name(input: &str) -> Result<String, String> {
         }
     }
 
-    // Validate: only ASCII letters and at most one dash.
-    let lower = trimmed.to_ascii_lowercase();
-    let parts: Vec<&str> = lower.split('-').collect();
-    if parts.len() > 2 {
+    // Validate against the player-name pattern.
+    if !is_player_name(trimmed) {
         return Err(format!("invalid pirate name: {trimmed:?}"));
     }
-    for part in &parts {
-        if part.is_empty() || !part.chars().all(|c| c.is_ascii_lowercase()) {
-            return Err(format!("invalid pirate name: {trimmed:?}"));
-        }
-    }
+
+    let lower = trimmed.to_ascii_lowercase();
+    let parts: Vec<&str> = lower.split('-').collect();
 
     // Capitalize first letter of each part.
     let normalized = parts
@@ -742,4 +764,47 @@ fn strip_tags(html: &str) -> String {
         }
     }
     result
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn player_names_are_accepted() {
+        assert!(is_player_name("Playerone"));
+        assert!(is_player_name("playerone")); // case-insensitive
+        assert!(is_player_name("Mary-jane")); // single internal dash
+        assert!(is_player_name("  Playerone  ")); // surrounding whitespace ok
+    }
+
+    #[test]
+    fn npc_names_are_rejected() {
+        // Swabbies and special characters all carry a space.
+        assert!(!is_player_name("A swabbie"));
+        assert!(!is_player_name("Tony Ironsides"));
+        assert!(!is_player_name("Master Hogan"));
+        assert!(!is_player_name("Mother o' Nyght"));
+    }
+
+    #[test]
+    fn malformed_names_are_rejected() {
+        assert!(!is_player_name("")); // empty
+        assert!(!is_player_name("   ")); // whitespace only
+        assert!(!is_player_name("-jane")); // empty part
+        assert!(!is_player_name("a-b-c")); // too many dashes
+        assert!(!is_player_name("Bob123")); // digits
+    }
+
+    #[test]
+    fn normalize_capitalizes_and_validates() {
+        assert_eq!(normalize_name("playerONE").unwrap(), "Playerone");
+        assert_eq!(normalize_name("mary-jane").unwrap(), "Mary-Jane");
+        assert_eq!(normalize_name("Mother o' Nyght").unwrap(), "Mother o' Nyght");
+        assert!(normalize_name("Tony Ironsides").is_err());
+    }
 }

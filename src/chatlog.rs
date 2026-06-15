@@ -21,6 +21,8 @@ use std::time::Duration;
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
+use crate::pirate;
+
 // ---------------------------------------------------------------------------
 // Job kinds
 // ---------------------------------------------------------------------------
@@ -387,9 +389,11 @@ impl GameState {
             return;
         }
 
-        // Others boarding / leaving the vessel. "A swabbie" is an NPC — ignore.
+        // Others boarding / leaving the vessel. Only real player pirates are
+        // tracked — NPCs like "A swabbie" or named swabbies ("Tony Ironsides")
+        // contain a space and are rejected by `is_player_name`.
         if let Some(name) = body.strip_suffix(" has come aboard.") {
-            if name != "A swabbie" {
+            if pirate::is_player_name(name) {
                 if let Some(v) = self.current_vessel_mut() {
                     v.crewmates.insert(name.to_string());
                 }
@@ -537,7 +541,7 @@ impl GameState {
 
         let new_crew: HashSet<String> = names
             .iter()
-            .filter(|n| **n != "A swabbie")
+            .filter(|n| pirate::is_player_name(n))
             .filter(|n| me.is_none_or(|me| !n.eq_ignore_ascii_case(me)))
             .map(|n| n.to_string())
             .collect();
@@ -912,6 +916,20 @@ mod tests {
         gs.process_line("[01:00:02] Mateeight has come aboard.");
         let v = gs.current_vessel().unwrap();
         assert!(!v.crewmates.contains("A swabbie"));
+        assert!(v.crewmates.contains("Mateeight"));
+    }
+
+    #[test]
+    fn ignores_named_swabbie_aboard() {
+        // Named swabbies (NPCs) carry a space; only real player names are kept.
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Test Tuna...");
+        gs.process_line("[01:00:01] Tony Ironsides has come aboard.");
+        gs.process_line("[01:00:02] Master Hogan has come aboard.");
+        gs.process_line("[01:00:03] Mateeight has come aboard.");
+        let v = gs.current_vessel().unwrap();
+        assert!(!v.crewmates.contains("Tony Ironsides"));
+        assert!(!v.crewmates.contains("Master Hogan"));
         assert!(v.crewmates.contains("Mateeight"));
     }
 
