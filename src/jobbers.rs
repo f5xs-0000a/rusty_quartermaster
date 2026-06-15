@@ -283,7 +283,9 @@ pub fn render(
     let vessel = selected.as_ref().and_then(|k| state.vessels.get(k));
     let list_h = |n: usize| (n as u16 + 2).max(3);
     let left_h = (ordered.len() as u16 + 2).max(3) + 3; // vessels box + unpoison
-    let lists_h = list_h(aboard_set.len())
+    // The Aboard box gains one extra row for the "and n swabbies" footer.
+    let aboard_rows = aboard_set.len() + usize::from(vessel.is_some_and(|v| v.swabbies > 0));
+    let lists_h = list_h(aboard_rows)
         + list_h(vessel.map_or(0, |v| v.greedy_by_pirate.len()))
         + list_h(vessel.map_or(0, |v| v.planked_by_us.len()));
     let block_h = top_h + left_h.max(lists_h) + tip_h;
@@ -488,10 +490,18 @@ fn render_lists_column(
     // -- Aboard (alphabetical) --
     let mut aboard: Vec<&String> = aboard_set.iter().collect();
     aboard.sort_unstable();
-    let aboard_lines: Vec<Line> = aboard
+    let mut aboard_lines: Vec<Line> = aboard
         .iter()
         .map(|n| Line::from(Span::styled((*n).clone(), name_style(n))))
         .collect();
+    // Footer: how many swabbies (NPC crew) are aboard, italicized.
+    let swabbies = vessel.map_or(0, |v| v.swabbies);
+    if swabbies > 0 {
+        aboard_lines.push(Line::from(Span::styled(
+            format!("   and {swabbies} swabbies"),
+            Style::default().italic(),
+        )));
+    }
     place_list_vertical(
         frame, area, &mut y, "─── Aboard ", aboard_lines, &mut ui.aboard_offset,
         box_border(focused, ui.focus == JobberFocus::Aboard),

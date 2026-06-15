@@ -208,6 +208,12 @@ pub struct Vessel {
     pub job_kind: Option<JobKind>,
     /// Pirates currently aboard with us.
     pub crewmates: HashSet<String>,
+    /// Swabbies (NPC crew) aboard. There's no absolute count line, so this is a
+    /// running tally from the four "swabbie(s) (has|have) come aboard / left the
+    /// vessel" delta lines, snapped to the authoritative roster whenever we win a
+    /// fight (see [`on_battle_end`]). Departures saturate at zero so a poisoned
+    /// vessel (we missed lines while away) can't underflow.
+    pub swabbies: u32,
     /// Greedy strikes tallied per attacking pirate, over the whole run.
     pub greedy_by_pirate: HashMap<String, u32>,
     /// Greedy strikes during the current/most-recent battle only. Reset when a
@@ -389,6 +395,20 @@ impl GameState {
             return;
         }
 
+        // Swabbie head-count deltas. These are the only board-count signal for
+        // NPC crew (there is no absolute "N swabbies aboard" line between
+        // fights); a won fight later resyncs the tally from the winners roster.
+        if let Some(delta) = parse_swabbie_delta(body) {
+            if let Some(v) = self.current_vessel_mut() {
+                v.swabbies = if delta >= 0 {
+                    v.swabbies.saturating_add(delta as u32)
+                } else {
+                    v.swabbies.saturating_sub(delta.unsigned_abs() as u32)
+                };
+            }
+            return;
+        }
+
         // Others boarding / leaving the vessel. Only real player pirates are
         // tracked — NPCs like "A swabbie" or named swabbies ("Tony Ironsides")
         // contain a space and are rejected by `is_player_name`.
@@ -546,8 +566,14 @@ impl GameState {
             .map(|n| n.to_string())
             .collect();
 
+        // The roster is authoritative for swabbies too: everything that isn't a
+        // player name is one. This resyncs the running delta tally, correcting
+        // any drift accumulated while the vessel was poisoned.
+        let swabbies = names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32;
+
         if let Some(v) = self.current_vessel_mut() {
             v.crewmates = new_crew;
+            v.swabbies = swabbies;
         }
     }
 
@@ -610,6 +636,34 @@ impl Default for GameState {
     fn default() -> Self {
         Self::new()
     }
+}
+
+/// Parse a swabbie board-count delta from a message body, returning the signed
+/// change to the aboard count, or `None` if the line isn't one of the four
+/// forms. Singular uses "has", plural uses "have"; departures are negative:
+///   "A swabbie has come aboard."        -> +1
+///   "N swabbies have come aboard."      -> +N
+///   "A swabbie has left the vessel."    -> -1
+///   "N swabbies have left the vessel."  -> -N
+fn parse_swabbie_delta(body: &str) -> Option<i64> {
+    match body {
+        "A swabbie has come aboard." => return Some(1),
+        "A swabbie has left the vessel." => return Some(-1),
+        _ => {}
+    }
+    if let Some(n) = body
+        .strip_suffix(" swabbies have come aboard.")
+        .and_then(|n| n.parse::<u32>().ok())
+    {
+        return Some(n as i64);
+    }
+    if let Some(n) = body
+        .strip_suffix(" swabbies have left the vessel.")
+        .and_then(|n| n.parse::<u32>().ok())
+    {
+        return Some(-(n as i64));
+    }
+    None
 }
 
 /// Split a `[HH:MM:SS] <body>` line into its parsed time and message body.
@@ -931,6 +985,36 @@ mod tests {
         assert!(!v.crewmates.contains("Tony Ironsides"));
         assert!(!v.crewmates.contains("Master Hogan"));
         assert!(v.crewmates.contains("Mateeight"));
+    }
+
+    #[test]
+    fn counts_swabbies_from_deltas_and_saturates() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Swab Tuna...");
+        gs.process_line("[01:00:01] A swabbie has come aboard.");
+        gs.process_line("[01:00:02] 3 swabbies have come aboard.");
+        assert_eq!(gs.current_vessel().unwrap().swabbies, 4);
+        gs.process_line("[01:00:03] 2 swabbies have left the vessel.");
+        assert_eq!(gs.current_vessel().unwrap().swabbies, 2);
+        gs.process_line("[01:00:04] A swabbie has left the vessel.");
+        assert_eq!(gs.current_vessel().unwrap().swabbies, 1);
+        // Underflow (poison-induced over-counting of departures) saturates at 0.
+        gs.process_line("[01:00:05] 5 swabbies have left the vessel.");
+        assert_eq!(gs.current_vessel().unwrap().swabbies, 0);
+    }
+
+    #[test]
+    fn won_fight_resyncs_swabbie_count() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Resync Roughy...");
+        // Drift the delta tally away from the truth first.
+        gs.process_line("[01:00:01] A swabbie has come aboard.");
+        // Winners roster: 1 player (us) + 3 swabbies (named + generic).
+        gs.process_line(
+            "[01:30:00] Game over.  Winners: Playerone, Tony Ironsides, Master Hogan, A swabbie.",
+        );
+        assert_eq!(gs.current_vessel().unwrap().swabbies, 3);
     }
 
     #[test]
