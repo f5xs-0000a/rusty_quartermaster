@@ -693,7 +693,7 @@ fn parse_date_header(line: &str) -> Option<NaiveDate> {
 /// looping forever would make the runtime's shutdown (on `main` returning) hang
 /// waiting for it. A plain thread is simply abandoned when the process exits.
 pub fn spawn_tailer(
-    path: String,
+    path: std::path::PathBuf,
     start_offset: u64,
     tx: tokio::sync::mpsc::UnboundedSender<String>,
 ) {

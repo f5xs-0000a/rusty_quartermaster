@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde::{Deserialize, Serialize};
 
 use crate::api::Commodity;
@@ -25,7 +27,7 @@ pub struct LoadedInventory {
     pub panel_values: Vec<String>,
 }
 
-pub fn load_inventory(path: &str, commodities: &[Commodity]) -> Option<LoadedInventory> {
+pub fn load_inventory(path: &Path, commodities: &[Commodity]) -> Option<LoadedInventory> {
     let data = std::fs::read_to_string(path).ok()?;
     let inv: SavedInventory = match serde_json::from_str(&data) {
         Ok(inv) => inv,
@@ -35,7 +37,7 @@ pub fn load_inventory(path: &str, commodities: &[Commodity]) -> Option<LoadedInv
         }
     };
 
-    eprintln!("Loaded inventory from {}", path);
+    eprintln!("Loaded inventory from {}", path.display());
     let mut rows = Vec::new();
     for saved_row in inv.rows {
         let Some(c) = commodities
@@ -74,7 +76,7 @@ pub fn load_inventory(path: &str, commodities: &[Commodity]) -> Option<LoadedInv
 }
 
 pub fn save_inventory(
-    path: &str,
+    path: &Path,
     rows: &[InventoryRow],
     panel: &[crate::utils::PromptField],
     restocking_island: &str,
@@ -101,8 +103,8 @@ pub fn save_inventory(
         }
     };
     if let Err(e) = std::fs::write(path, json) {
-        eprintln!("error: failed to write inventory to {}: {}", path, e);
+        eprintln!("error: failed to write inventory to {}: {}", path.display(), e);
     } else {
-        eprintln!("Saved inventory to {}", path);
+        eprintln!("Saved inventory to {}", path.display());
     }
 }

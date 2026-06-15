@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,21 +45,21 @@ struct Args {
     /// Commodity quantities, panel settings, and restocking island are
     /// loaded on startup and saved on exit.
     #[arg(long, value_name = "PATH")]
-    inventory: Option<String>,
+    inventory: Option<PathBuf>,
 
     /// Path to save/load market cache JSON.
     ///
     /// Caches commodity list and pricing data from Market so
     /// subsequent runs don't need an internet connection.
     #[arg(long, value_name = "PATH")]
-    market_cache: Option<String>,
+    market_cache: Option<PathBuf>,
 
     /// Path to the Puzzle Pirates client chat log to monitor.
     ///
     /// When set, the existing log is read in full, then tailed live for new
     /// lines. When omitted, no chat-log monitoring happens.
     #[arg(long, value_name = "PATH")]
-    chat_log: Option<String>,
+    chat_log: Option<PathBuf>,
 
     /// Your pirate name, used to attribute planks to you in the chat log.
     #[arg(long, value_name = "NAME")]
@@ -268,7 +269,7 @@ async fn main() -> io::Result<()> {
 }
 
 async fn load_market_cache(
-    path: &str,
+    path: &Path,
     cached_offers: &mut HashMap<String, CachedOffers>,
 ) -> Vec<Commodity> {
     let Ok(data) = std::fs::read_to_string(path) else {
@@ -280,7 +281,7 @@ async fn load_market_cache(
 
     match serde_json::from_str::<SavedMarketCache>(&data) {
         Ok(cache) => {
-            eprintln!("Loaded market cache from {}", path);
+            eprintln!("Loaded market cache from {}", path.display());
             *cached_offers = cache.offers;
             cache
                 .commodities
@@ -299,7 +300,7 @@ async fn load_market_cache(
 }
 
 fn save_market_cache(
-    path: &str,
+    path: &Path,
     commodities: &[Commodity],
     cached_offers: HashMap<String, CachedOffers>,
 ) {
@@ -321,8 +322,8 @@ fn save_market_cache(
         }
     };
     if let Err(e) = std::fs::write(path, json) {
-        eprintln!("error: failed to write market cache to {}: {}", path, e);
+        eprintln!("error: failed to write market cache to {}: {}", path.display(), e);
     } else {
-        eprintln!("Saved market cache to {}", path);
+        eprintln!("Saved market cache to {}", path.display());
     }
 }
