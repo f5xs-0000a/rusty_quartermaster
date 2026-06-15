@@ -19,14 +19,17 @@ mod chatlog;
 mod clickmap;
 mod damage;
 mod jobbers;
+mod ocean;
 mod pirate;
 mod profits;
 mod ratelimit;
 mod ships;
+mod startup;
 mod utils;
 
 use api::{CachedOffers, Commodity, SavedCommodity, SavedMarketCache};
 use app::AppShell;
+use ocean::Ocean;
 
 // ---------------------------------------------------------------------------
 // CLI
@@ -64,6 +67,16 @@ struct Args {
     /// Your pirate name, used to attribute planks to you in the chat log.
     #[arg(long, value_name = "NAME")]
     user: Option<String>,
+
+    /// Ocean (server) to use. Case-insensitive. One of the seven live oceans:
+    /// Emerald, Meridian, Cerulean, Obsidian, Opal, Jade, Ice. Profit
+    /// calculation needs a Market ocean (Emerald, Meridian, or Cerulean).
+    #[arg(long, value_name = "OCEAN", value_parser = parse_ocean)]
+    ocean: Option<Ocean>,
+}
+
+fn parse_ocean(s: &str) -> Result<Ocean, String> {
+    s.parse()
 }
 
 // ---------------------------------------------------------------------------
@@ -74,11 +87,33 @@ struct Args {
 async fn main() -> io::Result<()> {
     let args = Args::parse();
 
+    // -- Resolve ocean + pirate name (interactive popup if either is missing) --
+    let http = reqwest::Client::new();
+    let (ocean, user): (Option<Ocean>, Option<String>) =
+        if args.ocean.is_none() || args.user.is_none() {
+            startup::prompt(&http, args.ocean, args.user.clone()).await?
+        } else {
+            (args.ocean, args.user.clone())
+        };
+
+    match ocean {
+        None => eprintln!(
+            "warning: no ocean selected — market prices and pirate stats are unavailable."
+        ),
+        Some(o) if !o.market_supported() => eprintln!(
+            "note: {o} has no Market market data — profit calculation is disabled (inventory still works)."
+        ),
+        _ => {}
+    }
+    if user.is_none() {
+        eprintln!("warning: no pirate name set — Jobbers pirate-stat lookups are limited.");
+    }
+
     // -- Load market cache or fetch commodities from API --
     let mut cached_offers: HashMap<String, CachedOffers> = HashMap::new();
 
     let commodities: Vec<Commodity> = if let Some(ref path) = args.market_cache {
-        load_market_cache(path, &mut cached_offers).await
+        load_market_cache(path, ocean, &mut cached_offers).await
     } else {
         eprintln!("Fetching commodities from market...");
         api::fetch_commodities()
@@ -101,6 +136,7 @@ async fn main() -> io::Result<()> {
 
     let mut shell = AppShell::new(commodities);
     shell.cached_offers = cached_offers;
+    shell.ocean = ocean;
 
     // -- Load inventory --
     if let Some(ref path) = args.inventory {
@@ -119,28 +155,29 @@ async fn main() -> io::Result<()> {
         }
     }
 
-    // -- Auto-fetch missing market data --
-    if !shell.profits.rows.is_empty() {
-        let missing: Vec<String> = shell
-            .profits
-            .rows
-            .iter()
-            .map(|r| app::commod_name(&shell.commodities, r.commod_id).to_owned())
-            .filter(|name| !shell.cached_offers.contains_key(name.as_str()))
-            .collect();
+    // -- Auto-fetch missing market data (only on Market oceans) --
+    if let Some(o) = ocean.filter(|o| o.market_supported()) {
+        if !shell.profits.rows.is_empty() {
+            let missing: Vec<String> = shell
+                .profits
+                .rows
+                .iter()
+                .map(|r| app::commod_name(&shell.commodities, r.commod_id).to_owned())
+                .filter(|name| !shell.cached_offers.contains_key(name.as_str()))
+                .collect();
 
-        if !missing.is_empty() {
-            eprintln!(
-                "Fetching market data for {} missing commodities...",
-                missing.len()
-            );
-            let client = reqwest::Client::new();
-            match api::fetch_offers_for(&client, &missing).await {
-                Ok(new_offers) => {
-                    shell.cached_offers.extend(new_offers);
-                }
-                Err(e) => {
-                    eprintln!("warning: failed to fetch missing market data: {}", e);
+            if !missing.is_empty() {
+                eprintln!(
+                    "Fetching market data for {} missing commodities...",
+                    missing.len()
+                );
+                match api::fetch_offers_for(&http, &missing, o).await {
+                    Ok(new_offers) => {
+                        shell.cached_offers.extend(new_offers);
+                    }
+                    Err(e) => {
+                        eprintln!("warning: failed to fetch missing market data: {}", e);
+                    }
                 }
             }
         }
@@ -150,7 +187,7 @@ async fn main() -> io::Result<()> {
 
     // -- Chat log: read existing content, then tail live --
     let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
-    shell.chatlog.player_name = args.user.as_deref().map(Arc::from);
+    shell.chatlog.player_name = user.as_deref().map(Arc::from);
     if let Some(ref path) = args.chat_log {
         shell.chatlog.attached = true;
         let data = std::fs::read(path).unwrap_or_default();
@@ -194,7 +231,8 @@ async fn main() -> io::Result<()> {
         }
 
         // Queue fetches for any newly-seen pirates (plus ourselves), throttled.
-        if args.chat_log.is_some() {
+        // yoweb is per-ocean, so this only runs when an ocean is known.
+        if let Some(pirate_ocean) = ocean.filter(|_| args.chat_log.is_some()) {
             let mut names = shell.chatlog.all_pirate_names();
             if let Some(ref me) = shell.chatlog.player_name {
                 names.insert(me.to_string());
@@ -216,7 +254,7 @@ async fn main() -> io::Result<()> {
                 let tx = pirate_tx.clone();
                 let client = pirate_client.clone();
                 tokio::spawn(async move {
-                    let result = pirate::fetch_pirate(&client, &norm).await;
+                    let result = pirate::fetch_pirate(&client, &norm, pirate_ocean).await;
                     let _ = tx.send((norm, result));
                 });
             }
@@ -262,7 +300,7 @@ async fn main() -> io::Result<()> {
 
     // -- Save market cache --
     if let Some(ref path) = args.market_cache {
-        save_market_cache(path, &shell.commodities, shell.cached_offers);
+        save_market_cache(path, shell.ocean, &shell.commodities, shell.cached_offers);
     }
 
     Ok(())
@@ -270,6 +308,7 @@ async fn main() -> io::Result<()> {
 
 async fn load_market_cache(
     path: &Path,
+    ocean: Option<Ocean>,
     cached_offers: &mut HashMap<String, CachedOffers>,
 ) -> Vec<Commodity> {
     let Ok(data) = std::fs::read_to_string(path) else {
@@ -282,12 +321,20 @@ async fn load_market_cache(
     match serde_json::from_str::<SavedMarketCache>(&data) {
         Ok(cache) => {
             eprintln!("Loaded market cache from {}", path.display());
-            *cached_offers = cache.offers;
-            cache
-                .commodities
-                .into_iter()
-                .map(|c| Commodity { id: c.id, name: c.name })
-                .collect()
+            let had_offers = !cache.offers.is_empty();
+            let cache_ocean = cache.ocean.clone();
+            // Commodities are ocean-independent; prices are kept only when the
+            // cache was built for the selected ocean (see `into_parts`).
+            let (commodities, offers) = cache.into_parts(ocean);
+            if had_offers && offers.is_empty() {
+                eprintln!(
+                    "note: cached prices{} don't match the selected ocean{} — they'll be refetched.",
+                    cache_ocean.map(|o| format!(" (from {o})")).unwrap_or_default(),
+                    ocean.map(|o| format!(" ({o})")).unwrap_or_default(),
+                );
+            }
+            *cached_offers = offers;
+            commodities
         }
         Err(e) => {
             eprintln!("warning: failed to parse market cache: {}", e);
@@ -301,10 +348,12 @@ async fn load_market_cache(
 
 fn save_market_cache(
     path: &Path,
+    ocean: Option<Ocean>,
     commodities: &[Commodity],
     cached_offers: HashMap<String, CachedOffers>,
 ) {
     let saved = SavedMarketCache {
+        ocean: ocean.map(|o| o.name().to_owned()),
         commodities: commodities
             .iter()
             .map(|c| SavedCommodity {

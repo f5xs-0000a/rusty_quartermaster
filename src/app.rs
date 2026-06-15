@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
+use crate::ocean::Ocean;
 use crate::chatlog::GameState;
 use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
@@ -70,6 +71,8 @@ pub struct SharedState<'a> {
     pub cached_offers: &'a HashMap<String, CachedOffers>,
     pub available_islands: &'a [String],
     pub loading: bool,
+    /// Whether the selected ocean has Market market data (profit calc works).
+    pub market_supported: bool,
 }
 
 // ---------------------------------------------------------------------------
@@ -169,6 +172,8 @@ pub struct AppShell {
     pub cached_offers: HashMap<String, CachedOffers>,
     pub available_islands: Vec<String>,
     pub loading: bool,
+    /// Selected ocean, or `None` if the user skipped selection.
+    pub ocean: Option<Ocean>,
     // app routing
     sidebar_index: usize,
     global_focus: GlobalFocus,
@@ -189,6 +194,7 @@ impl AppShell {
             cached_offers: HashMap::new(),
             available_islands: Vec::new(),
             loading: false,
+            ocean: None,
             sidebar_index: 0,
             global_focus: GlobalFocus::Content,
             profits: ProfitsApp::new(),
@@ -198,6 +204,11 @@ impl AppShell {
             jobbers_ui: JobbersUi::default(),
             click_regions: Vec::new(),
         }
+    }
+
+    /// Whether profit calculation is available (an ocean with Market data).
+    fn market_ok(&self) -> bool {
+        self.ocean.is_some_and(Ocean::market_supported)
     }
 
     pub fn rebuild_island_list(&mut self) {
@@ -237,6 +248,7 @@ impl AppShell {
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
+                    market_supported: self.market_ok(),
                 };
                 crate::profits::ui::render(
                     frame,
@@ -329,6 +341,7 @@ impl AppShell {
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
+                    market_supported: self.market_ok(),
                 };
                 self.profits.handle_key(key, &shared)
             }
@@ -619,6 +632,7 @@ impl AppShell {
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
+                    market_supported: self.market_ok(),
                 };
                 let result = self.profits.handle_button_activate(&shared);
                 self.process_input_result(result, tx);
@@ -629,6 +643,7 @@ impl AppShell {
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
+                    market_supported: self.market_ok(),
                 };
                 let result = self.profits.handle_popup_click(false, &shared);
                 self.process_input_result(result, tx);
@@ -639,6 +654,7 @@ impl AppShell {
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
+                    market_supported: self.market_ok(),
                 };
                 let result = self.profits.handle_popup_click(true, &shared);
                 self.process_input_result(result, tx);
@@ -857,6 +873,7 @@ impl AppShell {
                         cached_offers: &self.cached_offers,
                         available_islands: &self.available_islands,
                         loading: self.loading,
+                        market_supported: self.market_ok(),
                     };
                     self.profits.calculate_or_warn(&shared);
                 }
@@ -894,9 +911,13 @@ impl AppShell {
         };
 
         let tx = tx.clone();
+        let ocean = self.ocean;
         tokio::spawn(async move {
             let client = reqwest::Client::new();
-            let result = fetch_offers_for(&client, &names).await;
+            let result = match ocean.filter(|o| o.market_supported()) {
+                Some(o) => fetch_offers_for(&client, &names, o).await,
+                None => Err("No Market ocean selected for this run".to_owned()),
+            };
             let _ = tx.send(result);
         });
     }

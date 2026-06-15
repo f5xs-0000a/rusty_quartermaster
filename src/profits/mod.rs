@@ -655,7 +655,10 @@ impl ProfitsApp {
 
     pub fn handle_button_activate(&mut self, shared: &SharedState) -> InputResult {
         self.calc_error = None;
-        if self.rows.is_empty() {
+        if !shared.market_supported {
+            self.calc_error =
+                Some("Profit calc needs a Market ocean (Emerald, Meridian, or Cerulean).".to_owned());
+        } else if self.rows.is_empty() {
             self.calc_error = Some("Add commodities first".to_owned());
         } else if !self.panel[0].value.trim().is_empty()
             && app::suggest_island(self.panel[0].value.trim(), shared.available_islands)

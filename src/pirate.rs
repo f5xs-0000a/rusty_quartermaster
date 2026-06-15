@@ -5,6 +5,7 @@ use std::str::FromStr;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
+use crate::ocean::Ocean;
 use crate::ratelimit::{throttled, Service};
 
 // ---------------------------------------------------------------------------
@@ -384,13 +385,16 @@ fn url_encode_name(name: &str) -> String {
 // Fetching
 // ---------------------------------------------------------------------------
 
-const YOWEB_BASE: &str = "https://emerald.puzzlepirates.com/yoweb";
-
-pub async fn fetch_pirate(client: &reqwest::Client, name: &str) -> Result<Pirate, String> {
+pub async fn fetch_pirate(
+    client: &reqwest::Client,
+    name: &str,
+    ocean: Ocean,
+) -> Result<Pirate, String> {
     let normalized = normalize_name(name)?;
     let encoded = url_encode_name(&normalized);
+    let yoweb_base = ocean.yoweb_base();
 
-    let pirate_url = format!("{YOWEB_BASE}/pirate.wm?target={encoded}");
+    let pirate_url = format!("{yoweb_base}/pirate.wm?target={encoded}");
     let pirate_html =
         throttled(Service::PuzzlePirates, || client.get(&pirate_url).send())
             .await
@@ -399,7 +403,7 @@ pub async fn fetch_pirate(client: &reqwest::Client, name: &str) -> Result<Pirate
             .await
             .map_err(|e| format!("failed to read pirate page: {e}"))?;
 
-    let trophy_url = format!("{YOWEB_BASE}/trophy/?pirate={encoded}&classic=$classic");
+    let trophy_url = format!("{yoweb_base}/trophy/?pirate={encoded}&classic=$classic");
     let trophy_html =
         throttled(Service::PuzzlePirates, || client.get(&trophy_url).send())
             .await
@@ -411,6 +415,29 @@ pub async fn fetch_pirate(client: &reqwest::Client, name: &str) -> Result<Pirate
     let mut pirate = parse_pirate_page(&pirate_html);
     pirate.trophies = parse_trophy_page(&trophy_html);
     Ok(pirate)
+}
+
+/// Check whether a pirate exists on `ocean` by fetching its yoweb page and
+/// looking for a parseable name. Returns `Ok(false)` when the page loads but
+/// names no pirate (yoweb's "no such pirate" response), `Err` on a network or
+/// name-normalisation failure.
+pub async fn verify_exists(
+    client: &reqwest::Client,
+    ocean: Ocean,
+    name: &str,
+) -> Result<bool, String> {
+    let normalized = normalize_name(name)?;
+    let encoded = url_encode_name(&normalized);
+    let pirate_url = format!("{}/pirate.wm?target={encoded}", ocean.yoweb_base());
+    let html = throttled(Service::PuzzlePirates, || client.get(&pirate_url).send())
+        .await
+        .map_err(|e| format!("failed to fetch pirate page: {e}"))?
+        .text()
+        .await
+        .map_err(|e| format!("failed to read pirate page: {e}"))?;
+
+    let document = Html::parse_document(&html);
+    Ok(!parse_name(&document).is_empty())
 }
 
 // ---------------------------------------------------------------------------
