@@ -20,6 +20,7 @@ mod damage;
 mod jobbers;
 mod pirate;
 mod profits;
+mod ratelimit;
 mod ships;
 mod utils;
 

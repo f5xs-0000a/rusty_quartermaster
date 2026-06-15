@@ -2,6 +2,8 @@ use std::collections::HashMap;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ratelimit::{throttled, Service};
+
 // ---------------------------------------------------------------------------
 // API types
 // ---------------------------------------------------------------------------
@@ -85,12 +87,13 @@ pub struct SavedMarketCache {
 // ---------------------------------------------------------------------------
 
 pub async fn fetch_commodities() -> Result<Vec<Commodity>, String> {
-    let mut commodities: Vec<Commodity> = reqwest::get("https://api.plunderly.app/commods")
-        .await
-        .map_err(|e| format!("failed to fetch commodities: {}", e))?
-        .json()
-        .await
-        .map_err(|e| format!("failed to parse commodities: {}", e))?;
+    let mut commodities: Vec<Commodity> =
+        throttled(Service::Market, || reqwest::get("https://api.plunderly.app/commods"))
+            .await
+            .map_err(|e| format!("failed to fetch commodities: {}", e))?
+            .json()
+            .await
+            .map_err(|e| format!("failed to parse commodities: {}", e))?;
     commodities.sort_by_key(|c| c.id);
     Ok(commodities)
 }
@@ -107,9 +110,7 @@ pub async fn fetch_offers_for(
             .append_pair("ocean", "Emerald")
             .append_pair("commodity", name);
 
-        let resp = client
-            .get(url)
-            .send()
+        let resp = throttled(Service::Market, || client.get(url).send())
             .await
             .map_err(|e| format!("Fetch error: {}", e))?;
 

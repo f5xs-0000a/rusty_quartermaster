@@ -5,6 +5,8 @@ use std::str::FromStr;
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
+use crate::ratelimit::{throttled, Service};
+
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
@@ -367,24 +369,22 @@ pub async fn fetch_pirate(client: &reqwest::Client, name: &str) -> Result<Pirate
     let encoded = url_encode_name(&normalized);
 
     let pirate_url = format!("{YOWEB_BASE}/pirate.wm?target={encoded}");
-    let pirate_html = client
-        .get(&pirate_url)
-        .send()
-        .await
-        .map_err(|e| format!("failed to fetch pirate page: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("failed to read pirate page: {e}"))?;
+    let pirate_html =
+        throttled(Service::PuzzlePirates, || client.get(&pirate_url).send())
+            .await
+            .map_err(|e| format!("failed to fetch pirate page: {e}"))?
+            .text()
+            .await
+            .map_err(|e| format!("failed to read pirate page: {e}"))?;
 
     let trophy_url = format!("{YOWEB_BASE}/trophy/?pirate={encoded}&classic=$classic");
-    let trophy_html = client
-        .get(&trophy_url)
-        .send()
-        .await
-        .map_err(|e| format!("failed to fetch trophy page: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("failed to read trophy page: {e}"))?;
+    let trophy_html =
+        throttled(Service::PuzzlePirates, || client.get(&trophy_url).send())
+            .await
+            .map_err(|e| format!("failed to fetch trophy page: {e}"))?
+            .text()
+            .await
+            .map_err(|e| format!("failed to read trophy page: {e}"))?;
 
     let mut pirate = parse_pirate_page(&pirate_html);
     pirate.trophies = parse_trophy_page(&trophy_html);
