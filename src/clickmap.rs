@@ -21,6 +21,8 @@ pub enum ClickTarget {
     DamageButton(usize),
     DamageShipItem(usize),
     JobberVessel(usize),
+    JobberShipType,
+    JobberShipItem(usize),
     JobberUnpoison,
     JobberAboardList,
     JobberGreedyList,

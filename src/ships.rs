@@ -38,11 +38,18 @@ pub struct Ship {
     pub ram_damage: u32,
     pub ship_size_class: ShipClass,
     pub move_tokens: u8,
+    /// Maximum *mercenaries* (improved NPC crew) hireable, per yppedia. Used as
+    /// the swabbie cap for staffing checks — mercenaries, not basic swabbies.
+    pub max_mercenaries: u8,
+    /// Maximum pirates that can be aboard (Capacity "Pirates" column).
+    pub max_pirates: u8,
     pub image_data: &'static [u8],
 }
 
 const SLOOP: Ship = Ship {
     name: "Sloop",
+    max_mercenaries: 6,
+    max_pirates: 7,
     sail_stations: 3,
     bilge_stations: 2,
     carpentry_stations: 2,
@@ -61,6 +68,8 @@ const SLOOP: Ship = Ship {
 
 const CUTTER: Ship = Ship {
     name: "Cutter",
+    max_mercenaries: 10,
+    max_pirates: 12,
     sail_stations: 5,
     bilge_stations: 2,
     carpentry_stations: 3,
@@ -79,6 +88,8 @@ const CUTTER: Ship = Ship {
 
 const DHOW: Ship = Ship {
     name: "Dhow",
+    max_mercenaries: 10,
+    max_pirates: 12,
     sail_stations: 5,
     bilge_stations: 2,
     carpentry_stations: 3,
@@ -97,6 +108,8 @@ const DHOW: Ship = Ship {
 
 const FANCHUAN: Ship = Ship {
     name: "Fanchuan",
+    max_mercenaries: 10,
+    max_pirates: 12,
     sail_stations: 5,
     bilge_stations: 2,
     carpentry_stations: 3,
@@ -115,6 +128,8 @@ const FANCHUAN: Ship = Ship {
 
 const LONGSHIP: Ship = Ship {
     name: "Longship",
+    max_mercenaries: 13,
+    max_pirates: 15,
     sail_stations: 5,
     bilge_stations: 3,
     carpentry_stations: 3,
@@ -133,6 +148,8 @@ const LONGSHIP: Ship = Ship {
 
 const BAGHLAH: Ship = Ship {
     name: "Baghlah",
+    max_mercenaries: 16,
+    max_pirates: 18,
     sail_stations: 6,
     bilge_stations: 4,
     carpentry_stations: 4,
@@ -151,6 +168,8 @@ const BAGHLAH: Ship = Ship {
 
 const JUNK: Ship = Ship {
     name: "Junk",
+    max_mercenaries: 16,
+    max_pirates: 18,
     sail_stations: 6,
     bilge_stations: 4,
     carpentry_stations: 4,
@@ -169,6 +188,8 @@ const JUNK: Ship = Ship {
 
 const MERCHANT_BRIG: Ship = Ship {
     name: "Merchant Brig",
+    max_mercenaries: 18,
+    max_pirates: 20,
     sail_stations: 6,
     bilge_stations: 6,
     carpentry_stations: 9,
@@ -187,6 +208,8 @@ const MERCHANT_BRIG: Ship = Ship {
 
 const WAR_BRIG: Ship = Ship {
     name: "War Brig",
+    max_mercenaries: 23,
+    max_pirates: 30,
     sail_stations: 9,
     bilge_stations: 4,
     carpentry_stations: 6,
@@ -205,6 +228,8 @@ const WAR_BRIG: Ship = Ship {
 
 const MERCHANT_GALLEON: Ship = Ship {
     name: "Merchant Galleon",
+    max_mercenaries: 28,
+    max_pirates: 30,
     sail_stations: 9,
     bilge_stations: 14,
     carpentry_stations: 14,
@@ -223,6 +248,8 @@ const MERCHANT_GALLEON: Ship = Ship {
 
 const WAR_GALLEON: Ship = Ship {
     name: "War Galleon",
+    max_mercenaries: 32,
+    max_pirates: 40,
     sail_stations: 12,
     bilge_stations: 7,
     carpentry_stations: 8,
@@ -241,6 +268,8 @@ const WAR_GALLEON: Ship = Ship {
 
 const XEBEC: Ship = Ship {
     name: "Xebec",
+    max_mercenaries: 36,
+    max_pirates: 45,
     sail_stations: 14,
     bilge_stations: 8,
     carpentry_stations: 9,
@@ -259,6 +288,8 @@ const XEBEC: Ship = Ship {
 
 const WAR_FRIGATE: Ship = Ship {
     name: "War Frigate",
+    max_mercenaries: 54,
+    max_pirates: 75,
     sail_stations: 18,
     bilge_stations: 12,
     carpentry_stations: 18,
@@ -277,6 +308,8 @@ const WAR_FRIGATE: Ship = Ship {
 
 const GRAND_FRIGATE: Ship = Ship {
     name: "Grand Frigate",
+    max_mercenaries: 75,
+    max_pirates: 159,
     sail_stations: 30,
     bilge_stations: 16,
     carpentry_stations: 24,

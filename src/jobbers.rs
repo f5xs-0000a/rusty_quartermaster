@@ -14,11 +14,12 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use crate::chatlog::GameState;
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::pirate::{self, Experience, Pirate, Skill, Standing};
+use crate::ships::{Ship, SHIPS};
 
 const TOP_N: usize = 4;
 /// Width of the `EEE/SSS` experience/standing code.
@@ -80,6 +81,7 @@ impl PirateCache {
 pub enum JobberFocus {
     #[default]
     Vessels,
+    ShipType,
     Unpoison,
     Aboard,
     Greedy,
@@ -94,6 +96,12 @@ pub struct JobbersUi {
     pub aboard_offset: usize,
     pub greedy_offset: usize,
     pub planked_offset: usize,
+    /// Ship type chosen per vessel (index into [`SHIPS`]), keyed by vessel name.
+    /// Lives here, not on the `Vessel`, so picks survive a relog state wipe.
+    pub ship_types: HashMap<Arc<str>, usize>,
+    /// When `Some`, the ship-type popup is open with this highlighted index;
+    /// it applies to the currently-selected vessel.
+    pub ship_popup: Option<usize>,
 }
 
 /// Bottom-bar tooltip lines for the current focus (empty when nothing to say).
@@ -111,6 +119,7 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
                 Vec::new()
             }
         }
+        JobberFocus::ShipType => vec!["Press Enter to pick this vessel's ship type."],
         JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
             vec!["Shift+Up/Down: scroll this list."]
         }
@@ -212,6 +221,95 @@ fn truncate(s: &str, max: usize) -> String {
 }
 
 // ---------------------------------------------------------------------------
+// Ship staffing
+// ---------------------------------------------------------------------------
+
+/// Staffing verdict for the selected vessel against the chosen ship.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Staffing {
+    /// Room for more crew *and* mercenaries still available — hire some.
+    Understaffed,
+    /// More swabbies or pirates aboard than the ship can hold: wrong ship.
+    Invalid,
+}
+
+impl Staffing {
+    fn message(self) -> &'static str {
+        match self {
+            Staffing::Understaffed => "Understaffed. Hire jobbers.",
+            Staffing::Invalid => "Invalid ship selected.",
+        }
+    }
+
+    fn style(self) -> Style {
+        match self {
+            Staffing::Understaffed => Style::default().fg(Color::Yellow),
+            Staffing::Invalid => Style::default().fg(Color::Red),
+        }
+    }
+}
+
+/// Compare the crew aboard against the chosen ship's capacity.
+///
+/// * `players` — named pirates aboard (the Aboard list).
+/// * `swabbies` — the anonymous swabbie/mercenary tally aboard.
+///
+/// Overstaffed takes priority: exceeding the mercenary cap *or* the total
+/// pirate cap means the wrong ship was probably picked. Otherwise it's
+/// understaffed only while both there's room for more crew and the mercenary
+/// cap hasn't been hit.
+fn staffing(ship: &Ship, players: usize, swabbies: u32) -> Option<Staffing> {
+    let total = players as u64 + swabbies as u64;
+    if swabbies > ship.max_mercenaries as u32 || total > ship.max_pirates as u64 {
+        Some(Staffing::Invalid)
+    } else if swabbies < ship.max_mercenaries as u32 && total < ship.max_pirates as u64 {
+        Some(Staffing::Understaffed)
+    } else {
+        None
+    }
+}
+
+/// Word-wrap `text` to `width` columns, hard-breaking any single word longer
+/// than the line so a narrow column never overflows.
+fn wrap_words(text: &str, width: usize) -> Vec<String> {
+    if width == 0 {
+        return Vec::new();
+    }
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for mut word in text.split_whitespace() {
+        // A word that can't fit on its own line is chopped to width.
+        while word.chars().count() > width {
+            if !cur.is_empty() {
+                lines.push(std::mem::take(&mut cur));
+            }
+            let head: String = word.chars().take(width).collect();
+            let consumed = head.len();
+            lines.push(head);
+            word = &word[consumed..];
+        }
+        if word.is_empty() {
+            continue;
+        }
+        let need = if cur.is_empty() {
+            word.chars().count()
+        } else {
+            cur.chars().count() + 1 + word.chars().count()
+        };
+        if need > width {
+            lines.push(std::mem::take(&mut cur));
+        } else if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+}
+
+// ---------------------------------------------------------------------------
 // Render entry point
 // ---------------------------------------------------------------------------
 
@@ -281,8 +379,22 @@ pub fn render(
     let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
     let vessel = selected.as_ref().and_then(|k| state.vessels.get(k));
+
+    // Ship-type widget: the ship chosen for this vessel (if any) and the
+    // staffing warning it implies. Wrapped here so the box can be sized to fit.
+    let ship_idx = selected.as_ref().and_then(|k| ui.ship_types.get(k).copied());
+    let players_aboard = aboard_set.len();
+    let swabbies = vessel.map_or(0, |v| v.swabbies);
+    let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], players_aboard, swabbies));
+    // Box has no padding, so inner text width = box width - borders(2).
+    let warn_lines: Vec<String> = warn
+        .map(|w| wrap_words(w.message(), vessel_w.saturating_sub(2) as usize))
+        .unwrap_or_default();
+    let ship_h = warn_lines.len() as u16 + 3; // ship-name row + warning + borders(2)
+
     let list_h = |n: usize| (n as u16 + 2).max(3);
-    let left_h = (ordered.len() as u16 + 2).max(3) + 3; // vessels box + unpoison
+    // Left column: vessels box + ship-type box + unpoison button.
+    let left_h = (ordered.len() as u16 + 2).max(3) + ship_h + 3;
     // The Aboard box gains one extra row for the "and n swabbies" footer.
     let aboard_rows = aboard_set.len() + usize::from(vessel.is_some_and(|v| v.swabbies > 0));
     let lists_h = list_h(aboard_rows)
@@ -313,7 +425,10 @@ pub fn render(
     // widen to fill the rest of the block.
     let bottom = Layout::horizontal([Constraint::Length(vessel_w), Constraint::Min(0)]).split(rows[1]);
 
-    render_left_column(frame, bottom[0], state, &ordered, &selected, ui.focus, focused, regions);
+    render_left_column(
+        frame, bottom[0], state, &ordered, &selected, ui.focus, focused,
+        ship_idx, warn, &warn_lines, ship_h, regions,
+    );
     render_lists_column(frame, bottom[1], state, cache, selected.as_ref(), &aboard_set, ui, focused, regions);
 
     // Tooltip: spans the block width, directly under the bottom region.
@@ -323,6 +438,12 @@ pub fn render(
             Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
             rows[2],
         );
+    }
+
+    // Ship-type popup, drawn last so it sits atop the page and its click
+    // regions win the reverse-iterating hit test.
+    if let Some(sel) = ui.ship_popup {
+        render_ship_popup(frame, sel, regions);
     }
 }
 
@@ -339,13 +460,20 @@ fn render_left_column(
     selected: &Option<Arc<str>>,
     focus: JobberFocus,
     focused: bool,
+    ship_idx: Option<usize>,
+    warn: Option<Staffing>,
+    warn_lines: &[String],
+    ship_h: u16,
     regions: &mut Vec<ClickRegion>,
 ) {
-    // Vessels list as tall as its content; Unpoison directly below; empty slack
-    // beneath. Leave room for the 3-tall button.
-    let vessels_h = (ordered.len() as u16 + 2).clamp(3, area.height.saturating_sub(3).max(3));
+    // Vessels list as tall as its content; Ship Type below it; Unpoison below
+    // that; empty slack beneath. Leave room for the ship-type box + 3-tall button.
+    let reserve = ship_h + 3;
+    let vessels_h =
+        (ordered.len() as u16 + 2).clamp(3, area.height.saturating_sub(reserve).max(3));
     let chunks = Layout::vertical([
         Constraint::Length(vessels_h),
+        Constraint::Length(ship_h),
         Constraint::Length(3),
         Constraint::Min(0),
     ])
@@ -396,6 +524,36 @@ fn render_left_column(
         });
     }
 
+    // -- Ship Type --
+    // First row is the chosen ship (a button that opens the select popup);
+    // any staffing warning is wrapped beneath it inside the same box.
+    let st_focused = focus == JobberFocus::ShipType;
+    let label_style = if focused && st_focused {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else if ship_idx.is_some() {
+        Style::default().bold()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let ship_label = ship_idx
+        .map(|i| crate::ships::SHIPS[i].name.to_string())
+        .unwrap_or_else(|| "Select ship".to_string());
+    let mut st_lines: Vec<Line> = Vec::with_capacity(1 + warn_lines.len());
+    st_lines.push(Line::from(Span::styled(ship_label, label_style)).centered());
+    let warn_style = warn.map(Staffing::style).unwrap_or_default();
+    for w in warn_lines {
+        st_lines.push(Line::from(Span::styled(w.clone(), warn_style)));
+    }
+    let st_block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(box_border(focused, st_focused))
+        .title("─── Ship Type ");
+    frame.render_widget(Paragraph::new(st_lines).block(st_block), chunks[1]);
+    regions.push(ClickRegion {
+        rect: chunks[1],
+        target: ClickTarget::JobberShipType,
+    });
+
     // -- Unpoison button --
     // When the vessel isn't poisoned the button can't be used, so both the box
     // and the word are grayed out; otherwise the border follows normal focus.
@@ -422,9 +580,9 @@ fn render_left_column(
             .borders(Borders::ALL)
             .border_style(border),
     );
-    frame.render_widget(button, chunks[1]);
+    frame.render_widget(button, chunks[2]);
     regions.push(ClickRegion {
-        rect: chunks[1],
+        rect: chunks[2],
         target: ClickTarget::JobberUnpoison,
     });
 }
@@ -735,4 +893,89 @@ fn render_scroll_list(
     frame.render_widget(Paragraph::new(visible), inner);
 
     regions.push(ClickRegion { rect: area, target });
+}
+
+/// The ship-type select popup: same list as the Damage calculator's, minus the
+/// "View" affordance. `selected` is the highlighted ship index.
+fn render_ship_popup(frame: &mut Frame, selected: usize, regions: &mut Vec<ClickRegion>) {
+    let area = frame.area();
+
+    let max_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
+    // +2 borders +2 padding +2 highlight symbol.
+    let w = max_name as u16 + 6;
+    let h = SHIPS.len() as u16 + 2; // +2 borders
+    let x = area.width.saturating_sub(w) / 2;
+    let y = area.height.saturating_sub(h) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = SHIPS.iter().map(|s| ListItem::new(s.name)).collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
+                .title("─── Select Ship "),
+        )
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol("> ");
+
+    let mut state = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, popup_area, &mut state);
+
+    let inner_x = popup_area.x + 1;
+    let inner_y = popup_area.y + 1;
+    let inner_w = popup_area.width.saturating_sub(2);
+    for i in 0..SHIPS.len() {
+        regions.push(ClickRegion {
+            rect: Rect::new(inner_x, inner_y + i as u16, inner_w, 1),
+            target: ClickTarget::JobberShipItem(i),
+        });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Sloop: max_mercenaries = 6, max_pirates = 7.
+    fn sloop() -> &'static Ship {
+        SHIPS.iter().find(|s| s.name == "Sloop").unwrap()
+    }
+
+    #[test]
+    fn staffing_flags_understaffed_when_room_and_mercs_left() {
+        // 2 players + 2 swabbies = 4 < 7 pirates, 2 < 6 mercs.
+        assert_eq!(staffing(sloop(), 2, 2), Some(Staffing::Understaffed));
+    }
+
+    #[test]
+    fn staffing_is_clear_when_full_or_mercs_capped() {
+        // Exactly at the pirate cap: not understaffed, not invalid.
+        assert_eq!(staffing(sloop(), 1, 6), None);
+        // Mercenary cap reached even with a free pirate slot: don't nag to hire.
+        assert_eq!(staffing(sloop(), 0, 6), None);
+    }
+
+    #[test]
+    fn staffing_is_invalid_when_over_either_cap() {
+        // Too many swabbies for the merc cap.
+        assert_eq!(staffing(sloop(), 0, 7), Some(Staffing::Invalid));
+        // Too many bodies for the pirate cap (overstaffed beats understaffed).
+        assert_eq!(staffing(sloop(), 5, 4), Some(Staffing::Invalid));
+    }
+
+    #[test]
+    fn wrap_words_breaks_on_spaces() {
+        assert_eq!(
+            wrap_words("Understaffed. Hire jobbers.", 20),
+            vec!["Understaffed. Hire", "jobbers."],
+        );
+    }
+
+    #[test]
+    fn wrap_words_hard_breaks_overlong_words() {
+        assert_eq!(wrap_words("Understaffed.", 5), vec!["Under", "staff", "ed."]);
+    }
 }

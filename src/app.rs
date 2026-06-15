@@ -380,6 +380,11 @@ impl AppShell {
     fn handle_jobbers_key(&mut self, key: KeyEvent) -> InputResult {
         use JobberFocus::*;
 
+        // The ship-type popup is modal: it eats keys until dismissed.
+        if let Some(sel) = self.jobbers_ui.ship_popup {
+            return self.handle_ship_popup_key(key, sel);
+        }
+
         // Shift+Up/Down scrolls the focused list (rather than navigating).
         if key.modifiers.contains(KeyModifiers::SHIFT)
             && matches!(key.code, KeyCode::Up | KeyCode::Down)
@@ -394,27 +399,34 @@ impl AppShell {
             // Left from the left column exits to the Apps sidebar; from the
             // lists it steps back to the vessel column.
             KeyCode::Left => match self.jobbers_ui.focus {
-                Vessels | Unpoison => return InputResult::Exit,
+                Vessels | ShipType | Unpoison => return InputResult::Exit,
                 Aboard | Greedy | Planked => self.jobbers_ui.focus = Vessels,
             },
             KeyCode::Right => match self.jobbers_ui.focus {
-                Vessels | Unpoison => self.jobbers_ui.focus = Aboard,
+                Vessels | ShipType | Unpoison => self.jobbers_ui.focus = Aboard,
                 _ => {}
             },
             KeyCode::Up => match self.jobbers_ui.focus {
                 Vessels => self.jobbers_select_delta(-1),
-                Unpoison => self.jobbers_ui.focus = Vessels,
+                ShipType => self.jobbers_ui.focus = Vessels,
+                Unpoison => self.jobbers_ui.focus = ShipType,
                 Aboard => {}
                 Greedy => self.jobbers_ui.focus = Aboard,
                 Planked => self.jobbers_ui.focus = Greedy,
             },
             KeyCode::Down => match self.jobbers_ui.focus {
                 Vessels => {
-                    // Past the last vessel, drop onto Unpoison — only if poisoned.
-                    if self.jobbers_at_last_vessel() && self.selected_poisoned() {
-                        self.jobbers_ui.focus = Unpoison;
+                    // Past the last vessel, drop onto the Ship Type widget.
+                    if self.jobbers_at_last_vessel() {
+                        self.jobbers_ui.focus = ShipType;
                     } else {
                         self.jobbers_select_delta(1);
+                    }
+                }
+                // Unpoison is only reachable while the vessel is poisoned.
+                ShipType => {
+                    if self.selected_poisoned() {
+                        self.jobbers_ui.focus = Unpoison;
                     }
                 }
                 Unpoison => {}
@@ -422,11 +434,52 @@ impl AppShell {
                 Greedy => self.jobbers_ui.focus = Planked,
                 Planked => {}
             },
-            KeyCode::Enter => {
-                if self.jobbers_ui.focus == Unpoison {
+            KeyCode::Enter => match self.jobbers_ui.focus {
+                Unpoison => {
                     self.jobbers_unpoison();
                     self.jobbers_ui.focus = Vessels;
                 }
+                ShipType => self.open_ship_popup(),
+                _ => {}
+            },
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Open the ship-type popup for the selected vessel, highlighting its
+    /// current pick (or the first ship if none chosen yet).
+    fn open_ship_popup(&mut self) {
+        let cur = self
+            .jobbers_ui
+            .selected
+            .as_ref()
+            .and_then(|k| self.jobbers_ui.ship_types.get(k).copied())
+            .unwrap_or(0);
+        self.jobbers_ui.ship_popup = Some(cur);
+        self.jobbers_ui.focus = JobberFocus::ShipType;
+    }
+
+    /// Modal key handling while the ship-type popup is open.
+    fn handle_ship_popup_key(&mut self, key: KeyEvent, sel: usize) -> InputResult {
+        let count = crate::ships::SHIPS.len();
+        match key.code {
+            KeyCode::Esc => self.jobbers_ui.ship_popup = None,
+            KeyCode::Up => {
+                if sel > 0 {
+                    self.jobbers_ui.ship_popup = Some(sel - 1);
+                }
+            }
+            KeyCode::Down => {
+                if sel + 1 < count {
+                    self.jobbers_ui.ship_popup = Some(sel + 1);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(vessel) = self.jobbers_ui.selected.clone() {
+                    self.jobbers_ui.ship_types.insert(vessel, sel);
+                }
+                self.jobbers_ui.ship_popup = None;
             }
             _ => {}
         }
@@ -672,6 +725,18 @@ impl AppShell {
                     self.jobbers_ui.selected = Some(key.clone());
                 }
             }
+            ClickTarget::JobberShipType => {
+                self.global_focus = GlobalFocus::Content;
+                self.open_ship_popup();
+            }
+            ClickTarget::JobberShipItem(i) => {
+                if i < crate::ships::SHIPS.len() {
+                    if let Some(vessel) = self.jobbers_ui.selected.clone() {
+                        self.jobbers_ui.ship_types.insert(vessel, i);
+                    }
+                }
+                self.jobbers_ui.ship_popup = None;
+            }
             ClickTarget::JobberUnpoison => {
                 self.global_focus = GlobalFocus::Content;
                 // Nothing to unpoison on a clean vessel.
@@ -724,6 +789,16 @@ impl AppShell {
                 }
             }
             AppId::Chatlog => {
+                // While the ship-type popup is open, the wheel moves its highlight.
+                if let Some(sel) = self.jobbers_ui.ship_popup {
+                    let count = crate::ships::SHIPS.len();
+                    self.jobbers_ui.ship_popup = Some(if delta < 0 {
+                        sel.saturating_sub(1)
+                    } else {
+                        (sel + 1).min(count.saturating_sub(1))
+                    });
+                    return;
+                }
                 // Scroll whichever list the cursor is hovering.
                 let target = clickmap::hit_test(&self.click_regions, col, row);
                 let offset = match target {
