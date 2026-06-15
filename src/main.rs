@@ -15,6 +15,7 @@ mod api;
 mod app;
 mod clickmap;
 mod damage;
+mod pirate;
 mod profits;
 mod ships;
 mod utils;
