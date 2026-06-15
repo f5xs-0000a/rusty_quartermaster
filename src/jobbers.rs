@@ -271,7 +271,13 @@ pub fn render(
     let vessel_w = ((max_name + 6).max(12)).min(28) as u16;
     let block_w = top_panel_width(&ranked).max(vessel_w + 20);
 
-    // Total block height = Top Jobbers + the taller of the two bottom columns.
+    // The tooltip (focus-dependent help) rides at the bottom of the block so it
+    // shares the block's width rather than spanning the whole content area.
+    let tooltip_lines = tooltip(state, ui);
+    let tip_h = tooltip_lines.len() as u16;
+
+    // Total block height = Top Jobbers + the taller of the two bottom columns,
+    // plus the tooltip strip beneath them.
     let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
     let vessel = selected.as_ref().and_then(|k| state.vessels.get(k));
@@ -280,7 +286,7 @@ pub fn render(
     let lists_h = list_h(aboard_set.len())
         + list_h(vessel.map_or(0, |v| v.greedy_by_pirate.len()))
         + list_h(vessel.map_or(0, |v| v.planked_by_us.len()));
-    let block_h = top_h + left_h.max(lists_h);
+    let block_h = top_h + left_h.max(lists_h) + tip_h;
 
     // Center the whole block in the content area (matches the Damage/Profit
     // calculators), bounded by the available space.
@@ -290,9 +296,15 @@ pub fn render(
     let by = area.y + area.height.saturating_sub(block_h) / 2;
     let block = Rect::new(bx, by, block_w, block_h);
 
-    // Vertical: Top Jobbers (content height) over the bottom region.
+    // Vertical: Top Jobbers (content height) over the bottom region, with the
+    // tooltip strip beneath them.
     let top_h = top_h.min(block.height);
-    let rows = Layout::vertical([Constraint::Length(top_h), Constraint::Min(0)]).split(block);
+    let rows = Layout::vertical([
+        Constraint::Length(top_h),
+        Constraint::Min(0),
+        Constraint::Length(tip_h),
+    ])
+    .split(block);
     render_top_panel(frame, rows[0], &ranked, focused);
 
     // Bottom: left column (vessels + unpoison) beside the stacked lists, which
@@ -301,6 +313,15 @@ pub fn render(
 
     render_left_column(frame, bottom[0], state, &ordered, &selected, ui.focus, focused, regions);
     render_lists_column(frame, bottom[1], state, cache, selected.as_ref(), &aboard_set, ui, focused, regions);
+
+    // Tooltip: spans the block width, directly under the bottom region.
+    if !tooltip_lines.is_empty() {
+        let text: Vec<Line> = tooltip_lines.iter().map(|l| Line::from(*l)).collect();
+        frame.render_widget(
+            Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
+            rows[2],
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -374,21 +395,30 @@ fn render_left_column(
     }
 
     // -- Unpoison button --
+    // When the vessel isn't poisoned the button can't be used, so both the box
+    // and the word are grayed out; otherwise the border follows normal focus.
     let poisoned = selected
         .as_ref()
         .and_then(|k| state.vessels.get(k))
         .is_some_and(|v| v.poisoned);
-    let btn_style = if !poisoned {
-        Style::default().fg(Color::DarkGray)
+    let disabled = Style::default().fg(Color::DarkGray);
+    let (btn_style, border) = if !poisoned {
+        (disabled, disabled)
     } else if focus == JobberFocus::Unpoison {
-        Style::default().bg(Color::White).fg(Color::Black).bold()
+        (
+            Style::default().bg(Color::White).fg(Color::Black).bold(),
+            box_border(focused, true),
+        )
     } else {
-        Style::default().fg(Color::Red).bold()
+        (
+            Style::default().fg(Color::Red).bold(),
+            box_border(focused, false),
+        )
     };
     let button = Paragraph::new("Unpoison").centered().style(btn_style).block(
         Block::default()
             .borders(Borders::ALL)
-            .border_style(box_border(focused, focus == JobberFocus::Unpoison)),
+            .border_style(border),
     );
     frame.render_widget(button, chunks[1]);
     regions.push(ClickRegion {

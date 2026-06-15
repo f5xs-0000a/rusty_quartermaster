@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
@@ -217,14 +217,9 @@ impl AppShell {
 
         let area = frame.area();
 
-        // Layout tree: [sidebar | right], where right = [content | tooltip].
-        // The tooltip lives under the content (not the sidebar) and its height
-        // is dynamic — zero when there's nothing to say.
-        let tooltip_lines: Vec<&str> = match APP_LIST[self.sidebar_index] {
-            AppId::Chatlog => jobbers::tooltip(&self.chatlog, &self.jobbers_ui),
-            _ => Vec::new(),
-        };
-
+        // Layout tree: [sidebar | content]. Pages own everything in their
+        // content area — the Jobbers page, for instance, draws its own tooltip
+        // inside its centered block rather than as a full-width strip here.
         let chunks = Layout::horizontal([
             Constraint::Length(SIDEBAR_WIDTH),
             Constraint::Min(0),
@@ -233,20 +228,7 @@ impl AppShell {
 
         self.render_sidebar(frame, chunks[0]);
 
-        let right = Layout::vertical([
-            Constraint::Min(0),
-            Constraint::Length(tooltip_lines.len() as u16),
-        ])
-        .split(chunks[1]);
-        if !tooltip_lines.is_empty() {
-            let text: Vec<Line> = tooltip_lines.iter().map(|l| Line::from(*l)).collect();
-            frame.render_widget(
-                Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
-                right[1],
-            );
-        }
-
-        let content_area = right[0];
+        let content_area = chunks[1];
         let content_focused = self.global_focus == GlobalFocus::Content;
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
