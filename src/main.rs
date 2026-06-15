@@ -3,7 +3,7 @@ use std::io;
 use std::time::Duration;
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyEventKind};
+use crossterm::event::{self, Event, KeyEventKind, EnableMouseCapture, DisableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -13,6 +13,7 @@ use ratatui::prelude::*;
 mod aliases;
 mod api;
 mod app;
+mod clickmap;
 mod damage;
 mod profits;
 mod ships;
@@ -120,7 +121,7 @@ async fn main() -> io::Result<()> {
 
     // -- Terminal setup --
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen)?;
+    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
     let (tx, mut rx) =
@@ -138,19 +139,25 @@ async fn main() -> io::Result<()> {
             continue;
         }
 
-        if let Event::Key(key) = event::read()? {
-            if key.kind != KeyEventKind::Press {
-                continue;
+        match event::read()? {
+            Event::Key(key) => {
+                if key.kind != KeyEventKind::Press {
+                    continue;
+                }
+                if shell.handle_key(key, &tx) {
+                    break;
+                }
             }
-            if shell.handle_key(key, &tx) {
-                break;
+            Event::Mouse(mouse) => {
+                shell.handle_mouse(mouse, &tx);
             }
+            _ => {}
         }
     }
 
     // -- Teardown --
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen)?;
+    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
 
     // -- Cleanup temp images --
     shell.damage.cleanup_temp_images();

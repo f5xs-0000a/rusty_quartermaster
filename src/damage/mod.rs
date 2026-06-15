@@ -12,7 +12,7 @@ use crate::ships::SHIPS;
 // Types
 // ---------------------------------------------------------------------------
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Side {
     Left,
     Right,
@@ -115,7 +115,7 @@ impl DamageApp {
         }
     }
 
-    fn increment(&mut self) {
+    pub fn increment(&mut self) {
         if self.focus_row == ROW_HEADON {
             self.headon = self.headon.saturating_add(1);
             return;
@@ -125,7 +125,7 @@ impl DamageApp {
         vals[idx] = vals[idx].saturating_add(1);
     }
 
-    fn decrement(&mut self) {
+    pub fn decrement(&mut self) {
         if self.focus_row == ROW_HEADON {
             self.headon = self.headon.saturating_sub(1);
             return;
@@ -270,7 +270,7 @@ impl DamageApp {
         InputResult::Consumed
     }
 
-    fn activate_button(&mut self) {
+    pub fn activate_button(&mut self) {
         match self.button_index {
             0 => {
                 self.left = [0; 3];

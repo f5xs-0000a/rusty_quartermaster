@@ -2,9 +2,17 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
 
 use crate::app::{self, SharedState};
+use crate::clickmap::{ClickRegion, ClickTarget};
 use super::{Focus, PopupKind, ProfitsApp, PANEL_COUNT};
 
-pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &SharedState) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut ProfitsApp,
+    shared: &SharedState,
+    focused: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
     let vchunks = Layout::vertical([
         Constraint::Min(0),
         Constraint::Length(4), // border(1) + input(1) + suggestion(1) + border(1)
@@ -58,7 +66,11 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
     // 2 = left + right border, 2 = horizontal padding, 3 = spacing between 4 columns
     let table_width = item_width + 7 + 5 + 5 + 3 + 2 + 2;
 
-    let highlight = Style::default().bg(Color::White).fg(Color::Black);
+    let highlight = if focused {
+        Style::default().bg(Color::White).fg(Color::Black)
+    } else {
+        Style::default()
+    };
     let table = Table::new(rows, widths)
         .header(header)
         .column_spacing(1)
@@ -93,12 +105,49 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
 
     frame.render_stateful_widget(table, hchunks[1], &mut app.table_state);
 
-    // Vertically center the panel
+    // Register table cell click regions
+    {
+        let table_inner_x = hchunks[1].x + 2; // border + padding
+        let table_inner_y = hchunks[1].y + 1; // top border
+        // header row + 1 blank bottom_margin = 2 lines before data
+        let data_start_y = table_inner_y + 2;
+        let scroll_offset = app.table_state.offset();
+        let visible_height = hchunks[1].height.saturating_sub(2); // borders
+        let visible_rows = visible_height.saturating_sub(2); // header + margin
+        let col_xs = [
+            table_inner_x,
+            table_inner_x + item_width + 1,
+            table_inner_x + item_width + 1 + 7 + 1,
+            table_inner_x + item_width + 1 + 7 + 1 + 5 + 1,
+        ];
+        let col_ws = [item_width, 7, 5, 5];
+        for vis_row in 0..visible_rows as usize {
+            let data_row = scroll_offset + vis_row;
+            if data_row >= app.rows.len() {
+                break;
+            }
+            for col in 0..4usize {
+                regions.push(ClickRegion {
+                    rect: Rect::new(
+                        col_xs[col],
+                        data_start_y + vis_row as u16,
+                        col_ws[col],
+                        1,
+                    ),
+                    target: ClickTarget::ProfitsTableCell { row: data_row, col },
+                });
+            }
+        }
+    }
+
+    // Vertically center the panel + stats box
     let panel_content_height = (PANEL_COUNT as u16) * 2 + 2;
     let panel_block_height = panel_content_height + 2;
+    let stats_height: u16 = 3; // 1 content line + 2 borders
     let panel_vchunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(panel_block_height),
+        Constraint::Length(stats_height),
         Constraint::Fill(1),
     ])
     .split(hchunks[3]);
@@ -123,7 +172,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
         let label = Paragraph::new(Span::styled(field.label, Style::default().bold()));
         frame.render_widget(label, label_area);
 
-        let is_focused = app.focus == Focus::Panel(i);
+        let is_focused = focused && app.focus == Focus::Panel(i);
         let value_style = if is_focused {
             Style::default().bg(Color::White).fg(Color::Black)
         } else {
@@ -144,11 +193,22 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
                 frame.set_cursor_position((cx, value_area.y));
             }
         }
+
+        // Register click region for this panel field (label + value area)
+        regions.push(ClickRegion {
+            rect: Rect::new(
+                label_area.x,
+                label_area.y,
+                label_area.width,
+                2, // label + value
+            ),
+            target: ClickTarget::ProfitsPanel(i),
+        });
     }
 
     // "Calculate profits!" button
     let button_area = panel_rows[PANEL_COUNT * 2 + 1];
-    let button_focused = app.focus == Focus::Button;
+    let button_focused = focused && app.focus == Focus::Button;
     let button_style = if button_focused {
         Style::default().bg(Color::White).fg(Color::Black).bold()
     } else {
@@ -157,6 +217,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
     let button =
         Paragraph::new(Line::from(Span::styled("Calculate profits!", button_style)).centered());
     frame.render_widget(button, button_area);
+
+    regions.push(ClickRegion {
+        rect: button_area,
+        target: ClickTarget::ProfitsButton,
+    });
+
+    // -- Hold Stats box --
+    let stats_block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title("─── Hold Stats ");
+    let stats_inner = stats_block.inner(panel_vchunks[2]);
+    frame.render_widget(stats_block, panel_vchunks[2]);
+
+    let total_alcohol = compute_total_alcohol(app, shared);
+    let label = "Total Alcohol";
+    let val_str = total_alcohol.to_string();
+    let avail = stats_inner.width as usize;
+    let pad = avail.saturating_sub(label.len()).saturating_sub(val_str.len());
+    let line = format!("{}{:>w$}", label, val_str, w = pad + val_str.len());
+    frame.render_widget(Paragraph::new(line), stats_inner);
 
     // -- Bottom box (input + suggestion) --
     let bottom_width = table_width + 1 + panel_width;
@@ -182,7 +263,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
 
     // -- Input prompt --
     let label = "Add Commodity: ";
-    let input_style = if app.focus == Focus::Input {
+    let input_style = if focused && app.focus == Focus::Input {
         Style::default().bg(Color::White).fg(Color::Black)
     } else {
         Style::default()
@@ -193,12 +274,17 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
     ]));
     frame.render_widget(prompt, bottom_rows[0]);
 
-    if app.focus == Focus::Input {
+    if focused && app.focus == Focus::Input {
         let cursor_x =
             bottom_rows[0].x + label.len() as u16 + app.input[..app.cursor].chars().count() as u16;
         let cursor_y = bottom_rows[0].y;
         frame.set_cursor_position((cursor_x, cursor_y));
     }
+
+    regions.push(ClickRegion {
+        rect: bottom_rows[0],
+        target: ClickTarget::ProfitsInput,
+    });
 
     // -- Status line --
     let status_line = build_status_line(app, shared);
@@ -208,7 +294,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut ProfitsApp, shared: &Shar
 
     // -- Popup overlay --
     if let Some(ref popup) = app.popup {
-        render_popup(frame, popup);
+        render_popup(frame, popup, regions);
     }
 }
 
@@ -339,7 +425,23 @@ fn build_status_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option
     }
 }
 
-fn render_popup(frame: &mut Frame, popup: &PopupKind) {
+fn compute_total_alcohol(app: &ProfitsApp, shared: &SharedState) -> u64 {
+    let mut total: u64 = 0;
+    for row in &app.rows {
+        let name = app::commod_name(shared.commodities, row.commod_id);
+        let stock = row.stock.parse::<u64>().unwrap_or(0);
+        let multiplier = match () {
+            _ if name.eq_ignore_ascii_case("swill") => 2,
+            _ if name.eq_ignore_ascii_case("grog") => 3,
+            _ if name.eq_ignore_ascii_case("fine rum") => 6,
+            _ => 0,
+        };
+        total += stock * multiplier;
+    }
+    total
+}
+
+fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickRegion>) {
     let area = frame.area();
 
     match popup {
@@ -391,6 +493,17 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 Span::styled(" Yes ", yes_style),
             ]);
             frame.render_widget(Paragraph::new(buttons).centered(), rows[3]);
+
+            // Register popup button regions (split button row in half)
+            let half = rows[3].width / 2;
+            regions.push(ClickRegion {
+                rect: Rect::new(rows[3].x, rows[3].y, half, 1),
+                target: ClickTarget::ProfitsPopupNo,
+            });
+            regions.push(ClickRegion {
+                rect: Rect::new(rows[3].x + half, rows[3].y, rows[3].width - half, 1),
+                target: ClickTarget::ProfitsPopupYes,
+            });
         }
         PopupKind::DeleteConfirm {
             row_idx: _,
@@ -442,6 +555,16 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 Span::styled(" Yes ", yes_style),
             ]);
             frame.render_widget(Paragraph::new(buttons).centered(), rows[2]);
+
+            let half = rows[2].width / 2;
+            regions.push(ClickRegion {
+                rect: Rect::new(rows[2].x, rows[2].y, half, 1),
+                target: ClickTarget::ProfitsPopupNo,
+            });
+            regions.push(ClickRegion {
+                rect: Rect::new(rows[2].x + half, rows[2].y, rows[2].width - half, 1),
+                target: ClickTarget::ProfitsPopupYes,
+            });
         }
         PopupKind::RestockWarning {
             missing,
@@ -514,7 +637,18 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
                 Span::raw("  "),
                 Span::styled(" Ocean-wide ", ocean_style),
             ]);
-            frame.render_widget(Paragraph::new(buttons).centered(), rows[rows.len() - 1]);
+            let btn_row = rows[rows.len() - 1];
+            frame.render_widget(Paragraph::new(buttons).centered(), btn_row);
+
+            let half = btn_row.width / 2;
+            regions.push(ClickRegion {
+                rect: Rect::new(btn_row.x, btn_row.y, half, 1),
+                target: ClickTarget::ProfitsPopupNo,
+            });
+            regions.push(ClickRegion {
+                rect: Rect::new(btn_row.x + half, btn_row.y, btn_row.width - half, 1),
+                target: ClickTarget::ProfitsPopupYes,
+            });
         }
         PopupKind::ProfitResult(result) => {
             let labels = [
@@ -579,6 +713,11 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind) {
             let ok_style = Style::default().bg(Color::White).fg(Color::Black).bold();
             let ok_btn = Line::from(Span::styled(" Ok ", ok_style));
             frame.render_widget(Paragraph::new(ok_btn).centered(), rows[8]);
+
+            regions.push(ClickRegion {
+                rect: rows[8],
+                target: ClickTarget::ProfitsPopupOk,
+            });
         }
     }
 }

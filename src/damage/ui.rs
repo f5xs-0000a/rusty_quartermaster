@@ -1,6 +1,7 @@
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
+use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::ships::SHIPS;
 use super::{
     BUTTON_LABELS, CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON,
@@ -9,7 +10,7 @@ use super::{
 
 const COL_GAP: u16 = 3;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
+pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp, focused: bool, regions: &mut Vec<ClickRegion>) {
     let max_ship_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0) as u16;
     let center_width = CENTER_LABELS
         .iter()
@@ -55,12 +56,14 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
     let rows = Layout::vertical(row_constraints).split(inner);
 
     let no_popup = app.popup.is_none();
+    let cells_active = focused && no_popup && !app.button_focused;
+    let buttons_active = focused && no_popup && app.button_focused;
 
     for i in 0..ROW_COUNT {
         if i == ROW_GAP {
             continue;
         } else if i == ROW_HEADON {
-            render_headon_row(frame, rows[i], app, max_ship_name, center_width, no_popup);
+            render_headon_row(frame, rows[i], app, max_ship_name, center_width, cells_active, regions);
         } else {
             render_standard_row(
                 frame,
@@ -69,7 +72,8 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
                 app,
                 max_ship_name,
                 center_width,
-                no_popup,
+                cells_active,
+                regions,
             );
         }
     }
@@ -93,16 +97,20 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
 
     for (i, label) in BUTTON_LABELS.iter().enumerate() {
         let btn_rect = Rect::new(button_inner.x, button_inner.y + i as u16, button_inner.width, 1);
-        let style = if no_popup && app.button_focused && app.button_index == i {
+        let style = if buttons_active && app.button_index == i {
             Style::default().bg(Color::White).fg(Color::Black)
         } else {
             Style::default()
         };
         frame.render_widget(Paragraph::new(*label).centered().style(style), btn_rect);
+        regions.push(ClickRegion {
+            rect: btn_rect,
+            target: ClickTarget::DamageButton(i),
+        });
     }
 
     // -- Hint --
-    if app.popup.is_none() {
+    if focused && app.popup.is_none() {
         let hint = if app.button_focused {
             Some("Press Enter to activate")
         } else {
@@ -129,7 +137,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp) {
 
     // -- Ship select popup --
     if let Some(ref popup) = app.popup {
-        render_ship_popup(frame, popup);
+        render_ship_popup(frame, popup, regions);
     }
 }
 
@@ -140,7 +148,8 @@ fn render_standard_row(
     app: &DamageApp,
     max_ship_name: u16,
     center_width: u16,
-    no_popup: bool,
+    cells_active: bool,
+    regions: &mut Vec<ClickRegion>,
 ) {
     let row_cols = Layout::horizontal([
         Constraint::Length(max_ship_name),
@@ -158,8 +167,8 @@ fn render_standard_row(
     );
 
     // Focus highlight (Damage row is never focused)
-    let left_focused = no_popup && app.focus_row == row && app.focus_side == Side::Left;
-    let right_focused = no_popup && app.focus_row == row && app.focus_side == Side::Right;
+    let left_focused = cells_active && app.focus_row == row && app.focus_side == Side::Left;
+    let right_focused = cells_active && app.focus_row == row && app.focus_side == Side::Right;
 
     let left_style = if left_focused {
         Style::default().bg(Color::White).fg(Color::Black)
@@ -185,19 +194,29 @@ fn render_standard_row(
                 .style(right_style),
             row_cols[4],
         );
+
+        // Ship name cells: click to open ship select popup
+        regions.push(ClickRegion {
+            rect: row_cols[0],
+            target: ClickTarget::DamageCell { row, side: Side::Left },
+        });
+        regions.push(ClickRegion {
+            rect: row_cols[4],
+            target: ClickTarget::DamageCell { row, side: Side::Right },
+        });
     } else if row < ROW_DAMAGE {
         let li = row - 1;
-        frame.render_widget(
-            Paragraph::new(app.left[li].to_string())
-                .centered()
-                .style(left_style),
-            row_cols[0],
+
+        // Render left side: [- ] [value] [ +]
+        render_value_with_buttons(
+            frame, row_cols[0], &app.left[li].to_string(), left_style,
+            row, Side::Left, regions,
         );
-        frame.render_widget(
-            Paragraph::new(app.right[li].to_string())
-                .centered()
-                .style(right_style),
-            row_cols[4],
+
+        // Render right side: [- ] [value] [ +]
+        render_value_with_buttons(
+            frame, row_cols[4], &app.right[li].to_string(), right_style,
+            row, Side::Right, regions,
         );
     } else {
         // Damage row: view-only, calculated, with colored bars
@@ -218,13 +237,59 @@ fn render_standard_row(
     }
 }
 
+const BTN_WIDTH: u16 = 3;
+
+fn render_value_with_buttons(
+    frame: &mut Frame,
+    area: Rect,
+    value: &str,
+    value_style: Style,
+    row: usize,
+    side: Side,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let sub_cols = Layout::horizontal([
+        Constraint::Length(BTN_WIDTH),
+        Constraint::Min(0),
+        Constraint::Length(BTN_WIDTH),
+    ])
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(" - ").centered().style(Style::default().fg(Color::DarkGray)),
+        sub_cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(value).centered().style(value_style),
+        sub_cols[1],
+    );
+    frame.render_widget(
+        Paragraph::new(" + ").centered().style(Style::default().fg(Color::DarkGray)),
+        sub_cols[2],
+    );
+
+    regions.push(ClickRegion {
+        rect: sub_cols[0],
+        target: ClickTarget::DamageDecrement { row, side },
+    });
+    regions.push(ClickRegion {
+        rect: sub_cols[1],
+        target: ClickTarget::DamageCell { row, side },
+    });
+    regions.push(ClickRegion {
+        rect: sub_cols[2],
+        target: ClickTarget::DamageIncrement { row, side },
+    });
+}
+
 fn render_headon_row(
     frame: &mut Frame,
     area: Rect,
     app: &DamageApp,
     max_ship_name: u16,
     center_width: u16,
-    no_popup: bool,
+    cells_active: bool,
+    regions: &mut Vec<ClickRegion>,
 ) {
     let merged_width = max_ship_name + COL_GAP + center_width;
 
@@ -245,19 +310,48 @@ fn render_headon_row(
         row_cols[0],
     );
 
-    // Value
-    let focused = no_popup && app.focus_row == ROW_HEADON;
+    // Value with +/- buttons
+    let focused = cells_active && app.focus_row == ROW_HEADON;
     let style = if focused {
         Style::default().bg(Color::White).fg(Color::Black)
     } else {
         Style::default()
     };
+
+    let sub_cols = Layout::horizontal([
+        Constraint::Length(BTN_WIDTH),
+        Constraint::Min(0),
+        Constraint::Length(BTN_WIDTH),
+    ])
+    .split(row_cols[2]);
+
+    frame.render_widget(
+        Paragraph::new(" - ").centered().style(Style::default().fg(Color::DarkGray)),
+        sub_cols[0],
+    );
     frame.render_widget(
         Paragraph::new(app.headon.to_string())
             .centered()
             .style(style),
-        row_cols[2],
+        sub_cols[1],
     );
+    frame.render_widget(
+        Paragraph::new(" + ").centered().style(Style::default().fg(Color::DarkGray)),
+        sub_cols[2],
+    );
+
+    regions.push(ClickRegion {
+        rect: sub_cols[0],
+        target: ClickTarget::DamageHeadonDecrement,
+    });
+    regions.push(ClickRegion {
+        rect: sub_cols[1],
+        target: ClickTarget::DamageHeadon,
+    });
+    regions.push(ClickRegion {
+        rect: sub_cols[2],
+        target: ClickTarget::DamageHeadonIncrement,
+    });
 }
 
 /// Paint a damage bar onto the buffer after the text has been rendered.
@@ -300,7 +394,11 @@ fn apply_damage_bar(
     }
 }
 
-fn render_ship_popup(frame: &mut Frame, popup: &super::ShipSelectPopup) {
+fn render_ship_popup(
+    frame: &mut Frame,
+    popup: &super::ShipSelectPopup,
+    regions: &mut Vec<ClickRegion>,
+) {
     let area = frame.area();
 
     let max_name_len = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
@@ -331,4 +429,15 @@ fn render_ship_popup(frame: &mut Frame, popup: &super::ShipSelectPopup) {
 
     let mut state = ListState::default().with_selected(Some(popup.selected));
     frame.render_stateful_widget(list, popup_area, &mut state);
+
+    // Register click regions for each ship item
+    let inner_y = popup_area.y + 1; // top border
+    let inner_x = popup_area.x + 1; // left border
+    let inner_w = popup_area.width.saturating_sub(2); // borders
+    for i in 0..SHIPS.len() {
+        regions.push(ClickRegion {
+            rect: Rect::new(inner_x, inner_y + i as u16, inner_w, 1),
+            target: ClickTarget::DamageShipItem(i),
+        });
+    }
 }

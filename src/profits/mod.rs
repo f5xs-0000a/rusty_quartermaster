@@ -653,24 +653,83 @@ impl ProfitsApp {
         InputResult::Consumed
     }
 
+    pub fn handle_button_activate(&mut self, shared: &SharedState) -> InputResult {
+        self.calc_error = None;
+        if self.rows.is_empty() {
+            self.calc_error = Some("Add commodities first".to_owned());
+        } else if !self.panel[0].value.trim().is_empty()
+            && app::suggest_island(self.panel[0].value.trim(), shared.available_islands)
+                .is_none()
+        {
+            self.calc_error = Some("Unknown restocking island".to_owned());
+        } else if shared.cached_offers.is_empty() {
+            self.fetch_purpose = FetchPurpose::Profits;
+            return InputResult::StartFetch(FetchPurpose::Profits);
+        } else {
+            self.popup = Some(PopupKind::ReQueryConfirm { yes_focused: false });
+            self.focus = Focus::Popup;
+        }
+        InputResult::Consumed
+    }
+
+    /// Handle a mouse click on a popup button. `yes_side` is true for
+    /// Yes / Ocean-wide (the right button), false for No / Change Island (left).
+    pub fn handle_popup_click(&mut self, yes_side: bool, shared: &SharedState) -> InputResult {
+        match self.popup {
+            Some(PopupKind::ReQueryConfirm { .. }) => {
+                if yes_side {
+                    self.popup = None;
+                    self.focus = Focus::Button;
+                    self.fetch_purpose = FetchPurpose::Profits;
+                    return InputResult::StartFetch(FetchPurpose::Profits);
+                }
+                self.calculate_or_warn(shared);
+            }
+            Some(PopupKind::DeleteConfirm { row_idx, .. }) => {
+                if yes_side {
+                    self.rows.remove(row_idx);
+                    self.popup = None;
+                    if self.rows.is_empty() {
+                        self.focus_input();
+                    } else {
+                        self.focus = Focus::Table;
+                        let new_sel = if row_idx < self.rows.len() {
+                            row_idx
+                        } else {
+                            self.rows.len() - 1
+                        };
+                        self.table_state.select(Some(new_sel));
+                        self.table_state.select_column(Some(FIRST_COL));
+                    }
+                    return InputResult::RebuildIslands;
+                }
+                self.popup = None;
+                self.focus = Focus::Table;
+            }
+            Some(PopupKind::RestockWarning { .. }) => {
+                if yes_side {
+                    self.panel[0].value.clear();
+                    self.panel[0].cursor = 0;
+                    let profit = self.calculate_profits(shared);
+                    self.popup = Some(PopupKind::ProfitResult(profit));
+                } else {
+                    self.popup = None;
+                    self.focus = Focus::Panel(0);
+                }
+            }
+            Some(PopupKind::ProfitResult(_)) => {
+                self.popup = None;
+                self.focus = Focus::Input;
+            }
+            None => {}
+        }
+        InputResult::Consumed
+    }
+
     fn handle_button_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
         match key.code {
             KeyCode::Enter => {
-                self.calc_error = None;
-                if self.rows.is_empty() {
-                    self.calc_error = Some("Add commodities first".to_owned());
-                } else if !self.panel[0].value.trim().is_empty()
-                    && app::suggest_island(self.panel[0].value.trim(), shared.available_islands)
-                        .is_none()
-                {
-                    self.calc_error = Some("Unknown restocking island".to_owned());
-                } else if shared.cached_offers.is_empty() {
-                    self.fetch_purpose = FetchPurpose::Profits;
-                    return InputResult::StartFetch(FetchPurpose::Profits);
-                } else {
-                    self.popup = Some(PopupKind::ReQueryConfirm { yes_focused: false });
-                    self.focus = Focus::Popup;
-                }
+                return self.handle_button_activate(shared);
             }
             KeyCode::Up => {
                 self.focus = Focus::Panel(PANEL_COUNT - 1);

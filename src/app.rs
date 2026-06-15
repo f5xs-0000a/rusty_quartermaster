@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyEvent};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
+use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
 use crate::profits::ProfitsApp;
 use crate::utils::text_similarity;
@@ -170,6 +171,8 @@ pub struct AppShell {
     // per-app state
     pub profits: ProfitsApp,
     pub damage: DamageApp,
+    // click regions rebuilt each render
+    click_regions: Vec<ClickRegion>,
 }
 
 impl AppShell {
@@ -183,6 +186,7 @@ impl AppShell {
             global_focus: GlobalFocus::Content,
             profits: ProfitsApp::new(),
             damage: DamageApp::new(),
+            click_regions: Vec::new(),
         }
     }
 
@@ -199,6 +203,8 @@ impl AppShell {
     // -- rendering --
 
     pub fn render(&mut self, frame: &mut Frame) {
+        self.click_regions.clear();
+
         let area = frame.area();
 
         let chunks = Layout::horizontal([
@@ -210,6 +216,7 @@ impl AppShell {
         self.render_sidebar(frame, chunks[0]);
 
         let content_area = chunks[1];
+        let content_focused = self.global_focus == GlobalFocus::Content;
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
                 let shared = SharedState {
@@ -218,15 +225,28 @@ impl AppShell {
                     available_islands: &self.available_islands,
                     loading: self.loading,
                 };
-                crate::profits::ui::render(frame, content_area, &mut self.profits, &shared);
+                crate::profits::ui::render(
+                    frame,
+                    content_area,
+                    &mut self.profits,
+                    &shared,
+                    content_focused,
+                    &mut self.click_regions,
+                );
             }
             AppId::Damage => {
-                crate::damage::ui::render(frame, content_area, &mut self.damage);
+                crate::damage::ui::render(
+                    frame,
+                    content_area,
+                    &mut self.damage,
+                    content_focused,
+                    &mut self.click_regions,
+                );
             }
         }
     }
 
-    fn render_sidebar(&self, frame: &mut Frame, area: Rect) {
+    fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.global_focus == GlobalFocus::Sidebar;
 
         let items: Vec<ListItem> = APP_LIST
@@ -251,6 +271,19 @@ impl AppShell {
 
         let mut state = ListState::default().with_selected(Some(self.sidebar_index));
         frame.render_stateful_widget(list, area, &mut state);
+
+        // Register sidebar item click regions
+        // inner area: 1 border + 1 padding on each side
+        let inner_x = area.x + 2;
+        let inner_w = area.width.saturating_sub(4);
+        let inner_y = area.y + 1; // top border
+        for i in 0..APP_LIST.len() {
+            let item_rect = Rect::new(inner_x, inner_y + i as u16, inner_w, 1);
+            self.click_regions.push(ClickRegion {
+                rect: item_rect,
+                target: ClickTarget::SidebarItem(i),
+            });
+        }
     }
 
     // -- key handling --
@@ -313,6 +346,232 @@ impl AppShell {
             _ => {}
         }
         false
+    }
+
+    // -- mouse handling --
+
+    pub fn handle_mouse(
+        &mut self,
+        mouse: MouseEvent,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+    ) {
+        match mouse.kind {
+            MouseEventKind::Down(MouseButton::Left) => {
+                if let Some(target) = clickmap::hit_test(&self.click_regions, mouse.column, mouse.row) {
+                    self.handle_click(target, tx);
+                }
+            }
+            MouseEventKind::ScrollUp => {
+                self.handle_scroll(-1);
+            }
+            MouseEventKind::ScrollDown => {
+                self.handle_scroll(1);
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_click(
+        &mut self,
+        target: ClickTarget,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+    ) {
+        match target {
+            ClickTarget::SidebarItem(i) => {
+                if i < APP_LIST.len() {
+                    self.sidebar_index = i;
+                    self.global_focus = GlobalFocus::Content;
+                }
+            }
+            ClickTarget::ProfitsInput => {
+                self.global_focus = GlobalFocus::Content;
+                self.profits.focus_input();
+            }
+            ClickTarget::ProfitsTableCell { row, col } => {
+                self.global_focus = GlobalFocus::Content;
+                if col == 0 {
+                    // Clicking the item name column: open delete confirm
+                    if row < self.profits.rows.len() {
+                        let name = commod_name(
+                            &self.commodities,
+                            self.profits.rows[row].commod_id,
+                        )
+                        .to_owned();
+                        self.profits.popup = Some(crate::profits::PopupKind::DeleteConfirm {
+                            row_idx: row,
+                            name,
+                            yes_focused: false,
+                        });
+                        self.profits.focus = crate::profits::Focus::Popup;
+                    }
+                } else {
+                    self.profits.focus = crate::profits::Focus::Table;
+                    self.profits.table_state.select(Some(row));
+                    self.profits.table_state.select_column(Some(col));
+                }
+            }
+            ClickTarget::ProfitsPanel(i) => {
+                self.global_focus = GlobalFocus::Content;
+                self.profits.focus_panel(i);
+            }
+            ClickTarget::ProfitsButton => {
+                self.global_focus = GlobalFocus::Content;
+                self.profits.focus = crate::profits::Focus::Button;
+                let shared = SharedState {
+                    commodities: &self.commodities,
+                    cached_offers: &self.cached_offers,
+                    available_islands: &self.available_islands,
+                    loading: self.loading,
+                };
+                let result = self.profits.handle_button_activate(&shared);
+                self.process_input_result(result, tx);
+            }
+            ClickTarget::ProfitsPopupNo => {
+                let shared = SharedState {
+                    commodities: &self.commodities,
+                    cached_offers: &self.cached_offers,
+                    available_islands: &self.available_islands,
+                    loading: self.loading,
+                };
+                let result = self.profits.handle_popup_click(false, &shared);
+                self.process_input_result(result, tx);
+            }
+            ClickTarget::ProfitsPopupYes => {
+                let shared = SharedState {
+                    commodities: &self.commodities,
+                    cached_offers: &self.cached_offers,
+                    available_islands: &self.available_islands,
+                    loading: self.loading,
+                };
+                let result = self.profits.handle_popup_click(true, &shared);
+                self.process_input_result(result, tx);
+            }
+            ClickTarget::ProfitsPopupOk => {
+                self.profits.popup = None;
+                self.profits.focus = crate::profits::Focus::Input;
+            }
+            ClickTarget::DamageCell { row, side } => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.popup = None;
+                self.damage.button_focused = false;
+                if row == crate::damage::ROW_SHIP {
+                    let current = match side {
+                        crate::damage::Side::Left => self.damage.left_ship,
+                        crate::damage::Side::Right => self.damage.right_ship,
+                    };
+                    self.damage.popup = Some(crate::damage::ShipSelectPopup {
+                        side,
+                        selected: current,
+                    });
+                } else {
+                    self.damage.focus_row = row;
+                    self.damage.focus_side = side;
+                }
+            }
+            ClickTarget::DamageIncrement { row, side } => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.popup = None;
+                self.damage.button_focused = false;
+                self.damage.focus_row = row;
+                self.damage.focus_side = side;
+                self.damage.increment();
+            }
+            ClickTarget::DamageDecrement { row, side } => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.popup = None;
+                self.damage.button_focused = false;
+                self.damage.focus_row = row;
+                self.damage.focus_side = side;
+                self.damage.decrement();
+            }
+            ClickTarget::DamageHeadon => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.popup = None;
+                self.damage.button_focused = false;
+                self.damage.focus_row = crate::damage::ROW_HEADON;
+            }
+            ClickTarget::DamageHeadonIncrement => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.popup = None;
+                self.damage.button_focused = false;
+                self.damage.focus_row = crate::damage::ROW_HEADON;
+                self.damage.increment();
+            }
+            ClickTarget::DamageHeadonDecrement => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.popup = None;
+                self.damage.button_focused = false;
+                self.damage.focus_row = crate::damage::ROW_HEADON;
+                self.damage.decrement();
+            }
+            ClickTarget::DamageButton(i) => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.button_focused = true;
+                self.damage.button_index = i;
+                self.damage.activate_button();
+            }
+            ClickTarget::DamageShipItem(i) => {
+                if let Some(ref popup) = self.damage.popup {
+                    let side = popup.side;
+                    match side {
+                        crate::damage::Side::Left => self.damage.left_ship = i,
+                        crate::damage::Side::Right => self.damage.right_ship = i,
+                    }
+                    self.damage.popup = None;
+                }
+            }
+        }
+    }
+
+    fn handle_scroll(&mut self, delta: i32) {
+        match APP_LIST[self.sidebar_index] {
+            AppId::Profits => {
+                if self.profits.focus == crate::profits::Focus::Table {
+                    if delta < 0 {
+                        self.profits.table_up();
+                    } else {
+                        if let Some(row) = self.profits.table_state.selected() {
+                            if row + 1 < self.profits.rows.len() {
+                                self.profits.table_state.select(Some(row + 1));
+                            }
+                        }
+                    }
+                }
+            }
+            AppId::Damage => {
+                if let Some(ref mut popup) = self.damage.popup {
+                    if delta < 0 {
+                        if 0 < popup.selected {
+                            popup.selected -= 1;
+                        }
+                    } else {
+                        if popup.selected + 1 < crate::ships::SHIPS.len() {
+                            popup.selected += 1;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn process_input_result(
+        &mut self,
+        result: InputResult,
+        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+    ) {
+        match result {
+            InputResult::Consumed => {}
+            InputResult::Exit => {
+                self.global_focus = GlobalFocus::Sidebar;
+            }
+            InputResult::StartFetch(purpose) => {
+                self.loading = true;
+                self.spawn_fetch(purpose, tx);
+            }
+            InputResult::RebuildIslands => {
+                self.rebuild_island_list();
+            }
+        }
     }
 
     // -- fetch handling --
