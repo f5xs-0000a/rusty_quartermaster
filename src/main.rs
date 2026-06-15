@@ -27,13 +27,25 @@ use app::AppShell;
 // ---------------------------------------------------------------------------
 
 #[derive(Parser)]
+#[command(
+    about = "A terminal toolkit for Yohoho! Puzzle Pirates players.",
+    long_about = "A terminal toolkit for Yohoho! Puzzle Pirates players.\n\n\
+        Market prices are fetched from the Market API. Use --market-cache to \
+        avoid re-fetching every run.",
+)]
 struct Args {
-    /// Path to save/load inventory JSON
-    #[arg(long)]
+    /// Path to save/load inventory JSON.
+    ///
+    /// Commodity quantities, panel settings, and restocking island are
+    /// loaded on startup and saved on exit.
+    #[arg(long, value_name = "PATH")]
     inventory: Option<String>,
 
-    /// Path to save/load market cache JSON
-    #[arg(long)]
+    /// Path to save/load market cache JSON.
+    ///
+    /// Caches commodity list and pricing data from Market so
+    /// subsequent runs don't need an internet connection.
+    #[arg(long, value_name = "PATH")]
     market_cache: Option<String>,
 }
 
