@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
+use crate::chatlog::{self, GameState};
 use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
 use crate::profits::ProfitsApp;
@@ -19,6 +20,7 @@ use crate::utils::text_similarity;
 pub enum AppId {
     Profits,
     Damage,
+    Chatlog,
 }
 
 impl AppId {
@@ -26,11 +28,12 @@ impl AppId {
         match self {
             AppId::Profits => "Profits",
             AppId::Damage => "Damage",
+            AppId::Chatlog => "Chat Log",
         }
     }
 }
 
-pub const APP_LIST: &[AppId] = &[AppId::Profits, AppId::Damage];
+pub const APP_LIST: &[AppId] = &[AppId::Profits, AppId::Damage, AppId::Chatlog];
 
 const SIDEBAR_WIDTH: u16 = 14;
 
@@ -171,6 +174,7 @@ pub struct AppShell {
     // per-app state
     pub profits: ProfitsApp,
     pub damage: DamageApp,
+    pub chatlog: GameState,
     // click regions rebuilt each render
     click_regions: Vec<ClickRegion>,
 }
@@ -186,6 +190,7 @@ impl AppShell {
             global_focus: GlobalFocus::Content,
             profits: ProfitsApp::new(),
             damage: DamageApp::new(),
+            chatlog: GameState::new(),
             click_regions: Vec::new(),
         }
     }
@@ -242,6 +247,9 @@ impl AppShell {
                     content_focused,
                     &mut self.click_regions,
                 );
+            }
+            AppId::Chatlog => {
+                chatlog::render(frame, content_area, &self.chatlog, content_focused);
             }
         }
     }
@@ -309,6 +317,13 @@ impl AppShell {
                 self.profits.handle_key(key, &shared)
             }
             AppId::Damage => self.damage.handle_key(key),
+            AppId::Chatlog => {
+                if key.code == KeyCode::Esc {
+                    InputResult::Exit
+                } else {
+                    InputResult::Consumed
+                }
+            }
         };
 
         match result {
@@ -551,6 +566,7 @@ impl AppShell {
                     }
                 }
             }
+            AppId::Chatlog => {}
         }
     }
 

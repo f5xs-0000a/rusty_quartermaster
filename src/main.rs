@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::io;
+use std::sync::Arc;
 use std::time::Duration;
 
 use clap::Parser;
@@ -13,6 +14,7 @@ use ratatui::prelude::*;
 mod aliases;
 mod api;
 mod app;
+mod chatlog;
 mod clickmap;
 mod damage;
 mod pirate;
@@ -48,6 +50,17 @@ struct Args {
     /// subsequent runs don't need an internet connection.
     #[arg(long, value_name = "PATH")]
     market_cache: Option<String>,
+
+    /// Path to the Puzzle Pirates client chat log to monitor.
+    ///
+    /// When set, the existing log is read in full, then tailed live for new
+    /// lines. When omitted, no chat-log monitoring happens.
+    #[arg(long, value_name = "PATH")]
+    chat_log: Option<String>,
+
+    /// Your pirate name, used to attribute planks to you in the chat log.
+    #[arg(long, value_name = "NAME")]
+    user: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -132,6 +145,16 @@ async fn main() -> io::Result<()> {
 
     shell.rebuild_island_list();
 
+    // -- Chat log: read existing content, then tail live --
+    let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    shell.chatlog.player_name = args.user.as_deref().map(Arc::from);
+    if let Some(ref path) = args.chat_log {
+        shell.chatlog.attached = true;
+        let data = std::fs::read(path).unwrap_or_default();
+        let offset = shell.chatlog.process_existing(&data);
+        chatlog::spawn_tailer(path.clone(), offset, chat_tx);
+    }
+
     // -- Terminal setup --
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -146,6 +169,10 @@ async fn main() -> io::Result<()> {
 
         if let Ok(result) = rx.try_recv() {
             shell.handle_fetch_result(result);
+        }
+
+        while let Ok(line) = chat_rx.try_recv() {
+            shell.chatlog.process_line(&line);
         }
 
         if !event::poll(Duration::from_millis(100))? {
