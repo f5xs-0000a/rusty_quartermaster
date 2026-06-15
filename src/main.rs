@@ -17,6 +17,7 @@ mod app;
 mod chatlog;
 mod clickmap;
 mod damage;
+mod jobbers;
 mod pirate;
 mod profits;
 mod ships;
@@ -155,6 +156,12 @@ async fn main() -> io::Result<()> {
         chatlog::spawn_tailer(path.clone(), offset, chat_tx);
     }
 
+    // -- Background pirate-stat fetching (yoweb), deduped + throttled --
+    const MAX_PIRATE_FETCHES: usize = 4;
+    let (pirate_tx, mut pirate_rx) =
+        tokio::sync::mpsc::unbounded_channel::<(String, Result<pirate::Pirate, String>)>();
+    let pirate_client = reqwest::Client::new();
+
     // -- Terminal setup --
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
@@ -173,6 +180,44 @@ async fn main() -> io::Result<()> {
 
         while let Ok(line) = chat_rx.try_recv() {
             shell.chatlog.process_line(&line);
+        }
+
+        // Absorb completed pirate fetches.
+        while let Ok((key, result)) = pirate_rx.try_recv() {
+            shell.pirate_cache.in_flight = shell.pirate_cache.in_flight.saturating_sub(1);
+            if let Ok(pirate) = result {
+                shell.pirate_cache.fetched.insert(key, pirate);
+            }
+            // On error we keep `key` in `requested` so we don't retry-storm.
+        }
+
+        // Queue fetches for any newly-seen pirates (plus ourselves), throttled.
+        if args.chat_log.is_some() {
+            let mut names = shell.chatlog.all_pirate_names();
+            if let Some(ref me) = shell.chatlog.player_name {
+                names.insert(me.to_string());
+            }
+            for name in names {
+                if MAX_PIRATE_FETCHES <= shell.pirate_cache.in_flight {
+                    break;
+                }
+                let Ok(norm) = pirate::normalize_name(&name) else {
+                    continue;
+                };
+                if shell.pirate_cache.fetched.contains_key(&norm)
+                    || shell.pirate_cache.requested.contains(&norm)
+                {
+                    continue;
+                }
+                shell.pirate_cache.requested.insert(norm.clone());
+                shell.pirate_cache.in_flight += 1;
+                let tx = pirate_tx.clone();
+                let client = pirate_client.clone();
+                tokio::spawn(async move {
+                    let result = pirate::fetch_pirate(&client, &norm).await;
+                    let _ = tx.send((norm, result));
+                });
+            }
         }
 
         if !event::poll(Duration::from_millis(100))? {

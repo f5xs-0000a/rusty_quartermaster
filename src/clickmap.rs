@@ -20,6 +20,11 @@ pub enum ClickTarget {
     DamageHeadonDecrement,
     DamageButton(usize),
     DamageShipItem(usize),
+    JobberVessel(usize),
+    JobberUnpoison,
+    JobberAboardList,
+    JobberGreedyList,
+    JobberPlankedList,
 }
 
 #[derive(Clone)]

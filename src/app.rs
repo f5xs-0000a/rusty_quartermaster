@@ -1,14 +1,15 @@
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
+use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding, Paragraph};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
-use crate::chatlog::{self, GameState};
+use crate::chatlog::GameState;
 use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
+use crate::jobbers::{self, JobberFocus, JobbersUi, PirateCache};
 use crate::profits::ProfitsApp;
 use crate::utils::text_similarity;
 
@@ -28,7 +29,7 @@ impl AppId {
         match self {
             AppId::Profits => "Profits",
             AppId::Damage => "Damage",
-            AppId::Chatlog => "Chat Log",
+            AppId::Chatlog => "Jobbers",
         }
     }
 }
@@ -175,6 +176,8 @@ pub struct AppShell {
     pub profits: ProfitsApp,
     pub damage: DamageApp,
     pub chatlog: GameState,
+    pub pirate_cache: PirateCache,
+    pub jobbers_ui: JobbersUi,
     // click regions rebuilt each render
     click_regions: Vec<ClickRegion>,
 }
@@ -191,6 +194,8 @@ impl AppShell {
             profits: ProfitsApp::new(),
             damage: DamageApp::new(),
             chatlog: GameState::new(),
+            pirate_cache: PirateCache::new(),
+            jobbers_ui: JobbersUi::default(),
             click_regions: Vec::new(),
         }
     }
@@ -212,6 +217,14 @@ impl AppShell {
 
         let area = frame.area();
 
+        // Layout tree: [sidebar | right], where right = [content | tooltip].
+        // The tooltip lives under the content (not the sidebar) and its height
+        // is dynamic — zero when there's nothing to say.
+        let tooltip_lines: Vec<&str> = match APP_LIST[self.sidebar_index] {
+            AppId::Chatlog => jobbers::tooltip(&self.chatlog, &self.jobbers_ui),
+            _ => Vec::new(),
+        };
+
         let chunks = Layout::horizontal([
             Constraint::Length(SIDEBAR_WIDTH),
             Constraint::Min(0),
@@ -220,7 +233,20 @@ impl AppShell {
 
         self.render_sidebar(frame, chunks[0]);
 
-        let content_area = chunks[1];
+        let right = Layout::vertical([
+            Constraint::Min(0),
+            Constraint::Length(tooltip_lines.len() as u16),
+        ])
+        .split(chunks[1]);
+        if !tooltip_lines.is_empty() {
+            let text: Vec<Line> = tooltip_lines.iter().map(|l| Line::from(*l)).collect();
+            frame.render_widget(
+                Paragraph::new(text).style(Style::default().fg(Color::Yellow)),
+                right[1],
+            );
+        }
+
+        let content_area = right[0];
         let content_focused = self.global_focus == GlobalFocus::Content;
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
@@ -249,7 +275,15 @@ impl AppShell {
                 );
             }
             AppId::Chatlog => {
-                chatlog::render(frame, content_area, &self.chatlog, content_focused);
+                jobbers::render(
+                    frame,
+                    content_area,
+                    &self.chatlog,
+                    &self.pirate_cache,
+                    &mut self.jobbers_ui,
+                    content_focused,
+                    &mut self.click_regions,
+                );
             }
         }
     }
@@ -317,13 +351,7 @@ impl AppShell {
                 self.profits.handle_key(key, &shared)
             }
             AppId::Damage => self.damage.handle_key(key),
-            AppId::Chatlog => {
-                if key.code == KeyCode::Esc {
-                    InputResult::Exit
-                } else {
-                    InputResult::Consumed
-                }
-            }
+            AppId::Chatlog => self.handle_jobbers_key(key),
         };
 
         match result {
@@ -357,10 +385,128 @@ impl AppShell {
             }
             KeyCode::Enter | KeyCode::Right => {
                 self.global_focus = GlobalFocus::Content;
+                // Entering the Jobbers page lands on the Vessels list.
+                self.jobbers_ui.focus = JobberFocus::Vessels;
             }
             _ => {}
         }
         false
+    }
+
+    // -- jobbers (chat log) handling --
+
+    fn handle_jobbers_key(&mut self, key: KeyEvent) -> InputResult {
+        use JobberFocus::*;
+
+        // Shift+Up/Down scrolls the focused list (rather than navigating).
+        if key.modifiers.contains(KeyModifiers::SHIFT)
+            && matches!(key.code, KeyCode::Up | KeyCode::Down)
+        {
+            let delta = if key.code == KeyCode::Up { -1 } else { 1 };
+            self.jobbers_scroll_focused(delta);
+            return InputResult::Consumed;
+        }
+
+        match key.code {
+            KeyCode::Esc => return InputResult::Exit,
+            // Left from the left column exits to the Apps sidebar; from the
+            // lists it steps back to the vessel column.
+            KeyCode::Left => match self.jobbers_ui.focus {
+                Vessels | Unpoison => return InputResult::Exit,
+                Aboard | Greedy | Planked => self.jobbers_ui.focus = Vessels,
+            },
+            KeyCode::Right => match self.jobbers_ui.focus {
+                Vessels | Unpoison => self.jobbers_ui.focus = Aboard,
+                _ => {}
+            },
+            KeyCode::Up => match self.jobbers_ui.focus {
+                Vessels => self.jobbers_select_delta(-1),
+                Unpoison => self.jobbers_ui.focus = Vessels,
+                Aboard => {}
+                Greedy => self.jobbers_ui.focus = Aboard,
+                Planked => self.jobbers_ui.focus = Greedy,
+            },
+            KeyCode::Down => match self.jobbers_ui.focus {
+                Vessels => {
+                    // Past the last vessel, drop onto Unpoison — only if poisoned.
+                    if self.jobbers_at_last_vessel() && self.selected_poisoned() {
+                        self.jobbers_ui.focus = Unpoison;
+                    } else {
+                        self.jobbers_select_delta(1);
+                    }
+                }
+                Unpoison => {}
+                Aboard => self.jobbers_ui.focus = Greedy,
+                Greedy => self.jobbers_ui.focus = Planked,
+                Planked => {}
+            },
+            KeyCode::Enter => {
+                if self.jobbers_ui.focus == Unpoison {
+                    self.jobbers_unpoison();
+                    self.jobbers_ui.focus = Vessels;
+                }
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Scroll the currently-focused list by `delta` rows.
+    fn jobbers_scroll_focused(&mut self, delta: i32) {
+        let offset = match self.jobbers_ui.focus {
+            JobberFocus::Aboard => &mut self.jobbers_ui.aboard_offset,
+            JobberFocus::Greedy => &mut self.jobbers_ui.greedy_offset,
+            JobberFocus::Planked => &mut self.jobbers_ui.planked_offset,
+            _ => return,
+        };
+        *offset = if delta < 0 {
+            offset.saturating_sub(1)
+        } else {
+            offset.saturating_add(1)
+        };
+    }
+
+    /// Move the vessel selection up/down the latest-first list.
+    fn jobbers_select_delta(&mut self, delta: i32) {
+        let ordered = self.chatlog.vessels_by_recency();
+        if ordered.is_empty() {
+            return;
+        }
+        let cur = self
+            .jobbers_ui
+            .selected
+            .as_ref()
+            .and_then(|s| ordered.iter().position(|k| k == s))
+            .unwrap_or(0) as i32;
+        let next = (cur + delta).clamp(0, ordered.len() as i32 - 1) as usize;
+        self.jobbers_ui.selected = Some(ordered[next].clone());
+    }
+
+    /// Whether the selected vessel is the last (bottom) one in the list.
+    fn jobbers_at_last_vessel(&self) -> bool {
+        let ordered = self.chatlog.vessels_by_recency();
+        match (&self.jobbers_ui.selected, ordered.last()) {
+            (Some(sel), Some(last)) => sel == last,
+            _ => false,
+        }
+    }
+
+    /// Whether the selected vessel is currently poisoned.
+    fn selected_poisoned(&self) -> bool {
+        self.jobbers_ui
+            .selected
+            .as_ref()
+            .and_then(|k| self.chatlog.vessels.get(k))
+            .is_some_and(|v| v.poisoned)
+    }
+
+    /// Clear the poisoned flag on the selected vessel.
+    fn jobbers_unpoison(&mut self) {
+        if let Some(key) = self.jobbers_ui.selected.clone() {
+            if let Some(v) = self.chatlog.vessels.get_mut(&key) {
+                v.poisoned = false;
+            }
+        }
     }
 
     // -- mouse handling --
@@ -377,10 +523,10 @@ impl AppShell {
                 }
             }
             MouseEventKind::ScrollUp => {
-                self.handle_scroll(-1);
+                self.handle_scroll(-1, mouse.column, mouse.row);
             }
             MouseEventKind::ScrollDown => {
-                self.handle_scroll(1);
+                self.handle_scroll(1, mouse.column, mouse.row);
             }
             _ => {}
         }
@@ -396,6 +542,7 @@ impl AppShell {
                 if i < APP_LIST.len() {
                     self.sidebar_index = i;
                     self.global_focus = GlobalFocus::Content;
+                    self.jobbers_ui.focus = JobberFocus::Vessels;
                 }
             }
             ClickTarget::ProfitsInput => {
@@ -535,10 +682,38 @@ impl AppShell {
                     self.damage.popup = None;
                 }
             }
+            ClickTarget::JobberVessel(i) => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Vessels;
+                let ordered = self.chatlog.vessels_by_recency();
+                if let Some(key) = ordered.get(i) {
+                    self.jobbers_ui.selected = Some(key.clone());
+                }
+            }
+            ClickTarget::JobberUnpoison => {
+                self.global_focus = GlobalFocus::Content;
+                // Nothing to unpoison on a clean vessel.
+                if self.selected_poisoned() {
+                    self.jobbers_unpoison();
+                }
+                self.jobbers_ui.focus = JobberFocus::Vessels;
+            }
+            ClickTarget::JobberAboardList => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Aboard;
+            }
+            ClickTarget::JobberGreedyList => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Greedy;
+            }
+            ClickTarget::JobberPlankedList => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Planked;
+            }
         }
     }
 
-    fn handle_scroll(&mut self, delta: i32) {
+    fn handle_scroll(&mut self, delta: i32, col: u16, row: u16) {
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
                 if self.profits.focus == crate::profits::Focus::Table {
@@ -566,7 +741,21 @@ impl AppShell {
                     }
                 }
             }
-            AppId::Chatlog => {}
+            AppId::Chatlog => {
+                // Scroll whichever list the cursor is hovering.
+                let target = clickmap::hit_test(&self.click_regions, col, row);
+                let offset = match target {
+                    Some(ClickTarget::JobberAboardList) => &mut self.jobbers_ui.aboard_offset,
+                    Some(ClickTarget::JobberGreedyList) => &mut self.jobbers_ui.greedy_offset,
+                    Some(ClickTarget::JobberPlankedList) => &mut self.jobbers_ui.planked_offset,
+                    _ => return,
+                };
+                if delta < 0 {
+                    *offset = offset.saturating_sub(1);
+                } else {
+                    *offset = offset.saturating_add(1);
+                }
+            }
         }
     }
 
