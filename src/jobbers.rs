@@ -18,7 +18,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding
 
 use crate::chatlog::GameState;
 use crate::clickmap::{ClickRegion, ClickTarget};
-use crate::pirate::{self, Experience, Pirate, Skill, Standing};
+use crate::pirate::{self, CachedPirate, Experience, Pirate, Skill, Standing};
 use crate::ships::{Ship, SHIPS};
 
 const TOP_N: usize = 4;
@@ -50,8 +50,9 @@ const SKILL_COLUMNS: &[(Skill, &str)] = &[
 /// so the background fetcher never requests the same pirate twice.
 #[derive(Default)]
 pub struct PirateCache {
-    /// Successfully fetched pirates, keyed by normalized name.
-    pub fetched: HashMap<String, Pirate>,
+    /// Successfully fetched pirates, keyed by normalized name. Each entry
+    /// carries fetch timestamps (see [`CachedPirate`]).
+    pub fetched: HashMap<String, CachedPirate>,
     /// Names already queued/in-flight/done — dedups the fetch worklist.
     pub requested: HashSet<String>,
     /// Fetches currently in flight, for throttling.
@@ -63,8 +64,13 @@ impl PirateCache {
         Self::default()
     }
 
-    /// Look up a pirate by (un-normalized) name.
+    /// Look up a pirate's stats by (un-normalized) name.
     pub fn get(&self, name: &str) -> Option<&Pirate> {
+        self.get_cached(name).map(|c| &c.pirate)
+    }
+
+    /// Look up a cached pirate, including its fetch timestamps.
+    pub fn get_cached(&self, name: &str) -> Option<&CachedPirate> {
         pirate::normalize_name(name)
             .ok()
             .and_then(|n| self.fetched.get(&n))

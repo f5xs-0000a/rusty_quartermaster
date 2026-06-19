@@ -11,7 +11,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::api::{CachedOffers, SavedCommodity};
-use crate::pirate::Pirate;
+use crate::pirate::CachedPirate;
 use crate::profits::persistence::SavedInventory;
 
 /// Per-ocean cached data. Prices (`market`) and the playerbase are both
@@ -22,9 +22,9 @@ pub struct OceanCache {
     #[serde(default)]
     pub market: HashMap<String, CachedOffers>,
     /// Yoweb pirate stats keyed by normalized name; includes our own pirate so
-    /// we don't re-query it next run.
+    /// we don't re-query it next run. Each entry carries fetch timestamps.
     #[serde(default)]
-    pub players: HashMap<String, Pirate>,
+    pub players: HashMap<String, CachedPirate>,
 }
 
 /// Everything we persist between runs, in a single JSON file.

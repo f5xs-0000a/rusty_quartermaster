@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::fmt;
 use std::str::FromStr;
 
+use chrono::{DateTime, Utc};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
@@ -292,6 +293,19 @@ impl Pirate {
     }
 }
 
+/// A cached pirate plus when each part was last fetched from yoweb. Basic info
+/// (the pirate page: crew, flag, skills, reputation) and the trophy list live on
+/// separate yoweb pages, so they age independently and carry separate
+/// timestamps — letting callers decide how stale each may be before refetching.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CachedPirate {
+    pub pirate: Pirate,
+    /// When the basic pirate page was last fetched.
+    pub basic_fetched_at: DateTime<Utc>,
+    /// When the trophy list was last fetched.
+    pub trophies_fetched_at: DateTime<Utc>,
+}
+
 // ---------------------------------------------------------------------------
 // Name normalization
 // ---------------------------------------------------------------------------
@@ -389,7 +403,7 @@ pub async fn fetch_pirate(
     client: &reqwest::Client,
     name: &str,
     ocean: Ocean,
-) -> Result<Pirate, String> {
+) -> Result<CachedPirate, String> {
     let normalized = normalize_name(name)?;
     let encoded = url_encode_name(&normalized);
     let yoweb_base = ocean.yoweb_base();
@@ -402,6 +416,8 @@ pub async fn fetch_pirate(
             .text()
             .await
             .map_err(|e| format!("failed to read pirate page: {e}"))?;
+    let mut pirate = parse_pirate_page(&pirate_html);
+    let basic_fetched_at = Utc::now();
 
     let trophy_url = format!("{yoweb_base}/trophy/?pirate={encoded}&classic=$classic");
     let trophy_html =
@@ -411,10 +427,14 @@ pub async fn fetch_pirate(
             .text()
             .await
             .map_err(|e| format!("failed to read trophy page: {e}"))?;
-
-    let mut pirate = parse_pirate_page(&pirate_html);
     pirate.trophies = parse_trophy_page(&trophy_html);
-    Ok(pirate)
+    let trophies_fetched_at = Utc::now();
+
+    Ok(CachedPirate {
+        pirate,
+        basic_fetched_at,
+        trophies_fetched_at,
+    })
 }
 
 /// Check whether a pirate exists on `ocean` by fetching its yoweb page and

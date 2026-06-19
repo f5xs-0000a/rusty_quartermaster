@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::ocean::Ocean;
@@ -64,7 +65,8 @@ impl From<RawOffer> for Offer {
 #[derive(Serialize, Deserialize)]
 pub struct CachedOffers {
     pub offers: Vec<Offer>,
-    pub fetched_at: u64,
+    /// When these offers were last fetched from Market.
+    pub fetched_at: DateTime<Utc>,
 }
 
 // ---------------------------------------------------------------------------
@@ -110,18 +112,13 @@ pub async fn fetch_offers_for(
             .await
             .map_err(|e| format!("Fetch error: {}", e))?;
 
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .unwrap_or_default()
-            .as_secs();
-
         let data: BuySellResponse = resp
             .json()
             .await
             .map_err(|e| format!("Parse error: {}", e))?;
 
         let offers = data.offers.into_iter().map(Offer::from).collect();
-        map.insert(name.clone(), CachedOffers { offers, fetched_at: now });
+        map.insert(name.clone(), CachedOffers { offers, fetched_at: Utc::now() });
     }
     Ok(map)
 }

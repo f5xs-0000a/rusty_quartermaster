@@ -83,11 +83,20 @@ fn parse_ocean(s: &str) -> Result<Ocean, String> {
 async fn main() -> io::Result<()> {
     let args = Args::parse();
 
+    // -- Load the unified cache (inventory + commodities global; market +
+    //    players per-ocean). Loaded before the setup popup so the popup can
+    //    confirm an already-cached pirate without a yoweb round-trip. --
+    let SavedCache {
+        inventory: saved_inventory,
+        commodities: saved_commodities,
+        mut oceans,
+    } = args.cache.as_deref().map(cache::load).unwrap_or_default();
+
     // -- Resolve ocean + pirate name (interactive popup if either is missing) --
     let http = reqwest::Client::new();
     let (ocean, user): (Option<Ocean>, Option<String>) =
         if args.ocean.is_none() || args.user.is_none() {
-            startup::prompt(&http, args.ocean, args.user.clone()).await?
+            startup::prompt(&http, args.ocean, args.user.clone(), &oceans).await?
         } else {
             (args.ocean, args.user.clone())
         };
@@ -104,14 +113,6 @@ async fn main() -> io::Result<()> {
     if user.is_none() {
         eprintln!("warning: no pirate name set — Jobbers pirate-stat lookups are limited.");
     }
-
-    // -- Load the unified cache (inventory + commodities global; market +
-    //    players per-ocean) --
-    let SavedCache {
-        inventory: saved_inventory,
-        commodities: saved_commodities,
-        mut oceans,
-    } = args.cache.as_deref().map(cache::load).unwrap_or_default();
 
     // The selected ocean's bucket. Other oceans' data stays in `oceans` and is
     // written back untouched on save.
@@ -211,7 +212,7 @@ async fn main() -> io::Result<()> {
     // -- Background pirate-stat fetching (yoweb), deduped + throttled --
     const MAX_PIRATE_FETCHES: usize = 4;
     let (pirate_tx, mut pirate_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, Result<pirate::Pirate, String>)>();
+        tokio::sync::mpsc::unbounded_channel::<(String, Result<pirate::CachedPirate, String>)>();
     let pirate_client = reqwest::Client::new();
 
     // -- Terminal setup --

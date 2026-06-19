@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::io;
 use std::time::Duration;
 
@@ -9,6 +10,7 @@ use crossterm::terminal::{
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
+use crate::cache::OceanCache;
 use crate::ocean::Ocean;
 use crate::utils::{FieldKind, PromptField};
 
@@ -51,12 +53,13 @@ pub async fn prompt(
     client: &reqwest::Client,
     ocean: Option<Ocean>,
     user: Option<String>,
+    oceans: &HashMap<String, OceanCache>,
 ) -> io::Result<(Option<Ocean>, Option<String>)> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let result = run(client, ocean, user, &mut terminal).await;
+    let result = run(client, ocean, user, oceans, &mut terminal).await;
 
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
@@ -67,6 +70,7 @@ async fn run(
     client: &reqwest::Client,
     ocean: Option<Ocean>,
     user: Option<String>,
+    oceans: &HashMap<String, OceanCache>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
 ) -> io::Result<(Option<Ocean>, Option<String>)> {
     let ocean_idx = ocean
@@ -155,6 +159,12 @@ async fn run(
                     if trimmed.is_empty() {
                         state.status =
                             Some("Enter a pirate name, or Esc to skip.".to_owned());
+                    } else if cached_player(oceans, Ocean::LIVE[state.ocean_idx], &trimmed)
+                        .is_some()
+                    {
+                        // Already cached for this ocean — it was verified on a
+                        // previous run, so skip the yoweb round-trip.
+                        return Ok((Some(Ocean::LIVE[state.ocean_idx]), Some(trimmed)));
                     } else {
                         let ocean = Ocean::LIVE[state.ocean_idx];
                         state.verifying = true;
@@ -182,6 +192,18 @@ async fn run(
             _ => {}
         }
     }
+}
+
+/// Look up a cached pirate (and their stats) for `ocean`. A `Some` means we
+/// already fetched them on a previous run, so no yoweb verification is needed.
+/// Cache keys are normalized pirate names, so we normalize before looking up.
+fn cached_player<'a>(
+    oceans: &'a HashMap<String, OceanCache>,
+    ocean: Ocean,
+    name: &str,
+) -> Option<&'a crate::pirate::CachedPirate> {
+    let norm = crate::pirate::normalize_name(name).ok()?;
+    oceans.get(ocean.name())?.players.get(&norm)
 }
 
 /// Esc was pressed: proceed with whatever is currently chosen. An ocean is
