@@ -82,9 +82,9 @@ struct Args {
 
     /// Whether to query the Market API at all. Combined with the ocean's
     /// Market support: if either is false, we never hit Market. Hidden;
-    /// defaults on, pass `--query-market false` to suppress all Market
-    /// traffic (market prices and commodity list).
-    #[arg(long, hide = true, default_value_t = true, action = clap::ArgAction::Set)]
+    /// off by default — pass `--query-market` to enable Market traffic
+    /// (market prices and commodity list).
+    #[arg(long, hide = true)]
     query_market: bool,
 }
 
@@ -111,12 +111,17 @@ async fn main() -> io::Result<()> {
 
     // -- Resolve ocean + pirate name (interactive popup if either is missing) --
     let http = reqwest::Client::new();
-    let (ocean, user, self_update): (Option<Ocean>, Option<String>, Option<pirate::PirateUpdate>) =
+    let resolved: Option<(Option<Ocean>, Option<String>, Option<pirate::PirateUpdate>)> =
         if args.ocean.is_none() || args.user.is_none() {
-            startup::prompt(&http, args.ocean, args.user.clone(), &oceans).await?
+            startup::prompt(&http, args.ocean, args.user.clone(), &oceans, args.query_market)
+                .await?
         } else {
-            (args.ocean, args.user.clone(), None)
+            Some((args.ocean, args.user.clone(), None))
         };
+    // `None` means the user pressed Esc at setup to quit.
+    let Some((ocean, user, self_update)) = resolved else {
+        return Ok(());
+    };
 
     match ocean {
         None => eprintln!(
