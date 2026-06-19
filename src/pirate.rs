@@ -3,6 +3,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use chrono::{DateTime, Utc};
+use ratatui::style::{Modifier, Style};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
@@ -95,6 +96,43 @@ pub enum ReputationType {
     Explorer,
     Patron,
     Magnate,
+}
+
+/// The three families a [`Skill`] belongs to, matching how yoweb groups them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum SkillCategory {
+    Piracy,
+    Carousing,
+    Crafting,
+}
+
+/// A pirate's rank within their crew, ordered most → least senior. `Other`
+/// preserves anything yoweb shows that we don't recognise (so styling falls back
+/// to plain rather than dropping the text).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CrewRank {
+    Captain,
+    SeniorOfficer,
+    FleetOfficer,
+    Officer,
+    JobbingPirate,
+    CabinPerson,
+    Pirate,
+    Other(String),
+}
+
+/// A pirate's title within their flag. Gendered pairs (King/Queen, …) collapse to
+/// one tier; `Other` keeps anything unrecognised.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FlagTitle {
+    /// King / Queen.
+    Royalty,
+    /// Prince / Princess.
+    Noble,
+    /// Lord / Lady.
+    Titled,
+    Member,
+    Other(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -247,6 +285,86 @@ impl fmt::Display for ReputationType {
 }
 
 // ---------------------------------------------------------------------------
+// Skill / rank / title classification + styling
+// ---------------------------------------------------------------------------
+
+impl Skill {
+    /// Which family this skill belongs to (Piracy, Carousing, or Crafting),
+    /// matching the grouping yoweb renders the skill tables in.
+    pub fn category(&self) -> SkillCategory {
+        use Skill::*;
+        match self {
+            Sailing | Rigging | Carpentry | Patching | Bilging | Gunning | TreasureHaul
+            | Navigating | BattleNavigation | Swordfighting | Rumble => SkillCategory::Piracy,
+            Drinking | Spades | Hearts | TreasureDrop | Poker => SkillCategory::Carousing,
+            Distilling | Alchemistry | Shipwrightery | Blacksmithing | Foraging | Weaving => {
+                SkillCategory::Crafting
+            }
+        }
+    }
+}
+
+impl CrewRank {
+    /// Classify a yoweb crew-rank label. Unknown labels are preserved as
+    /// [`CrewRank::Other`] rather than discarded.
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "Captain" => Self::Captain,
+            "Senior Officer" => Self::SeniorOfficer,
+            "Fleet Officer" => Self::FleetOfficer,
+            "Officer" => Self::Officer,
+            "Jobbing Pirate" => Self::JobbingPirate,
+            "Cabin Person" => Self::CabinPerson,
+            "Pirate" => Self::Pirate,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    /// Emphasis for the rank label, scaling with seniority.
+    pub fn style(&self) -> Style {
+        match self {
+            Self::Captain => Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
+            Self::SeniorOfficer => {
+                Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC)
+            }
+            Self::FleetOfficer => Style::default().add_modifier(Modifier::BOLD),
+            Self::Officer => Style::default().add_modifier(Modifier::ITALIC),
+            Self::JobbingPirate | Self::CabinPerson | Self::Pirate | Self::Other(_) => {
+                Style::default()
+            }
+        }
+    }
+}
+
+impl FlagTitle {
+    /// Classify a yoweb flag-title label. Gendered pairs collapse to one tier;
+    /// unknown labels are preserved as [`FlagTitle::Other`].
+    #[allow(clippy::should_implement_trait)]
+    pub fn from_str(s: &str) -> Self {
+        match s.trim() {
+            "King" | "Queen" => Self::Royalty,
+            "Prince" | "Princess" => Self::Noble,
+            "Lord" | "Lady" => Self::Titled,
+            "Member" => Self::Member,
+            other => Self::Other(other.to_owned()),
+        }
+    }
+
+    /// Emphasis for the title label, scaling with rank.
+    pub fn style(&self) -> Style {
+        match self {
+            Self::Royalty => Style::default()
+                .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
+            Self::Noble => Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            Self::Titled => Style::default().add_modifier(Modifier::BOLD),
+            Self::Member | Self::Other(_) => Style::default(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Structs
 // ---------------------------------------------------------------------------
 
@@ -275,18 +393,72 @@ impl TrophySection {
     }
 }
 
+/// A pirate's crew membership, resolved from the raw page fields. A pirate may
+/// hold a duty role within the crew (e.g. a fleet officer also titled something
+/// in-crew); `role` is `None` when no such middle title is shown.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CrewAffiliation {
+    pub rank: CrewRank,
+    pub role: Option<String>,
+    pub name: String,
+}
+
+/// A pirate's flag membership, resolved from the raw page fields.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlagAffiliation {
+    pub title: FlagTitle,
+    pub name: String,
+}
+
 /// A pirate's basic profile from the `pirate.wm` page: identity, crew/flag
 /// affiliation, reputation and skills. Trophies live separately (see
 /// [`Trophies`]) because they're on a different page that ages independently.
+///
+/// The crew/flag are stored as raw strings (as scraped) for cache stability;
+/// callers should use [`BasicInfo::crew`]/[`BasicInfo::flag`] for the resolved,
+/// optional structured form.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BasicInfo {
     pub name: String,
     pub crew_rank: String,
+    /// Optional duty role within the crew, between rank and crew name.
+    #[serde(default)]
+    pub crew_role: Option<String>,
     pub crew_name: String,
     pub flag_rank: String,
     pub flag_name: String,
     pub reputation: HashMap<ReputationType, Fame>,
     pub skills: HashMap<Skill, SkillRecord>,
+}
+
+impl BasicInfo {
+    /// The pirate's crew membership, or `None` if they belong to no crew.
+    pub fn crew(&self) -> Option<CrewAffiliation> {
+        if self.crew_name.trim().is_empty() {
+            return None;
+        }
+        Some(CrewAffiliation {
+            rank: CrewRank::from_str(&self.crew_rank),
+            role: self
+                .crew_role
+                .as_deref()
+                .map(str::trim)
+                .filter(|r| !r.is_empty())
+                .map(str::to_owned),
+            name: self.crew_name.clone(),
+        })
+    }
+
+    /// The pirate's flag membership, or `None` if they fly no flag.
+    pub fn flag(&self) -> Option<FlagAffiliation> {
+        if self.flag_name.trim().is_empty() {
+            return None;
+        }
+        Some(FlagAffiliation {
+            title: FlagTitle::from_str(&self.flag_rank),
+            name: self.flag_name.clone(),
+        })
+    }
 }
 
 /// A pirate's trophies, grouped into the sections yoweb displays them in.
@@ -545,14 +717,16 @@ fn parse_pirate_page(html: &str) -> BasicInfo {
     let document = Html::parse_document(html);
 
     let name = parse_name(&document);
-    let (crew_rank, crew_name) = parse_affiliation(&document, "crew-");
-    let (flag_rank, flag_name) = parse_affiliation(&document, "flag-");
+    let (crew_rank, crew_role, crew_name) = parse_affiliation(&document, "crew-");
+    // A flag has only a title + name (no middle role); ignore any stray role.
+    let (flag_rank, _flag_role, flag_name) = parse_affiliation(&document, "flag-");
     let reputation = parse_reputation(&document);
     let skills = parse_skills(&document);
 
     BasicInfo {
         name,
         crew_rank,
+        crew_role,
         crew_name,
         flag_rank,
         flag_name,
@@ -571,9 +745,12 @@ fn parse_name(document: &Html) -> String {
         .unwrap_or_default()
 }
 
-/// Crew/flag: find `<img src="...{prefix}...">`, walk up to the parent
-/// `<tr>`, then extract rank (first `<b>`) and name (last `<a>` in `<b>`).
-fn parse_affiliation(document: &Html, prefix: &str) -> (String, String) {
+/// Crew/flag: find `<img src="...{prefix}...">`, walk up to the parent `<tr>`,
+/// then read the bold runs in order. The first `<b>` is the rank/title and the
+/// `<a>` link (inside the last `<b>`) is the crew/flag name. A `<b>` *between*
+/// them is a duty role: three bolds → the middle one is the role; two bolds →
+/// no role. Returns `(rank, role, name)`; role is `None` when absent.
+fn parse_affiliation(document: &Html, prefix: &str) -> (String, Option<String>, String) {
     let img_sel = Selector::parse("img").unwrap();
 
     for img in document.select(&img_sel) {
@@ -588,12 +765,16 @@ fn parse_affiliation(document: &Html, prefix: &str) -> (String, String) {
         };
 
         let tr_html = tr.inner_html();
-        let rank = extract_first_bold(&tr_html);
+        let bolds = extract_bold_texts(&tr_html);
+        let rank = bolds.first().cloned().unwrap_or_default();
         let name = extract_link_in_bold(&tr_html);
+        // Exactly three bolds means the middle one is the duty role; the first is
+        // the rank and the last carries the name link.
+        let role = (bolds.len() == 3).then(|| bolds[1].clone());
 
-        return (rank, name);
+        return (rank, role, name);
     }
-    (String::new(), String::new())
+    (String::new(), None, String::new())
 }
 
 /// Reputation section: `<font color="#0052b5"><b>Reputation</b></font>`,
@@ -843,16 +1024,21 @@ fn find_ancestor_tag<'a>(el: &ElementRef<'a>, tag: &str) -> Option<ElementRef<'a
     }
 }
 
-fn extract_first_bold(html: &str) -> String {
-    let start = match html.find("<b>") {
-        Some(i) => i + 3,
-        None => return String::new(),
-    };
-    let end = match html[start..].find("</b>") {
-        Some(i) => start + i,
-        None => return String::new(),
-    };
-    strip_tags(&html[start..end]).trim().to_string()
+/// Collect the text of each `<b>…</b>` run in order, tags stripped. Used to read
+/// an affiliation row's rank / role / name bolds positionally.
+fn extract_bold_texts(html: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = html[from..].find("<b>") {
+        let start = from + rel + 3;
+        let Some(rel_end) = html[start..].find("</b>") else {
+            break;
+        };
+        let end = start + rel_end;
+        out.push(strip_tags(&html[start..end]).trim().to_string());
+        from = end + 4;
+    }
+    out
 }
 
 fn extract_link_in_bold(html: &str) -> String {
@@ -929,5 +1115,61 @@ mod tests {
         assert_eq!(normalize_name("mary-jane").unwrap(), "Mary-Jane");
         assert_eq!(normalize_name("Mother o' Nyght").unwrap(), "Mother o' Nyght");
         assert!(normalize_name("Tony Ironsides").is_err());
+    }
+
+    #[test]
+    fn crew_rank_classifies_known_and_unknown() {
+        assert_eq!(CrewRank::from_str("Captain"), CrewRank::Captain);
+        assert_eq!(CrewRank::from_str("Senior Officer"), CrewRank::SeniorOfficer);
+        assert_eq!(CrewRank::from_str(" Pirate "), CrewRank::Pirate);
+        assert_eq!(
+            CrewRank::from_str("Deckhand"),
+            CrewRank::Other("Deckhand".to_owned())
+        );
+    }
+
+    #[test]
+    fn flag_title_collapses_gendered_pairs() {
+        assert_eq!(FlagTitle::from_str("King"), FlagTitle::Royalty);
+        assert_eq!(FlagTitle::from_str("Queen"), FlagTitle::Royalty);
+        assert_eq!(FlagTitle::from_str("Prince"), FlagTitle::Noble);
+        assert_eq!(FlagTitle::from_str("Lady"), FlagTitle::Titled);
+        assert_eq!(FlagTitle::from_str("Member"), FlagTitle::Member);
+        assert_eq!(
+            FlagTitle::from_str("Founder"),
+            FlagTitle::Other("Founder".to_owned())
+        );
+    }
+
+    #[test]
+    fn skill_category_groups_all_skills() {
+        assert_eq!(Skill::Gunning.category(), SkillCategory::Piracy);
+        assert_eq!(Skill::Poker.category(), SkillCategory::Carousing);
+        assert_eq!(Skill::Blacksmithing.category(), SkillCategory::Crafting);
+    }
+
+    #[test]
+    fn basic_info_crew_and_flag_are_optional() {
+        let mut info = BasicInfo {
+            name: "Playerone".to_owned(),
+            crew_rank: "Captain".to_owned(),
+            crew_role: Some("Fleet Officer".to_owned()),
+            crew_name: "Some Crew".to_owned(),
+            flag_rank: String::new(),
+            flag_name: String::new(),
+            reputation: HashMap::new(),
+            skills: HashMap::new(),
+        };
+
+        let crew = info.crew().expect("has a crew");
+        assert_eq!(crew.rank, CrewRank::Captain);
+        assert_eq!(crew.role.as_deref(), Some("Fleet Officer"));
+        assert_eq!(crew.name, "Some Crew");
+        // No flag name → no flag.
+        assert!(info.flag().is_none());
+
+        // Empty crew name → no crew, even with a stale rank string.
+        info.crew_name = String::new();
+        assert!(info.crew().is_none());
     }
 }

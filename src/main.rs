@@ -79,6 +79,13 @@ struct Args {
     /// re-queried in the background.
     #[arg(long, value_name = "DAYS", default_value_t = 7)]
     trophy_ttl_days: i64,
+
+    /// Whether to query the Market API at all. Combined with the ocean's
+    /// Market support: if either is false, we never hit Market. Hidden;
+    /// defaults on, pass `--query-market false` to suppress all Market
+    /// traffic (market prices and commodity list).
+    #[arg(long, hide = true, default_value_t = true, action = clap::ArgAction::Set)]
+    query_market: bool,
 }
 
 fn parse_ocean(s: &str) -> Result<Ocean, String> {
@@ -130,17 +137,21 @@ async fn main() -> io::Result<()> {
         .and_then(|o| oceans.remove(o.name()))
         .unwrap_or_default();
 
-    // Commodities are ocean-independent: reuse the cached list, or fetch it.
-    let commodities: Vec<Commodity> = if saved_commodities.is_empty() {
+    // Commodities are ocean-independent: reuse the cached list, or fetch it
+    // (only if Market querying is enabled).
+    let commodities: Vec<Commodity> = if !saved_commodities.is_empty() {
+        saved_commodities
+            .into_iter()
+            .map(|c| Commodity { id: c.id, name: c.name })
+            .collect()
+    } else if args.query_market {
         eprintln!("Fetching commodities from market...");
         api::fetch_commodities()
             .await
             .expect("failed to fetch commodities")
     } else {
-        saved_commodities
-            .into_iter()
-            .map(|c| Commodity { id: c.id, name: c.name })
-            .collect()
+        eprintln!("note: --query-market is off and no cached commodities — commodity list is empty.");
+        Vec::new()
     };
 
     // Validate alias targets against commodity list.
@@ -159,6 +170,7 @@ async fn main() -> io::Result<()> {
     let mut shell = AppShell::new(commodities);
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
+    shell.query_market = args.query_market;
     // Pre-seed pirate stats from the cache. They're refreshed lazily: a cached
     // pirate is only re-queried once it's both relevant (seen in the log) and
     // past its staleness TTL, so startup never blocks on a refetch burst.
@@ -188,8 +200,9 @@ async fn main() -> io::Result<()> {
         }
     }
 
-    // -- Auto-fetch missing market data (only on Market oceans) --
-    if let Some(o) = ocean.filter(|o| o.market_supported()) {
+    // -- Auto-fetch missing market data (only on Market oceans, and only
+    //    when Market querying is enabled) --
+    if let Some(o) = ocean.filter(|o| o.market_supported() && args.query_market) {
         if !shell.profits.rows.is_empty() {
             let missing: Vec<String> = shell
                 .profits

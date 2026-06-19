@@ -174,6 +174,9 @@ pub struct AppShell {
     pub loading: bool,
     /// Selected ocean, or `None` if the user skipped selection.
     pub ocean: Option<Ocean>,
+    /// Whether Market querying is enabled at all (the `--query-market`
+    /// flag). Gated together with the ocean's Market support.
+    pub query_market: bool,
     // app routing
     sidebar_index: usize,
     global_focus: GlobalFocus,
@@ -195,6 +198,7 @@ impl AppShell {
             available_islands: Vec::new(),
             loading: false,
             ocean: None,
+            query_market: true,
             sidebar_index: 0,
             global_focus: GlobalFocus::Content,
             profits: ProfitsApp::new(),
@@ -206,9 +210,11 @@ impl AppShell {
         }
     }
 
-    /// Whether profit calculation is available (an ocean with Market data).
+    /// Whether profit calculation is available: Market querying is enabled
+    /// *and* the selected ocean has Market data. If either is false we never
+    /// hit Market.
     fn market_ok(&self) -> bool {
-        self.ocean.is_some_and(Ocean::market_supported)
+        self.query_market && self.ocean.is_some_and(Ocean::market_supported)
     }
 
     pub fn rebuild_island_list(&mut self) {
@@ -911,7 +917,7 @@ impl AppShell {
         };
 
         let tx = tx.clone();
-        let ocean = self.ocean;
+        let ocean = self.ocean.filter(|_| self.query_market);
         tokio::spawn(async move {
             let client = reqwest::Client::new();
             let result = match ocean.filter(|o| o.market_supported()) {
