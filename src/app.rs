@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph};
+use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
@@ -201,20 +201,53 @@ fn render_voyage_placeholder(frame: &mut Frame, area: Rect) {
 /// The Exit app: a single centered prompt. Pressing Enter or Esc while it is the
 /// open app quits the program.
 fn render_exit(frame: &mut Frame, area: Rect) {
-    // Vertically center one line of text.
+    let bold = |s: &'static str| Span::styled(s, Style::default().bold());
+
+    // Footer/credits pinned to the bottom, with one blank line below it.
+    let footer = vec![
+        Line::from(vec![bold("Rusty Quartermaster"), Span::raw(" by "), bold("F5XS")]),
+        Line::from(""),
+        Line::from(vec![
+            bold("Puzzle Pirates"),
+            Span::raw(" is a trademark of "),
+            bold("Grey Havens"),
+            Span::raw(" and is used without permission."),
+        ]),
+        Line::from(vec![
+            bold("Rusty Quartermaster"),
+            Span::raw(" is an unofficial fan tool and is not affiliated with "),
+            bold("Grey Havens"),
+            Span::raw(", "),
+            bold("Three Rings"),
+            Span::raw(", or "),
+            bold("Sega"),
+            Span::raw("."),
+        ]),
+    ];
+
+    // Vertically center the prompt; let the footer sit at the bottom. The footer
+    // block is generously sized so the long disclaimer line can wrap.
     let rows = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
         Constraint::Fill(1),
+        Constraint::Length(6),
+        Constraint::Length(1),
     ])
     .split(area);
+
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "Press Enter or Esc to Exit",
+            "Press Enter or Esc to Exit.",
             Style::default().bold(),
         ))
         .centered(),
         rows[1],
+    );
+
+    frame.render_widget(
+        Paragraph::new(footer).centered().wrap(Wrap { trim: true }),
+        rows[3],
     );
 }
 
