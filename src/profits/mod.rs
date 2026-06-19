@@ -545,14 +545,19 @@ impl ProfitsApp {
 
     fn handle_table_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
         match key.code {
-            KeyCode::Up => self.table_up(),
+            KeyCode::Up => {
+                // The table is the page's top widget; ↑ from its first row hands
+                // focus back to the top bar.
+                if self.table_state.selected() == Some(0) {
+                    return InputResult::Exit;
+                }
+                self.table_up();
+            }
             KeyCode::Down => self.table_down(),
             KeyCode::Left => {
                 if let Some(col) = self.table_state.selected_column() {
                     if FIRST_COL < col {
                         self.table_state.select_column(Some(col - 1));
-                    } else {
-                        return InputResult::Exit;
                     }
                 }
             }
@@ -603,8 +608,13 @@ impl ProfitsApp {
                     self.focus = Focus::Panel(1);
                 }
             }
-            KeyCode::Up if 0 < idx => {
-                self.focus = Focus::Panel(idx - 1);
+            KeyCode::Up => {
+                if 0 < idx {
+                    self.focus = Focus::Panel(idx - 1);
+                } else {
+                    // Top of the panel column — return focus to the top bar.
+                    return InputResult::Exit;
+                }
             }
             KeyCode::Down => {
                 if idx + 1 < PANEL_COUNT {

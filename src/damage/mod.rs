@@ -185,6 +185,9 @@ impl DamageApp {
             KeyCode::Up => {
                 if 0 < self.focus_row {
                     self.focus_row -= 1;
+                } else {
+                    // Already at the top row — hand focus back to the top bar.
+                    return InputResult::Exit;
                 }
             }
             KeyCode::Down => {
@@ -197,8 +200,6 @@ impl DamageApp {
             KeyCode::Left => {
                 if self.focus_side == Side::Right && self.focus_row != ROW_HEADON {
                     self.focus_side = Side::Left;
-                } else {
-                    return InputResult::Exit;
                 }
             }
             KeyCode::Right => {
@@ -253,8 +254,6 @@ impl DamageApp {
             KeyCode::Left => {
                 if 0 < self.button_index {
                     self.button_index -= 1;
-                } else {
-                    return InputResult::Exit;
                 }
             }
             KeyCode::Right => {

@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Padding};
+use ratatui::widgets::{Block, Borders, Paragraph};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
@@ -23,6 +23,7 @@ pub enum AppId {
     Profits,
     Damage,
     Chatlog,
+    Voyage,
 }
 
 impl AppId {
@@ -31,17 +32,31 @@ impl AppId {
             AppId::Profits => "Profits",
             AppId::Damage => "Damage",
             AppId::Chatlog => "Jobbers",
+            AppId::Voyage => "Voyage Statistics",
+        }
+    }
+
+    /// Two-line top-bar label. Single-word apps sit on the upper line with an
+    /// empty lower line; only "Voyage Statistics" wraps onto both lines.
+    fn bar_lines(self) -> (&'static str, &'static str) {
+        match self {
+            AppId::Profits => ("Profits", ""),
+            AppId::Damage => ("Damage", ""),
+            AppId::Chatlog => ("Jobbers", ""),
+            AppId::Voyage => ("Voyage", "Statistics"),
         }
     }
 }
 
-pub const APP_LIST: &[AppId] = &[AppId::Profits, AppId::Damage, AppId::Chatlog];
+pub const APP_LIST: &[AppId] =
+    &[AppId::Profits, AppId::Damage, AppId::Chatlog, AppId::Voyage];
 
-const SIDEBAR_WIDTH: u16 = 14;
+/// Top bar: two label lines, no border (a shaded strip).
+const TOPBAR_HEIGHT: u16 = 2;
 
 #[derive(PartialEq)]
 enum GlobalFocus {
-    Sidebar,
+    TopBar,
     Content,
 }
 
@@ -163,6 +178,28 @@ pub fn rebuild_island_list(
     islands
 }
 
+/// Inert "coming soon" page for the Voyage Statistics app. Navigable (the top
+/// bar can land on it) but draws nothing interactive yet.
+fn render_voyage_placeholder(frame: &mut Frame, area: Rect) {
+    let block = Block::default().borders(Borders::ALL).title("─── Voyage Statistics ");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let para = Paragraph::new(vec![
+        Line::from(""),
+        Line::from(Span::styled(
+            "Voyage Statistics — coming soon.",
+            Style::default().bold(),
+        )),
+        Line::from(Span::styled(
+            "Per-voyage stats (Atlantis, Cursed Isles, Vampirates, …) will live here.",
+            Style::default().fg(Color::DarkGray),
+        )),
+    ])
+    .centered();
+    frame.render_widget(para, inner);
+}
+
 // ---------------------------------------------------------------------------
 // AppShell
 // ---------------------------------------------------------------------------
@@ -234,16 +271,18 @@ impl AppShell {
 
         let area = frame.area();
 
-        // Layout tree: [sidebar | content]. Pages own everything in their
-        // content area — the Jobbers page, for instance, draws its own tooltip
-        // inside its centered block rather than as a full-width strip here.
-        let chunks = Layout::horizontal([
-            Constraint::Length(SIDEBAR_WIDTH),
+        // Layout tree: [top bar / content]. The full-width top bar reclaims the
+        // columns the old sidebar spent, so every page now gets all 80 columns.
+        // Pages own everything in their content area — the Jobbers page, for
+        // instance, draws its own tooltip inside its centered block rather than
+        // as a full-width strip here.
+        let chunks = Layout::vertical([
+            Constraint::Length(TOPBAR_HEIGHT),
             Constraint::Min(0),
         ])
         .split(area);
 
-        self.render_sidebar(frame, chunks[0]);
+        self.render_topbar(frame, chunks[0]);
 
         let content_area = chunks[1];
         let content_focused = self.global_focus == GlobalFocus::Content;
@@ -285,44 +324,52 @@ impl AppShell {
                     &mut self.click_regions,
                 );
             }
+            AppId::Voyage => {
+                render_voyage_placeholder(frame, content_area);
+            }
         }
     }
 
-    fn render_sidebar(&mut self, frame: &mut Frame, area: Rect) {
-        let focused = self.global_focus == GlobalFocus::Sidebar;
+    /// Draw the full-width two-line top bar: a continuous shaded strip split
+    /// into four equal slots. Each slot's whole box is shaded along a three-step
+    /// brightness ramp — the open/selected app is brightest; while the bar is
+    /// focused the other slots sit a step up from the resting shade; once focus
+    /// drops into an app those others fall back to the base shade.
+    fn render_topbar(&mut self, frame: &mut Frame, area: Rect) {
+        let focused = self.global_focus == GlobalFocus::TopBar;
 
-        let items: Vec<ListItem> = APP_LIST
-            .iter()
-            .map(|app_id| ListItem::new(app_id.label()))
-            .collect();
+        // Greyscale ramp: base (resting bar) → middle (bar focused) → strongest
+        // (the open app). Backgrounds fill the entire slot box.
+        let base = Style::default().bg(Color::DarkGray).fg(Color::White);
+        let middle = Style::default().bg(Color::Gray).fg(Color::Black);
+        let strongest = Style::default().bg(Color::White).fg(Color::Black).bold();
 
-        let highlight_style = if focused {
-            Style::default().bg(Color::White).fg(Color::Black)
-        } else {
-            Style::default().bold()
-        };
+        // Four equal slots side by side, contiguous (no gaps) so the shade reads
+        // as one bar.
+        let slots = Layout::horizontal(
+            APP_LIST.iter().map(|_| Constraint::Ratio(1, APP_LIST.len() as u32)),
+        )
+        .split(area);
 
-        let list = List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .padding(Padding::horizontal(1))
-                    .title("─── Apps "),
-            )
-            .highlight_style(highlight_style);
+        for (i, (&app_id, &slot)) in APP_LIST.iter().zip(slots.iter()).enumerate() {
+            let style = if i == self.sidebar_index {
+                strongest
+            } else if focused {
+                middle
+            } else {
+                base
+            };
 
-        let mut state = ListState::default().with_selected(Some(self.sidebar_index));
-        frame.render_stateful_widget(list, area, &mut state);
+            let (upper, lower) = app_id.bar_lines();
+            // Paragraph::style shades the whole slot box; centered text rides on
+            // top of it.
+            let para = Paragraph::new(vec![Line::from(upper), Line::from(lower)])
+                .style(style)
+                .centered();
+            frame.render_widget(para, slot);
 
-        // Register sidebar item click regions
-        // inner area: 1 border + 1 padding on each side
-        let inner_x = area.x + 2;
-        let inner_w = area.width.saturating_sub(4);
-        let inner_y = area.y + 1; // top border
-        for i in 0..APP_LIST.len() {
-            let item_rect = Rect::new(inner_x, inner_y + i as u16, inner_w, 1);
             self.click_regions.push(ClickRegion {
-                rect: item_rect,
+                rect: slot,
                 target: ClickTarget::SidebarItem(i),
             });
         }
@@ -336,8 +383,8 @@ impl AppShell {
         key: KeyEvent,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
     ) -> bool {
-        if self.global_focus == GlobalFocus::Sidebar {
-            return self.handle_sidebar_key(key);
+        if self.global_focus == GlobalFocus::TopBar {
+            return self.handle_topbar_key(key);
         }
 
         let result = match APP_LIST[self.sidebar_index] {
@@ -353,12 +400,13 @@ impl AppShell {
             }
             AppId::Damage => self.damage.handle_key(key),
             AppId::Chatlog => self.handle_jobbers_key(key),
+            AppId::Voyage => Self::handle_voyage_key(key),
         };
 
         match result {
             InputResult::Consumed => {}
             InputResult::Exit => {
-                self.global_focus = GlobalFocus::Sidebar;
+                self.global_focus = GlobalFocus::TopBar;
             }
             InputResult::StartFetch(purpose) => {
                 self.loading = true;
@@ -371,20 +419,22 @@ impl AppShell {
         false
     }
 
-    fn handle_sidebar_key(&mut self, key: KeyEvent) -> bool {
+    /// Key handling while the top bar is focused: ←/→ live-switch the app shown
+    /// beneath, ↓/Enter drop focus into it, Esc quits.
+    fn handle_topbar_key(&mut self, key: KeyEvent) -> bool {
         match key.code {
             KeyCode::Esc => return true,
-            KeyCode::Up => {
+            KeyCode::Left => {
                 if 0 < self.sidebar_index {
                     self.sidebar_index -= 1;
                 }
             }
-            KeyCode::Down => {
+            KeyCode::Right => {
                 if self.sidebar_index + 1 < APP_LIST.len() {
                     self.sidebar_index += 1;
                 }
             }
-            KeyCode::Enter | KeyCode::Right => {
+            KeyCode::Enter | KeyCode::Down => {
                 self.global_focus = GlobalFocus::Content;
                 // Entering the Jobbers page lands on the Vessels list.
                 self.jobbers_ui.focus = JobberFocus::Vessels;
@@ -392,6 +442,15 @@ impl AppShell {
             _ => {}
         }
         false
+    }
+
+    /// The Voyage Statistics page is inert: ↑ or Esc returns focus to the bar,
+    /// everything else is ignored.
+    fn handle_voyage_key(key: KeyEvent) -> InputResult {
+        match key.code {
+            KeyCode::Up | KeyCode::Esc => InputResult::Exit,
+            _ => InputResult::Consumed,
+        }
     }
 
     // -- jobbers (chat log) handling --
@@ -415,10 +474,10 @@ impl AppShell {
 
         match key.code {
             KeyCode::Esc => return InputResult::Exit,
-            // Left from the left column exits to the Apps sidebar; from the
-            // lists it steps back to the vessel column.
+            // Left from the right-hand lists steps back to the vessel column; the
+            // left column has nowhere further to go.
             KeyCode::Left => match self.jobbers_ui.focus {
-                Vessels | ShipType | Unpoison => return InputResult::Exit,
+                Vessels | ShipType | Unpoison => {}
                 Aboard | Greedy | Planked => self.jobbers_ui.focus = Vessels,
             },
             KeyCode::Right => match self.jobbers_ui.focus {
@@ -426,7 +485,14 @@ impl AppShell {
                 _ => {}
             },
             KeyCode::Up => match self.jobbers_ui.focus {
-                Vessels => self.jobbers_select_delta(-1),
+                // The vessel list is the page's top widget; ↑ from its first
+                // entry hands focus back to the top bar.
+                Vessels => {
+                    if self.jobbers_at_first_vessel() {
+                        return InputResult::Exit;
+                    }
+                    self.jobbers_select_delta(-1);
+                }
                 ShipType => self.jobbers_ui.focus = Vessels,
                 Unpoison => self.jobbers_ui.focus = ShipType,
                 Aboard => {}
@@ -534,6 +600,16 @@ impl AppShell {
             .unwrap_or(0) as i32;
         let next = (cur + delta).clamp(0, ordered.len() as i32 - 1) as usize;
         self.jobbers_ui.selected = Some(ordered[next].clone());
+    }
+
+    /// Whether the selected vessel is the first (top) one in the list, or there
+    /// is no selection / no vessels at all.
+    fn jobbers_at_first_vessel(&self) -> bool {
+        let ordered = self.chatlog.vessels_by_recency();
+        match (&self.jobbers_ui.selected, ordered.first()) {
+            (Some(sel), Some(first)) => sel == first,
+            _ => true,
+        }
     }
 
     /// Whether the selected vessel is the last (bottom) one in the list.
@@ -835,6 +911,7 @@ impl AppShell {
                     *offset = offset.saturating_add(1);
                 }
             }
+            AppId::Voyage => {}
         }
     }
 
@@ -846,7 +923,7 @@ impl AppShell {
         match result {
             InputResult::Consumed => {}
             InputResult::Exit => {
-                self.global_focus = GlobalFocus::Sidebar;
+                self.global_focus = GlobalFocus::TopBar;
             }
             InputResult::StartFetch(purpose) => {
                 self.loading = true;
