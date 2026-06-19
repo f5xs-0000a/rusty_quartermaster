@@ -537,29 +537,6 @@ async fn fetch_trophy_page(
     })
 }
 
-/// Check whether a pirate exists on `ocean` by fetching its yoweb page and
-/// looking for a parseable name. Returns `Ok(false)` when the page loads but
-/// names no pirate (yoweb's "no such pirate" response), `Err` on a network or
-/// name-normalisation failure.
-pub async fn verify_exists(
-    client: &reqwest::Client,
-    ocean: Ocean,
-    name: &str,
-) -> Result<bool, String> {
-    let normalized = normalize_name(name)?;
-    let encoded = url_encode_name(&normalized);
-    let pirate_url = format!("{}/pirate.wm?target={encoded}", ocean.yoweb_base());
-    let html = throttled(Service::PuzzlePirates, || client.get(&pirate_url).send())
-        .await
-        .map_err(|e| format!("failed to fetch pirate page: {e}"))?
-        .text()
-        .await
-        .map_err(|e| format!("failed to read pirate page: {e}"))?;
-
-    let document = Html::parse_document(&html);
-    Ok(!parse_name(&document).is_empty())
-}
-
 // ---------------------------------------------------------------------------
 // Pirate page parsing
 // ---------------------------------------------------------------------------

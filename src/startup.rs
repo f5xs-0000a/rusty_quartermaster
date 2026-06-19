@@ -12,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding
 
 use crate::cache::OceanCache;
 use crate::ocean::Ocean;
+use crate::pirate::{FetchPlan, PirateUpdate};
 use crate::utils::{FieldKind, PromptField};
 
 // ---------------------------------------------------------------------------
@@ -26,9 +27,11 @@ enum Field {
 }
 
 /// Outcome of a verification attempt, delivered over a channel so the UI can
-/// keep redrawing "Verifying…" while it runs.
+/// keep redrawing "Verifying…" while it runs. `Found` carries the freshly
+/// fetched pirate page so the caller can fold it into the cache instead of
+/// throwing the fetch away and re-querying next run.
 enum Verify {
-    Found,
+    Found(Box<PirateUpdate>),
     NotFound,
     Error(String),
 }
@@ -47,14 +50,16 @@ struct Setup {
 ///
 /// Drawn on the alternate screen in raw mode and torn down before returning,
 /// so the caller's later `eprintln!` progress and main loop are unaffected.
-/// Returns the resolved `(ocean, name)`; either may be `None` if the user
-/// skips with Esc and never supplied one.
+/// Returns the resolved `(ocean, name, fetched)`; ocean/name may be `None` if
+/// the user skips with Esc and never supplied one. `fetched` is the pirate page
+/// pulled while verifying a not-yet-cached name, for the caller to fold into the
+/// cache; it is `None` when the name was already cached or no fetch happened.
 pub async fn prompt(
     client: &reqwest::Client,
     ocean: Option<Ocean>,
     user: Option<String>,
     oceans: &HashMap<String, OceanCache>,
-) -> io::Result<(Option<Ocean>, Option<String>)> {
+) -> io::Result<(Option<Ocean>, Option<String>, Option<PirateUpdate>)> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
@@ -72,7 +77,7 @@ async fn run(
     user: Option<String>,
     oceans: &HashMap<String, OceanCache>,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> io::Result<(Option<Ocean>, Option<String>)> {
+) -> io::Result<(Option<Ocean>, Option<String>, Option<PirateUpdate>)> {
     let ocean_idx = ocean
         .and_then(|o| Ocean::LIVE.iter().position(|&l| l == o))
         .unwrap_or(0);
@@ -99,9 +104,13 @@ async fn run(
         if let Ok(outcome) = rx.try_recv() {
             state.verifying = false;
             match outcome {
-                Verify::Found => {
+                Verify::Found(update) => {
                     let chosen = Ocean::LIVE[state.ocean_idx];
-                    return Ok((Some(chosen), Some(state.name.value.trim().to_owned())));
+                    return Ok((
+                        Some(chosen),
+                        Some(state.name.value.trim().to_owned()),
+                        Some(*update),
+                    ));
                 }
                 Verify::NotFound => {
                     state.status = Some(format!(
@@ -129,13 +138,17 @@ async fn run(
         // While verifying, only Esc (skip) is accepted.
         if state.verifying {
             if key.code == KeyCode::Esc {
-                return Ok(skip(&state));
+                let (ocean, name) = skip(&state);
+                return Ok((ocean, name, None));
             }
             continue;
         }
 
         match key.code {
-            KeyCode::Esc => return Ok(skip(&state)),
+            KeyCode::Esc => {
+                let (ocean, name) = skip(&state);
+                return Ok((ocean, name, None));
+            }
             KeyCode::Tab => {
                 state.field = match state.field {
                     Field::Ocean => Field::Name,
@@ -164,7 +177,7 @@ async fn run(
                     {
                         // Already cached for this ocean — it was verified on a
                         // previous run, so skip the yoweb round-trip.
-                        return Ok((Some(Ocean::LIVE[state.ocean_idx]), Some(trimmed)));
+                        return Ok((Some(Ocean::LIVE[state.ocean_idx]), Some(trimmed), None));
                     } else {
                         let ocean = Ocean::LIVE[state.ocean_idx];
                         state.verifying = true;
@@ -172,12 +185,23 @@ async fn run(
                         let tx = tx.clone();
                         let client = client.clone();
                         tokio::spawn(async move {
-                            let outcome =
-                                match crate::pirate::verify_exists(&client, ocean, &trimmed).await {
-                                    Ok(true) => Verify::Found,
-                                    Ok(false) => Verify::NotFound,
-                                    Err(e) => Verify::Error(e),
-                                };
+                            // Fetch the basic page (not just an existence check) so
+                            // the result can be cached and never re-queried next run.
+                            // Trophies are left for the lazy background fetcher.
+                            let plan = FetchPlan { basic: true, trophies: false };
+                            let update = crate::pirate::fetch_pirate_update(
+                                &client, &trimmed, ocean, plan,
+                            )
+                            .await;
+                            let outcome = match update {
+                                u @ PirateUpdate::Refreshed { basic: Some(_), .. } => {
+                                    Verify::Found(Box::new(u))
+                                }
+                                // basic was requested, so absent means no pirate.
+                                PirateUpdate::Refreshed { .. }
+                                | PirateUpdate::NotFound => Verify::NotFound,
+                                PirateUpdate::Error(e) => Verify::Error(e),
+                            };
                             let _ = tx.send(outcome);
                         });
                     }

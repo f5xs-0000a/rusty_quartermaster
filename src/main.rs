@@ -104,11 +104,11 @@ async fn main() -> io::Result<()> {
 
     // -- Resolve ocean + pirate name (interactive popup if either is missing) --
     let http = reqwest::Client::new();
-    let (ocean, user): (Option<Ocean>, Option<String>) =
+    let (ocean, user, self_update): (Option<Ocean>, Option<String>, Option<pirate::PirateUpdate>) =
         if args.ocean.is_none() || args.user.is_none() {
             startup::prompt(&http, args.ocean, args.user.clone(), &oceans).await?
         } else {
-            (args.ocean, args.user.clone())
+            (args.ocean, args.user.clone(), None)
         };
 
     match ocean {
@@ -163,6 +163,15 @@ async fn main() -> io::Result<()> {
     // pirate is only re-queried once it's both relevant (seen in the log) and
     // past its staleness TTL, so startup never blocks on a refetch burst.
     shell.pirate_cache.fetched = this_ocean.players;
+    // Fold in our own pirate if the setup popup just verified (and thus fetched)
+    // it — otherwise the verification fetch would be thrown away and re-queried
+    // every run. `apply_update` builds the cache entry, leaving trophies stale
+    // for the lazy background fetcher.
+    if let (Some(update), Some(name)) = (self_update, user.as_deref()) {
+        if let Ok(norm) = pirate::normalize_name(name) {
+            shell.pirate_cache.apply_update(norm, update);
+        }
+    }
 
     // -- Load inventory --
     {
