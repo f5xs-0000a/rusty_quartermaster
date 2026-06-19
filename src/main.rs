@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -15,6 +15,7 @@ use ratatui::prelude::*;
 mod aliases;
 mod api;
 mod app;
+mod cache;
 mod chatlog;
 mod clickmap;
 mod damage;
@@ -27,8 +28,9 @@ mod ships;
 mod startup;
 mod utils;
 
-use api::{CachedOffers, Commodity, SavedCommodity, SavedMarketCache};
+use api::{CachedOffers, Commodity, SavedCommodity};
 use app::AppShell;
+use cache::{OceanCache, SavedCache};
 use ocean::Ocean;
 
 // ---------------------------------------------------------------------------
@@ -39,23 +41,17 @@ use ocean::Ocean;
 #[command(
     about = "A terminal toolkit for Yohoho! Puzzle Pirates players.",
     long_about = "A terminal toolkit for Yohoho! Puzzle Pirates players.\n\n\
-        Market prices are fetched from the Market API. Use --market-cache to \
+        Market prices are fetched from the Market API. Use --cache to \
         avoid re-fetching every run.",
 )]
 struct Args {
-    /// Path to save/load inventory JSON.
+    /// Path to save/load the unified cache JSON.
     ///
-    /// Commodity quantities, panel settings, and restocking island are
-    /// loaded on startup and saved on exit.
+    /// One file holds the inventory and commodity list (global) plus, per
+    /// ocean, market prices and fetched pirate stats. Loaded on startup and
+    /// saved on exit.
     #[arg(long, value_name = "PATH")]
-    inventory: Option<PathBuf>,
-
-    /// Path to save/load market cache JSON.
-    ///
-    /// Caches commodity list and pricing data from Market so
-    /// subsequent runs don't need an internet connection.
-    #[arg(long, value_name = "PATH")]
-    market_cache: Option<PathBuf>,
+    cache: Option<PathBuf>,
 
     /// Path to the Puzzle Pirates client chat log to monitor.
     ///
@@ -109,16 +105,31 @@ async fn main() -> io::Result<()> {
         eprintln!("warning: no pirate name set — Jobbers pirate-stat lookups are limited.");
     }
 
-    // -- Load market cache or fetch commodities from API --
-    let mut cached_offers: HashMap<String, CachedOffers> = HashMap::new();
+    // -- Load the unified cache (inventory + commodities global; market +
+    //    players per-ocean) --
+    let SavedCache {
+        inventory: saved_inventory,
+        commodities: saved_commodities,
+        mut oceans,
+    } = args.cache.as_deref().map(cache::load).unwrap_or_default();
 
-    let commodities: Vec<Commodity> = if let Some(ref path) = args.market_cache {
-        load_market_cache(path, ocean, &mut cached_offers).await
-    } else {
+    // The selected ocean's bucket. Other oceans' data stays in `oceans` and is
+    // written back untouched on save.
+    let this_ocean = ocean
+        .and_then(|o| oceans.remove(o.name()))
+        .unwrap_or_default();
+
+    // Commodities are ocean-independent: reuse the cached list, or fetch it.
+    let commodities: Vec<Commodity> = if saved_commodities.is_empty() {
         eprintln!("Fetching commodities from market...");
         api::fetch_commodities()
             .await
             .expect("failed to fetch commodities")
+    } else {
+        saved_commodities
+            .into_iter()
+            .map(|c| Commodity { id: c.id, name: c.name })
+            .collect()
     };
 
     // Validate alias targets against commodity list.
@@ -135,22 +146,24 @@ async fn main() -> io::Result<()> {
     }
 
     let mut shell = AppShell::new(commodities);
-    shell.cached_offers = cached_offers;
+    shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
+    // Pre-seed pirate stats from the cache so they aren't re-queried (our own
+    // pirate included), while still allowing newly-seen pirates to be fetched.
+    shell.pirate_cache.requested = this_ocean.players.keys().cloned().collect();
+    shell.pirate_cache.fetched = this_ocean.players;
 
     // -- Load inventory --
-    if let Some(ref path) = args.inventory {
-        if let Some(loaded) =
-            profits::persistence::load_inventory(path, &shell.commodities)
-        {
-            shell.profits.rows = loaded.rows;
-            shell.profits.panel[0].value = loaded.restocking_island.clone();
-            shell.profits.panel[0].cursor = loaded.restocking_island.len();
-            for (i, val) in loaded.panel_values.into_iter().enumerate() {
-                if i + 1 < profits::PANEL_COUNT {
-                    shell.profits.panel[i + 1].value = val.clone();
-                    shell.profits.panel[i + 1].cursor = val.len();
-                }
+    {
+        let loaded =
+            profits::persistence::from_saved(saved_inventory, &shell.commodities);
+        shell.profits.rows = loaded.rows;
+        shell.profits.panel[0].value = loaded.restocking_island.clone();
+        shell.profits.panel[0].cursor = loaded.restocking_island.len();
+        for (i, val) in loaded.panel_values.into_iter().enumerate() {
+            if i + 1 < profits::PANEL_COUNT {
+                shell.profits.panel[i + 1].value = val.clone();
+                shell.profits.panel[i + 1].cursor = val.len();
             }
         }
     }
@@ -287,92 +300,35 @@ async fn main() -> io::Result<()> {
     // -- Cleanup temp images --
     shell.damage.cleanup_temp_images();
 
-    // -- Save inventory --
-    if let Some(ref path) = args.inventory {
-        profits::persistence::save_inventory(
-            path,
-            &shell.profits.rows,
-            &shell.profits.panel[1..],
-            &shell.profits.panel[0].value,
-            |id| app::commod_name(&shell.commodities, id).to_owned(),
-        );
-    }
-
-    // -- Save market cache --
-    if let Some(ref path) = args.market_cache {
-        save_market_cache(path, shell.ocean, &shell.commodities, shell.cached_offers);
+    // -- Save the unified cache --
+    if let Some(ref path) = args.cache {
+        // Fold the current ocean's market + players back into the per-ocean map,
+        // leaving other oceans' buckets intact.
+        if let Some(o) = shell.ocean {
+            oceans.insert(
+                o.name().to_owned(),
+                OceanCache {
+                    market: shell.cached_offers,
+                    players: shell.pirate_cache.fetched,
+                },
+            );
+        }
+        let saved = SavedCache {
+            inventory: profits::persistence::to_saved(
+                &shell.profits.rows,
+                &shell.profits.panel[1..],
+                &shell.profits.panel[0].value,
+                |id| app::commod_name(&shell.commodities, id).to_owned(),
+            ),
+            commodities: shell
+                .commodities
+                .iter()
+                .map(|c| SavedCommodity { id: c.id, name: c.name.clone() })
+                .collect(),
+            oceans,
+        };
+        cache::save(path, &saved);
     }
 
     Ok(())
-}
-
-async fn load_market_cache(
-    path: &Path,
-    ocean: Option<Ocean>,
-    cached_offers: &mut HashMap<String, CachedOffers>,
-) -> Vec<Commodity> {
-    let Ok(data) = std::fs::read_to_string(path) else {
-        eprintln!("Fetching commodities from market...");
-        return api::fetch_commodities()
-            .await
-            .expect("failed to fetch commodities");
-    };
-
-    match serde_json::from_str::<SavedMarketCache>(&data) {
-        Ok(cache) => {
-            eprintln!("Loaded market cache from {}", path.display());
-            let had_offers = !cache.offers.is_empty();
-            let cache_ocean = cache.ocean.clone();
-            // Commodities are ocean-independent; prices are kept only when the
-            // cache was built for the selected ocean (see `into_parts`).
-            let (commodities, offers) = cache.into_parts(ocean);
-            if had_offers && offers.is_empty() {
-                eprintln!(
-                    "note: cached prices{} don't match the selected ocean{} — they'll be refetched.",
-                    cache_ocean.map(|o| format!(" (from {o})")).unwrap_or_default(),
-                    ocean.map(|o| format!(" ({o})")).unwrap_or_default(),
-                );
-            }
-            *cached_offers = offers;
-            commodities
-        }
-        Err(e) => {
-            eprintln!("warning: failed to parse market cache: {}", e);
-            eprintln!("Fetching commodities from market...");
-            api::fetch_commodities()
-                .await
-                .expect("failed to fetch commodities")
-        }
-    }
-}
-
-fn save_market_cache(
-    path: &Path,
-    ocean: Option<Ocean>,
-    commodities: &[Commodity],
-    cached_offers: HashMap<String, CachedOffers>,
-) {
-    let saved = SavedMarketCache {
-        ocean: ocean.map(|o| o.name().to_owned()),
-        commodities: commodities
-            .iter()
-            .map(|c| SavedCommodity {
-                id: c.id,
-                name: c.name.clone(),
-            })
-            .collect(),
-        offers: cached_offers,
-    };
-    let json = match serde_json::to_string_pretty(&saved) {
-        Ok(json) => json,
-        Err(e) => {
-            eprintln!("error: failed to serialize market cache: {}", e);
-            return;
-        }
-    };
-    if let Err(e) = std::fs::write(path, json) {
-        eprintln!("error: failed to write market cache to {}: {}", path.display(), e);
-    } else {
-        eprintln!("Saved market cache to {}", path.display());
-    }
 }

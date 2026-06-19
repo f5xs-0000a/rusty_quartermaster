@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use serde::{Deserialize, Serialize};
 
 use crate::api::Commodity;
@@ -13,9 +11,11 @@ pub struct SavedInventoryRow {
     pub booty: String,
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Default)]
 pub struct SavedInventory {
+    #[serde(default)]
     pub rows: Vec<SavedInventoryRow>,
+    #[serde(default)]
     pub panel: Vec<String>,
     #[serde(default)]
     pub restocking_island: String,
@@ -27,17 +27,9 @@ pub struct LoadedInventory {
     pub panel_values: Vec<String>,
 }
 
-pub fn load_inventory(path: &Path, commodities: &[Commodity]) -> Option<LoadedInventory> {
-    let data = std::fs::read_to_string(path).ok()?;
-    let inv: SavedInventory = match serde_json::from_str(&data) {
-        Ok(inv) => inv,
-        Err(e) => {
-            eprintln!("warning: failed to parse inventory: {}", e);
-            return None;
-        }
-    };
-
-    eprintln!("Loaded inventory from {}", path.display());
+/// Resolve a deserialized [`SavedInventory`] against the known commodity list,
+/// dropping rows whose commodity name is unknown.
+pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInventory {
     let mut rows = Vec::new();
     for saved_row in inv.rows {
         let Some(c) = commodities
@@ -68,21 +60,21 @@ pub fn load_inventory(path: &Path, commodities: &[Commodity]) -> Option<LoadedIn
         );
     }
 
-    Some(LoadedInventory {
+    LoadedInventory {
         rows,
         restocking_island: inv.restocking_island,
         panel_values: inv.panel,
-    })
+    }
 }
 
-pub fn save_inventory(
-    path: &Path,
+/// Build a savable [`SavedInventory`] snapshot from live app state.
+pub fn to_saved(
     rows: &[InventoryRow],
     panel: &[crate::utils::PromptField],
     restocking_island: &str,
     commod_name: impl Fn(u64) -> String,
-) {
-    let saved = SavedInventory {
+) -> SavedInventory {
+    SavedInventory {
         rows: rows
             .iter()
             .map(|r| SavedInventoryRow {
@@ -94,17 +86,5 @@ pub fn save_inventory(
             .collect(),
         restocking_island: restocking_island.to_owned(),
         panel: panel.iter().map(|f| f.value.clone()).collect(),
-    };
-    let json = match serde_json::to_string_pretty(&saved) {
-        Ok(json) => json,
-        Err(e) => {
-            eprintln!("error: failed to serialize inventory: {}", e);
-            return;
-        }
-    };
-    if let Err(e) = std::fs::write(path, json) {
-        eprintln!("error: failed to write inventory to {}: {}", path.display(), e);
-    } else {
-        eprintln!("Saved inventory to {}", path.display());
     }
 }

@@ -77,41 +77,6 @@ pub struct SavedCommodity {
     pub name: String,
 }
 
-#[derive(Serialize, Deserialize)]
-pub struct SavedMarketCache {
-    /// Ocean whose prices the `offers` were fetched from. Older caches predate
-    /// this field, so it defaults to `None` (treated as "unknown ocean").
-    #[serde(default)]
-    pub ocean: Option<String>,
-    pub commodities: Vec<SavedCommodity>,
-    pub offers: HashMap<String, CachedOffers>,
-}
-
-impl SavedMarketCache {
-    /// Split a loaded cache into `(commodities, offers)` for `ocean`.
-    ///
-    /// The commodity list comes from Market's ocean-independent `/commods`
-    /// endpoint, so it is always reusable. Offers (prices) are per-ocean: they
-    /// are kept only when the cache was built for the same ocean, and dropped
-    /// (returned empty, forcing a refetch) otherwise — including when the
-    /// current ocean is unknown.
-    pub fn into_parts(
-        self,
-        ocean: Option<Ocean>,
-    ) -> (Vec<Commodity>, HashMap<String, CachedOffers>) {
-        let commodities = self
-            .commodities
-            .into_iter()
-            .map(|c| Commodity { id: c.id, name: c.name })
-            .collect();
-        let offers = match ocean {
-            Some(o) if self.ocean.as_deref() == Some(o.name()) => self.offers,
-            _ => HashMap::new(),
-        };
-        (commodities, offers)
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Fetch logic
 // ---------------------------------------------------------------------------
@@ -159,45 +124,4 @@ pub async fn fetch_offers_for(
         map.insert(name.clone(), CachedOffers { offers, fetched_at: now });
     }
     Ok(map)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn sample_cache(ocean: Option<&str>) -> SavedMarketCache {
-        let mut offers = HashMap::new();
-        offers.insert(
-            "Swill".to_owned(),
-            CachedOffers { offers: Vec::new(), fetched_at: 0 },
-        );
-        SavedMarketCache {
-            ocean: ocean.map(str::to_owned),
-            commodities: vec![SavedCommodity { id: 1, name: "Swill".to_owned() }],
-            offers,
-        }
-    }
-
-    #[test]
-    fn matching_ocean_keeps_offers() {
-        let (commods, offers) = sample_cache(Some("Cerulean")).into_parts(Some(Ocean::Cerulean));
-        assert_eq!(commods.len(), 1);
-        assert_eq!(offers.len(), 1);
-    }
-
-    #[test]
-    fn mismatched_ocean_drops_offers_keeps_commodities() {
-        let (commods, offers) = sample_cache(Some("Emerald")).into_parts(Some(Ocean::Cerulean));
-        assert_eq!(commods.len(), 1, "commodities are ocean-independent");
-        assert!(offers.is_empty(), "offers from another ocean must be dropped");
-    }
-
-    #[test]
-    fn unknown_ocean_drops_offers() {
-        // Legacy cache with no ocean recorded, or no ocean selected this run.
-        let (_, offers) = sample_cache(None).into_parts(Some(Ocean::Emerald));
-        assert!(offers.is_empty());
-        let (_, offers) = sample_cache(Some("Emerald")).into_parts(None);
-        assert!(offers.is_empty());
-    }
 }
