@@ -31,8 +31,9 @@ pub const ROW_ROCKS: usize = 2;
 pub const ROW_RAMS: usize = 3;
 pub const ROW_HEADON: usize = 4;
 pub const ROW_GAP: usize = 5;
-pub const ROW_DAMAGE: usize = 6;
-pub const ROW_COUNT: usize = 7;
+pub const ROW_SHOTS_LEFT: usize = 6;
+pub const ROW_DAMAGE: usize = 7;
+pub const ROW_COUNT: usize = 8;
 const LAST_INTERACTIVE_ROW: usize = 4;
 
 pub const BUTTON_LABELS: &[&str] = &["Reset values"];
@@ -45,6 +46,7 @@ pub const CENTER_LABELS: &[&str] = &[
     "Times Rammed",
     "",
     "",
+    "Shots Left",
     "Damage",
 ];
 
@@ -85,8 +87,8 @@ impl DamageApp {
 
     // -- damage calculation --
 
-    /// Returns (morale_percent, hull_percent) for the given side.
-    pub fn calculate_damage(&self, side: Side) -> (u32, u32) {
+    /// Total raw damage taken by `side` from shots + rocks + rams + head-on.
+    fn total_damage(&self, side: Side) -> u64 {
         let (values, own_ship, other_ship) = match side {
             Side::Left => (&self.left, &SHIPS[self.left_ship], &SHIPS[self.right_ship]),
             Side::Right => (&self.right, &SHIPS[self.right_ship], &SHIPS[self.left_ship]),
@@ -100,12 +102,40 @@ impl DamageApp {
             if own_ship.ship_size_class != other_ship.ship_size_class { 2 } else { 1 };
         let headon_dmg = self.headon as u64 * other_ship.ram_damage as u64 * headon_mult;
 
-        let total = shot_dmg + rock_dmg + ram_dmg + headon_dmg;
+        shot_dmg + rock_dmg + ram_dmg + headon_dmg
+    }
+
+    /// Returns (morale_percent, hull_percent) for the given side.
+    pub fn calculate_damage(&self, side: Side) -> (u32, u32) {
+        let own_ship = match side {
+            Side::Left => &SHIPS[self.left_ship],
+            Side::Right => &SHIPS[self.right_ship],
+        };
+
+        let total = self.total_damage(side);
 
         let morale_pct = (total * 100 / own_ship.morale_hp as u64).min(100) as u32;
         let hull_pct = (total * 100 / own_ship.hull_hp as u64).min(100) as u32;
 
         (morale_pct, hull_pct)
+    }
+
+    /// Returns (shots-to-max-morale, shots-to-sink) for `side`: how many more
+    /// shots from the opposing ship's cannons it would take, given the damage
+    /// already entered. Each saturates at 0 once that threshold is reached.
+    pub fn shots_left(&self, side: Side) -> (u32, u32) {
+        let (own_ship, other_ship) = match side {
+            Side::Left => (&SHIPS[self.left_ship], &SHIPS[self.right_ship]),
+            Side::Right => (&SHIPS[self.right_ship], &SHIPS[self.left_ship]),
+        };
+
+        let cannon_dmg = other_ship.cannon_size.damage() as u64;
+        let total = self.total_damage(side);
+
+        let to_morale = (own_ship.morale_hp as u64).saturating_sub(total);
+        let to_hull = (own_ship.hull_hp as u64).saturating_sub(total);
+
+        (to_morale.div_ceil(cannon_dmg) as u32, to_hull.div_ceil(cannon_dmg) as u32)
     }
 
     fn values_mut(&mut self, side: Side) -> &mut [u32; 3] {
@@ -311,5 +341,41 @@ impl DamageApp {
             _ => {}
         }
         InputResult::Consumed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `DamageApp::new` starts with both sides as the first ship (Sloop): Small
+    // cannons (960 dmg), morale_hp 5760, hull_hp 9600.
+    const CANNON: u32 = 960;
+    const MORALE_HP: u32 = 5760;
+    const HULL_HP: u32 = 9600;
+
+    #[test]
+    fn shots_left_counts_down_from_full_health() {
+        let app = DamageApp::new();
+        // ceil(5760/960)=6 to max morale, ceil(9600/960)=10 to sink.
+        assert_eq!(app.shots_left(Side::Left), (6, 10));
+        assert_eq!(MORALE_HP.div_ceil(CANNON), 6);
+        assert_eq!(HULL_HP.div_ceil(CANNON), 10);
+    }
+
+    #[test]
+    fn shots_left_accounts_for_damage_already_taken() {
+        let mut app = DamageApp::new();
+        app.left[0] = 1; // one shot taken: 960 damage
+        // remaining morale 4800 -> 5 shots, remaining hull 8640 -> 9 shots.
+        assert_eq!(app.shots_left(Side::Left), (5, 9));
+    }
+
+    #[test]
+    fn shots_left_saturates_at_zero_once_maxed() {
+        let mut app = DamageApp::new();
+        app.left[0] = 6; // 5760 damage = morale capped
+        // morale exhausted -> 0; hull has 3840 left -> 4 shots.
+        assert_eq!(app.shots_left(Side::Left), (0, 4));
     }
 }

@@ -6,7 +6,7 @@ use crate::ships::SHIPS;
 use crate::utils::offset_title;
 use super::{
     BUTTON_LABELS, CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON,
-    ROW_SHIP, Side,
+    ROW_SHIP, ROW_SHOTS_LEFT, Side,
 };
 
 const COL_GAP: u16 = 3;
@@ -205,6 +205,26 @@ fn render_standard_row(
             rect: row_cols[4],
             target: ClickTarget::DamageCell { row, side: Side::Right },
         });
+    } else if row == ROW_SHOTS_LEFT {
+        // Shots Left row: view-only, calculated `N / M` per side (N = shots to max
+        // morale damage, M = shots to sink). Shares the Damage row's colored bar,
+        // driven by the same morale/hull percentages.
+        let (left_n, left_m) = app.shots_left(Side::Left);
+        let (right_n, right_m) = app.shots_left(Side::Right);
+        let (left_morale, left_hull) = app.calculate_damage(Side::Left);
+        let (right_morale, right_hull) = app.calculate_damage(Side::Right);
+
+        frame.render_widget(
+            Paragraph::new(format!("{} / {}", left_n, left_m)).centered(),
+            row_cols[0],
+        );
+        apply_damage_bar(frame, row_cols[0], left_morale, left_hull, false);
+
+        frame.render_widget(
+            Paragraph::new(format!("{} / {}", right_n, right_m)).centered(),
+            row_cols[4],
+        );
+        apply_damage_bar(frame, row_cols[4], right_morale, right_hull, true);
     } else if row < ROW_DAMAGE {
         let li = row - 1;
 
@@ -225,13 +245,13 @@ fn render_standard_row(
         let (right_morale, right_hull) = app.calculate_damage(Side::Right);
 
         frame.render_widget(
-            Paragraph::new(format!("{}%/{}%", left_morale, left_hull)).centered(),
+            Paragraph::new(format!("{}% / {}%", left_morale, left_hull)).centered(),
             row_cols[0],
         );
         apply_damage_bar(frame, row_cols[0], left_morale, left_hull, false);
 
         frame.render_widget(
-            Paragraph::new(format!("{}%/{}%", right_morale, right_hull)).centered(),
+            Paragraph::new(format!("{}% / {}%", right_morale, right_hull)).centered(),
             row_cols[4],
         );
         apply_damage_bar(frame, row_cols[4], right_morale, right_hull, true);
