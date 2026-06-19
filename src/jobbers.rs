@@ -13,12 +13,15 @@
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use chrono::{DateTime, Duration, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use crate::chatlog::GameState;
 use crate::clickmap::{ClickRegion, ClickTarget};
-use crate::pirate::{self, CachedPirate, Experience, Pirate, Skill, Standing};
+use crate::pirate::{
+    self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, Standing,
+};
 use crate::ships::{Ship, SHIPS};
 
 const TOP_N: usize = 4;
@@ -47,16 +50,23 @@ const SKILL_COLUMNS: &[(Skill, &str)] = &[
 // ---------------------------------------------------------------------------
 
 /// Yoweb stats fetched per pirate, keyed by normalized name, plus bookkeeping
-/// so the background fetcher never requests the same pirate twice.
+/// so the background fetcher never requests the same pirate twice and knows when
+/// a cached entry has gone stale.
 #[derive(Default)]
 pub struct PirateCache {
     /// Successfully fetched pirates, keyed by normalized name. Each entry
-    /// carries fetch timestamps (see [`CachedPirate`]).
+    /// carries its basic profile, trophies, and per-part fetch timestamps.
     pub fetched: HashMap<String, CachedPirate>,
-    /// Names already queued/in-flight/done — dedups the fetch worklist.
-    pub requested: HashSet<String>,
-    /// Fetches currently in flight, for throttling.
-    pub in_flight: usize,
+    /// Normalized names currently being fetched — dedups the worklist and, via
+    /// its length, bounds in-flight concurrency.
+    pub in_flight: HashSet<String>,
+    /// Normalized names confirmed not to exist on yoweb this session (the page
+    /// loaded but named no pirate). Never auto-fetched again; a force-requery
+    /// clears the name so it can be retried.
+    pub gone: HashSet<String>,
+    /// Normalized names queued for a full re-query regardless of staleness, set
+    /// by the force-refresh UI. Drained as each is dispatched.
+    pub forced: HashSet<String>,
 }
 
 impl PirateCache {
@@ -64,16 +74,98 @@ impl PirateCache {
         Self::default()
     }
 
-    /// Look up a pirate's stats by (un-normalized) name.
-    pub fn get(&self, name: &str) -> Option<&Pirate> {
-        self.get_cached(name).map(|c| &c.pirate)
+    /// Look up a pirate's basic profile by (un-normalized) name.
+    pub fn get(&self, name: &str) -> Option<&BasicInfo> {
+        self.get_cached(name).map(|c| &c.basic)
     }
 
-    /// Look up a cached pirate, including its fetch timestamps.
+    /// Look up a cached pirate, including trophies and fetch timestamps.
     pub fn get_cached(&self, name: &str) -> Option<&CachedPirate> {
         pirate::normalize_name(name)
             .ok()
             .and_then(|n| self.fetched.get(&n))
+    }
+
+    /// Queue `name` for a full re-query on the next worklist pass, ignoring
+    /// staleness and any prior not-found result. Used by the force-refresh UI
+    /// (still to be wired up).
+    #[allow(dead_code)]
+    pub fn force_requery(&mut self, name: &str) {
+        if let Ok(norm) = pirate::normalize_name(name) {
+            self.gone.remove(&norm);
+            self.forced.insert(norm);
+        }
+    }
+
+    /// Decide which yoweb pages to (re)fetch for an already-normalized `norm`,
+    /// or `None` if nothing is due. A forced or never-seen pirate fetches both
+    /// pages; otherwise each page is fetched only once its TTL has elapsed.
+    pub fn fetch_plan(
+        &self,
+        norm: &str,
+        basic_ttl: Duration,
+        trophy_ttl: Duration,
+        now: DateTime<Utc>,
+    ) -> Option<FetchPlan> {
+        if self.forced.contains(norm) {
+            return Some(FetchPlan { basic: true, trophies: true });
+        }
+        match self.fetched.get(norm) {
+            None => Some(FetchPlan { basic: true, trophies: true }),
+            Some(c) => {
+                let basic = now.signed_duration_since(c.basic_fetched_at) >= basic_ttl;
+                let trophies = now.signed_duration_since(c.trophies_fetched_at) >= trophy_ttl;
+                (basic || trophies).then_some(FetchPlan { basic, trophies })
+            }
+        }
+    }
+
+    /// Fold a completed fetch for `norm` into the cache, swapping in whichever
+    /// parts came back fresh, and clear the name's in-flight/forced bookkeeping.
+    pub fn apply_update(&mut self, norm: String, update: PirateUpdate) {
+        self.in_flight.remove(&norm);
+        self.forced.remove(&norm);
+        match update {
+            PirateUpdate::Refreshed { basic, trophies } => match self.fetched.get_mut(&norm) {
+                Some(entry) => {
+                    if let Some((info, at)) = basic {
+                        entry.basic = info;
+                        entry.basic_fetched_at = at;
+                    }
+                    if let Some((t, at)) = trophies {
+                        entry.trophies = t;
+                        entry.trophies_fetched_at = at;
+                    }
+                }
+                // A brand-new pirate always fetches the basic page first, so
+                // `basic` is present here; trophies may lag behind, left stale so
+                // the next pass retries them.
+                None => {
+                    if let Some((info, basic_at)) = basic {
+                        let (trophies, trophies_at) = match trophies {
+                            Some((t, at)) => (t, at),
+                            None => (Default::default(), DateTime::<Utc>::MIN_UTC),
+                        };
+                        self.fetched.insert(
+                            norm,
+                            CachedPirate {
+                                basic: info,
+                                trophies,
+                                basic_fetched_at: basic_at,
+                                trophies_fetched_at: trophies_at,
+                            },
+                        );
+                    }
+                }
+            },
+            PirateUpdate::NotFound => {
+                self.fetched.remove(&norm);
+                self.gone.insert(norm);
+            }
+            // Transport/server error: keep whatever we have; the name stays
+            // eligible for a later requery.
+            PirateUpdate::Error(_) => {}
+        }
     }
 }
 

@@ -69,6 +69,16 @@ struct Args {
     /// calculation needs a Market ocean (Emerald, Meridian, or Cerulean).
     #[arg(long, value_name = "OCEAN", value_parser = parse_ocean)]
     ocean: Option<Ocean>,
+
+    /// Days before a cached pirate's basic profile is treated as stale and
+    /// re-queried in the background.
+    #[arg(long, value_name = "DAYS", default_value_t = 3)]
+    pirate_ttl_days: i64,
+
+    /// Days before a cached pirate's trophies are treated as stale and
+    /// re-queried in the background.
+    #[arg(long, value_name = "DAYS", default_value_t = 7)]
+    trophy_ttl_days: i64,
 }
 
 fn parse_ocean(s: &str) -> Result<Ocean, String> {
@@ -149,9 +159,9 @@ async fn main() -> io::Result<()> {
     let mut shell = AppShell::new(commodities);
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
-    // Pre-seed pirate stats from the cache so they aren't re-queried (our own
-    // pirate included), while still allowing newly-seen pirates to be fetched.
-    shell.pirate_cache.requested = this_ocean.players.keys().cloned().collect();
+    // Pre-seed pirate stats from the cache. They're refreshed lazily: a cached
+    // pirate is only re-queried once it's both relevant (seen in the log) and
+    // past its staleness TTL, so startup never blocks on a refetch burst.
     shell.pirate_cache.fetched = this_ocean.players;
 
     // -- Load inventory --
@@ -211,8 +221,10 @@ async fn main() -> io::Result<()> {
 
     // -- Background pirate-stat fetching (yoweb), deduped + throttled --
     const MAX_PIRATE_FETCHES: usize = 4;
+    let basic_ttl = chrono::Duration::days(args.pirate_ttl_days.max(0));
+    let trophy_ttl = chrono::Duration::days(args.trophy_ttl_days.max(0));
     let (pirate_tx, mut pirate_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, Result<pirate::CachedPirate, String>)>();
+        tokio::sync::mpsc::unbounded_channel::<(String, pirate::PirateUpdate)>();
     let pirate_client = reqwest::Client::new();
 
     // -- Terminal setup --
@@ -235,41 +247,60 @@ async fn main() -> io::Result<()> {
             shell.chatlog.process_line(&line);
         }
 
-        // Absorb completed pirate fetches.
-        while let Ok((key, result)) = pirate_rx.try_recv() {
-            shell.pirate_cache.in_flight = shell.pirate_cache.in_flight.saturating_sub(1);
-            if let Ok(pirate) = result {
-                shell.pirate_cache.fetched.insert(key, pirate);
-            }
-            // On error we keep `key` in `requested` so we don't retry-storm.
+        // Absorb completed pirate fetches, folding each into the cache.
+        while let Ok((key, update)) = pirate_rx.try_recv() {
+            shell.pirate_cache.apply_update(key, update);
         }
 
-        // Queue fetches for any newly-seen pirates (plus ourselves), throttled.
+        // Queue (re)fetches for relevant pirates: those seen in the log, plus
+        // ourselves and anything explicitly forced. Each is fetched only when a
+        // page is missing or past its TTL, bounded by the concurrency cap.
         // yoweb is per-ocean, so this only runs when an ocean is known.
         if let Some(pirate_ocean) = ocean.filter(|_| args.chat_log.is_some()) {
+            let now = chrono::Utc::now();
             let mut names = shell.chatlog.all_pirate_names();
             if let Some(ref me) = shell.chatlog.player_name {
                 names.insert(me.to_string());
             }
+            names.extend(shell.pirate_cache.forced.iter().cloned());
+
+            // Decide the worklist first (immutable borrows), then dispatch.
+            let mut to_fetch: Vec<(String, pirate::FetchPlan)> = Vec::new();
+            let mut slots =
+                MAX_PIRATE_FETCHES.saturating_sub(shell.pirate_cache.in_flight.len());
             for name in names {
-                if MAX_PIRATE_FETCHES <= shell.pirate_cache.in_flight {
+                if slots == 0 {
                     break;
                 }
                 let Ok(norm) = pirate::normalize_name(&name) else {
                     continue;
                 };
-                if shell.pirate_cache.fetched.contains_key(&norm)
-                    || shell.pirate_cache.requested.contains(&norm)
+                if shell.pirate_cache.in_flight.contains(&norm) {
+                    continue;
+                }
+                // A confirmed not-found pirate is skipped unless forced.
+                if shell.pirate_cache.gone.contains(&norm)
+                    && !shell.pirate_cache.forced.contains(&norm)
                 {
                     continue;
                 }
-                shell.pirate_cache.requested.insert(norm.clone());
-                shell.pirate_cache.in_flight += 1;
+                let Some(plan) =
+                    shell.pirate_cache.fetch_plan(&norm, basic_ttl, trophy_ttl, now)
+                else {
+                    continue;
+                };
+                shell.pirate_cache.in_flight.insert(norm.clone());
+                to_fetch.push((norm, plan));
+                slots -= 1;
+            }
+
+            for (norm, plan) in to_fetch {
                 let tx = pirate_tx.clone();
                 let client = pirate_client.clone();
                 tokio::spawn(async move {
-                    let result = pirate::fetch_pirate(&client, &norm, pirate_ocean).await;
-                    let _ = tx.send((norm, result));
+                    let update =
+                        pirate::fetch_pirate_update(&client, &norm, pirate_ocean, plan).await;
+                    let _ = tx.send((norm, update));
                 });
             }
         }

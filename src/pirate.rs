@@ -275,8 +275,11 @@ impl TrophySection {
     }
 }
 
+/// A pirate's basic profile from the `pirate.wm` page: identity, crew/flag
+/// affiliation, reputation and skills. Trophies live separately (see
+/// [`Trophies`]) because they're on a different page that ages independently.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Pirate {
+pub struct BasicInfo {
     pub name: String,
     pub crew_rank: String,
     pub crew_name: String,
@@ -284,12 +287,17 @@ pub struct Pirate {
     pub flag_name: String,
     pub reputation: HashMap<ReputationType, Fame>,
     pub skills: HashMap<Skill, SkillRecord>,
-    pub trophies: Vec<TrophySection>,
 }
 
-impl Pirate {
+/// A pirate's trophies, grouped into the sections yoweb displays them in.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct Trophies {
+    pub sections: Vec<TrophySection>,
+}
+
+impl Trophies {
     pub fn has_trophy(&self, name: &str) -> bool {
-        self.trophies.iter().any(|s| s.has_trophy(name))
+        self.sections.iter().any(|s| s.has_trophy(name))
     }
 }
 
@@ -299,11 +307,41 @@ impl Pirate {
 /// timestamps — letting callers decide how stale each may be before refetching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedPirate {
-    pub pirate: Pirate,
+    /// Basic profile (the `pirate.wm` page).
+    pub basic: BasicInfo,
+    /// Trophies (a separate page).
+    #[serde(default)]
+    pub trophies: Trophies,
     /// When the basic pirate page was last fetched.
     pub basic_fetched_at: DateTime<Utc>,
     /// When the trophy list was last fetched.
     pub trophies_fetched_at: DateTime<Utc>,
+}
+
+/// Which yoweb pages a (re)fetch should pull. The basic page and the trophy page
+/// age independently, so a refetch driven by staleness only pulls the part(s)
+/// that actually expired; a forced refresh pulls both.
+#[derive(Debug, Clone, Copy)]
+pub struct FetchPlan {
+    pub basic: bool,
+    pub trophies: bool,
+}
+
+/// The result of a (partial) pirate fetch, ready to be folded into the cache.
+pub enum PirateUpdate {
+    /// The pages we pulled, each with the instant it was fetched. A part is
+    /// `None` when it wasn't in the plan (or, for trophies, when only that part
+    /// failed while the basic page succeeded — it stays stale for a later retry).
+    Refreshed {
+        basic: Option<(BasicInfo, DateTime<Utc>)>,
+        trophies: Option<(Trophies, DateTime<Utc>)>,
+    },
+    /// The pirate page loaded but named no pirate ("no tell of that pirate"):
+    /// the name doesn't exist or is banned, so the entry should be dropped.
+    NotFound,
+    /// A network or server error — the existing cache should be kept and the
+    /// name remains eligible for a later requery.
+    Error(String),
 }
 
 // ---------------------------------------------------------------------------
@@ -399,41 +437,103 @@ fn url_encode_name(name: &str) -> String {
 // Fetching
 // ---------------------------------------------------------------------------
 
-pub async fn fetch_pirate(
+/// Fetch the parts of a pirate named by `plan` and report what to do with the
+/// cache. Each fetched part is timestamped at the moment it lands, so the basic
+/// profile and trophies carry independent ages. A found part is returned whole,
+/// ready to replace the cached object in one swap.
+pub async fn fetch_pirate_update(
     client: &reqwest::Client,
     name: &str,
     ocean: Ocean,
-) -> Result<CachedPirate, String> {
-    let normalized = normalize_name(name)?;
+    plan: FetchPlan,
+) -> PirateUpdate {
+    let normalized = match normalize_name(name) {
+        Ok(n) => n,
+        Err(e) => return PirateUpdate::Error(e),
+    };
     let encoded = url_encode_name(&normalized);
     let yoweb_base = ocean.yoweb_base();
 
-    let pirate_url = format!("{yoweb_base}/pirate.wm?target={encoded}");
-    let pirate_html =
-        throttled(Service::PuzzlePirates, || client.get(&pirate_url).send())
-            .await
-            .map_err(|e| format!("failed to fetch pirate page: {e}"))?
-            .text()
-            .await
-            .map_err(|e| format!("failed to read pirate page: {e}"))?;
-    let mut pirate = parse_pirate_page(&pirate_html);
-    let basic_fetched_at = Utc::now();
+    let mut basic = None;
+    if plan.basic {
+        match fetch_basic_page(client, &yoweb_base, &encoded).await {
+            BasicOutcome::Found(info) => basic = Some((info, Utc::now())),
+            BasicOutcome::NotFound => return PirateUpdate::NotFound,
+            BasicOutcome::Error(e) => return PirateUpdate::Error(e),
+        }
+    }
 
-    let trophy_url = format!("{yoweb_base}/trophy/?pirate={encoded}&classic=$classic");
-    let trophy_html =
-        throttled(Service::PuzzlePirates, || client.get(&trophy_url).send())
-            .await
-            .map_err(|e| format!("failed to fetch trophy page: {e}"))?
-            .text()
-            .await
-            .map_err(|e| format!("failed to read trophy page: {e}"))?;
-    pirate.trophies = parse_trophy_page(&trophy_html);
-    let trophies_fetched_at = Utc::now();
+    let mut trophies = None;
+    if plan.trophies {
+        match fetch_trophy_page(client, &yoweb_base, &encoded).await {
+            Ok(t) => trophies = Some((t, Utc::now())),
+            // If the basic page already came back fresh, keep it and let the
+            // trophies stay stale for a later retry; otherwise it's a plain error.
+            Err(e) if basic.is_none() => return PirateUpdate::Error(e),
+            Err(_) => {}
+        }
+    }
 
-    Ok(CachedPirate {
-        pirate,
-        basic_fetched_at,
-        trophies_fetched_at,
+    PirateUpdate::Refreshed { basic, trophies }
+}
+
+/// Outcome of fetching just the basic pirate page.
+enum BasicOutcome {
+    Found(BasicInfo),
+    /// HTTP 200 but no pirate named on the page — doesn't exist or is banned.
+    NotFound,
+    Error(String),
+}
+
+/// Fetch and parse the basic pirate page (`pirate.wm`). A successful HTTP
+/// response that names no pirate is [`BasicOutcome::NotFound`]; transport or
+/// non-2xx responses are [`BasicOutcome::Error`].
+async fn fetch_basic_page(
+    client: &reqwest::Client,
+    yoweb_base: &str,
+    encoded: &str,
+) -> BasicOutcome {
+    let url = format!("{yoweb_base}/pirate.wm?target={encoded}");
+    let resp = match throttled(Service::PuzzlePirates, || client.get(&url).send()).await {
+        Ok(r) => r,
+        Err(e) => return BasicOutcome::Error(format!("failed to fetch pirate page: {e}")),
+    };
+    if !resp.status().is_success() {
+        return BasicOutcome::Error(format!("pirate page returned HTTP {}", resp.status()));
+    }
+    let html = match resp.text().await {
+        Ok(t) => t,
+        Err(e) => return BasicOutcome::Error(format!("failed to read pirate page: {e}")),
+    };
+    let info = parse_pirate_page(&html);
+    if info.name.is_empty() {
+        BasicOutcome::NotFound
+    } else {
+        BasicOutcome::Found(info)
+    }
+}
+
+/// Fetch and parse the trophy page. A non-2xx or transport failure is an error;
+/// the trophy page has no "no such pirate" state of its own (existence is
+/// decided by the basic page).
+async fn fetch_trophy_page(
+    client: &reqwest::Client,
+    yoweb_base: &str,
+    encoded: &str,
+) -> Result<Trophies, String> {
+    let url = format!("{yoweb_base}/trophy/?pirate={encoded}&classic=$classic");
+    let resp = throttled(Service::PuzzlePirates, || client.get(&url).send())
+        .await
+        .map_err(|e| format!("failed to fetch trophy page: {e}"))?;
+    if !resp.status().is_success() {
+        return Err(format!("trophy page returned HTTP {}", resp.status()));
+    }
+    let html = resp
+        .text()
+        .await
+        .map_err(|e| format!("failed to read trophy page: {e}"))?;
+    Ok(Trophies {
+        sections: parse_trophy_page(&html),
     })
 }
 
@@ -464,7 +564,7 @@ pub async fn verify_exists(
 // Pirate page parsing
 // ---------------------------------------------------------------------------
 
-fn parse_pirate_page(html: &str) -> Pirate {
+fn parse_pirate_page(html: &str) -> BasicInfo {
     let document = Html::parse_document(html);
 
     let name = parse_name(&document);
@@ -473,7 +573,7 @@ fn parse_pirate_page(html: &str) -> Pirate {
     let reputation = parse_reputation(&document);
     let skills = parse_skills(&document);
 
-    Pirate {
+    BasicInfo {
         name,
         crew_rank,
         crew_name,
@@ -481,7 +581,6 @@ fn parse_pirate_page(html: &str) -> Pirate {
         flag_name,
         reputation,
         skills,
-        trophies: Vec::new(),
     }
 }
 
