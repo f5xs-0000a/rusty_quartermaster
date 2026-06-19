@@ -1,6 +1,7 @@
 use ratatui::prelude::Rect;
 
 use crate::damage::Side;
+use crate::jobbers::JobberPane;
 
 #[derive(Clone, Debug)]
 pub enum ClickTarget {
@@ -20,13 +21,17 @@ pub enum ClickTarget {
     DamageHeadonDecrement,
     DamageButton(usize),
     DamageShipItem(usize),
-    JobberVessel(usize),
+    JobberVesselButton,
+    JobberVesselItem(usize),
     JobberShipType,
     JobberShipItem(usize),
+    JobberVoyageType,
+    JobberVoyageItem(usize),
     JobberUnpoison,
     JobberAboardList,
     JobberGreedyList,
     JobberPlankedList,
+    JobberPirate { pane: JobberPane, idx: usize },
 }
 
 #[derive(Clone)]

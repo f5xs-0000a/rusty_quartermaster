@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
+use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
@@ -10,7 +10,9 @@ use crate::ocean::Ocean;
 use crate::chatlog::GameState;
 use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
-use crate::jobbers::{self, JobberFocus, JobbersUi, PirateCache};
+use crate::jobbers::{
+    self, JobberFocus, JobberPane, JobbersUi, PirateCache, VOYAGE_TYPES,
+};
 use crate::profits::ProfitsApp;
 use crate::utils::{offset_title, text_similarity};
 
@@ -500,7 +502,11 @@ impl AppShell {
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => self.profits.popup.is_some(),
             AppId::Damage => self.damage.popup.is_some(),
-            AppId::Chatlog => self.jobbers_ui.ship_popup.is_some(),
+            AppId::Chatlog => {
+                self.jobbers_ui.ship_popup.is_some()
+                    || self.jobbers_ui.vessel_popup.is_some()
+                    || self.jobbers_ui.voyage_popup.is_some()
+            }
             AppId::Voyage | AppId::Exit => false,
         }
     }
@@ -540,7 +546,7 @@ impl AppShell {
     /// Drop focus from the bar into the selected app's content.
     fn enter_app(&mut self) {
         self.global_focus = GlobalFocus::Content;
-        // Entering the Jobbers page lands on the Vessels list.
+        // Entering the Jobbers page lands on the Vessels button (the top widget).
         self.jobbers_ui.focus = JobberFocus::Vessels;
         // Entering Profits lands on the topmost widget (the first parameter),
         // not the search box at the bottom of the stack.
@@ -561,74 +567,82 @@ impl AppShell {
     fn handle_jobbers_key(&mut self, key: KeyEvent) -> InputResult {
         use JobberFocus::*;
 
-        // The ship-type popup is modal: it eats keys until dismissed.
+        // The picker popups are modal: each eats keys until dismissed.
         if let Some(sel) = self.jobbers_ui.ship_popup {
             return self.handle_ship_popup_key(key, sel);
         }
-
-        // Shift+Up/Down scrolls the focused list (rather than navigating).
-        if key.modifiers.contains(KeyModifiers::SHIFT)
-            && matches!(key.code, KeyCode::Up | KeyCode::Down)
-        {
-            let delta = if key.code == KeyCode::Up { -1 } else { 1 };
-            self.jobbers_scroll_focused(delta);
-            return InputResult::Consumed;
+        if let Some(sel) = self.jobbers_ui.vessel_popup {
+            return self.handle_vessel_popup_key(key, sel);
         }
+        if let Some(sel) = self.jobbers_ui.voyage_popup {
+            return self.handle_voyage_popup_key(key, sel);
+        }
+
+        let pillage = self.jobbers_ui.voyage_type.implemented();
+        let poisoned = self.selected_poisoned();
+        // The voyage box's bottom row: Unpoison when poisoned, else Voyage Type.
+        let box_bottom = if poisoned { Unpoison } else { VoyageType };
 
         match key.code {
             KeyCode::Esc => return InputResult::Exit,
-            // Left from the right-hand lists steps back to the vessel column; the
-            // left column has nowhere further to go.
-            KeyCode::Left => match self.jobbers_ui.focus {
-                Vessels | ShipType | Unpoison => {}
-                Aboard | Greedy | Planked => self.jobbers_ui.focus = Vessels,
-            },
-            KeyCode::Right => match self.jobbers_ui.focus {
-                Vessels | ShipType | Unpoison => self.jobbers_ui.focus = Aboard,
-                _ => {}
-            },
             KeyCode::Up => match self.jobbers_ui.focus {
-                // The vessel list is the page's top widget; ↑ from its first
-                // entry hands focus back to the top bar.
-                Vessels => {
-                    if self.jobbers_at_first_vessel() {
-                        return InputResult::Exit;
-                    }
-                    self.jobbers_select_delta(-1);
-                }
+                // The Vessels button is the page's top widget; ↑ returns to the bar.
+                Vessels => return InputResult::Exit,
                 ShipType => self.jobbers_ui.focus = Vessels,
-                Unpoison => self.jobbers_ui.focus = ShipType,
-                Aboard => {}
-                Greedy => self.jobbers_ui.focus = Aboard,
-                Planked => self.jobbers_ui.focus = Greedy,
+                VoyageType => self.jobbers_ui.focus = ShipType,
+                Unpoison => self.jobbers_ui.focus = VoyageType,
+                Aboard | Greedy | Planked => {
+                    let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                    // At the top of a pane (or an empty one), ↑ leaves for the box.
+                    if self.jobbers_pane_count(pane) == 0 || self.jobbers_pane_sel(pane) == 0 {
+                        self.jobbers_ui.focus = box_bottom;
+                    } else {
+                        self.jobbers_pane_select_delta(pane, -1);
+                    }
+                }
             },
             KeyCode::Down => match self.jobbers_ui.focus {
-                Vessels => {
-                    // Past the last vessel, drop onto the Ship Type widget.
-                    if self.jobbers_at_last_vessel() {
-                        self.jobbers_ui.focus = ShipType;
+                Vessels => self.jobbers_ui.focus = ShipType,
+                ShipType => self.jobbers_ui.focus = VoyageType,
+                VoyageType => {
+                    self.jobbers_ui.focus = if poisoned {
+                        Unpoison
+                    } else if pillage {
+                        Aboard
                     } else {
-                        self.jobbers_select_delta(1);
+                        VoyageType
+                    };
+                }
+                Unpoison => {
+                    if pillage {
+                        self.jobbers_ui.focus = Aboard;
                     }
                 }
-                // Unpoison is only reachable while the vessel is poisoned.
-                ShipType => {
-                    if self.selected_poisoned() {
-                        self.jobbers_ui.focus = Unpoison;
-                    }
+                Aboard | Greedy | Planked => {
+                    let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                    self.jobbers_pane_select_delta(pane, 1);
                 }
-                Unpoison => {}
+            },
+            KeyCode::Left => match self.jobbers_ui.focus {
+                Greedy => self.jobbers_ui.focus = Aboard,
+                Planked => self.jobbers_ui.focus = Greedy,
+                _ => {}
+            },
+            KeyCode::Right => match self.jobbers_ui.focus {
                 Aboard => self.jobbers_ui.focus = Greedy,
                 Greedy => self.jobbers_ui.focus = Planked,
-                Planked => {}
+                _ => {}
             },
             KeyCode::Enter => match self.jobbers_ui.focus {
+                Vessels => self.open_vessel_popup(),
+                ShipType => self.open_ship_popup(),
+                VoyageType => self.open_voyage_popup(),
                 Unpoison => {
                     self.jobbers_unpoison();
                     self.jobbers_ui.focus = Vessels;
                 }
-                ShipType => self.open_ship_popup(),
-                _ => {}
+                // Pirate-stats popup is the next chunk of work.
+                Aboard | Greedy | Planked => {}
             },
             _ => {}
         }
@@ -674,23 +688,8 @@ impl AppShell {
         InputResult::Consumed
     }
 
-    /// Scroll the currently-focused list by `delta` rows.
-    fn jobbers_scroll_focused(&mut self, delta: i32) {
-        let offset = match self.jobbers_ui.focus {
-            JobberFocus::Aboard => &mut self.jobbers_ui.aboard_offset,
-            JobberFocus::Greedy => &mut self.jobbers_ui.greedy_offset,
-            JobberFocus::Planked => &mut self.jobbers_ui.planked_offset,
-            _ => return,
-        };
-        *offset = if delta < 0 {
-            offset.saturating_sub(1)
-        } else {
-            offset.saturating_add(1)
-        };
-    }
-
-    /// Move the vessel selection up/down the latest-first list.
-    fn jobbers_select_delta(&mut self, delta: i32) {
+    /// Open the vessel picker popup, highlighting the current selection.
+    fn open_vessel_popup(&mut self) {
         let ordered = self.chatlog.vessels_by_recency();
         if ordered.is_empty() {
             return;
@@ -700,28 +699,133 @@ impl AppShell {
             .selected
             .as_ref()
             .and_then(|s| ordered.iter().position(|k| k == s))
-            .unwrap_or(0) as i32;
-        let next = (cur + delta).clamp(0, ordered.len() as i32 - 1) as usize;
-        self.jobbers_ui.selected = Some(ordered[next].clone());
+            .unwrap_or(0);
+        self.jobbers_ui.vessel_popup = Some(cur);
+        self.jobbers_ui.focus = JobberFocus::Vessels;
     }
 
-    /// Whether the selected vessel is the first (top) one in the list, or there
-    /// is no selection / no vessels at all.
-    fn jobbers_at_first_vessel(&self) -> bool {
+    /// Modal key handling while the vessel picker is open.
+    fn handle_vessel_popup_key(&mut self, key: KeyEvent, sel: usize) -> InputResult {
         let ordered = self.chatlog.vessels_by_recency();
-        match (&self.jobbers_ui.selected, ordered.first()) {
-            (Some(sel), Some(first)) => sel == first,
-            _ => true,
+        match key.code {
+            KeyCode::Esc => self.jobbers_ui.vessel_popup = None,
+            KeyCode::Up => {
+                if sel > 0 {
+                    self.jobbers_ui.vessel_popup = Some(sel - 1);
+                }
+            }
+            KeyCode::Down => {
+                if sel + 1 < ordered.len() {
+                    self.jobbers_ui.vessel_popup = Some(sel + 1);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(k) = ordered.get(sel) {
+                    self.jobbers_ui.selected = Some(k.clone());
+                }
+                self.jobbers_ui.vessel_popup = None;
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Open the voyage-type picker popup, highlighting the current type.
+    fn open_voyage_popup(&mut self) {
+        let cur = VOYAGE_TYPES
+            .iter()
+            .position(|v| *v == self.jobbers_ui.voyage_type)
+            .unwrap_or(0);
+        self.jobbers_ui.voyage_popup = Some(cur);
+        self.jobbers_ui.focus = JobberFocus::VoyageType;
+    }
+
+    /// Modal key handling while the voyage-type picker is open.
+    fn handle_voyage_popup_key(&mut self, key: KeyEvent, sel: usize) -> InputResult {
+        match key.code {
+            KeyCode::Esc => self.jobbers_ui.voyage_popup = None,
+            KeyCode::Up => {
+                if sel > 0 {
+                    self.jobbers_ui.voyage_popup = Some(sel - 1);
+                }
+            }
+            KeyCode::Down => {
+                if sel + 1 < VOYAGE_TYPES.len() {
+                    self.jobbers_ui.voyage_popup = Some(sel + 1);
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(v) = VOYAGE_TYPES.get(sel) {
+                    self.jobbers_ui.voyage_type = *v;
+                }
+                self.jobbers_ui.voyage_popup = None;
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Map a pane focus to its [`JobberPane`], or `None` for non-pane focuses.
+    fn focus_pane(focus: JobberFocus) -> Option<JobberPane> {
+        match focus {
+            JobberFocus::Aboard => Some(JobberPane::Aboard),
+            JobberFocus::Greedy => Some(JobberPane::Greedy),
+            JobberFocus::Planked => Some(JobberPane::Planked),
+            _ => None,
         }
     }
 
-    /// Whether the selected vessel is the last (bottom) one in the list.
-    fn jobbers_at_last_vessel(&self) -> bool {
-        let ordered = self.chatlog.vessels_by_recency();
-        match (&self.jobbers_ui.selected, ordered.last()) {
-            (Some(sel), Some(last)) => sel == last,
-            _ => false,
+    /// Number of selectable pirates in a pane for the selected vessel.
+    fn jobbers_pane_count(&self, pane: JobberPane) -> usize {
+        let Some(key) = self.jobbers_ui.selected.as_ref() else {
+            return 0;
+        };
+        match pane {
+            JobberPane::Aboard => self.chatlog.aboard(key).len(),
+            JobberPane::Greedy => self
+                .chatlog
+                .vessels
+                .get(key)
+                .map_or(0, |v| v.greedy_by_pirate.len()),
+            JobberPane::Planked => self
+                .chatlog
+                .vessels
+                .get(key)
+                .map_or(0, |v| v.planked_by_us.len()),
         }
+    }
+
+    fn jobbers_pane_sel_mut(&mut self, pane: JobberPane) -> &mut usize {
+        match pane {
+            JobberPane::Aboard => &mut self.jobbers_ui.aboard_sel,
+            JobberPane::Greedy => &mut self.jobbers_ui.greedy_sel,
+            JobberPane::Planked => &mut self.jobbers_ui.planked_sel,
+        }
+    }
+
+    /// The pane's current selection, clamped to its live pirate count.
+    fn jobbers_pane_sel(&self, pane: JobberPane) -> usize {
+        let n = self.jobbers_pane_count(pane);
+        let raw = match pane {
+            JobberPane::Aboard => self.jobbers_ui.aboard_sel,
+            JobberPane::Greedy => self.jobbers_ui.greedy_sel,
+            JobberPane::Planked => self.jobbers_ui.planked_sel,
+        };
+        if n == 0 {
+            0
+        } else {
+            raw.min(n - 1)
+        }
+    }
+
+    /// Move a pane's selection by `delta`, clamped to the pirate count.
+    fn jobbers_pane_select_delta(&mut self, pane: JobberPane, delta: i32) {
+        let n = self.jobbers_pane_count(pane);
+        if n == 0 {
+            return;
+        }
+        let next = (self.jobbers_pane_sel(pane) as i32 + delta).clamp(0, n as i32 - 1) as usize;
+        *self.jobbers_pane_sel_mut(pane) = next;
     }
 
     /// Whether the selected vessel is currently poisoned.
@@ -923,13 +1027,16 @@ impl AppShell {
                     self.damage.popup = None;
                 }
             }
-            ClickTarget::JobberVessel(i) => {
+            ClickTarget::JobberVesselButton => {
                 self.global_focus = GlobalFocus::Content;
-                self.jobbers_ui.focus = JobberFocus::Vessels;
+                self.open_vessel_popup();
+            }
+            ClickTarget::JobberVesselItem(i) => {
                 let ordered = self.chatlog.vessels_by_recency();
                 if let Some(key) = ordered.get(i) {
                     self.jobbers_ui.selected = Some(key.clone());
                 }
+                self.jobbers_ui.vessel_popup = None;
             }
             ClickTarget::JobberShipType => {
                 self.global_focus = GlobalFocus::Content;
@@ -942,6 +1049,16 @@ impl AppShell {
                     }
                 }
                 self.jobbers_ui.ship_popup = None;
+            }
+            ClickTarget::JobberVoyageType => {
+                self.global_focus = GlobalFocus::Content;
+                self.open_voyage_popup();
+            }
+            ClickTarget::JobberVoyageItem(i) => {
+                if let Some(v) = VOYAGE_TYPES.get(i) {
+                    self.jobbers_ui.voyage_type = *v;
+                }
+                self.jobbers_ui.voyage_popup = None;
             }
             ClickTarget::JobberUnpoison => {
                 self.global_focus = GlobalFocus::Content;
@@ -962,6 +1079,15 @@ impl AppShell {
             ClickTarget::JobberPlankedList => {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Planked;
+            }
+            ClickTarget::JobberPirate { pane, idx } => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = match pane {
+                    JobberPane::Aboard => JobberFocus::Aboard,
+                    JobberPane::Greedy => JobberFocus::Greedy,
+                    JobberPane::Planked => JobberFocus::Planked,
+                };
+                *self.jobbers_pane_sel_mut(pane) = idx;
             }
         }
     }
@@ -995,7 +1121,7 @@ impl AppShell {
                 }
             }
             AppId::Chatlog => {
-                // While the ship-type popup is open, the wheel moves its highlight.
+                // While a picker popup is open, the wheel moves its highlight.
                 if let Some(sel) = self.jobbers_ui.ship_popup {
                     let count = crate::ships::SHIPS.len();
                     self.jobbers_ui.ship_popup = Some(if delta < 0 {
@@ -1005,19 +1131,45 @@ impl AppShell {
                     });
                     return;
                 }
-                // Scroll whichever list the cursor is hovering.
-                let target = clickmap::hit_test(&self.click_regions, col, row);
-                let offset = match target {
-                    Some(ClickTarget::JobberAboardList) => &mut self.jobbers_ui.aboard_offset,
-                    Some(ClickTarget::JobberGreedyList) => &mut self.jobbers_ui.greedy_offset,
-                    Some(ClickTarget::JobberPlankedList) => &mut self.jobbers_ui.planked_offset,
+                if let Some(sel) = self.jobbers_ui.vessel_popup {
+                    let count = self.chatlog.vessels_by_recency().len();
+                    self.jobbers_ui.vessel_popup = Some(if delta < 0 {
+                        sel.saturating_sub(1)
+                    } else {
+                        (sel + 1).min(count.saturating_sub(1))
+                    });
+                    return;
+                }
+                if let Some(sel) = self.jobbers_ui.voyage_popup {
+                    let count = VOYAGE_TYPES.len();
+                    self.jobbers_ui.voyage_popup = Some(if delta < 0 {
+                        sel.saturating_sub(1)
+                    } else {
+                        (sel + 1).min(count.saturating_sub(1))
+                    });
+                    return;
+                }
+                // Otherwise move the selection of whichever pane the cursor is over
+                // (the panes auto-scroll to follow the selection).
+                let pane = match clickmap::hit_test(&self.click_regions, col, row) {
+                    Some(ClickTarget::JobberAboardList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Aboard,
+                        ..
+                    }) => JobberPane::Aboard,
+                    Some(ClickTarget::JobberGreedyList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Greedy,
+                        ..
+                    }) => JobberPane::Greedy,
+                    Some(ClickTarget::JobberPlankedList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Planked,
+                        ..
+                    }) => JobberPane::Planked,
                     _ => return,
                 };
-                if delta < 0 {
-                    *offset = offset.saturating_sub(1);
-                } else {
-                    *offset = offset.saturating_add(1);
-                }
+                self.jobbers_pane_select_delta(pane, delta.signum());
             }
             AppId::Voyage | AppId::Exit => {}
         }

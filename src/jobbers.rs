@@ -46,6 +46,56 @@ const SKILL_COLUMNS: &[(Skill, &str)] = &[
     (Skill::BattleNavigation, "B. Navigation"),
 ];
 
+/// The kind of voyage being crewed. Only [`VoyageType::Pillage`] is implemented;
+/// the rest are picker stubs that fall back to a "coming soon" placeholder. New
+/// types only *augment* the Pillage layout with extra stats, so the enum can grow
+/// without disturbing the existing data model.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum VoyageType {
+    #[default]
+    Pillage,
+    Atlantis,
+    CursedIsles,
+    Vampirates,
+    Vikings,
+}
+
+/// Every voyage type, in picker order.
+pub const VOYAGE_TYPES: &[VoyageType] = &[
+    VoyageType::Pillage,
+    VoyageType::Atlantis,
+    VoyageType::CursedIsles,
+    VoyageType::Vampirates,
+    VoyageType::Vikings,
+];
+
+impl VoyageType {
+    /// Display name shown in the Voyage box and its picker.
+    pub fn name(self) -> &'static str {
+        match self {
+            VoyageType::Pillage => "Pillage",
+            VoyageType::Atlantis => "Atlantis",
+            VoyageType::CursedIsles => "Cursed Isles",
+            VoyageType::Vampirates => "Vampirates",
+            VoyageType::Vikings => "Vikings",
+        }
+    }
+
+    /// Whether the full jobbers layout (Top Jobbers + the three panes) is wired up
+    /// for this voyage type. Only Pillage is, for now.
+    pub fn implemented(self) -> bool {
+        matches!(self, VoyageType::Pillage)
+    }
+}
+
+/// One of the three pirate panes along the bottom of the Pillage layout.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum JobberPane {
+    Aboard,
+    Greedy,
+    Planked,
+}
+
 // ---------------------------------------------------------------------------
 // Global pirate stat cache
 // ---------------------------------------------------------------------------
@@ -175,12 +225,14 @@ impl PirateCache {
 // ---------------------------------------------------------------------------
 
 /// Which widget on the page has keyboard focus. The Unpoison button is only
-/// reachable when the selected vessel is actually poisoned.
+/// reachable when the selected vessel is actually poisoned; the three panes only
+/// exist on the Pillage layout.
 #[derive(Default, Clone, Copy, PartialEq, Eq)]
 pub enum JobberFocus {
     #[default]
     Vessels,
     ShipType,
+    VoyageType,
     Unpoison,
     Aboard,
     Greedy,
@@ -192,20 +244,37 @@ pub struct JobbersUi {
     /// Vessel currently shown; resolved against the live vessel set each frame.
     pub selected: Option<Arc<str>>,
     pub focus: JobberFocus,
+    /// Scroll offset of each pane, recomputed each frame to keep the pane's
+    /// selection visible (the panes auto-scroll rather than scroll manually).
     pub aboard_offset: usize,
     pub greedy_offset: usize,
     pub planked_offset: usize,
+    /// Selected pirate index within each pane (into that pane's pirate list).
+    pub aboard_sel: usize,
+    pub greedy_sel: usize,
+    pub planked_sel: usize,
+    /// The voyage type being crewed; gates the Pillage-only layout.
+    pub voyage_type: VoyageType,
     /// Ship type chosen per vessel (index into [`SHIPS`]), keyed by vessel name.
     /// Lives here, not on the `Vessel`, so picks survive a relog state wipe.
     pub ship_types: HashMap<Arc<str>, usize>,
     /// When `Some`, the ship-type popup is open with this highlighted index;
     /// it applies to the currently-selected vessel.
     pub ship_popup: Option<usize>,
+    /// When `Some`, the vessel picker popup is open with this highlighted index
+    /// (into the latest-first vessel ordering).
+    pub vessel_popup: Option<usize>,
+    /// When `Some`, the voyage-type picker popup is open with this highlighted
+    /// index (into [`VOYAGE_TYPES`]).
+    pub voyage_popup: Option<usize>,
 }
 
 /// Bottom-bar tooltip lines for the current focus (empty when nothing to say).
 pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
     match ui.focus {
+        JobberFocus::Vessels => vec!["Press Enter to pick a vessel."],
+        JobberFocus::ShipType => vec!["Press Enter to pick this vessel's ship type."],
+        JobberFocus::VoyageType => vec!["Press Enter to pick the voyage type."],
         JobberFocus::Unpoison => {
             let poisoned = ui
                 .selected
@@ -218,11 +287,9 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
                 Vec::new()
             }
         }
-        JobberFocus::ShipType => vec!["Press Enter to pick this vessel's ship type."],
         JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
-            vec!["Shift+Up/Down: scroll this list."]
+            vec!["\u{2190}/\u{2192} switch panes \u{00b7} \u{2191}/\u{2193} select pirate"]
         }
-        JobberFocus::Vessels => Vec::new(),
     }
 }
 
@@ -445,7 +512,11 @@ pub fn render(
         .or_else(|| ordered.first().cloned());
     ui.selected = selected.clone();
 
-    // The Unpoison button is only focusable while the vessel is poisoned.
+    let pillage = ui.voyage_type.implemented();
+
+    // The Unpoison button is only focusable while the vessel is poisoned, and the
+    // three panes only exist on the Pillage layout — bounce focus out of either
+    // when it no longer applies.
     let sel_poisoned = selected
         .as_ref()
         .and_then(|k| state.vessels.get(k))
@@ -453,19 +524,19 @@ pub fn render(
     if !sel_poisoned && ui.focus == JobberFocus::Unpoison {
         ui.focus = JobberFocus::Vessels;
     }
+    if !pillage
+        && matches!(
+            ui.focus,
+            JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked
+        )
+    {
+        ui.focus = JobberFocus::VoyageType;
+    }
 
-    // Rank currently-aboard jobbers per skill (reused for the panel + sizing).
-    let aboard_set = selected.as_ref().map(|k| state.aboard(k)).unwrap_or_default();
-    let ranked: Vec<Vec<(String, Experience, Standing)>> = SKILL_COLUMNS
-        .iter()
-        .map(|(skill, _)| rank_for_skill(&aboard_set, cache, skill))
-        .collect();
-
-    // The Top Jobbers panel is the widest piece, so its natural width sets the
-    // width of the whole Jobbers block; the bottom row spans that same width.
-    // Longest ship name, computed at compile time. The Ship Type box (which
-    // shares the left column's width) shows ship names, so the column must fit it.
-    const MAX_SHIP_NAME: u16 = {
+    // ---- Voyage box sizing ----
+    // Longest ship name, computed at compile time — the Ship Type row's value must
+    // fit it.
+    const MAX_SHIP_NAME: usize = {
         let mut max = 0usize;
         let mut i = 0;
         while i < SHIPS.len() {
@@ -475,274 +546,363 @@ pub fn render(
             }
             i += 1;
         }
-        max as u16
+        max
     };
+    let label_w = ["Vessels", "Ship Type", "Voyage Type"]
+        .iter()
+        .map(|s| s.len())
+        .max()
+        .unwrap_or(0) as u16;
+    let vessel_name_w = selected.as_ref().map_or(0, |k| k.chars().count());
+    let voyage_name_w = VOYAGE_TYPES.iter().map(|v| v.name().len()).max().unwrap_or(0);
+    let value_w = vessel_name_w
+        .max(MAX_SHIP_NAME)
+        .max(voyage_name_w)
+        .max("Select ship".len())
+        .max("No vessel".len()) as u16;
+    // label + 2-space gap + value, plus borders(2) + padding(2).
+    let voyage_w = (label_w + 2 + value_w + 4).max(offset_title_width("Voyage"));
 
-    let max_name = ordered.iter().map(|k| k.chars().count()).max().unwrap_or(0);
-    // Each width is a name plus its framing: borders(2) + padding(2) + the "> "
-    // selection marker(2) = 6. Cap at the longest ship name's width so a long
-    // vessel name can't push the left column past the Top Jobbers panel; floor at
-    // the wider of the two stacked titles ("Vessels"/"Ship Type") so they stay
-    // readable when no vessels are aboard (the box would otherwise collapse).
-    let title_min = offset_title_width("Vessels").max(offset_title_width("Ship Type"));
-    let vessel_w = ((max_name as u16 + 6).min(MAX_SHIP_NAME + 6)).max(title_min);
-    let block_w = top_panel_width(&ranked).max(vessel_w + 20);
+    // Staffing data + the warning the chosen ship implies.
+    let vessel = selected.as_ref().and_then(|k| state.vessels.get(k));
+    let aboard_set = selected.as_ref().map(|k| state.aboard(k)).unwrap_or_default();
+    let ship_idx = selected.as_ref().and_then(|k| ui.ship_types.get(k).copied());
+    let swabbies = vessel.map_or(0, |v| v.swabbies);
+    let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], aboard_set.len(), swabbies));
 
-    // The tooltip (focus-dependent help) rides at the bottom of the block so it
-    // shares the block's width rather than spanning the whole content area.
+    // ---- Pillage-only sizing (Top Jobbers + the three panes) ----
+    let ranked: Vec<Vec<(String, Experience, Standing)>> = SKILL_COLUMNS
+        .iter()
+        .map(|(skill, _)| rank_for_skill(&aboard_set, cache, skill))
+        .collect();
+    let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
+    let top_h = top_rows as u16 + 3;
+    let top_panel_w = top_panel_width(&ranked);
+
+    // Per-pane natural widths: content + borders(2) + padding(2), floored at title.
+    let aboard_cw = aboard_set
+        .iter()
+        .map(|n| n.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(if swabbies > 0 {
+            format!("and {swabbies} swabbies").len()
+        } else {
+            0
+        });
+    let greedy: Vec<(&String, u32, u32)> = vessel
+        .map(|v| {
+            v.greedy_by_pirate
+                .iter()
+                .map(|(n, total)| {
+                    let current = v.greedy_current.get(n).copied().unwrap_or(0);
+                    (n, *total, current)
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    let greedy_cw = name_col_plus_value(&greedy);
+    let planked_cw = vessel
+        .map(|v| {
+            v.planked_by_us
+                .iter()
+                .map(|n| n.chars().count())
+                .max()
+                .unwrap_or(0)
+        })
+        .unwrap_or(0);
+    let pane_w = |cw: usize, title: &'static str| (cw as u16 + 4).max(offset_title_width(title));
+    let aboard_w = pane_w(aboard_cw, "Aboard");
+    let greedy_w = pane_w(greedy_cw, "Greedy");
+    let planked_w = pane_w(planked_cw, "Planked");
+    let panes_w = aboard_w + greedy_w + planked_w;
+
+    // ---- Block geometry: centered horizontally, full content height so the panes
+    //      can run the whole way down. ----
+    let block_w = if pillage {
+        voyage_w.max(top_panel_w).max(panes_w)
+    } else {
+        voyage_w.max(offset_title_width("Coming Soon"))
+    };
+    let block_w = block_w.min(area.width.max(1));
+    let block = Rect::new(
+        area.x + area.width.saturating_sub(block_w) / 2,
+        area.y,
+        block_w,
+        area.height,
+    );
+
+    // Voyage box height: 3 rows + (blank + Unpoison) when poisoned + warning lines
+    // + borders(2). Warnings wrap to the block's inner width.
+    let warn_lines: Vec<String> = warn
+        .map(|w| wrap_words(w.message(), block_w.saturating_sub(4) as usize))
+        .unwrap_or_default();
+    let unpoison_h: u16 = if sel_poisoned { 2 } else { 0 };
+    let voyage_h = 3 + unpoison_h + warn_lines.len() as u16 + 2;
+
     let tooltip_lines = tooltip(state, ui);
     let tip_h = tooltip_lines.len() as u16;
 
-    // Total block height = Top Jobbers + the taller of the two bottom columns,
-    // plus the tooltip strip beneath them.
-    let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
-    let top_h = top_rows as u16 + 3;
-    let vessel = selected.as_ref().and_then(|k| state.vessels.get(k));
+    let rows = if pillage {
+        Layout::vertical([
+            Constraint::Length(voyage_h),
+            Constraint::Length(top_h),
+            Constraint::Min(0),
+            Constraint::Length(tip_h),
+        ])
+        .split(block)
+    } else {
+        Layout::vertical([
+            Constraint::Length(voyage_h),
+            Constraint::Min(0),
+            Constraint::Length(tip_h),
+        ])
+        .split(block)
+    };
 
-    // Ship-type widget: the ship chosen for this vessel (if any) and the
-    // staffing warning it implies. Wrapped here so the box can be sized to fit.
-    let ship_idx = selected.as_ref().and_then(|k| ui.ship_types.get(k).copied());
-    let players_aboard = aboard_set.len();
-    let swabbies = vessel.map_or(0, |v| v.swabbies);
-    let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], players_aboard, swabbies));
-    // Box has no padding, so inner text width = box width - borders(2).
-    let warn_lines: Vec<String> = warn
-        .map(|w| wrap_words(w.message(), vessel_w.saturating_sub(2) as usize))
-        .unwrap_or_default();
-    let ship_h = warn_lines.len() as u16 + 3; // ship-name row + warning + borders(2)
-
-    let list_h = |n: usize| (n as u16 + 2).max(3);
-    // Left column: vessels box + ship-type box + unpoison button.
-    let left_h = (ordered.len() as u16 + 2).max(3) + ship_h + 3;
-    // The Aboard box gains one extra row for the "and n swabbies" footer.
-    let aboard_rows = aboard_set.len() + usize::from(vessel.is_some_and(|v| v.swabbies > 0));
-    let lists_h = list_h(aboard_rows)
-        + list_h(vessel.map_or(0, |v| v.greedy_by_pirate.len()))
-        + list_h(vessel.map_or(0, |v| v.planked_by_us.len()));
-    let block_h = top_h + left_h.max(lists_h) + tip_h;
-
-    // Center the whole block in the content area (matches the Damage/Profit
-    // calculators), bounded by the available space.
-    let block_w = block_w.min(area.width);
-    let block_h = block_h.min(area.height);
-    let bx = area.x + area.width.saturating_sub(block_w) / 2;
-    let by = area.y + area.height.saturating_sub(block_h) / 2;
-    let block = Rect::new(bx, by, block_w, block_h);
-
-    // Vertical: Top Jobbers (content height) over the bottom region, with the
-    // tooltip strip beneath them.
-    let top_h = top_h.min(block.height);
-    let rows = Layout::vertical([
-        Constraint::Length(top_h),
-        Constraint::Min(0),
-        Constraint::Length(tip_h),
-    ])
-    .split(block);
-    render_top_panel(frame, rows[0], &ranked, focused);
-
-    // Bottom: left column (vessels + unpoison) beside the stacked lists, which
-    // widen to fill the rest of the block.
-    let bottom = Layout::horizontal([Constraint::Length(vessel_w), Constraint::Min(0)]).split(rows[1]);
-
-    render_left_column(
-        frame, bottom[0], state, &ordered, &selected, ui.focus, focused,
-        ship_idx, warn, &warn_lines, ship_h, regions,
+    render_voyage_box(
+        frame, rows[0], ui, &selected, ship_idx, sel_poisoned, warn, &warn_lines, label_w,
+        focused, regions,
     );
-    render_lists_column(frame, bottom[1], state, cache, selected.as_ref(), &aboard_set, ui, focused, regions);
 
-    // Tooltip: spans the block width, directly under the bottom region.
+    let tip_area = if pillage {
+        render_top_panel(frame, rows[1], &ranked, focused);
+        render_panes(
+            frame, rows[2], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
+            aboard_w, greedy_w, planked_w, regions,
+        );
+        rows[3]
+    } else {
+        render_placeholder(frame, rows[1], ui.voyage_type, focused);
+        rows[2]
+    };
+
     if !tooltip_lines.is_empty() {
         let text: Vec<Line> = tooltip_lines.iter().map(|l| Line::from(*l)).collect();
         frame.render_widget(
             Paragraph::new(text).style(Style::default().fg(Color::DarkGray)),
-            rows[2],
+            tip_area,
         );
     }
 
-    // Ship-type popup, drawn last so it sits atop the page and its click
-    // regions win the reverse-iterating hit test.
+    // Modal popups, drawn last so they sit atop the page and their click regions
+    // win the reverse-iterating hit test.
     if let Some(sel) = ui.ship_popup {
         render_ship_popup(frame, sel, regions);
+    } else if let Some(sel) = ui.vessel_popup {
+        render_vessel_popup(frame, sel, &ordered, state, regions);
+    } else if let Some(sel) = ui.voyage_popup {
+        render_voyage_popup(frame, sel, regions);
     }
 }
 
 // ---------------------------------------------------------------------------
-// Left column: vessel selector + unpoison button (both content-sized)
+// Voyage box: vessel / ship-type / voyage-type buttons + Unpoison
 // ---------------------------------------------------------------------------
 
+/// The Voyage box at the top of the page: a 2-column `label | value` table whose
+/// three value cells are buttons (each opens its picker popup), plus a conditional
+/// Unpoison button and any staffing warning, all framed in one bordered box.
 #[allow(clippy::too_many_arguments)]
-fn render_left_column(
+fn render_voyage_box(
     frame: &mut Frame,
     area: Rect,
-    state: &GameState,
-    ordered: &[Arc<str>],
+    ui: &JobbersUi,
     selected: &Option<Arc<str>>,
-    focus: JobberFocus,
-    focused: bool,
     ship_idx: Option<usize>,
+    poisoned: bool,
     warn: Option<Staffing>,
     warn_lines: &[String],
-    ship_h: u16,
+    label_w: u16,
+    page_focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
-    // Vessels list as tall as its content; Ship Type below it; Unpoison below
-    // that; empty slack beneath. Leave room for the ship-type box + 3-tall button.
-    let reserve = ship_h + 3;
-    let vessels_h =
-        (ordered.len() as u16 + 2).clamp(3, area.height.saturating_sub(reserve).max(3));
-    let chunks = Layout::vertical([
-        Constraint::Length(vessels_h),
-        Constraint::Length(ship_h),
-        Constraint::Length(3),
-        Constraint::Min(0),
-    ])
-    .split(area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style(page_focused))
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Voyage").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    // -- Vessel list --
-    // inner content width = width - borders(2) - padding(2) - highlight "> "(2).
-    let name_w = chunks[0].width.saturating_sub(6) as usize;
-    let items: Vec<ListItem> = ordered
-        .iter()
-        .map(|key| {
-            let poisoned = state.vessels.get(key).is_some_and(|v| v.poisoned);
-            let item = ListItem::new(truncate(key, name_w));
-            if poisoned {
-                item.style(Style::default().fg(Color::Red))
-            } else {
-                item
-            }
-        })
-        .collect();
+    // Three label/value rows, then (when poisoned) a blank + Unpoison line, then
+    // any warning lines, then slack.
+    let mut constraints: Vec<Constraint> = vec![Constraint::Length(1); 3];
+    if poisoned {
+        constraints.push(Constraint::Length(1)); // blank
+        constraints.push(Constraint::Length(1)); // unpoison
+    }
+    for _ in warn_lines {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(0));
+    let rows = Layout::vertical(constraints).split(inner);
 
-    let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(box_border(focused, focus == JobberFocus::Vessels))
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Vessels").0),
-        )
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
-        .highlight_symbol("> ");
-
-    let sel_idx = selected
+    let vessel_value = selected
         .as_ref()
-        .and_then(|s| ordered.iter().position(|k| k == s));
-    let mut list_state = ListState::default().with_selected(sel_idx);
-    frame.render_stateful_widget(list, chunks[0], &mut list_state);
+        .map(|k| k.to_string())
+        .unwrap_or_else(|| "No vessel".to_string());
+    let ship_value = ship_idx
+        .map(|i| SHIPS[i].name.to_string())
+        .unwrap_or_else(|| "Select ship".to_string());
+    let voyage_value = ui.voyage_type.name().to_string();
 
-    // Click regions for each visible vessel row.
-    let inner_x = chunks[0].x + 1;
-    let inner_y = chunks[0].y + 1;
-    let inner_w = chunks[0].width.saturating_sub(2);
-    let inner_h = chunks[0].height.saturating_sub(2);
-    for i in 0..ordered.len().min(inner_h as usize) {
+    // The fourth field flags a placeholder value (nothing picked yet): it renders
+    // greyed + italic when unfocused, matching the profits "Query Market first"
+    // affordance.
+    let entries: [(&str, String, bool, JobberFocus, ClickTarget); 3] = [
+        (
+            "Vessels",
+            vessel_value,
+            false,
+            JobberFocus::Vessels,
+            ClickTarget::JobberVesselButton,
+        ),
+        (
+            "Ship Type",
+            ship_value,
+            ship_idx.is_none(),
+            JobberFocus::ShipType,
+            ClickTarget::JobberShipType,
+        ),
+        (
+            "Voyage Type",
+            voyage_value,
+            false,
+            JobberFocus::VoyageType,
+            ClickTarget::JobberVoyageType,
+        ),
+    ];
+
+    for (i, (label, value, placeholder, focus, target)) in entries.into_iter().enumerate() {
+        let cols = Layout::horizontal([
+            Constraint::Length(label_w),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+        ])
+        .split(rows[i]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label, Style::default().bold())),
+            cols[0],
+        );
+        let is_focused = page_focused && ui.focus == focus;
+        let value_style = if is_focused {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else if placeholder {
+            Style::default().fg(Color::DarkGray).italic()
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::raw(value)).right_aligned()).style(value_style),
+            cols[2],
+        );
+        regions.push(ClickRegion { rect: rows[i], target });
+    }
+
+    if poisoned {
+        let btn_area = rows[4]; // rows: 0..2 table, 3 blank, 4 unpoison
+        let btn_style = if page_focused && ui.focus == JobberFocus::Unpoison {
+            Style::default().bg(Color::White).fg(Color::Black).bold()
+        } else {
+            Style::default().fg(Color::Red).bold()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled("Unpoison", btn_style)).centered()),
+            btn_area,
+        );
         regions.push(ClickRegion {
-            rect: Rect::new(inner_x, inner_y + i as u16, inner_w, 1),
-            target: ClickTarget::JobberVessel(i),
+            rect: btn_area,
+            target: ClickTarget::JobberUnpoison,
         });
     }
 
-    // -- Ship Type --
-    // First row is the chosen ship (a button that opens the select popup);
-    // any staffing warning is wrapped beneath it inside the same box.
-    let st_focused = focus == JobberFocus::ShipType;
-    let label_style = if focused && st_focused {
-        Style::default().bg(Color::White).fg(Color::Black).bold()
-    } else if ship_idx.is_some() {
-        Style::default().bold()
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let ship_label = ship_idx
-        .map(|i| crate::ships::SHIPS[i].name.to_string())
-        .unwrap_or_else(|| "Select ship".to_string());
-    let mut st_lines: Vec<Line> = Vec::with_capacity(1 + warn_lines.len());
-    st_lines.push(Line::from(Span::styled(ship_label, label_style)).centered());
+    let warn_start = if poisoned { 5 } else { 3 };
     let warn_style = warn.map(Staffing::style).unwrap_or_default();
-    for w in warn_lines {
-        st_lines.push(Line::from(Span::styled(w.clone(), warn_style)));
+    for (j, w) in warn_lines.iter().enumerate() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(w.clone(), warn_style)).centered()),
+            rows[warn_start + j],
+        );
     }
-    let st_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(box_border(focused, st_focused))
-        .title(offset_title("Ship Type").0);
-    frame.render_widget(Paragraph::new(st_lines).block(st_block), chunks[1]);
-    regions.push(ClickRegion {
-        rect: chunks[1],
-        target: ClickTarget::JobberShipType,
-    });
+}
 
-    // -- Unpoison button --
-    // When the vessel isn't poisoned the button can't be used, so both the box
-    // and the word are grayed out; otherwise the border follows normal focus.
-    let poisoned = selected
-        .as_ref()
-        .and_then(|k| state.vessels.get(k))
-        .is_some_and(|v| v.poisoned);
-    let disabled = Style::default().fg(Color::DarkGray);
-    let (btn_style, border) = if !poisoned {
-        (disabled, disabled)
-    } else if focus == JobberFocus::Unpoison {
-        (
-            Style::default().bg(Color::White).fg(Color::Black).bold(),
-            box_border(focused, true),
-        )
-    } else {
-        (
-            Style::default().fg(Color::Red).bold(),
-            box_border(focused, false),
-        )
-    };
-    let button = Paragraph::new("Unpoison").centered().style(btn_style).block(
-        Block::default()
-            .borders(Borders::ALL)
-            .border_style(border),
+/// Placeholder shown in place of the Pillage-only Top Jobbers + panes when the
+/// selected voyage type isn't wired up yet.
+fn render_placeholder(frame: &mut Frame, area: Rect, voyage_type: VoyageType, focused: bool) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style(focused))
+        .title(offset_title("Coming Soon").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    frame.render_widget(
+        Paragraph::new(format!("{} voyages aren't supported yet.", voyage_type.name())).centered(),
+        inner,
     );
-    frame.render_widget(button, chunks[2]);
-    regions.push(ClickRegion {
-        rect: chunks[2],
-        target: ClickTarget::JobberUnpoison,
-    });
 }
 
 // ---------------------------------------------------------------------------
-// Lists column: Aboard / Greedy / Planked, stacked, each content-sized
+// Bottom panes: Aboard | Greedy | Planked, side by side, with per-pane selection
 // ---------------------------------------------------------------------------
 
+/// Clamp a stored pane selection to the live pirate count.
+fn clamp_sel(sel: usize, n: usize) -> usize {
+    if n == 0 {
+        0
+    } else {
+        sel.min(n - 1)
+    }
+}
+
+fn pane_focus_target(pane: JobberPane) -> ClickTarget {
+    match pane {
+        JobberPane::Aboard => ClickTarget::JobberAboardList,
+        JobberPane::Greedy => ClickTarget::JobberGreedyList,
+        JobberPane::Planked => ClickTarget::JobberPlankedList,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
-fn render_lists_column(
+fn render_panes(
     frame: &mut Frame,
     area: Rect,
     state: &GameState,
     cache: &PirateCache,
     selected: Option<&Arc<str>>,
     aboard_set: &HashSet<String>,
+    greedy: &[(&String, u32, u32)],
     ui: &mut JobbersUi,
     focused: bool,
+    aboard_w: u16,
+    greedy_w: u16,
+    planked_w: u16,
     regions: &mut Vec<ClickRegion>,
 ) {
-    let Some(key) = selected else {
-        let h = 3.min(area.height);
-        let msg = Paragraph::new("No vessels boarded yet this session.").block(
-            Block::default()
-                .borders(Borders::ALL)
-                .border_style(border_style(focused))
-                .title(offset_title("Jobbers").0),
-        );
-        frame.render_widget(msg, Rect::new(area.x, area.y, area.width, h));
-        return;
-    };
+    // Start from each pane's natural (content) width, then spread any slack — the
+    // block may be wider than the three panes combined when Top Jobbers or the
+    // Voyage box is the widest piece — evenly so it doesn't all dump into Planked.
+    let natural = aboard_w + greedy_w + planked_w;
+    let slack = area.width.saturating_sub(natural);
+    let add = slack / 3;
+    let rem = slack % 3;
+    let a = aboard_w + add + u16::from(rem > 0);
+    let g = greedy_w + add + u16::from(rem > 1);
+    let cols = Layout::horizontal([
+        Constraint::Length(a),
+        Constraint::Length(g),
+        Constraint::Min(0),
+    ])
+    .split(area);
 
-    // The player's crew, used to bold same-crew jobbers.
+    // Same-crew / self emphasis, mirroring the old lists column.
     let my_crew: Option<String> = state
         .player_name
         .as_deref()
         .and_then(|me| cache.get(me))
         .map(|p| p.crew_name.clone())
         .filter(|c| !c.is_empty());
-
-    let name_style = |name: &str| -> Style {
+    let style_for = |name: &str| -> Style {
         let is_player = state
             .player_name
             .as_deref()
@@ -761,95 +921,139 @@ fn render_lists_column(
         }
     };
 
-    let vessel = state.vessels.get(key);
-    let mut y = area.y;
+    let vessel = selected.and_then(|k| state.vessels.get(k));
 
-    // -- Aboard (alphabetical) --
+    // -- Aboard (alphabetical) + swabbie footer (non-selectable) --
     let mut aboard: Vec<&String> = aboard_set.iter().collect();
     aboard.sort_unstable();
-    let mut aboard_lines: Vec<Line> = aboard
+    let aboard_n = aboard.len();
+    let mut aboard_rows: Vec<(Line, Option<usize>)> = aboard
         .iter()
-        .map(|n| Line::from(Span::styled((*n).clone(), name_style(n))))
+        .enumerate()
+        .map(|(i, n)| (Line::from(Span::styled((*n).clone(), style_for(n))), Some(i)))
         .collect();
-    // Footer: how many swabbies (NPC crew) are aboard, italicized.
     let swabbies = vessel.map_or(0, |v| v.swabbies);
     if swabbies > 0 {
-        aboard_lines.push(Line::from(Span::styled(
-            format!("   and {swabbies} swabbies"),
-            Style::default().italic(),
-        )));
+        aboard_rows.push((
+            Line::from(Span::styled(
+                format!("and {swabbies} swabbies"),
+                Style::default().italic(),
+            )),
+            None,
+        ));
     }
-    place_list_vertical(
-        frame, area, &mut y, &offset_title("Aboard").0, aboard_lines, &mut ui.aboard_offset,
-        box_border(focused, ui.focus == JobberFocus::Aboard),
-        ClickTarget::JobberAboardList, regions,
-    );
 
-    // -- Greedy strikes (by total desc, then alphabetical), shown as
-    //    "(before this battle) + (this/last battle)". --
-    let mut greedy: Vec<(&String, u32, u32)> = vessel
-        .map(|v| {
-            v.greedy_by_pirate
-                .iter()
-                .map(|(n, total)| {
-                    let current = v.greedy_current.get(n).copied().unwrap_or(0);
-                    (n, *total, current)
-                })
-                .collect()
-        })
-        .unwrap_or_default();
-    greedy.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    // The box fills the column, so right-align the values to its inner width
-    // (column width minus borders(2) and horizontal padding(2)).
-    let content_w = name_col_plus_value(&greedy);
-    let greedy_w = (area.width.saturating_sub(4) as usize).max(content_w);
-    let greedy_lines: Vec<Line> = greedy
+    // -- Greedy (total desc, then alphabetical) --
+    let mut greedy_sorted: Vec<(&String, u32, u32)> = greedy.to_vec();
+    greedy_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+    let greedy_n = greedy_sorted.len();
+    let greedy_inner_w =
+        (cols[1].width.saturating_sub(4) as usize).max(name_col_plus_value(&greedy_sorted));
+    let greedy_rows: Vec<(Line, Option<usize>)> = greedy_sorted
         .iter()
-        .map(|(name, total, current)| {
-            greedy_line(name, *total, *current, greedy_w, name_style(name))
+        .enumerate()
+        .map(|(i, (name, total, current))| {
+            (
+                greedy_line(name, *total, *current, greedy_inner_w, style_for(name)),
+                Some(i),
+            )
         })
         .collect();
-    place_list_vertical(
-        frame, area, &mut y, &offset_title("Greedy").0, greedy_lines, &mut ui.greedy_offset,
-        box_border(focused, ui.focus == JobberFocus::Greedy),
-        ClickTarget::JobberGreedyList, regions,
-    );
 
-    // -- Planked by us (alphabetical, unformatted) --
+    // -- Planked (alphabetical) --
     let mut planked: Vec<String> = vessel.map(|v| v.planked_by_us.clone()).unwrap_or_default();
     planked.sort_unstable();
-    let planked_lines: Vec<Line> = planked.iter().map(|n| Line::from(n.clone())).collect();
-    place_list_vertical(
-        frame, area, &mut y, &offset_title("Planked").0, planked_lines, &mut ui.planked_offset,
-        box_border(focused, ui.focus == JobberFocus::Planked),
-        ClickTarget::JobberPlankedList, regions,
+    let planked_n = planked.len();
+    let planked_rows: Vec<(Line, Option<usize>)> = planked
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (Line::from(Span::styled(n.clone(), style_for(n))), Some(i)))
+        .collect();
+
+    ui.aboard_sel = clamp_sel(ui.aboard_sel, aboard_n);
+    ui.greedy_sel = clamp_sel(ui.greedy_sel, greedy_n);
+    ui.planked_sel = clamp_sel(ui.planked_sel, planked_n);
+
+    render_pane(
+        frame, cols[0], "Aboard", aboard_rows, ui.aboard_sel, &mut ui.aboard_offset, focused,
+        ui.focus == JobberFocus::Aboard, JobberPane::Aboard, regions,
+    );
+    render_pane(
+        frame, cols[1], "Greedy", greedy_rows, ui.greedy_sel, &mut ui.greedy_offset, focused,
+        ui.focus == JobberFocus::Greedy, JobberPane::Greedy, regions,
+    );
+    render_pane(
+        frame, cols[2], "Planked", planked_rows, ui.planked_sel, &mut ui.planked_offset, focused,
+        ui.focus == JobberFocus::Planked, JobberPane::Planked, regions,
     );
 }
 
-/// Render a content-sized list box at `*y`, then advance `*y` past it so the
-/// next box stacks directly below. Width and height are bounded by `region`.
+/// Render a single pane: a bordered, auto-scrolling list of pirate rows. `rows`
+/// pairs each display line with its pirate index (or `None` for non-selectable
+/// rows like the swabbie footer). The selected pirate is highlighted and the
+/// offset is nudged to keep it visible.
 #[allow(clippy::too_many_arguments)]
-fn place_list_vertical(
+fn render_pane(
     frame: &mut Frame,
-    region: Rect,
-    y: &mut u16,
-    title: &str,
-    lines: Vec<Line>,
+    area: Rect,
+    title: &'static str,
+    rows: Vec<(Line<'static>, Option<usize>)>,
+    sel: usize,
     offset: &mut usize,
-    border: Style,
-    target: ClickTarget,
+    page_focused: bool,
+    active: bool,
+    pane: JobberPane,
     regions: &mut Vec<ClickRegion>,
 ) {
-    let remaining_h = (region.y + region.height).saturating_sub(*y);
-    if remaining_h == 0 {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(box_border(page_focused, active))
+        .padding(Padding::horizontal(1))
+        .title(offset_title(title).0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Whole-pane focus region first, so the per-row regions pushed below win the
+    // reverse-iterating hit test on overlap.
+    regions.push(ClickRegion {
+        rect: area,
+        target: pane_focus_target(pane),
+    });
+
+    let height = inner.height as usize;
+    if height == 0 {
         return;
     }
-    // Width fills the column (set from the Top Jobbers panel back in `render`);
-    // height = rows + borders(2), bounded by the available space.
-    let box_h = (lines.len() as u16 + 2).clamp(3, remaining_h);
-    let area = Rect::new(region.x, *y, region.width, box_h);
-    render_scroll_list(frame, area, title, lines, offset, border, target, regions);
-    *y = y.saturating_add(box_h);
+
+    // Auto-scroll: keep the selected pirate's line within the visible window.
+    if let Some(sel_line) = rows.iter().position(|(_, p)| *p == Some(sel)) {
+        if sel_line < *offset {
+            *offset = sel_line;
+        } else if sel_line >= *offset + height {
+            *offset = sel_line + 1 - height;
+        }
+    }
+    let max_off = rows.len().saturating_sub(height);
+    if *offset > max_off {
+        *offset = max_off;
+    }
+
+    for (vis, (line, pidx)) in rows.iter().enumerate().skip(*offset).take(height) {
+        let row_area = Rect::new(inner.x, inner.y + (vis - *offset) as u16, inner.width, 1);
+        let is_sel = page_focused && active && *pidx == Some(sel);
+        let para = if is_sel {
+            Paragraph::new(line.clone()).style(Style::default().bg(Color::White).fg(Color::Black))
+        } else {
+            Paragraph::new(line.clone())
+        };
+        frame.render_widget(para, row_area);
+        if let Some(idx) = pidx {
+            regions.push(ClickRegion {
+                rect: row_area,
+                target: ClickTarget::JobberPirate { pane, idx: *idx },
+            });
+        }
+    }
 }
 
 /// Minimum width that keeps every greedy row's name and value from colliding:
@@ -965,10 +1169,9 @@ fn render_top_panel(
         let name_w = (col_w[ci] as usize).saturating_sub(NAME_CODE_GAP + CODE_LEN);
 
         let mut lines: Vec<Line> = Vec::with_capacity(ranked[ci].len() + 1);
-        lines.push(Line::from(Span::styled(
-            *header,
-            Style::default().bold().underlined(),
-        )));
+        lines.push(
+            Line::from(Span::styled(*header, Style::default().bold().underlined())).centered(),
+        );
         for (name, exp, standing) in &ranked[ci] {
             lines.push(Line::from(vec![
                 Span::raw(format!("{:<name_w$}", truncate(name, name_w))),
@@ -981,39 +1184,6 @@ fn render_top_panel(
 
         frame.render_widget(Paragraph::new(lines), col_areas[ci]);
     }
-}
-
-/// Render a vertically-scrollable list inside a bordered box, registering the
-/// box as a scroll target. `offset` is clamped to the content here.
-#[allow(clippy::too_many_arguments)]
-fn render_scroll_list(
-    frame: &mut Frame,
-    area: Rect,
-    title: &str,
-    lines: Vec<Line>,
-    offset: &mut usize,
-    border: Style,
-    target: ClickTarget,
-    regions: &mut Vec<ClickRegion>,
-) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border)
-        .padding(Padding::horizontal(1))
-        .title(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let rows = inner.height as usize;
-    let max_off = lines.len().saturating_sub(rows);
-    if *offset > max_off {
-        *offset = max_off;
-    }
-
-    let visible: Vec<Line> = lines.into_iter().skip(*offset).take(rows).collect();
-    frame.render_widget(Paragraph::new(visible), inner);
-
-    regions.push(ClickRegion { rect: area, target });
 }
 
 /// The ship-type select popup: same list as the Damage calculator's, minus the
@@ -1052,6 +1222,131 @@ fn render_ship_popup(frame: &mut Frame, selected: usize, regions: &mut Vec<Click
         regions.push(ClickRegion {
             rect: Rect::new(inner_x, inner_y + i as u16, inner_w, 1),
             target: ClickTarget::JobberShipItem(i),
+        });
+    }
+}
+
+/// The vessel picker popup (replaces the old inline vessel list). Poisoned
+/// vessels are listed in red, matching the old list styling.
+fn render_vessel_popup(
+    frame: &mut Frame,
+    selected: usize,
+    ordered: &[Arc<str>],
+    state: &GameState,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let area = frame.area();
+
+    let max_name = ordered
+        .iter()
+        .map(|k| k.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("No vessels".len());
+    let w = max_name as u16 + 6; // +2 borders +2 padding +2 highlight symbol.
+    let h = (ordered.len() as u16).max(1) + 2;
+    let x = area.width.saturating_sub(w) / 2;
+    let y = area.height.saturating_sub(h) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = if ordered.is_empty() {
+        vec![ListItem::new("No vessels").style(Style::default().fg(Color::DarkGray))]
+    } else {
+        ordered
+            .iter()
+            .map(|k| {
+                let poisoned = state.vessels.get(k).is_some_and(|v| v.poisoned);
+                let item = ListItem::new(k.to_string());
+                if poisoned {
+                    item.style(Style::default().fg(Color::Red))
+                } else {
+                    item
+                }
+            })
+            .collect()
+    };
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
+                .title(offset_title("Vessels").0),
+        )
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol("> ");
+
+    let mut st = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, popup_area, &mut st);
+
+    let inner_x = popup_area.x + 1;
+    let inner_y = popup_area.y + 1;
+    let inner_w = popup_area.width.saturating_sub(2);
+    for i in 0..ordered.len() {
+        regions.push(ClickRegion {
+            rect: Rect::new(inner_x, inner_y + i as u16, inner_w, 1),
+            target: ClickTarget::JobberVesselItem(i),
+        });
+    }
+}
+
+/// The voyage-type picker popup. Unimplemented types are tagged "(soon)" and
+/// muted, but can still be selected (they show the "coming soon" placeholder).
+fn render_voyage_popup(frame: &mut Frame, selected: usize, regions: &mut Vec<ClickRegion>) {
+    let area = frame.area();
+
+    let labels: Vec<String> = VOYAGE_TYPES
+        .iter()
+        .map(|v| {
+            if v.implemented() {
+                v.name().to_string()
+            } else {
+                format!("{} (soon)", v.name())
+            }
+        })
+        .collect();
+    let max_name = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    let w = max_name as u16 + 6;
+    let h = VOYAGE_TYPES.len() as u16 + 2;
+    let x = area.width.saturating_sub(w) / 2;
+    let y = area.height.saturating_sub(h) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+
+    let items: Vec<ListItem> = labels
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            let item = ListItem::new(s.clone());
+            if VOYAGE_TYPES[i].implemented() {
+                item
+            } else {
+                item.style(Style::default().fg(Color::DarkGray))
+            }
+        })
+        .collect();
+    let list = List::new(items)
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
+                .title(offset_title("Voyage Type").0),
+        )
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol("> ");
+
+    let mut st = ListState::default().with_selected(Some(selected));
+    frame.render_stateful_widget(list, popup_area, &mut st);
+
+    let inner_x = popup_area.x + 1;
+    let inner_y = popup_area.y + 1;
+    let inner_w = popup_area.width.saturating_sub(2);
+    for i in 0..VOYAGE_TYPES.len() {
+        regions.push(ClickRegion {
+            rect: Rect::new(inner_x, inner_y + i as u16, inner_w, 1),
+            target: ClickTarget::JobberVoyageItem(i),
         });
     }
 }
