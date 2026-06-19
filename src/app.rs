@@ -542,6 +542,9 @@ impl AppShell {
         self.global_focus = GlobalFocus::Content;
         // Entering the Jobbers page lands on the Vessels list.
         self.jobbers_ui.focus = JobberFocus::Vessels;
+        // Entering Profits lands on the topmost widget (the first parameter),
+        // not the search box at the bottom of the stack.
+        self.profits.focus_panel(0);
     }
 
     /// The Voyage Statistics page is inert: ↑ or Esc returns focus to the bar,

@@ -97,8 +97,8 @@ impl ProfitsApp {
             table_state: TableState::default(),
             panel: [
                 PromptField::new("Restocking Island", FieldKind::Text),
-                PromptField::new("Money in Booty", FieldKind::PositiveInt),
-                PromptField::new("Commanding Officer Rate", FieldKind::Rate),
+                PromptField::new("PoE in Booty Chest", FieldKind::PositiveInt),
+                PromptField::new("C.O. Rate", FieldKind::Rate),
                 PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
                 PromptField::new("Restocking Rate", FieldKind::Rate),
                 PromptField::new("Stocking", FieldKind::PositiveInt),
@@ -210,6 +210,16 @@ impl ProfitsApp {
         self.table_state.select_column(Some(FIRST_COL));
     }
 
+    pub fn focus_table_top(&mut self) {
+        if self.rows.is_empty() {
+            self.focus_input();
+            return;
+        }
+        self.focus = Focus::Table;
+        self.table_state.select(Some(0));
+        self.table_state.select_column(Some(FIRST_COL));
+    }
+
     pub fn focus_input(&mut self) {
         self.focus = Focus::Input;
         self.table_state.select(None);
@@ -305,8 +315,6 @@ impl ProfitsApp {
         if let Some(col) = self.table_state.selected_column() {
             if col < LAST_COL {
                 self.table_state.select_column(Some(col + 1));
-            } else {
-                self.focus_panel(0);
             }
         }
     }
@@ -546,12 +554,13 @@ impl ProfitsApp {
     fn handle_table_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
         match key.code {
             KeyCode::Up => {
-                // The table is the page's top widget; ↑ from its first row hands
-                // focus back to the top bar.
+                // The Calculate button sits directly above the inventory table;
+                // ↑ from the first row focuses it.
                 if self.table_state.selected() == Some(0) {
-                    return InputResult::Exit;
+                    self.focus = Focus::Button;
+                } else {
+                    self.table_up();
                 }
-                self.table_up();
             }
             KeyCode::Down => self.table_down(),
             KeyCode::Left => {
@@ -624,16 +633,16 @@ impl ProfitsApp {
                 }
             }
             KeyCode::Left => {
-                if idx == 0 && 0 < self.panel[0].cursor {
-                    self.panel[0].move_left();
-                } else if !self.rows.is_empty() {
-                    self.focus = Focus::Table;
-                    self.table_state.select(Some(self.rows.len() - 1));
-                    self.table_state.select_column(Some(LAST_COL));
+                // The island field is a button until the market is queried; only
+                // move the text cursor once it accepts input.
+                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                    self.panel[idx].move_left();
                 }
             }
-            KeyCode::Right if idx == 0 && !shared.cached_offers.is_empty() => {
-                self.panel[0].move_right();
+            KeyCode::Right => {
+                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                    self.panel[idx].move_right();
+                }
             }
             KeyCode::Backspace => {
                 if !(idx == 0 && shared.cached_offers.is_empty()) {
@@ -748,12 +757,7 @@ impl ProfitsApp {
                 self.focus = Focus::Panel(PANEL_COUNT - 1);
             }
             KeyCode::Down => {
-                self.focus_input();
-            }
-            KeyCode::Left if !self.rows.is_empty() => {
-                self.focus = Focus::Table;
-                self.table_state.select(Some(self.rows.len() - 1));
-                self.table_state.select_column(Some(LAST_COL));
+                self.focus_table_top();
             }
             _ => {}
         }

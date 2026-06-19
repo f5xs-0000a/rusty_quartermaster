@@ -4,7 +4,14 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Tab
 use crate::app::{self, SharedState};
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::{offset_title, offset_title_width};
-use super::{Focus, PopupKind, ProfitsApp, PANEL_COUNT};
+use super::{Focus, InventoryRow, PopupKind, ProfitsApp, PANEL_COUNT};
+
+// Inventory numeric/placeholder column widths (the Item column flexes).
+const RESTOCK_W: u16 = 7; // "Restock"
+const STOCK_W: u16 = 5; // "Stock"
+const BOOTY_W: u16 = 5; // "Booty"
+const SELL_W: u16 = 10; // "Sell Price"
+const BUY_W: u16 = 9; // "Buy Price"
 
 pub fn render(
     frame: &mut Frame,
@@ -14,58 +21,237 @@ pub fn render(
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
-    let vchunks = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(4), // border(1) + input(1) + suggestion(1) + border(1)
-    ])
-    .split(area);
-
-    // -- Table --
-    let row_data: Vec<(String, String, String, String)> = app
+    // -- Widths ------------------------------------------------------------
+    let item_width = app
         .rows
         .iter()
-        .map(|r| {
-            (
-                app::commod_name(shared.commodities, r.commod_id).to_owned(),
-                r.restock.clone(),
-                r.stock.clone(),
-                r.booty.clone(),
-            )
-        })
-        .collect();
-
-    let item_width = row_data
-        .iter()
-        .map(|(name, ..)| name.chars().count())
+        .map(|r| app::commod_name(shared.commodities, r.commod_id).chars().count())
         .max()
         .unwrap_or(0)
         .max("Item".len()) as u16;
 
-    let header = Row::new(vec!["Item", "Restock", "Stock", "Booty"])
+    // 5 single-column gaps + 2 borders + 2 horizontal padding.
+    let table_width =
+        item_width + RESTOCK_W + STOCK_W + BOOTY_W + SELL_W + BUY_W + 5 + 2 + 2;
+
+    // Label column shared by the Parameters and Hold Stats tables.
+    let label_width = app
+        .panel
+        .iter()
+        .map(|f| f.label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max("Ship Hold Alcohol".len()) as u16;
+    // label + 2 gap + min input(8) + 2 borders + 2 padding.
+    let params_width = label_width + 2 + 8 + 2 + 2;
+
+    // One centered column width; every box is widened to it.
+    let content_width = table_width
+        .max(params_width)
+        .max(offset_title_width("Parameters"))
+        .max(offset_title_width("Inventory"))
+        .min(area.width.max(1));
+
+    let hchunks = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(content_width),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+    let col = hchunks[1];
+
+    // -- Vertical stack ----------------------------------------------------
+    let params_h = PANEL_COUNT as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
+    let stats_h = 2 + 2; // 2 rows + borders
+    let search_h = 2 + 2; // input + suggestion + borders
+
+    let vchunks = Layout::vertical([
+        Constraint::Length(params_h),
+        Constraint::Length(stats_h),
+        Constraint::Fill(1), // inventory
+        Constraint::Length(search_h),
+        Constraint::Length(1), // tooltip
+    ])
+    .split(col);
+
+    render_parameters(frame, vchunks[0], app, shared, focused, label_width, regions);
+    render_hold_stats(frame, vchunks[1], app, shared, label_width);
+    render_inventory(frame, vchunks[2], app, shared, focused, item_width, regions);
+    render_search(frame, vchunks[3], app, shared, focused, regions);
+
+    // -- Tooltip (focus-bound) --------------------------------------------
+    if let Some(line) = build_tooltip_line(app, shared) {
+        frame.render_widget(Paragraph::new(line), vchunks[4]);
+    }
+
+    // -- Popup overlay -----------------------------------------------------
+    if let Some(ref popup) = app.popup {
+        render_popup(frame, popup, regions);
+    }
+}
+
+fn render_parameters(
+    frame: &mut Frame,
+    area: Rect,
+    app: &ProfitsApp,
+    shared: &SharedState,
+    focused: bool,
+    label_width: u16,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Parameters").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut constraints: Vec<Constraint> =
+        (0..PANEL_COUNT).map(|_| Constraint::Length(1)).collect();
+    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Length(1)); // button
+    let rows = Layout::vertical(constraints).split(inner);
+
+    for (i, field) in app.panel.iter().enumerate() {
+        let cols = Layout::horizontal([
+            Constraint::Length(label_width),
+            Constraint::Length(2),
+            Constraint::Fill(1),
+        ])
+        .split(rows[i]);
+
+        frame.render_widget(
+            Paragraph::new(Span::styled(field.label, Style::default().bold())),
+            cols[0],
+        );
+
+        let is_focused = focused && app.focus == Focus::Panel(i);
+        let value_style = if is_focused {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else {
+            Style::default()
+        };
+
+        if i == 0 {
+            render_island_field(frame, field, cols[2], is_focused, value_style, shared);
+        } else {
+            let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
+                .style(value_style);
+            frame.render_widget(value, cols[2]);
+
+            if is_focused {
+                let cx = cols[2].x + cols[2].width
+                    - (field.value.chars().count()
+                        - field.value[..field.cursor].chars().count())
+                        as u16;
+                frame.set_cursor_position((cx, cols[2].y));
+            }
+        }
+
+        regions.push(ClickRegion {
+            rect: rows[i],
+            target: ClickTarget::ProfitsPanel(i),
+        });
+    }
+
+    // "Calculate Profits!" button (last inner row).
+    let button_area = rows[PANEL_COUNT + 1];
+    let button_focused = focused && app.focus == Focus::Button;
+    let button_style = if button_focused {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else {
+        Style::default().bold()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled("Calculate Profits!", button_style)).centered()),
+        button_area,
+    );
+    regions.push(ClickRegion {
+        rect: button_area,
+        target: ClickTarget::ProfitsButton,
+    });
+}
+
+fn render_hold_stats(
+    frame: &mut Frame,
+    area: Rect,
+    app: &ProfitsApp,
+    shared: &SharedState,
+    label_width: u16,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Hold Stats").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+
+    let restock_alcohol = compute_alcohol(app, shared, |r| &r.restock);
+    let hold_alcohol = compute_alcohol(app, shared, |r| &r.stock);
+
+    render_stat_row(frame, rows[0], label_width, "Restock Alcohol", restock_alcohol);
+    render_stat_row(frame, rows[1], label_width, "Ship Hold Alcohol", hold_alcohol);
+}
+
+fn render_stat_row(frame: &mut Frame, area: Rect, label_width: u16, label: &str, value: u64) {
+    let cols = Layout::horizontal([
+        Constraint::Length(label_width),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(label, Style::default().bold())),
+        cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(value.to_string()).right_aligned()),
+        cols[2],
+    );
+}
+
+fn render_inventory(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut ProfitsApp,
+    shared: &SharedState,
+    focused: bool,
+    item_width: u16,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let header = Row::new(vec!["Item", "Restock", "Stock", "Booty", "Sell Price", "Buy Price"])
         .style(Style::default().bold())
         .bottom_margin(1);
 
-    let rows: Vec<Row> = row_data
+    let placeholder = || {
+        Cell::new(Line::from(Span::styled("—", Style::default().fg(Color::DarkGray))).right_aligned())
+    };
+    let rows: Vec<Row> = app
+        .rows
         .iter()
-        .map(|(name, restock, stock, booty)| {
+        .map(|r| {
+            let name = app::commod_name(shared.commodities, r.commod_id).to_owned();
             Row::new(vec![
-                Cell::new(name.as_str()),
-                Cell::new(Line::from(restock.as_str()).right_aligned()),
-                Cell::new(Line::from(stock.as_str()).right_aligned()),
-                Cell::new(Line::from(booty.as_str()).right_aligned()),
+                Cell::new(name),
+                Cell::new(Line::from(r.restock.clone()).right_aligned()),
+                Cell::new(Line::from(r.stock.clone()).right_aligned()),
+                Cell::new(Line::from(r.booty.clone()).right_aligned()),
+                placeholder(), // Sell Price (inert placeholder)
+                placeholder(), // Buy Price (inert placeholder)
             ])
         })
         .collect();
 
     let widths = [
         Constraint::Length(item_width),
-        Constraint::Length(7),
-        Constraint::Length(5),
-        Constraint::Length(5),
+        Constraint::Length(RESTOCK_W),
+        Constraint::Length(STOCK_W),
+        Constraint::Length(BOOTY_W),
+        Constraint::Length(SELL_W),
+        Constraint::Length(BUY_W),
     ];
-
-    // 2 = left + right border, 2 = horizontal padding, 3 = spacing between 4 columns
-    let table_width = item_width + 7 + 5 + 5 + 3 + 2 + 2;
 
     let highlight = if focused {
         Style::default().bg(Color::White).fg(Color::Black)
@@ -84,222 +270,93 @@ pub fn render(
                 .title(offset_title("Inventory").0),
         );
 
-    // -- Panel --
-    let panel_label_width = app
-        .panel
-        .iter()
-        .map(|f| f.label.chars().count())
-        .max()
-        .unwrap_or(0) as u16;
-    let panel_inner_width = panel_label_width;
-    // +2 borders +2 padding; floor so the "Parameters"/"Hold Stats" titles (which
-    // share this width) stay readable if the panel has no or only-short labels.
-    let panel_title_min =
-        offset_title_width("Parameters").max(offset_title_width("Hold Stats"));
-    let panel_width = (panel_inner_width + 4).max(panel_title_min);
+    frame.render_stateful_widget(table, area, &mut app.table_state);
 
-    // -- Horizontal layout: table + gap + panel, centered --
-    let hchunks = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(table_width),
-        Constraint::Length(1),
-        Constraint::Length(panel_width),
-        Constraint::Fill(1),
-    ])
-    .split(vchunks[0]);
-
-    frame.render_stateful_widget(table, hchunks[1], &mut app.table_state);
-
-    // Register table cell click regions
-    {
-        let table_inner_x = hchunks[1].x + 2; // border + padding
-        let table_inner_y = hchunks[1].y + 1; // top border
-        // header row + 1 blank bottom_margin = 2 lines before data
-        let data_start_y = table_inner_y + 2;
-        let scroll_offset = app.table_state.offset();
-        let visible_height = hchunks[1].height.saturating_sub(2); // borders
-        let visible_rows = visible_height.saturating_sub(2); // header + margin
-        let col_xs = [
-            table_inner_x,
-            table_inner_x + item_width + 1,
-            table_inner_x + item_width + 1 + 7 + 1,
-            table_inner_x + item_width + 1 + 7 + 1 + 5 + 1,
-        ];
-        let col_ws = [item_width, 7, 5, 5];
-        for vis_row in 0..visible_rows as usize {
-            let data_row = scroll_offset + vis_row;
-            if data_row >= app.rows.len() {
-                break;
-            }
-            for col in 0..4usize {
-                regions.push(ClickRegion {
-                    rect: Rect::new(
-                        col_xs[col],
-                        data_start_y + vis_row as u16,
-                        col_ws[col],
-                        1,
-                    ),
-                    target: ClickTarget::ProfitsTableCell { row: data_row, col },
-                });
-            }
+    // Register click regions for the name + editable cells (cols 0..=3 only;
+    // the Sell/Buy placeholder columns are not interactive).
+    let inner_x = area.x + 2; // border + padding
+    let inner_y = area.y + 1; // top border
+    let data_start_y = inner_y + 2; // header row + bottom_margin
+    let scroll_offset = app.table_state.offset();
+    let visible_height = area.height.saturating_sub(2); // borders
+    let visible_rows = visible_height.saturating_sub(2); // header + margin
+    let col_xs = [
+        inner_x,
+        inner_x + item_width + 1,
+        inner_x + item_width + 1 + RESTOCK_W + 1,
+        inner_x + item_width + 1 + RESTOCK_W + 1 + STOCK_W + 1,
+    ];
+    let col_ws = [item_width, RESTOCK_W, STOCK_W, BOOTY_W];
+    for vis_row in 0..visible_rows as usize {
+        let data_row = scroll_offset + vis_row;
+        if data_row >= app.rows.len() {
+            break;
+        }
+        for c in 0..4usize {
+            regions.push(ClickRegion {
+                rect: Rect::new(col_xs[c], data_start_y + vis_row as u16, col_ws[c], 1),
+                target: ClickTarget::ProfitsTableCell { row: data_row, col: c },
+            });
         }
     }
+}
 
-    // Vertically center the panel + stats box
-    let panel_content_height = (PANEL_COUNT as u16) * 2 + 2;
-    let panel_block_height = panel_content_height + 2;
-    let stats_height: u16 = 3; // 1 content line + 2 borders
-    let panel_vchunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(panel_block_height),
-        Constraint::Length(stats_height),
-        Constraint::Fill(1),
-    ])
-    .split(hchunks[3]);
-
-    let panel_block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1))
-        .title(offset_title("Parameters").0);
-    let panel_inner = panel_block.inner(panel_vchunks[1]);
-    frame.render_widget(panel_block, panel_vchunks[1]);
-
-    let panel_constraints: Vec<Constraint> = (0..PANEL_COUNT)
-        .flat_map(|_| [Constraint::Length(1), Constraint::Length(1)])
-        .chain([Constraint::Length(1), Constraint::Length(1)])
-        .collect();
-    let panel_rows = Layout::vertical(panel_constraints).split(panel_inner);
-
-    for (i, field) in app.panel.iter().enumerate() {
-        let label_area = panel_rows[i * 2];
-        let value_area = panel_rows[i * 2 + 1];
-
-        let label = Paragraph::new(Span::styled(field.label, Style::default().bold()));
-        frame.render_widget(label, label_area);
-
-        let is_focused = focused && app.focus == Focus::Panel(i);
-        let value_style = if is_focused {
-            Style::default().bg(Color::White).fg(Color::Black)
-        } else {
-            Style::default()
-        };
-
-        if i == 0 {
-            render_island_field(frame, field, value_area, is_focused, value_style, shared);
-        } else {
-            let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
-                .style(value_style);
-            frame.render_widget(value, value_area);
-
-            if is_focused {
-                let cx = value_area.x + value_area.width
-                    - (field.value.chars().count() - field.value[..field.cursor].chars().count())
-                        as u16;
-                frame.set_cursor_position((cx, value_area.y));
-            }
-        }
-
-        // Register click region for this panel field (label + value area)
-        regions.push(ClickRegion {
-            rect: Rect::new(
-                label_area.x,
-                label_area.y,
-                label_area.width,
-                2, // label + value
-            ),
-            target: ClickTarget::ProfitsPanel(i),
-        });
-    }
-
-    // "Calculate profits!" button
-    let button_area = panel_rows[PANEL_COUNT * 2 + 1];
-    let button_focused = focused && app.focus == Focus::Button;
-    let button_style = if button_focused {
-        Style::default().bg(Color::White).fg(Color::Black).bold()
-    } else {
-        Style::default().bold()
-    };
-    let button =
-        Paragraph::new(Line::from(Span::styled("Calculate profits!", button_style)).centered());
-    frame.render_widget(button, button_area);
-
-    regions.push(ClickRegion {
-        rect: button_area,
-        target: ClickTarget::ProfitsButton,
-    });
-
-    // -- Hold Stats box --
-    let stats_block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1))
-        .title(offset_title("Hold Stats").0);
-    let stats_inner = stats_block.inner(panel_vchunks[2]);
-    frame.render_widget(stats_block, panel_vchunks[2]);
-
-    let total_alcohol = compute_total_alcohol(app, shared);
-    let label = "Total Alcohol";
-    let val_str = total_alcohol.to_string();
-    let avail = stats_inner.width as usize;
-    let pad = avail.saturating_sub(label.len()).saturating_sub(val_str.len());
-    let line = format!("{}{:>w$}", label, val_str, w = pad + val_str.len());
-    frame.render_widget(Paragraph::new(line), stats_inner);
-
-    // -- Bottom box (input + suggestion) --
-    let bottom_width = table_width + 1 + panel_width;
-    let bottom_hchunks = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(bottom_width),
-        Constraint::Fill(1),
-    ])
-    .split(vchunks[1]);
-
-    let bottom_block = Block::default()
+fn render_search(
+    frame: &mut Frame,
+    area: Rect,
+    app: &ProfitsApp,
+    shared: &SharedState,
+    focused: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
         .title(offset_title("Search").0);
-    let bottom_inner = bottom_block.inner(bottom_hchunks[1]);
-    frame.render_widget(bottom_block, bottom_hchunks[1]);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
 
-    let bottom_rows = Layout::vertical([
+    let rows = Layout::vertical([
         Constraint::Length(1), // input
-        Constraint::Length(1), // suggestion / error
+        Constraint::Length(1), // suggestion (input-bound)
     ])
-    .split(bottom_inner);
+    .split(inner);
 
-    // -- Input prompt --
     let label = "Add Commodity: ";
     let input_style = if focused && app.focus == Focus::Input {
         Style::default().bg(Color::White).fg(Color::Black)
     } else {
         Style::default()
     };
-    let prompt = Paragraph::new(Line::from(vec![
-        Span::styled(label, Style::default().bold()),
-        Span::styled(&app.input, input_style),
-    ]));
-    frame.render_widget(prompt, bottom_rows[0]);
+    let input_cols = Layout::horizontal([
+        Constraint::Length(label.len() as u16),
+        Constraint::Fill(1),
+    ])
+    .split(rows[0]);
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(label, Style::default().bold())),
+        input_cols[0],
+    );
+    // The input box fills the rest of the row, so the highlight spans the full
+    // available width rather than shrinking to the typed text.
+    frame.render_widget(
+        Paragraph::new(Span::raw(&app.input)).style(input_style),
+        input_cols[1],
+    );
 
     if focused && app.focus == Focus::Input {
-        let cursor_x =
-            bottom_rows[0].x + label.len() as u16 + app.input[..app.cursor].chars().count() as u16;
-        let cursor_y = bottom_rows[0].y;
-        frame.set_cursor_position((cursor_x, cursor_y));
+        let cursor_x = input_cols[1].x + app.input[..app.cursor].chars().count() as u16;
+        frame.set_cursor_position((cursor_x, input_cols[1].y));
     }
 
     regions.push(ClickRegion {
-        rect: bottom_rows[0],
+        rect: rows[0],
         target: ClickTarget::ProfitsInput,
     });
 
-    // -- Status line --
-    let status_line = build_status_line(app, shared);
-    if let Some(line) = status_line {
-        frame.render_widget(Paragraph::new(line), bottom_rows[1]);
-    }
-
-    // -- Popup overlay --
-    if let Some(ref popup) = app.popup {
-        render_popup(frame, popup, regions);
+    if let Some(line) = build_suggestion_line(app, shared) {
+        frame.render_widget(Paragraph::new(line), rows[1]);
     }
 }
 
@@ -318,7 +375,9 @@ fn render_island_field(
             Style::default().fg(Color::DarkGray).italic()
         };
         frame.render_widget(
-            Paragraph::new(Span::styled("Query Market first", btn_style)),
+            Paragraph::new(
+                Line::from(Span::styled("Query Market first", btn_style)).right_aligned(),
+            ),
             area,
         );
         return;
@@ -353,7 +412,39 @@ fn render_island_field(
     }
 }
 
-fn build_status_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Line<'a>> {
+/// Input-bound commodity suggestion shown under the Search box.
+fn build_suggestion_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Line<'a>> {
+    let suggestion = app.suggest(shared.commodities);
+    let query_lower = app.input.trim().to_lowercase();
+    match suggestion {
+        Some(id) => {
+            let name = app::commod_name(shared.commodities, id);
+            if name.eq_ignore_ascii_case(&query_lower) {
+                None
+            } else {
+                Some(Line::from(vec![
+                    Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+                    Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
+                    Span::styled("\"? Press enter if yes.", Style::default().fg(Color::DarkGray)),
+                ]))
+            }
+        }
+        None => {
+            let query = app.submit_failed.as_ref()?;
+            Some(Line::from(vec![
+                Span::styled("No \"", Style::default().fg(Color::Red)),
+                Span::styled(
+                    query.as_str(),
+                    Style::default().bold().italic().fg(Color::Red),
+                ),
+                Span::styled("\" found", Style::default().fg(Color::Red)),
+            ]))
+        }
+    }
+}
+
+/// Focus-bound context help (plus loading/error status) shown on the bottom line.
+fn build_tooltip_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Line<'a>> {
     if shared.loading {
         return Some(Line::from(Span::styled(
             "Fetching prices from market...",
@@ -368,82 +459,77 @@ fn build_status_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option
         )));
     }
 
-    if app.focus == Focus::Panel(0) && !shared.cached_offers.is_empty() {
-        let query = app.panel[0].value.trim();
-        if query.is_empty() {
-            return None;
-        }
-        return match app::suggest_island(query, shared.available_islands) {
-            Some(name) if name.eq_ignore_ascii_case(query) => None,
-            Some(name) => Some(Line::from(vec![
-                Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
-                Span::styled(
-                    name,
-                    Style::default().bold().italic().fg(Color::DarkGray),
-                ),
-                Span::styled(
-                    "\"? Press enter to accept.",
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ])),
-            None => Some(Line::from(Span::styled(
-                "No matching island",
-                Style::default().fg(Color::Red),
-            ))),
-        };
-    }
+    let hint = |text: &'static str| {
+        Some(Line::from(Span::styled(
+            text,
+            Style::default().fg(Color::DarkGray),
+        )))
+    };
 
-    let suggestion = app.suggest(shared.commodities);
-    let query_lower = app.input.trim().to_lowercase();
-    match suggestion {
-        Some(id) => {
-            let name = app::commod_name(shared.commodities, id);
-            if name.eq_ignore_ascii_case(&query_lower) {
-                None
-            } else {
-                Some(Line::from(vec![
+    match app.focus {
+        Focus::Panel(0) if shared.cached_offers.is_empty() => hint("Press Enter to find islands"),
+        Focus::Panel(0) => {
+            let query = app.panel[0].value.trim();
+            if query.is_empty() {
+                return hint("Leave blank for ocean-wide pricing, or name a restocking island.");
+            }
+            match app::suggest_island(query, shared.available_islands) {
+                Some(name) if name.eq_ignore_ascii_case(query) => None,
+                Some(name) => Some(Line::from(vec![
                     Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+                    Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
                     Span::styled(
-                        name,
-                        Style::default().bold().italic().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        "\"? Press enter if yes.",
+                        "\"? Press enter to accept.",
                         Style::default().fg(Color::DarkGray),
                     ),
-                ]))
+                ])),
+                None => Some(Line::from(Span::styled(
+                    "No matching island",
+                    Style::default().fg(Color::Red),
+                ))),
             }
         }
-        None => {
-            let Some(ref query) = app.submit_failed else {
-                return None;
-            };
-            Some(Line::from(vec![
-                Span::styled("No \"", Style::default().fg(Color::Red)),
-                Span::styled(
-                    query.as_str(),
-                    Style::default().bold().italic().fg(Color::Red),
-                ),
-                Span::styled("\" found", Style::default().fg(Color::Red)),
-            ]))
-        }
+        Focus::Panel(4) => hint("Restocking rate imposed by your crew"),
+        Focus::Panel(5) => hint("Amount spent before voyage to stock up"),
+        Focus::Input => Some(Line::from(Span::styled(
+            "Type a commodity and press Enter to add it.",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        Focus::Table => Some(Line::from(Span::styled(
+            "Type digits to set quantities; Delete removes the commodity.",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        Focus::Button => Some(Line::from(Span::styled(
+            "Press Enter to calculate profits.",
+            Style::default().fg(Color::DarkGray),
+        ))),
+        _ => None,
     }
 }
 
-fn compute_total_alcohol(app: &ProfitsApp, shared: &SharedState) -> u64 {
-    let mut total: u64 = 0;
-    for row in &app.rows {
-        let name = app::commod_name(shared.commodities, row.commod_id);
-        let stock = row.stock.parse::<u64>().unwrap_or(0);
-        let multiplier = match () {
-            _ if name.eq_ignore_ascii_case("swill") => 2,
-            _ if name.eq_ignore_ascii_case("grog") => 3,
-            _ if name.eq_ignore_ascii_case("fine rum") => 6,
-            _ => 0,
-        };
-        total += stock * multiplier;
+fn alcohol_multiplier(name: &str) -> u64 {
+    match () {
+        _ if name.eq_ignore_ascii_case("swill") => 2,
+        _ if name.eq_ignore_ascii_case("grog") => 3,
+        _ if name.eq_ignore_ascii_case("fine rum") => 6,
+        _ => 0,
     }
-    total
+}
+
+/// Sum of `field`'s quantity weighted by each commodity's alcohol multiplier.
+fn compute_alcohol(
+    app: &ProfitsApp,
+    shared: &SharedState,
+    field: impl Fn(&InventoryRow) -> &String,
+) -> u64 {
+    app.rows
+        .iter()
+        .map(|r| {
+            let name = app::commod_name(shared.commodities, r.commod_id);
+            let qty = field(r).parse::<u64>().unwrap_or(0);
+            qty * alcohol_multiplier(name)
+        })
+        .sum()
 }
 
 fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickRegion>) {
