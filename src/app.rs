@@ -24,18 +24,10 @@ pub enum AppId {
     Damage,
     Chatlog,
     Voyage,
+    Exit,
 }
 
 impl AppId {
-    pub fn label(self) -> &'static str {
-        match self {
-            AppId::Profits => "Profits",
-            AppId::Damage => "Damage",
-            AppId::Chatlog => "Jobbers",
-            AppId::Voyage => "Voyage Statistics",
-        }
-    }
-
     /// Two-line top-bar label. Single-word apps sit on the upper line with an
     /// empty lower line; only "Voyage Statistics" wraps onto both lines.
     fn bar_lines(self) -> (&'static str, &'static str) {
@@ -44,12 +36,18 @@ impl AppId {
             AppId::Damage => ("Damage", ""),
             AppId::Chatlog => ("Jobbers", ""),
             AppId::Voyage => ("Voyage", "Statistics"),
+            AppId::Exit => ("Exit", ""),
         }
     }
 }
 
 pub const APP_LIST: &[AppId] =
-    &[AppId::Profits, AppId::Damage, AppId::Chatlog, AppId::Voyage];
+    &[AppId::Profits, AppId::Damage, AppId::Chatlog, AppId::Voyage, AppId::Exit];
+
+/// Index of the Exit app in `APP_LIST` (where the universal Esc lands).
+fn exit_index() -> usize {
+    APP_LIST.iter().position(|a| *a == AppId::Exit).unwrap()
+}
 
 /// Top bar: two label lines, no border (a shaded strip).
 const TOPBAR_HEIGHT: u16 = 2;
@@ -200,6 +198,26 @@ fn render_voyage_placeholder(frame: &mut Frame, area: Rect) {
     frame.render_widget(para, inner);
 }
 
+/// The Exit app: a single centered prompt. Pressing Enter or Esc while it is the
+/// open app quits the program.
+fn render_exit(frame: &mut Frame, area: Rect) {
+    // Vertically center one line of text.
+    let rows = Layout::vertical([
+        Constraint::Fill(1),
+        Constraint::Length(1),
+        Constraint::Fill(1),
+    ])
+    .split(area);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "Press Enter or Esc to Exit",
+            Style::default().bold(),
+        ))
+        .centered(),
+        rows[1],
+    );
+}
+
 // ---------------------------------------------------------------------------
 // AppShell
 // ---------------------------------------------------------------------------
@@ -237,7 +255,8 @@ impl AppShell {
             ocean: None,
             query_market: true,
             sidebar_index: 0,
-            global_focus: GlobalFocus::Content,
+            // Start on the top bar with Profits selected.
+            global_focus: GlobalFocus::TopBar,
             profits: ProfitsApp::new(),
             damage: DamageApp::new(),
             chatlog: GameState::new(),
@@ -327,6 +346,9 @@ impl AppShell {
             AppId::Voyage => {
                 render_voyage_placeholder(frame, content_area);
             }
+            AppId::Exit => {
+                render_exit(frame, content_area);
+            }
         }
     }
 
@@ -383,6 +405,24 @@ impl AppShell {
         key: KeyEvent,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
     ) -> bool {
+        // The Exit app lives entirely on the top bar — it has no content to
+        // descend into. Selecting it shows its widget; Enter/Esc then quit.
+        let on_exit = APP_LIST[self.sidebar_index] == AppId::Exit;
+
+        // Universal Esc: from anywhere it selects the Exit app on the bar (which
+        // shows its widget); pressed again while Exit is already selected, it
+        // quits. A modal popup keeps first claim on Esc so it stays closable.
+        let popup_open =
+            self.global_focus == GlobalFocus::Content && self.current_popup_open();
+        if key.code == KeyCode::Esc && !popup_open {
+            if on_exit {
+                return true;
+            }
+            self.sidebar_index = exit_index();
+            self.global_focus = GlobalFocus::TopBar;
+            return false;
+        }
+
         if self.global_focus == GlobalFocus::TopBar {
             return self.handle_topbar_key(key);
         }
@@ -401,6 +441,8 @@ impl AppShell {
             AppId::Damage => self.damage.handle_key(key),
             AppId::Chatlog => self.handle_jobbers_key(key),
             AppId::Voyage => Self::handle_voyage_key(key),
+            // Handled above (Exit-app keys quit / return to the bar).
+            AppId::Exit => InputResult::Consumed,
         };
 
         match result {
@@ -419,29 +461,54 @@ impl AppShell {
         false
     }
 
+    /// Whether the currently-open app has a modal popup open (which should keep
+    /// first claim on Esc instead of the universal jump-to-Exit).
+    fn current_popup_open(&self) -> bool {
+        match APP_LIST[self.sidebar_index] {
+            AppId::Profits => self.profits.popup.is_some(),
+            AppId::Damage => self.damage.popup.is_some(),
+            AppId::Chatlog => self.jobbers_ui.ship_popup.is_some(),
+            AppId::Voyage | AppId::Exit => false,
+        }
+    }
+
     /// Key handling while the top bar is focused: ←/→ live-switch the app shown
-    /// beneath, ↓/Enter drop focus into it, Esc quits.
+    /// beneath, ↓/Enter drop focus into it. The Exit app is special — it has no
+    /// content, so ↓ is a no-op there and Enter quits. (Esc is handled
+    /// universally in `handle_key`.)
     fn handle_topbar_key(&mut self, key: KeyEvent) -> bool {
+        let on_exit = APP_LIST[self.sidebar_index] == AppId::Exit;
+        let last = APP_LIST.len() - 1;
         match key.code {
-            KeyCode::Esc => return true,
+            // ←/→ wrap around the ends of the bar.
             KeyCode::Left => {
-                if 0 < self.sidebar_index {
-                    self.sidebar_index -= 1;
-                }
+                self.sidebar_index =
+                    if self.sidebar_index == 0 { last } else { self.sidebar_index - 1 };
             }
             KeyCode::Right => {
-                if self.sidebar_index + 1 < APP_LIST.len() {
-                    self.sidebar_index += 1;
+                self.sidebar_index =
+                    if self.sidebar_index == last { 0 } else { self.sidebar_index + 1 };
+            }
+            // Enter drops into the selected app — except Exit, which has nothing
+            // to enter, so Enter there quits.
+            KeyCode::Enter => {
+                if on_exit {
+                    return true;
                 }
+                self.enter_app();
             }
-            KeyCode::Enter | KeyCode::Down => {
-                self.global_focus = GlobalFocus::Content;
-                // Entering the Jobbers page lands on the Vessels list.
-                self.jobbers_ui.focus = JobberFocus::Vessels;
-            }
+            // ↓ descends into the app; the Exit app has nothing below it.
+            KeyCode::Down if !on_exit => self.enter_app(),
             _ => {}
         }
         false
+    }
+
+    /// Drop focus from the bar into the selected app's content.
+    fn enter_app(&mut self) {
+        self.global_focus = GlobalFocus::Content;
+        // Entering the Jobbers page lands on the Vessels list.
+        self.jobbers_ui.focus = JobberFocus::Vessels;
     }
 
     /// The Voyage Statistics page is inert: ↑ or Esc returns focus to the bar,
@@ -671,8 +738,13 @@ impl AppShell {
             ClickTarget::SidebarItem(i) => {
                 if i < APP_LIST.len() {
                     self.sidebar_index = i;
-                    self.global_focus = GlobalFocus::Content;
-                    self.jobbers_ui.focus = JobberFocus::Vessels;
+                    // Exit has no content to enter — clicking it just selects it
+                    // on the bar and shows its widget (Enter/Esc then quit).
+                    if APP_LIST[i] == AppId::Exit {
+                        self.global_focus = GlobalFocus::TopBar;
+                    } else {
+                        self.enter_app();
+                    }
                 }
             }
             ClickTarget::ProfitsInput => {
@@ -911,7 +983,7 @@ impl AppShell {
                     *offset = offset.saturating_add(1);
                 }
             }
-            AppId::Voyage => {}
+            AppId::Voyage | AppId::Exit => {}
         }
     }
 
