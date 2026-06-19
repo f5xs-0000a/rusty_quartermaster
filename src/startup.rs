@@ -13,7 +13,7 @@ use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
 use crate::cache::OceanCache;
 use crate::ocean::Ocean;
 use crate::pirate::{FetchPlan, PirateUpdate};
-use crate::utils::{FieldKind, PromptField};
+use crate::utils::{offset_title, FieldKind, PromptField};
 
 // ---------------------------------------------------------------------------
 // Startup setup popup
@@ -402,7 +402,7 @@ fn render(frame: &mut Frame, state: &Setup) {
     let ocean_block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_for(ocean_focused))
-        .title("─── Ocean ");
+        .title(offset_title("Ocean").0);
     let ocean_inner = ocean_block.inner(rows[0]);
     frame.render_widget(ocean_block, rows[0]);
 
@@ -440,7 +440,7 @@ fn render(frame: &mut Frame, state: &Setup) {
         .borders(Borders::ALL)
         .border_style(border_for(name_focused))
         .padding(Padding::horizontal(1))
-        .title("─── Name ");
+        .title(offset_title("Name").0);
     let name_inner = name_block.inner(rows[1]);
     frame.render_widget(name_block, rows[1]);
     let name_span = if state.name.value.is_empty() && !name_focused {

@@ -326,7 +326,7 @@ const GRAND_FRIGATE: Ship = Ship {
     image_data: include_bytes!("../assets/grand_frigate.png"),
 };
 
-pub static SHIPS: &[Ship] = &[
+pub const SHIPS: &[Ship] = &[
     SLOOP,
     CUTTER,
     DHOW,

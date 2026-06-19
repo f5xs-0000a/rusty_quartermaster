@@ -23,6 +23,7 @@ use crate::pirate::{
     self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, Standing,
 };
 use crate::ships::{Ship, SHIPS};
+use crate::utils::{offset_title, offset_title_width};
 
 const TOP_N: usize = 4;
 /// Width of the `EEE/SSS` experience/standing code.
@@ -428,7 +429,7 @@ pub fn render(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style(focused))
-                .title("─── Vessel's Jobbers "),
+                .title(offset_title("Vessel's Jobbers").0),
         );
         frame.render_widget(msg, area);
         return;
@@ -462,9 +463,29 @@ pub fn render(
 
     // The Top Jobbers panel is the widest piece, so its natural width sets the
     // width of the whole Jobbers block; the bottom row spans that same width.
+    // Longest ship name, computed at compile time. The Ship Type box (which
+    // shares the left column's width) shows ship names, so the column must fit it.
+    const MAX_SHIP_NAME: u16 = {
+        let mut max = 0usize;
+        let mut i = 0;
+        while i < SHIPS.len() {
+            let len = SHIPS[i].name.len();
+            if len > max {
+                max = len;
+            }
+            i += 1;
+        }
+        max as u16
+    };
+
     let max_name = ordered.iter().map(|k| k.chars().count()).max().unwrap_or(0);
-    // chrome = borders(2) + padding(2) + highlight "> "(2); also fit "Unpoison".
-    let vessel_w = ((max_name + 6).max(12)).min(28) as u16;
+    // Each width is a name plus its framing: borders(2) + padding(2) + the "> "
+    // selection marker(2) = 6. Cap at the longest ship name's width so a long
+    // vessel name can't push the left column past the Top Jobbers panel; floor at
+    // the wider of the two stacked titles ("Vessels"/"Ship Type") so they stay
+    // readable when no vessels are aboard (the box would otherwise collapse).
+    let title_min = offset_title_width("Vessels").max(offset_title_width("Ship Type"));
+    let vessel_w = ((max_name as u16 + 6).min(MAX_SHIP_NAME + 6)).max(title_min);
     let block_w = top_panel_width(&ranked).max(vessel_w + 20);
 
     // The tooltip (focus-dependent help) rides at the bottom of the block so it
@@ -599,7 +620,7 @@ fn render_left_column(
                 .borders(Borders::ALL)
                 .border_style(box_border(focused, focus == JobberFocus::Vessels))
                 .padding(Padding::horizontal(1))
-                .title("─── Vessels "),
+                .title(offset_title("Vessels").0),
         )
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
         .highlight_symbol("> ");
@@ -645,7 +666,7 @@ fn render_left_column(
     let st_block = Block::default()
         .borders(Borders::ALL)
         .border_style(box_border(focused, st_focused))
-        .title("─── Ship Type ");
+        .title(offset_title("Ship Type").0);
     frame.render_widget(Paragraph::new(st_lines).block(st_block), chunks[1]);
     regions.push(ClickRegion {
         rect: chunks[1],
@@ -707,7 +728,7 @@ fn render_lists_column(
             Block::default()
                 .borders(Borders::ALL)
                 .border_style(border_style(focused))
-                .title("─── Jobbers "),
+                .title(offset_title("Jobbers").0),
         );
         frame.render_widget(msg, Rect::new(area.x, area.y, area.width, h));
         return;
@@ -759,7 +780,7 @@ fn render_lists_column(
         )));
     }
     place_list_vertical(
-        frame, area, &mut y, "─── Aboard ", aboard_lines, &mut ui.aboard_offset,
+        frame, area, &mut y, &offset_title("Aboard").0, aboard_lines, &mut ui.aboard_offset,
         box_border(focused, ui.focus == JobberFocus::Aboard),
         ClickTarget::JobberAboardList, regions,
     );
@@ -789,7 +810,7 @@ fn render_lists_column(
         })
         .collect();
     place_list_vertical(
-        frame, area, &mut y, "─── Greedy ", greedy_lines, &mut ui.greedy_offset,
+        frame, area, &mut y, &offset_title("Greedy").0, greedy_lines, &mut ui.greedy_offset,
         box_border(focused, ui.focus == JobberFocus::Greedy),
         ClickTarget::JobberGreedyList, regions,
     );
@@ -799,7 +820,7 @@ fn render_lists_column(
     planked.sort_unstable();
     let planked_lines: Vec<Line> = planked.iter().map(|n| Line::from(n.clone())).collect();
     place_list_vertical(
-        frame, area, &mut y, "─── Planked ", planked_lines, &mut ui.planked_offset,
+        frame, area, &mut y, &offset_title("Planked").0, planked_lines, &mut ui.planked_offset,
         box_border(focused, ui.focus == JobberFocus::Planked),
         ClickTarget::JobberPlankedList, regions,
     );
@@ -902,8 +923,10 @@ fn top_panel_col_widths(ranked: &[Vec<(String, Experience, Standing)>]) -> Vec<u
 /// The Top Jobbers panel's natural outer width: columns + gaps + padding +
 /// borders, with a floor so the title stays readable.
 fn top_panel_width(ranked: &[Vec<(String, Experience, Standing)>]) -> u16 {
+    // Floor so the title stays readable when no jobbers have fetched stats yet.
+    const FLOOR: u16 = offset_title_width("Top Jobbers");
     let inner_w = top_panel_col_widths(ranked).iter().sum::<u16>() + 2 * COLUMN_GAP;
-    (inner_w + 4).max(18)
+    (inner_w + 4).max(FLOOR)
 }
 
 fn render_top_panel(
@@ -923,7 +946,7 @@ fn render_top_panel(
         .borders(Borders::ALL)
         .border_style(border_style(focused))
         .padding(Padding::horizontal(1))
-        .title("─── Top Jobbers ");
+        .title(offset_title("Top Jobbers").0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -1014,7 +1037,7 @@ fn render_ship_popup(frame: &mut Frame, selected: usize, regions: &mut Vec<Click
             Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Select Ship "),
+                .title(offset_title("Select Ship").0),
         )
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
         .highlight_symbol("> ");

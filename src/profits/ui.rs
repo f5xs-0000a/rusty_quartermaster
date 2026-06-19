@@ -3,6 +3,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Tab
 
 use crate::app::{self, SharedState};
 use crate::clickmap::{ClickRegion, ClickTarget};
+use crate::utils::{offset_title, offset_title_width};
 use super::{Focus, PopupKind, ProfitsApp, PANEL_COUNT};
 
 pub fn render(
@@ -80,7 +81,7 @@ pub fn render(
             Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Inventory "),
+                .title(offset_title("Inventory").0),
         );
 
     // -- Panel --
@@ -91,7 +92,11 @@ pub fn render(
         .max()
         .unwrap_or(0) as u16;
     let panel_inner_width = panel_label_width;
-    let panel_width = panel_inner_width + 4; // +2 borders +2 padding
+    // +2 borders +2 padding; floor so the "Parameters"/"Hold Stats" titles (which
+    // share this width) stay readable if the panel has no or only-short labels.
+    let panel_title_min =
+        offset_title_width("Parameters").max(offset_title_width("Hold Stats"));
+    let panel_width = (panel_inner_width + 4).max(panel_title_min);
 
     // -- Horizontal layout: table + gap + panel, centered --
     let hchunks = Layout::horizontal([
@@ -155,7 +160,7 @@ pub fn render(
     let panel_block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
-        .title("─── Parameters ");
+        .title(offset_title("Parameters").0);
     let panel_inner = panel_block.inner(panel_vchunks[1]);
     frame.render_widget(panel_block, panel_vchunks[1]);
 
@@ -227,7 +232,7 @@ pub fn render(
     let stats_block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
-        .title("─── Hold Stats ");
+        .title(offset_title("Hold Stats").0);
     let stats_inner = stats_block.inner(panel_vchunks[2]);
     frame.render_widget(stats_block, panel_vchunks[2]);
 
@@ -251,7 +256,7 @@ pub fn render(
     let bottom_block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
-        .title("─── Search ");
+        .title(offset_title("Search").0);
     let bottom_inner = bottom_block.inner(bottom_hchunks[1]);
     frame.render_widget(bottom_block, bottom_hchunks[1]);
 
@@ -456,7 +461,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
             let block = Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Re-query? ");
+                .title(offset_title("Re-query?").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -521,7 +526,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
             let block = Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Delete row ");
+                .title(offset_title("Delete row").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -585,7 +590,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
             let block = Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Restock warning ");
+                .title(offset_title("Restock warning").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -675,7 +680,10 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
                 .map(|(l, v)| l.len() + 4 + v.len())
                 .max()
                 .unwrap_or(0);
-            let w: u16 = (max_content as u16 + 4).max(24);
+            // Floor at 24 for readability, but also never below the title's width.
+            let w: u16 = (max_content as u16 + 4)
+                .max(24)
+                .max(offset_title_width("Profit Breakdown"));
             let h: u16 = 11;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
@@ -685,7 +693,7 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
             let block = Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Profit Breakdown ");
+                .title(offset_title("Profit Breakdown").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 

@@ -108,3 +108,55 @@ pub fn parse_rate(field: &PromptField) -> f64 {
         s.parse::<f64>().unwrap_or(0.0)
     }
 }
+
+// ---------------------------------------------------------------------------
+// Widget titles
+// ---------------------------------------------------------------------------
+
+/// Length of the `─` run that leads an offset title. The block's border supplies
+/// the matching trailing run.
+const TITLE_DASHES: usize = 3;
+
+/// Build a block title in the app's house style (`─── Title `) together with the
+/// minimum widget width that keeps it readable. The width comes from
+/// [`offset_title_width`] so the two never drift.
+///
+/// The title is left-aligned on the block; at the returned width it reads
+/// `┌─── Title ───┐`, and any extra width simply lengthens the trailing run.
+pub fn offset_title(title: &'static str) -> (String, u16) {
+    // The `─── …` frame, kept as a tiny macro local to this fn since nothing
+    // else needs it. (`concat!` can't be used — `title` isn't a literal.)
+    macro_rules! framed {
+        ($t:expr) => {
+            format!("{} {} ", "─".repeat(TITLE_DASHES), $t)
+        };
+    }
+    (framed!(title), offset_title_width(title))
+}
+
+/// Minimum widget width at which an [`offset_title`] for `title` sits centered —
+/// equal `───` runs flank the text. `const` so widgets can derive a `const`
+/// minimum width and use it directly as a layout floor. Assumes an ASCII title
+/// (byte length == column count), which all of ours are.
+pub const fn offset_title_width(title: &'static str) -> u16 {
+    // `─── {title} ` spans `title.len() + TITLE_DASHES + 2` columns; the box adds
+    // a matching trailing dash run + 2 corners.
+    (title.len() + 2 * TITLE_DASHES + 4) as u16
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // The width is const-evaluable, so widgets can build `const` floors from it.
+    const _: () = assert!(offset_title_width("Ocean") == 15);
+
+    #[test]
+    fn offset_title_is_centered_at_min_width() {
+        let (s, w) = offset_title("Ocean");
+        assert_eq!(s, "─── Ocean ");
+        // ┌─── Ocean ───┐  → 2 corners + 10 title cols + 3 trailing dashes.
+        assert_eq!(w, 15);
+        assert_eq!(offset_title_width("Ocean"), 15);
+    }
+}

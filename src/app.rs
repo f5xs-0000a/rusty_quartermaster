@@ -12,7 +12,7 @@ use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
 use crate::jobbers::{self, JobberFocus, JobbersUi, PirateCache};
 use crate::profits::ProfitsApp;
-use crate::utils::text_similarity;
+use crate::utils::{offset_title, text_similarity};
 
 // ---------------------------------------------------------------------------
 // App routing
@@ -179,7 +179,7 @@ pub fn rebuild_island_list(
 /// Inert "coming soon" page for the Voyage Statistics app. Navigable (the top
 /// bar can land on it) but draws nothing interactive yet.
 fn render_voyage_placeholder(frame: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title("─── Voyage Statistics ");
+    let block = Block::default().borders(Borders::ALL).title(offset_title("Voyage Statistics").0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

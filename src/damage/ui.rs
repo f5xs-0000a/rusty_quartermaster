@@ -3,6 +3,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding
 
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::ships::SHIPS;
+use crate::utils::offset_title;
 use super::{
     BUTTON_LABELS, CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON,
     ROW_SHIP, Side,
@@ -46,7 +47,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp, focused: bool,
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
-        .title("─── Damage Calculator ");
+        .title(offset_title("Damage Calculator").0);
     let inner = block.inner(box_area);
     frame.render_widget(block, box_area);
 
@@ -421,7 +422,7 @@ fn render_ship_popup(
             Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title("─── Select Ship ")
+                .title(offset_title("Select Ship").0)
                 .title_bottom(" v: View "),
         )
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
