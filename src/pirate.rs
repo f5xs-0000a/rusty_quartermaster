@@ -271,6 +271,7 @@ impl fmt::Display for Skill {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::TreasureHaul => f.write_str("Treasure Haul"),
+            Self::Navigating => f.write_str("Duty Navigation"),
             Self::BattleNavigation => f.write_str("Battle Navigation"),
             Self::TreasureDrop => f.write_str("Treasure Drop"),
             other => fmt::Debug::fmt(other, f),
@@ -768,9 +769,16 @@ fn parse_affiliation(document: &Html, prefix: &str) -> (String, Option<String>, 
         let bolds = extract_bold_texts(&tr_html);
         let rank = bolds.first().cloned().unwrap_or_default();
         let name = extract_link_in_bold(&tr_html);
-        // Exactly three bolds means the middle one is the duty role; the first is
-        // the rank and the last carries the name link.
-        let role = (bolds.len() == 3).then(|| bolds[1].clone());
+        // The role is a bold between the rank and the crew/flag name. The name link
+        // may or may not itself be bold, so the run count alone is ambiguous: pick
+        // the first bold after the rank that isn't the name. That captures both
+        // `[rank, role, name]` and `[rank, role]` (name not bold), while
+        // `[rank, name]` (no role) correctly yields none.
+        let role = bolds
+            .iter()
+            .skip(1)
+            .find(|b| **b != name && !b.is_empty())
+            .cloned();
 
         return (rank, role, name);
     }
@@ -1171,5 +1179,66 @@ mod tests {
         // Empty crew name → no crew, even with a stale rank string.
         info.crew_name = String::new();
         assert!(info.crew().is_none());
+    }
+
+    // The affiliation rows below mirror the real `pirate.wm` markup (verified
+    // against saved sample pages): rank, optional duty role, and the crew/flag
+    // name as a link, all inside `<b>` runs within the row's `<font size="-1">`.
+
+    #[test]
+    fn parse_affiliation_extracts_rank_role_and_crew() {
+        // "Fleet Officer and Strategist of the crew The Example Crew"
+        let html = r#"<table><tr valign="middle">
+            <td><img src="files/crew-fleet_officer.png"></td>
+            <td><font size="-1"><b>Fleet Officer</b> and <b>Strategist</b> of the crew
+                <b><a href="https://x/crew?id=1">The Example Crew</a></b></font></td>
+        </tr></table>"#;
+        let doc = Html::parse_document(html);
+        let (rank, role, name) = parse_affiliation(&doc, "crew-");
+        assert_eq!(rank, "Fleet Officer");
+        assert_eq!(role.as_deref(), Some("Strategist"));
+        assert_eq!(name, "The Example Crew");
+    }
+
+    #[test]
+    fn parse_affiliation_handles_rank_and_crew_without_role() {
+        // "Officer of the crew The Other Crew"
+        let html = r#"<table><tr valign="middle">
+            <td><img src="files/crew-officer.png"></td>
+            <td><font size="-1"><b>Officer</b> of the crew
+                <b><a href="https://x/crew?id=2">The Other Crew</a></b></font></td>
+        </tr></table>"#;
+        let doc = Html::parse_document(html);
+        let (rank, role, name) = parse_affiliation(&doc, "crew-");
+        assert_eq!(rank, "Officer");
+        assert_eq!(role, None);
+        assert_eq!(name, "The Other Crew");
+    }
+
+    #[test]
+    fn parse_affiliation_role_when_crew_name_link_not_bold() {
+        // Same as the role case but the crew-name link is NOT wrapped in <b>, so
+        // the row has only two bold runs — the run count alone can't tell role
+        // from name. The non-rank, non-name bold is still the role.
+        let html = r#"<table><tr valign="middle">
+            <td><img src="files/crew-fleet_officer.png"></td>
+            <td><font size="-1"><b>Fleet Officer</b> and <b>Strategist</b> of the crew
+                <a href="https://x/crew?id=1">The Example Crew</a></font></td>
+        </tr></table>"#;
+        let doc = Html::parse_document(html);
+        let (rank, role, name) = parse_affiliation(&doc, "crew-");
+        assert_eq!(rank, "Fleet Officer");
+        assert_eq!(role.as_deref(), Some("Strategist"));
+        assert_eq!(name, "The Example Crew");
+    }
+
+    #[test]
+    fn parse_affiliation_absent_when_no_crew() {
+        let html = r#"<table><tr><td>no affiliations here</td></tr></table>"#;
+        let doc = Html::parse_document(html);
+        let (rank, role, name) = parse_affiliation(&doc, "crew-");
+        assert_eq!(rank, "");
+        assert_eq!(role, None);
+        assert_eq!(name, "");
     }
 }

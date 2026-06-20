@@ -32,6 +32,9 @@ pub enum ClickTarget {
     JobberGreedyList,
     JobberPlankedList,
     JobberPirate { pane: JobberPane, idx: usize },
+    JobberPirateSeeTrophies,
+    JobberPirateClose,
+    JobberTrophyArea,
 }
 
 #[derive(Clone)]

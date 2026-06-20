@@ -21,11 +21,11 @@ use crate::chatlog::GameState;
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::pirate::{
     self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, Standing,
+    TrophySection,
 };
 use crate::ships::{Ship, SHIPS};
-use crate::utils::{offset_title, offset_title_width};
+use crate::utils::{offset_title, offset_title_width, text_similarity};
 
-const TOP_N: usize = 4;
 /// Width of the `EEE/SSS` experience/standing code.
 const CODE_LEN: usize = 7;
 /// Spaces between a jobber's name and their code in the Top Jobbers panel.
@@ -44,6 +44,37 @@ const SKILL_COLUMNS: &[(Skill, &str)] = &[
     (Skill::Gunning, "Gunnery"),
     (Skill::Navigating, "Navigation"),
     (Skill::BattleNavigation, "B. Navigation"),
+];
+
+/// Skills in each family, in yoweb display order. The pirate-stats popup renders
+/// one table per family using these.
+const PIRACY_SKILLS: &[Skill] = &[
+    Skill::Sailing,
+    Skill::Rigging,
+    Skill::Carpentry,
+    Skill::Patching,
+    Skill::Bilging,
+    Skill::Gunning,
+    Skill::TreasureHaul,
+    Skill::Navigating,
+    Skill::BattleNavigation,
+    Skill::Swordfighting,
+    Skill::Rumble,
+];
+const CRAFTING_SKILLS: &[Skill] = &[
+    Skill::Distilling,
+    Skill::Alchemistry,
+    Skill::Shipwrightery,
+    Skill::Blacksmithing,
+    Skill::Foraging,
+    Skill::Weaving,
+];
+const CAROUSING_SKILLS: &[Skill] = &[
+    Skill::Drinking,
+    Skill::Spades,
+    Skill::Hearts,
+    Skill::TreasureDrop,
+    Skill::Poker,
 ];
 
 /// The kind of voyage being crewed. Only [`VoyageType::Pillage`] is implemented;
@@ -255,6 +286,9 @@ pub struct JobbersUi {
     pub planked_sel: usize,
     /// The voyage type being crewed; gates the Pillage-only layout.
     pub voyage_type: VoyageType,
+    /// How many entries each Top Jobbers column shows. `None` (the default) shows
+    /// the whole ranked list with no cap.
+    pub leaderboard_size: Option<usize>,
     /// Ship type chosen per vessel (index into [`SHIPS`]), keyed by vessel name.
     /// Lives here, not on the `Vessel`, so picks survive a relog state wipe.
     pub ship_types: HashMap<Arc<str>, usize>,
@@ -267,6 +301,30 @@ pub struct JobbersUi {
     /// When `Some`, the voyage-type picker popup is open with this highlighted
     /// index (into [`VOYAGE_TYPES`]).
     pub voyage_popup: Option<usize>,
+    /// When `Some`, the pirate-stats popup is open for this pirate.
+    pub pirate_popup: Option<PiratePopup>,
+    /// When `Some`, the trophies popup is open (layered over the stats popup).
+    pub trophy_popup: Option<TrophyPopup>,
+}
+
+/// State of the open pirate-stats popup: the pirate being viewed and which of its
+/// two buttons ([See Trophies] / [Close]) is focused.
+#[derive(Clone)]
+pub struct PiratePopup {
+    pub name: String,
+    /// 0 = See Trophies, 1 = Close.
+    pub button: usize,
+}
+
+/// State of the open trophies popup: whose trophies, the live search filter, the
+/// vertical scroll offset (in rendered lines), and the last-rendered view height
+/// (so Page Up/Down can scroll by half a page).
+#[derive(Clone)]
+pub struct TrophyPopup {
+    pub name: String,
+    pub search: String,
+    pub offset: usize,
+    pub view_h: usize,
 }
 
 /// Bottom-bar tooltip lines for the current focus (empty when nothing to say).
@@ -288,7 +346,7 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
             }
         }
         JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
-            vec!["\u{2190}/\u{2192} switch panes \u{00b7} \u{2191}/\u{2193} select pirate"]
+            vec!["Enter: pirate stats \u{00b7} \u{2190}/\u{2192} panes \u{00b7} \u{2191}/\u{2193} select"]
         }
     }
 }
@@ -571,9 +629,12 @@ pub fn render(
     let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], aboard_set.len(), swabbies));
 
     // ---- Pillage-only sizing (Top Jobbers + the three panes) ----
+    // Pillage caps its Top Jobbers at 5 per column; an explicit leaderboard size
+    // overrides that default.
+    let lb_limit = ui.leaderboard_size.or(Some(5));
     let ranked: Vec<Vec<(String, Experience, Standing)>> = SKILL_COLUMNS
         .iter()
-        .map(|(skill, _)| rank_for_skill(&aboard_set, cache, skill))
+        .map(|(skill, _)| rank_for_skill(&aboard_set, cache, skill, lb_limit))
         .collect();
     let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
@@ -586,7 +647,7 @@ pub fn render(
         .max()
         .unwrap_or(0)
         .max(if swabbies > 0 {
-            format!("and {swabbies} swabbies").len()
+            swabbie_footer(swabbies).len()
         } else {
             0
         });
@@ -640,7 +701,13 @@ pub fn render(
     let unpoison_h: u16 = if sel_poisoned { 2 } else { 0 };
     let voyage_h = 3 + unpoison_h + warn_lines.len() as u16 + 2;
 
-    let tooltip_lines = tooltip(state, ui);
+    // The pirate-stats / trophies popups own the screen, so hide the page tooltip
+    // underneath them.
+    let tooltip_lines = if ui.pirate_popup.is_some() || ui.trophy_popup.is_some() {
+        Vec::new()
+    } else {
+        tooltip(state, ui)
+    };
     let tip_h = tooltip_lines.len() as u16;
 
     let rows = if pillage {
@@ -693,6 +760,16 @@ pub fn render(
         render_vessel_popup(frame, sel, &ordered, state, regions);
     } else if let Some(sel) = ui.voyage_popup {
         render_voyage_popup(frame, sel, regions);
+    }
+
+    // The pirate-stats popup, and the trophies popup layered over it.
+    if ui.trophy_popup.is_none() {
+        if let Some(pp) = ui.pirate_popup.clone() {
+            render_pirate_popup(frame, &pp, cache, focused, regions);
+        }
+    }
+    if let Some(tp) = ui.trophy_popup.as_mut() {
+        render_trophy_popup(frame, tp, cache, regions);
     }
 }
 
@@ -855,11 +932,52 @@ fn clamp_sel(sel: usize, n: usize) -> usize {
     }
 }
 
+/// The Aboard pane's swabbie footer, pluralised: "and 1 swabbie" / "and N
+/// swabbies".
+fn swabbie_footer(n: u32) -> String {
+    if n == 1 {
+        "and 1 swabbie".to_string()
+    } else {
+        format!("and {n} swabbies")
+    }
+}
+
 fn pane_focus_target(pane: JobberPane) -> ClickTarget {
     match pane {
         JobberPane::Aboard => ClickTarget::JobberAboardList,
         JobberPane::Greedy => ClickTarget::JobberGreedyList,
         JobberPane::Planked => ClickTarget::JobberPlankedList,
+    }
+}
+
+/// Selectable pirate names in a pane, in the same display order `render_panes`
+/// uses — Aboard & Planked alphabetical, Greedy by total strikes desc then name.
+/// The single source of truth for mapping a pane selection index to a pirate.
+pub fn pane_pirates(state: &GameState, key: &Arc<str>, pane: JobberPane) -> Vec<String> {
+    match pane {
+        JobberPane::Aboard => {
+            let mut v: Vec<String> = state.aboard(key).into_iter().collect();
+            v.sort_unstable();
+            v
+        }
+        JobberPane::Greedy => {
+            let mut g: Vec<(String, u32)> = state
+                .vessels
+                .get(key)
+                .map(|v| v.greedy_by_pirate.iter().map(|(n, t)| (n.clone(), *t)).collect())
+                .unwrap_or_default();
+            g.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+            g.into_iter().map(|(n, _)| n).collect()
+        }
+        JobberPane::Planked => {
+            let mut v: Vec<String> = state
+                .vessels
+                .get(key)
+                .map(|v| v.planked_by_us.clone())
+                .unwrap_or_default();
+            v.sort_unstable();
+            v
+        }
     }
 }
 
@@ -936,7 +1054,7 @@ fn render_panes(
     if swabbies > 0 {
         aboard_rows.push((
             Line::from(Span::styled(
-                format!("and {swabbies} swabbies"),
+                swabbie_footer(swabbies),
                 Style::default().italic(),
             )),
             None,
@@ -1082,12 +1200,14 @@ fn greedy_line(name: &str, total: u32, current: u32, width: usize, style: Style)
     ])
 }
 
-/// Top-N currently-aboard jobbers for a skill, by standing then experience then
-/// name. Pirates without fetched stats are skipped.
+/// Currently-aboard jobbers ranked for a skill, by standing then experience then
+/// name. Pirates without fetched stats are skipped. `limit` caps the list length;
+/// `None` returns the whole ranked list.
 fn rank_for_skill(
     aboard: &HashSet<String>,
     cache: &PirateCache,
     skill: &Skill,
+    limit: Option<usize>,
 ) -> Vec<(String, Experience, Standing)> {
     let mut ranked: Vec<(String, Experience, Standing)> = aboard
         .iter()
@@ -1103,7 +1223,9 @@ fn rank_for_skill(
             .then(b.1.cmp(&a.1))
             .then_with(|| a.0.cmp(&b.0))
     });
-    ranked.truncate(TOP_N);
+    if let Some(n) = limit {
+        ranked.truncate(n);
+    }
     ranked
 }
 
@@ -1349,6 +1471,463 @@ fn render_voyage_popup(frame: &mut Frame, selected: usize, regions: &mut Vec<Cli
             target: ClickTarget::JobberVoyageItem(i),
         });
     }
+}
+
+// ---------------------------------------------------------------------------
+// Pirate-stats popup
+// ---------------------------------------------------------------------------
+
+/// One skill table row: skill name, then Experience and Standing spelled out in
+/// their own columns, each emphasised like the Top Jobbers codes.
+fn skill_row(
+    skill_w: usize,
+    exp_w: usize,
+    sta_w: usize,
+    name: &str,
+    exp: Experience,
+    standing: Standing,
+) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(format!("{name:<skill_w$}")),
+        Span::raw("  "),
+        Span::styled(format!("{:<exp_w$}", exp.to_string()), experience_style(exp)),
+        Span::raw("  "),
+        Span::styled(format!("{:<sta_w$}", standing.to_string()), standing_style(standing)),
+    ])
+}
+
+/// The pirate-stats popup: name, crew/flag boxes, three skill tables, and the
+/// [See Trophies] / [Close] buttons. Sized to its content.
+fn render_pirate_popup(
+    frame: &mut Frame,
+    pp: &PiratePopup,
+    cache: &PirateCache,
+    page_focused: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let screen = frame.area();
+    let cached = cache.get_cached(&pp.name);
+
+    // Buttons line (always present); compute its width up front.
+    let see = "[ See Trophies ]";
+    let close = "[ Close ]";
+    const BTN_GAP: usize = 3;
+    let buttons_w = see.len() + BTN_GAP + close.len();
+
+    // --- Build the unboxed crew/flag columns (no header label). Each column's
+    //     width is its widest line. ---
+    let muted = Style::default().fg(Color::DarkGray);
+    let (crew_lines, crew_w) = match cached.and_then(|c| c.basic.crew().map(|cr| (c, cr))) {
+        Some((c, cr)) => {
+            // Rank styled via CrewRank; the duty role (if any) renders plain. With
+            // a role the affiliation spans three lines:
+            //   [Rank] and / [Role] of / [Crew]
+            // without one, two:  [Rank] of / [Crew].
+            let rank_label = c.basic.crew_rank.trim().to_string();
+            let name_w = cr.name.chars().count();
+            match &cr.role {
+                Some(role) => {
+                    let l1_w = rank_label.chars().count() + " and".len();
+                    let l1 = Line::from(vec![
+                        Span::styled(rank_label, cr.rank.style()),
+                        Span::raw(" and"),
+                    ])
+                    .centered();
+                    let l2_text = format!("{role} of");
+                    let l2_w = l2_text.chars().count();
+                    let l2 = Line::from(l2_text).centered();
+                    let l3 = Line::from(cr.name.clone()).centered();
+                    (vec![l1, l2, l3], l1_w.max(l2_w).max(name_w) as u16)
+                }
+                None => {
+                    let l1_w = rank_label.chars().count() + " of".len();
+                    let l1 = Line::from(vec![
+                        Span::styled(rank_label, cr.rank.style()),
+                        Span::raw(" of"),
+                    ])
+                    .centered();
+                    let l2 = Line::from(cr.name.clone()).centered();
+                    (vec![l1, l2], l1_w.max(name_w) as u16)
+                }
+            }
+        }
+        None => (
+            vec![Line::from(Span::styled("No crew", muted)).centered()],
+            "No crew".len() as u16,
+        ),
+    };
+    let (flag_lines, flag_w) = match cached.and_then(|c| c.basic.flag().map(|fl| (c, fl))) {
+        Some((c, fl)) => {
+            let title_label = c.basic.flag_rank.trim().to_string();
+            let tail = " of".to_string();
+            let l1_w = title_label.chars().count() + tail.chars().count();
+            let l1 = Line::from(vec![
+                Span::styled(title_label, fl.title.style()),
+                Span::raw(tail),
+            ])
+            .centered();
+            let l2 = Line::from(fl.name.clone()).centered();
+            (vec![l1, l2], l1_w.max(fl.name.chars().count()) as u16)
+        }
+        None => (
+            vec![Line::from(Span::styled("No flag", muted)).centered()],
+            "No flag".len() as u16,
+        ),
+    };
+    // The two columns split the row into equal halves with a 2-space gap. Each
+    // side reserves the wider column's content width so they stay symmetric; when
+    // the popup is wider they expand to fill, content centered within each half.
+    const AFFIL_GAP: u16 = 2;
+    let affil_w = 2 * crew_w.max(flag_w) + AFFIL_GAP;
+    // The crew column may be 3 lines tall (with a role); the row fits the taller.
+    let affil_h = crew_lines.len().max(flag_lines.len()) as u16;
+
+    // --- Build the skill tables (one per family, in popup order). ---
+    let sections: [(&str, &[Skill]); 3] = [
+        ("Piracy Skills", PIRACY_SKILLS),
+        ("Crafting Skills", CRAFTING_SKILLS),
+        ("Carousing Skills", CAROUSING_SKILLS),
+    ];
+    // Column widths for the skill tables: skill name, then the spelled-out
+    // Experience and Standing words.
+    let (skill_w, exp_w, sta_w) = cached
+        .map(|c| {
+            c.basic.skills.iter().fold((0, 0, 0), |(sw, ew, stw), (s, r)| {
+                (
+                    sw.max(s.to_string().chars().count()),
+                    ew.max(r.experience.to_string().chars().count()),
+                    stw.max(r.standing.to_string().chars().count()),
+                )
+            })
+        })
+        .unwrap_or((0, 0, 0));
+
+    let mut skill_lines: Vec<Line> = Vec::new();
+    let mut table_title_w = 0usize;
+    match cached {
+        None => skill_lines.push(Line::from(Span::styled("Stats not loaded yet.", muted)).centered()),
+        Some(c) => {
+            let mut first = true;
+            for (title, skills) in sections {
+                let present: Vec<Skill> = skills
+                    .iter()
+                    .copied()
+                    .filter(|s| c.basic.skills.contains_key(s))
+                    .collect();
+                if present.is_empty() {
+                    continue;
+                }
+                if !first {
+                    skill_lines.push(Line::from(""));
+                }
+                first = false;
+                table_title_w = table_title_w.max(title.len());
+                skill_lines.push(
+                    Line::from(Span::styled(title, Style::default().bold().underlined())).centered(),
+                );
+                for s in present {
+                    let rec = &c.basic.skills[&s];
+                    skill_lines.push(skill_row(
+                        skill_w,
+                        exp_w,
+                        sta_w,
+                        &s.to_string(),
+                        rec.experience,
+                        rec.standing,
+                    ));
+                }
+            }
+            if skill_lines.is_empty() {
+                skill_lines.push(Line::from(Span::styled("No skills recorded.", muted)).centered());
+            }
+        }
+    }
+    let skills_h = skill_lines.len() as u16;
+    let skill_row_w = if skill_w > 0 {
+        skill_w + 2 + exp_w + 2 + sta_w
+    } else {
+        0
+    };
+    // Width of the skills section as a block (widest row / title / fallback line),
+    // so the whole section can be centered within the popup.
+    let skills_block_w = skill_row_w
+        .max(table_title_w)
+        .max("Stats not loaded yet.".len())
+        .max("No skills recorded.".len());
+
+    // --- Geometry ---
+    let content_w = (pp.name.chars().count())
+        .max(affil_w as usize)
+        .max(skills_block_w)
+        .max(buttons_w) as u16;
+    let box_w = (content_w + 4).min(screen.width.max(1));
+    // name + gap + affil + gap + skills + gap + buttons, plus borders(2).
+    let box_h = (1 + 1 + affil_h + 1 + skills_h + 1 + 1 + 2).min(screen.height.max(1));
+    let x = screen.x + screen.width.saturating_sub(box_w) / 2;
+    let y = screen.y + screen.height.saturating_sub(box_h) / 2;
+    let popup = Rect::new(x, y, box_w, box_h);
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Pirate").0);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),       // name
+        Constraint::Length(1),       // gap
+        Constraint::Length(affil_h), // crew | flag
+        Constraint::Length(1),       // gap
+        Constraint::Min(0),          // skills
+        Constraint::Length(1),       // gap
+        Constraint::Length(1),       // buttons
+    ])
+    .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(pp.name.clone(), Style::default().bold())).centered()),
+        rows[0],
+    );
+
+    // Crew | Flag (unboxed): two equal halves split by a 2-space gap, each filling
+    // its side with the content centered.
+    let affil_cols = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(AFFIL_GAP),
+        Constraint::Fill(1),
+    ])
+    .split(rows[2]);
+    frame.render_widget(Paragraph::new(crew_lines), affil_cols[0]);
+    frame.render_widget(Paragraph::new(flag_lines), affil_cols[2]);
+
+    // Center the whole skills section within the popup width.
+    let sb_w = (skills_block_w as u16).min(rows[4].width);
+    let sb_x = rows[4].x + rows[4].width.saturating_sub(sb_w) / 2;
+    frame.render_widget(
+        Paragraph::new(skill_lines),
+        Rect::new(sb_x, rows[4].y, sb_w, rows[4].height),
+    );
+
+    // Buttons, centered; each gets a click region.
+    let see_style = button_style(page_focused, pp.button == 0);
+    let close_style = button_style(page_focused, pp.button == 1);
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(see, see_style),
+            Span::raw(" ".repeat(BTN_GAP)),
+            Span::styled(close, close_style),
+        ])
+        .centered()),
+        rows[6],
+    );
+    let start_x = rows[6].x + rows[6].width.saturating_sub(buttons_w as u16) / 2;
+    regions.push(ClickRegion {
+        rect: Rect::new(start_x, rows[6].y, see.len() as u16, 1),
+        target: ClickTarget::JobberPirateSeeTrophies,
+    });
+    regions.push(ClickRegion {
+        rect: Rect::new(
+            start_x + (see.len() + BTN_GAP) as u16,
+            rows[6].y,
+            close.len() as u16,
+            1,
+        ),
+        target: ClickTarget::JobberPirateClose,
+    });
+}
+
+/// Button emphasis: highlighted when focused, bold otherwise.
+fn button_style(page_focused: bool, active: bool) -> Style {
+    if page_focused && active {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else {
+        Style::default().bold()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Trophies popup
+// ---------------------------------------------------------------------------
+
+/// Whether a (lowercased) trophy name matches the (lowercased) search needle:
+/// a plain substring hit, or a fuzzy Jaro-Winkler match against the whole name or
+/// any single word in it (so typos and partial words still surface trophies).
+fn trophy_matches(name_lower: &str, needle: &str) -> bool {
+    const FUZZY: f64 = 0.82;
+    name_lower.contains(needle)
+        || text_similarity(needle, name_lower) >= FUZZY
+        || name_lower
+            .split_whitespace()
+            .any(|w| text_similarity(needle, w) >= FUZZY)
+}
+
+/// Center `s` within `width` columns (truncating if it somehow overflows).
+fn center_to(s: &str, width: usize) -> String {
+    let len = s.chars().count();
+    if len >= width {
+        return truncate(s, width);
+    }
+    let left = (width - len) / 2;
+    let right = width - len - left;
+    format!("{}{}{}", " ".repeat(left), s, " ".repeat(right))
+}
+
+/// Build a category's lines for the trophies popup: a centered name, then the
+/// matching trophies laid out in 3 centered, word-wrapped columns. Returns an
+/// empty vec when nothing in the category matches `search`.
+fn trophy_section_lines(section: &TrophySection, search: &str, inner_w: usize) -> Vec<Line<'static>> {
+    let needle = search.trim().to_lowercase();
+    let mut names: Vec<&String> = section
+        .trophies
+        .iter()
+        .filter(|t| needle.is_empty() || trophy_matches(&t.to_lowercase(), &needle))
+        .collect();
+    if names.is_empty() {
+        return Vec::new();
+    }
+    names.sort_unstable();
+
+    const GAP: usize = 2;
+    let col_w = inner_w.saturating_sub(2 * GAP) / 3;
+    let col_w = col_w.max(1);
+
+    // Uncategorised trophies render under an italic "Ungrouped" heading.
+    let (title_text, title_style) = if section.category.trim().is_empty() {
+        ("Ungrouped".to_string(), Style::default().bold().underlined().italic())
+    } else {
+        (section.category.clone(), Style::default().bold().underlined())
+    };
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(title_text, title_style)).centered());
+
+    // Lay out row-major in threes. The final short row centers oddly per spec:
+    // two left → left & right columns; one left → the middle column. Each grid row
+    // is followed by a blank line so trophies are visually separated.
+    let mut i = 0;
+    while i < names.len() {
+        let remaining = names.len() - i;
+        // Which column each of this row's cells lands in.
+        let slots: [Option<&String>; 3] = if remaining == 1 {
+            [None, Some(names[i]), None]
+        } else if remaining == 2 {
+            [Some(names[i]), None, Some(names[i + 1])]
+        } else {
+            [Some(names[i]), Some(names[i + 1]), Some(names[i + 2])]
+        };
+        let consumed = remaining.min(3);
+
+        // Wrap each cell, then stack the columns to the tallest cell.
+        let wrapped: Vec<Vec<String>> = slots
+            .iter()
+            .map(|s| s.map(|t| wrap_words(t, col_w)).unwrap_or_default())
+            .collect();
+        let rows = wrapped.iter().map(Vec::len).max().unwrap_or(0);
+        for r in 0..rows {
+            let mut cells: Vec<String> = Vec::with_capacity(3);
+            for col in &wrapped {
+                let text = col.get(r).map(String::as_str).unwrap_or("");
+                cells.push(center_to(text, col_w));
+            }
+            lines.push(Line::from(cells.join(&" ".repeat(GAP))));
+        }
+        lines.push(Line::from("")); // blank under each row
+        i += consumed;
+    }
+    lines
+}
+
+/// The trophies popup: 80 wide, a pinned search box, then the pirate's trophy
+/// categories (each a centered name + 3-column grid), vertically scrollable.
+fn render_trophy_popup(
+    frame: &mut Frame,
+    tp: &mut TrophyPopup,
+    cache: &PirateCache,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let screen = frame.area();
+    let box_w = 80u16.min(screen.width.max(1));
+    let box_h = screen.height.saturating_sub(2).max(3).min(screen.height.max(1));
+    let x = screen.x + screen.width.saturating_sub(box_w) / 2;
+    let y = screen.y + screen.height.saturating_sub(box_h) / 2;
+    let popup = Rect::new(x, y, box_w, box_h);
+
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Trophies").0);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // search
+        Constraint::Min(0),    // scroll area
+    ])
+    .split(inner);
+
+    // Search box (typed text shows live; the placeholder is muted).
+    let search_line = if tp.search.is_empty() {
+        Line::from(vec![
+            Span::styled("Search: ", Style::default().bold()),
+            Span::styled("type to filter…", Style::default().fg(Color::DarkGray).italic()),
+        ])
+    } else {
+        Line::from(vec![
+            Span::styled("Search: ", Style::default().bold()),
+            Span::raw(tp.search.clone()),
+        ])
+    };
+    frame.render_widget(Paragraph::new(search_line), rows[0]);
+
+    // Build all visible category lines.
+    let inner_w = rows[1].width as usize;
+    let mut lines: Vec<Line> = Vec::new();
+    match cache.get_cached(&tp.name) {
+        None => lines.push(
+            Line::from(Span::styled("Trophies not loaded yet.", Style::default().fg(Color::DarkGray)))
+                .centered(),
+        ),
+        Some(c) => {
+            // Two blank lines separate one group from the next.
+            let mut first = true;
+            for section in &c.trophies.sections {
+                let sec = trophy_section_lines(section, &tp.search, inner_w);
+                if sec.is_empty() {
+                    continue;
+                }
+                if !first {
+                    lines.push(Line::from(""));
+                }
+                first = false;
+                lines.extend(sec);
+            }
+            if lines.is_empty() {
+                lines.push(
+                    Line::from(Span::styled("No matching trophies.", Style::default().fg(Color::DarkGray)))
+                        .centered(),
+                );
+            }
+        }
+    }
+
+    // Clamp scroll, then render the visible window. Record the view height so the
+    // key handler can scroll by half a page.
+    let view_h = rows[1].height as usize;
+    tp.view_h = view_h;
+    let max_off = lines.len().saturating_sub(view_h);
+    if tp.offset > max_off {
+        tp.offset = max_off;
+    }
+    let visible: Vec<Line> = lines.into_iter().skip(tp.offset).take(view_h).collect();
+    frame.render_widget(Paragraph::new(visible), rows[1]);
+
+    // The whole popup is a scroll target so the wheel works anywhere over it.
+    regions.push(ClickRegion {
+        rect: popup,
+        target: ClickTarget::JobberTrophyArea,
+    });
 }
 
 #[cfg(test)]

@@ -11,7 +11,7 @@ use crate::chatlog::GameState;
 use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
 use crate::jobbers::{
-    self, JobberFocus, JobberPane, JobbersUi, PirateCache, VOYAGE_TYPES,
+    self, JobberFocus, JobberPane, JobbersUi, PirateCache, PiratePopup, TrophyPopup, VOYAGE_TYPES,
 };
 use crate::profits::ProfitsApp;
 use crate::utils::{offset_title, text_similarity};
@@ -506,6 +506,8 @@ impl AppShell {
                 self.jobbers_ui.ship_popup.is_some()
                     || self.jobbers_ui.vessel_popup.is_some()
                     || self.jobbers_ui.voyage_popup.is_some()
+                    || self.jobbers_ui.pirate_popup.is_some()
+                    || self.jobbers_ui.trophy_popup.is_some()
             }
             AppId::Voyage | AppId::Exit => false,
         }
@@ -567,7 +569,14 @@ impl AppShell {
     fn handle_jobbers_key(&mut self, key: KeyEvent) -> InputResult {
         use JobberFocus::*;
 
-        // The picker popups are modal: each eats keys until dismissed.
+        // The popups are modal: each eats keys until dismissed. The trophies popup
+        // is checked first since it layers over the pirate-stats popup.
+        if self.jobbers_ui.trophy_popup.is_some() {
+            return self.handle_trophy_popup_key(key);
+        }
+        if self.jobbers_ui.pirate_popup.is_some() {
+            return self.handle_pirate_popup_key(key);
+        }
         if let Some(sel) = self.jobbers_ui.ship_popup {
             return self.handle_ship_popup_key(key, sel);
         }
@@ -641,8 +650,10 @@ impl AppShell {
                     self.jobbers_unpoison();
                     self.jobbers_ui.focus = Vessels;
                 }
-                // Pirate-stats popup is the next chunk of work.
-                Aboard | Greedy | Planked => {}
+                Aboard | Greedy | Planked => {
+                    let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                    self.open_pirate_popup(pane);
+                }
             },
             _ => {}
         }
@@ -759,6 +770,94 @@ impl AppShell {
                     self.jobbers_ui.voyage_type = *v;
                 }
                 self.jobbers_ui.voyage_popup = None;
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Open the pirate-stats popup for the pane's currently-selected pirate.
+    fn open_pirate_popup(&mut self, pane: JobberPane) {
+        let Some(key) = self.jobbers_ui.selected.clone() else {
+            return;
+        };
+        let names = jobbers::pane_pirates(&self.chatlog, &key, pane);
+        let sel = self.jobbers_pane_sel(pane);
+        if let Some(name) = names.get(sel) {
+            self.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: name.clone(),
+                button: 0,
+            });
+        }
+    }
+
+    /// Modal key handling for the pirate-stats popup: ←/→ toggle the two buttons,
+    /// Enter activates, Esc closes.
+    fn handle_pirate_popup_key(&mut self, key: KeyEvent) -> InputResult {
+        let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() else {
+            return InputResult::Consumed;
+        };
+        match key.code {
+            KeyCode::Esc => self.jobbers_ui.pirate_popup = None,
+            KeyCode::Left => pp.button = 0,
+            KeyCode::Right => pp.button = 1,
+            KeyCode::Enter => {
+                if pp.button == 0 {
+                    self.open_trophy_popup();
+                } else {
+                    self.jobbers_ui.pirate_popup = None;
+                }
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Open the trophies popup for the pirate in the stats popup.
+    fn open_trophy_popup(&mut self) {
+        if let Some(pp) = &self.jobbers_ui.pirate_popup {
+            self.jobbers_ui.trophy_popup = Some(TrophyPopup {
+                name: pp.name.clone(),
+                search: String::new(),
+                offset: 0,
+                view_h: 0,
+            });
+        }
+    }
+
+    /// Modal key handling for the trophies popup: type to filter, ↑/↓ scroll,
+    /// Esc returns to the stats popup.
+    fn handle_trophy_popup_key(&mut self, key: KeyEvent) -> InputResult {
+        let Some(tp) = self.jobbers_ui.trophy_popup.as_mut() else {
+            return InputResult::Consumed;
+        };
+        match key.code {
+            // Esc clears a non-empty search first; only then closes the popup.
+            KeyCode::Esc => {
+                if tp.search.is_empty() {
+                    self.jobbers_ui.trophy_popup = None;
+                } else {
+                    tp.search.clear();
+                    tp.offset = 0;
+                }
+            }
+            KeyCode::Up => tp.offset = tp.offset.saturating_sub(1),
+            KeyCode::Down => tp.offset = tp.offset.saturating_add(1),
+            KeyCode::PageUp => {
+                let half = (tp.view_h / 2).max(1);
+                tp.offset = tp.offset.saturating_sub(half);
+            }
+            KeyCode::PageDown => {
+                let half = (tp.view_h / 2).max(1);
+                tp.offset = tp.offset.saturating_add(half);
+            }
+            KeyCode::Backspace => {
+                tp.search.pop();
+                tp.offset = 0;
+            }
+            KeyCode::Char(c) => {
+                tp.search.push(c);
+                tp.offset = 0;
             }
             _ => {}
         }
@@ -1089,6 +1188,18 @@ impl AppShell {
                 };
                 *self.jobbers_pane_sel_mut(pane) = idx;
             }
+            ClickTarget::JobberPirateSeeTrophies => {
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    pp.button = 0;
+                }
+                self.open_trophy_popup();
+            }
+            ClickTarget::JobberPirateClose => {
+                self.jobbers_ui.pirate_popup = None;
+            }
+            // The trophies popup is keyboard-driven; a click on it is a no-op (it
+            // exists only so the scroll wheel has a target there).
+            ClickTarget::JobberTrophyArea => {}
         }
     }
 
@@ -1147,6 +1258,19 @@ impl AppShell {
                     } else {
                         (sel + 1).min(count.saturating_sub(1))
                     });
+                    return;
+                }
+                // The trophies popup scrolls its content with the wheel.
+                if let Some(tp) = self.jobbers_ui.trophy_popup.as_mut() {
+                    if delta < 0 {
+                        tp.offset = tp.offset.saturating_sub(1);
+                    } else {
+                        tp.offset = tp.offset.saturating_add(1);
+                    }
+                    return;
+                }
+                // The pirate-stats popup has nothing to scroll.
+                if self.jobbers_ui.pirate_popup.is_some() {
                     return;
                 }
                 // Otherwise move the selection of whichever pane the cursor is over
