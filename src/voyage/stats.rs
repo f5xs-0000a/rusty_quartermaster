@@ -148,10 +148,17 @@ pub struct BattleStats {
     pub disengages: u32,
     /// Mean whole-engagement duration (intercept -> resolution), seconds.
     pub avg_battle_secs: Option<f64>,
-    /// Mean naval-phase duration (intercept -> grapple), seconds.
+    /// Population σ of the whole-engagement durations, seconds (None if n < 3).
+    pub avg_battle_sd: Option<f64>,
+    /// Mean naval-phase duration (intercept -> grapple), seconds. The UI shows
+    /// this as turns (35s per turn).
     pub avg_naval_secs: Option<f64>,
+    /// Population σ of the naval-phase durations, seconds (None if n < 3).
+    pub avg_naval_sd: Option<f64>,
     /// Mean boarding-melee duration (grapple -> resolution), seconds.
     pub avg_boarding_secs: Option<f64>,
+    /// Population σ of the boarding-melee durations, seconds (None if n < 3).
+    pub avg_boarding_sd: Option<f64>,
     /// Total time spent in battle (sum of engagement durations), seconds.
     pub time_in_battle_secs: i64,
     /// Time at sea but not fighting = voyage duration − time in battle. `None`
@@ -165,23 +172,53 @@ pub struct BattleStats {
     pub goods_won_total: u64,
     /// Mean gross PoE per won fight.
     pub poe_per_fight_won: Option<f64>,
+    /// Population σ of per-won-fight PoE (None if n < 3).
+    pub poe_per_fight_won_sd: Option<f64>,
     /// Mean net PoE per decisive fight (wins + losses).
     pub poe_per_fight_net: Option<f64>,
+    /// Population σ of per-decisive-fight net PoE (None if n < 3).
+    pub poe_per_fight_net_sd: Option<f64>,
     /// Mean units of goods per won fight.
     pub goods_per_fight: Option<f64>,
+    /// Population σ of per-won-fight goods (None if n < 3).
+    pub goods_per_fight_sd: Option<f64>,
+    /// Mean net units of goods per decisive fight (goods lost in defeats
+    /// subtract). Can be negative.
+    pub goods_per_engagement: Option<f64>,
+    /// Population σ of per-decisive-fight net goods (None if n < 3).
+    pub goods_per_engagement_sd: Option<f64>,
     /// Net PoE per crew member (time-weighted avg crew).
     pub poe_per_crew: Option<f64>,
     /// Gross-won PoE per crew per won fight.
     pub poe_per_crew_per_fight_won: Option<f64>,
     /// Net PoE per crew per decisive fight (wins + losses).
     pub poe_per_crew_per_fight_all: Option<f64>,
-    /// Fight counts per enemy category (label, count), highest first. Only
-    /// categories that actually occurred appear — zero categories are omitted.
-    pub categories: Vec<(String, u32)>,
+    /// Per-enemy-category outcome tallies (label, W/L/D), most-fought first.
+    /// Only categories that actually occurred appear — zero categories omitted.
+    pub categories: Vec<(String, CategoryTally)>,
     /// Mean damage advantage over fights where it was tracked (`[-0.5, 0.5]`).
     pub avg_advantage_dmg: Option<f64>,
+    /// Population σ of the tracked damage advantages (None if n < 3).
+    pub avg_advantage_dmg_sd: Option<f64>,
     /// Mean headcount advantage over fights where it was tracked.
     pub avg_advantage_crew: Option<f64>,
+    /// Population σ of the tracked headcount advantages (None if n < 3).
+    pub avg_advantage_crew_sd: Option<f64>,
+}
+
+/// Win/loss/disengage tally for one enemy category.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct CategoryTally {
+    pub wins: u32,
+    pub losses: u32,
+    pub disengages: u32,
+}
+
+impl CategoryTally {
+    /// Total fights against this category (the sort key).
+    fn total(&self) -> u32 {
+        self.wins + self.losses + self.disengages
+    }
 }
 
 /// Five-number summary for a box-and-whiskers plot.
@@ -230,7 +267,7 @@ pub fn box_plot(values: &[f64]) -> Option<BoxPlot> {
 /// Display label for an enemy category.
 fn category_label(c: &BattleCategory) -> String {
     match c {
-        BattleCategory::Brigand => "Brigands".to_string(),
+        BattleCategory::Brigand => "Brigands and Barbarians".to_string(),
         BattleCategory::BrigandKing(name) => format!("King: {name}"),
         BattleCategory::Vampirate => "Vampirates".to_string(),
         BattleCategory::Skelly => "Skellies".to_string(),
@@ -245,6 +282,9 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
     let mut s = BattleStats::default();
     let (mut naval, mut boarding, mut total) = (Vec::new(), Vec::new(), Vec::new());
     let (mut adv_dmg, mut adv_crew) = (Vec::new(), Vec::new());
+    // Per-fight samples for the means' standard deviations.
+    let (mut won_poe, mut net_decisive) = (Vec::new(), Vec::new());
+    let (mut won_goods, mut net_goods_decisive) = (Vec::new(), Vec::new());
     for b in &voyage.battles {
         if let Some(a) = b.advantage_dmg {
             adv_dmg.push(a);
@@ -252,15 +292,38 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
         if let Some(a) = b.advantage_crew {
             adv_crew.push(a);
         }
-        // Tally enemy categories (insertion-order Vec; few distinct categories).
+        // Tally enemy categories (insertion-order Vec; few distinct categories),
+        // broken down by outcome.
         let label = category_label(&b.category);
-        match s.categories.iter_mut().find(|(l, _)| *l == label) {
-            Some(entry) => entry.1 += 1,
-            None => s.categories.push((label, 1)),
+        let idx = match s.categories.iter().position(|(l, _)| *l == label) {
+            Some(i) => i,
+            None => {
+                s.categories.push((label, CategoryTally::default()));
+                s.categories.len() - 1
+            }
+        };
+        let tally = &mut s.categories[idx].1;
+        match b.outcome {
+            BattleOutcome::Won => tally.wins += 1,
+            BattleOutcome::Lost => tally.losses += 1,
+            BattleOutcome::Disengaged => tally.disengages += 1,
+            BattleOutcome::Ongoing => {}
         }
         match b.outcome {
-            BattleOutcome::Won => s.wins += 1,
-            BattleOutcome::Lost => s.losses += 1,
+            BattleOutcome::Won => {
+                s.wins += 1;
+                let p = b.poe.unwrap_or(0) as f64;
+                let g = b.goods.unwrap_or(0) as f64;
+                won_poe.push(p);
+                net_decisive.push(p);
+                won_goods.push(g);
+                net_goods_decisive.push(g);
+            }
+            BattleOutcome::Lost => {
+                s.losses += 1;
+                net_decisive.push(b.poe.unwrap_or(0) as f64);
+                net_goods_decisive.push(-(b.goods.unwrap_or(0) as f64));
+            }
             BattleOutcome::Disengaged => s.disengages += 1,
             BattleOutcome::Ongoing => {}
         }
@@ -288,17 +351,26 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
     }
     let mean = |v: &[i64]| (!v.is_empty()).then(|| v.iter().sum::<i64>() as f64 / v.len() as f64);
     s.avg_battle_secs = mean(&total);
+    s.avg_battle_sd = stdev_i64(&total);
     s.avg_naval_secs = mean(&naval);
+    s.avg_naval_sd = stdev_i64(&naval);
     s.avg_boarding_secs = mean(&boarding);
+    s.avg_boarding_sd = stdev_i64(&boarding);
     s.time_at_sea_secs = voyage
         .duration_secs()
         .map(|d| (d - s.time_in_battle_secs).max(0));
 
-    let decisive = s.wins + s.losses;
-    s.poe_per_fight_won = (s.wins > 0).then(|| s.poe_won_total as f64 / s.wins as f64);
-    s.poe_per_fight_net = (decisive > 0).then(|| s.poe_net_total as f64 / decisive as f64);
-    s.goods_per_fight = (s.wins > 0).then(|| s.goods_won_total as f64 / s.wins as f64);
+    // Means and σ over the per-fight samples (σ only with 3+ data points).
+    s.poe_per_fight_won = mean_f64(&won_poe);
+    s.poe_per_fight_won_sd = stdev_f64(&won_poe);
+    s.poe_per_fight_net = mean_f64(&net_decisive);
+    s.poe_per_fight_net_sd = stdev_f64(&net_decisive);
+    s.goods_per_fight = mean_f64(&won_goods);
+    s.goods_per_fight_sd = stdev_f64(&won_goods);
+    s.goods_per_engagement = mean_f64(&net_goods_decisive);
+    s.goods_per_engagement_sd = stdev_f64(&net_goods_decisive);
 
+    let decisive = s.wins + s.losses;
     let avg_crew = match (voyage.avg_pirates(), voyage.avg_swabbies()) {
         (Some(p), Some(sw)) => Some(p + sw),
         _ => None,
@@ -314,12 +386,35 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
 
     // Most-fought category first; ties alphabetical for stability.
     s.categories
-        .sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+        .sort_by(|a, b| b.1.total().cmp(&a.1.total()).then_with(|| a.0.cmp(&b.0)));
 
-    let meanf = |v: &[f64]| (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64);
-    s.avg_advantage_dmg = meanf(&adv_dmg);
-    s.avg_advantage_crew = meanf(&adv_crew);
+    s.avg_advantage_dmg = mean_f64(&adv_dmg);
+    s.avg_advantage_dmg_sd = stdev_f64(&adv_dmg);
+    s.avg_advantage_crew = mean_f64(&adv_crew);
+    s.avg_advantage_crew_sd = stdev_f64(&adv_crew);
     s
+}
+
+/// Mean of an `f64` sample, or `None` when empty.
+fn mean_f64(v: &[f64]) -> Option<f64> {
+    (!v.is_empty()).then(|| v.iter().sum::<f64>() / v.len() as f64)
+}
+
+/// Population standard deviation of an `f64` sample, or `None` with fewer than
+/// three data points (per the Voyage Statistics spec — too few to be meaningful).
+fn stdev_f64(v: &[f64]) -> Option<f64> {
+    if v.len() < 3 {
+        return None;
+    }
+    let m = v.iter().sum::<f64>() / v.len() as f64;
+    let var = v.iter().map(|x| (x - m).powi(2)).sum::<f64>() / v.len() as f64;
+    Some(var.sqrt())
+}
+
+/// Population standard deviation of an `i64` sample (e.g. durations in seconds).
+fn stdev_i64(v: &[i64]) -> Option<f64> {
+    let f: Vec<f64> = v.iter().map(|&x| x as f64).collect();
+    stdev_f64(&f)
 }
 
 #[cfg(test)]
@@ -445,6 +540,7 @@ mod tests {
         approx(s.poe_per_fight_won.unwrap(), 8000.0);
         approx(s.poe_per_fight_net.unwrap(), 3000.0); // 6000 / 2 decisive
         approx(s.goods_per_fight.unwrap(), 10.0);
+        approx(s.goods_per_engagement.unwrap(), -20.0); // (+10 won, -50 lost) / 2
         approx(s.poe_per_crew.unwrap(), 600.0); // 6000 / 10 crew
         approx(s.poe_per_crew_per_fight_won.unwrap(), 800.0); // 8000 / 10 / 1
         approx(s.poe_per_crew_per_fight_all.unwrap(), 300.0); // 6000 / 10 / 2
@@ -453,14 +549,50 @@ mod tests {
         approx(s.avg_battle_secs.unwrap(), 200.0); // 600 / 3
         approx(s.avg_naval_secs.unwrap(), 120.0); // only the won fight grappled
         approx(s.avg_boarding_secs.unwrap(), 180.0);
-        // Categories: 2 generic Brigand fights (lost + disengaged), 1 king.
+        // Categories: 2 generic Brigand fights (lost + disengaged), 1 king won.
         assert_eq!(
             s.categories,
             vec![
-                ("Brigands".to_string(), 2),
-                ("King: Vargas the Mad".to_string(), 1),
+                (
+                    "Brigands and Barbarians".to_string(),
+                    CategoryTally { wins: 0, losses: 1, disengages: 1 }
+                ),
+                (
+                    "King: Vargas the Mad".to_string(),
+                    CategoryTally { wins: 1, losses: 0, disengages: 0 }
+                ),
             ]
         );
+    }
+
+    #[test]
+    fn stdev_needs_three_points() {
+        assert_eq!(stdev_f64(&[]), None);
+        assert_eq!(stdev_f64(&[1.0, 2.0]), None);
+        // Population σ of {2,4,6} is sqrt(8/3) ≈ 1.632993...
+        approx(stdev_f64(&[2.0, 4.0, 6.0]).unwrap(), (8.0_f64 / 3.0).sqrt());
+    }
+
+    #[test]
+    fn battle_stats_attaches_sd_with_three_wins() {
+        let win = |poe: i64, secs: u32| Battle {
+            outcome: BattleOutcome::Won,
+            started_at: Some(dt(12, 0, 0)),
+            ended_at: Some(dt(12, 0, secs)),
+            poe: Some(poe),
+            ..Battle::default()
+        };
+        let voy = Voyage {
+            sailed_at: Some(dt(12, 0, 0)),
+            ported_at: Some(dt(13, 0, 0)),
+            battles: vec![win(1000, 20), win(2000, 40), win(3000, 50)],
+            ..Voyage::default()
+        };
+        let s = battle_stats(&voy);
+        approx(s.poe_per_fight_won.unwrap(), 2000.0);
+        // σ of {1000,2000,3000} = sqrt(2_000_000/3) ≈ 816.5
+        approx(s.poe_per_fight_won_sd.unwrap(), (2_000_000.0_f64 / 3.0).sqrt());
+        assert!(s.avg_battle_sd.is_some()); // three durations
     }
 
     #[test]

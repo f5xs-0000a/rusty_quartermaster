@@ -633,7 +633,7 @@ impl AppShell {
             KeyCode::Enter => {
                 if self.voyage_ui.focus >= self.voyage_ui.n_stats {
                     let idx = self.voyage_ui.focus - self.voyage_ui.n_stats;
-                    if idx < crate::voyage::ui::CHART_TITLES.len() {
+                    if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true) {
                         self.voyage_ui.chart_popup = Some(idx);
                     }
                 }
@@ -734,13 +734,22 @@ impl AppShell {
         // Chart series: current voyage vs persisted history (won-fight PoE +
         // per-voyage totals). Total value is net PoE for now; goods fold in later.
         let charts = {
-            use crate::voyage::BattleOutcome::Won;
+            use crate::voyage::BattleOutcome::{Lost, Won};
             let cur_won_poe: Vec<f64> = voyage
                 .battles
                 .iter()
                 .filter(|b| b.outcome == Won)
                 .filter_map(|b| b.poe)
                 .filter(|p| *p > 0)
+                .map(|p| p as f64)
+                .collect();
+            // Signed PoE of each concluded (won or lost) fight, chronological —
+            // losses are negative. Drives the per-fight bar chart.
+            let cur_fight_poe: Vec<f64> = voyage
+                .battles
+                .iter()
+                .filter(|b| b.outcome == Won || b.outcome == Lost)
+                .filter_map(|b| b.poe)
                 .map(|p| p as f64)
                 .collect();
             let last_win = voyage
@@ -768,6 +777,7 @@ impl AppShell {
             }
             crate::voyage::ui::ChartData {
                 cur_won_poe,
+                cur_fight_poe,
                 hist_won_poe,
                 last_win,
                 cur_total,
@@ -1741,7 +1751,9 @@ impl AppShell {
             }
             ClickTarget::VoyageChart { idx } => {
                 self.voyage_ui.focus = self.voyage_ui.n_stats + idx;
-                self.voyage_ui.chart_popup = Some(idx);
+                if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true) {
+                    self.voyage_ui.chart_popup = Some(idx);
+                }
             }
             ClickTarget::VoyageChartClose => {
                 self.voyage_ui.chart_popup = None;

@@ -20,17 +20,22 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::offset_title;
-use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, ConsumptionStats};
+use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, CategoryTally, ConsumptionStats};
 
 /// The three charts, in display order.
 pub const CHART_TITLES: [&str; 3] = ["PoE won", "PoE per fight", "Total value"];
 
+/// Which charts can enlarge into a popup (parallel to [`CHART_TITLES`]). The two
+/// box-plot charts ("PoE won", "Total value") show everything in their mini box,
+/// so they have no popup — they stay selectable for their tooltip only.
+pub const CHART_ENLARGEABLE: [bool; 3] = [false, true, false];
+
 /// One-liners shown below the widget when a chart is focused (parallel to
 /// [`CHART_TITLES`]).
 const CHART_TOOLTIPS: [&str; 3] = [
-    "Pieces of eight per won fight — this voyage's spread vs history. Enter to enlarge.",
-    "PoE of each won fight (oldest first, newest last) vs a historical box. Enter to enlarge.",
-    "This voyage's net value against past voyages. Enter to enlarge.",
+    "Pieces of eight per won fight — this voyage's spread vs history.",
+    "PoE of each concluded fight, newest first (losses negative) vs a historical box. Enter to enlarge.",
+    "This voyage's total value (a point) against a historical box of past voyages.",
 ];
 
 /// Height in rows of each chart's bordered box in the scrolling body.
@@ -68,6 +73,9 @@ pub struct VoyageStatsUi {
 pub struct ChartData {
     /// PoE of each won fight this voyage (chronological).
     pub cur_won_poe: Vec<f64>,
+    /// Signed PoE of each concluded (won or lost) fight this voyage, in order —
+    /// losses are negative. Drives the per-fight bar chart.
+    pub cur_fight_poe: Vec<f64>,
     /// PoE of every won fight across saved history.
     pub hist_won_poe: Vec<f64>,
     /// PoE of the most recent won fight this voyage (highlighted marker).
@@ -422,7 +430,7 @@ fn render_charts(canvas: &mut Buffer, area: Rect, data: &ChartData, focused_char
             .title(title);
         let inner = block.inner(slot);
         block.render(slot, canvas);
-        Paragraph::new(chart_lines(i, data, inner.width as usize, inner.height as usize))
+        Paragraph::new(chart_lines(i, data, inner.width as usize, inner.height as usize, false))
             .render(inner, canvas);
     }
 }
@@ -462,81 +470,134 @@ fn render_chart_popup(
             data,
             inner.width as usize,
             inner.height as usize,
+            true,
         )),
         inner,
     );
 }
 
 /// Build the lines for chart `idx`, fitting `width`×`height` (used at both
-/// mini and enlarged sizes — it scales by the area it's given).
-fn chart_lines(idx: usize, data: &ChartData, width: usize, height: usize) -> Vec<Line<'static>> {
+/// mini and enlarged sizes — it scales by the area it's given). `enlarged` is
+/// set for the popup, which shows more rows and the full legend.
+fn chart_lines(
+    idx: usize,
+    data: &ChartData,
+    width: usize,
+    height: usize,
+    enlarged: bool,
+) -> Vec<Line<'static>> {
     match idx {
         0 => poe_box_lines(data, width),
-        1 => poe_bar_lines(data, width, height),
+        1 => poe_bar_lines(data, width, height, enlarged),
         _ => total_value_lines(data, width),
     }
 }
 
+/// Width of the row-label column on the PoE-won chart (fits "Historical" + gap).
+const PBOX_LABEL_W: usize = 12;
+
 /// Chart 0 — box & whiskers of won-fight PoE: this voyage vs historical, with a
-/// marker at the most recent win.
+/// marker at the most recent win and a legend below. It has no popup (it shows
+/// everything in its mini box), so all of it must fit the box's rows.
 fn poe_box_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
-    let axis = width.saturating_sub(5);
+    let axis = width.saturating_sub(PBOX_LABEL_W);
     let range = combined_range(&[data.cur_won_poe.as_slice(), data.hist_won_poe.as_slice()]);
     let mut lines = vec![
-        box_or_msg("this ", box_plot(&data.cur_won_poe), range, axis, data.last_win, cur_style()),
-        box_or_msg("hist ", box_plot(&data.hist_won_poe), range, axis, None, hist_style()),
+        box_or_msg(
+            "Current",
+            PBOX_LABEL_W,
+            box_plot(&data.cur_won_poe),
+            range,
+            axis,
+            data.last_win.map(|v| (v, '✦')),
+            cur_style(),
+        ),
+        box_or_msg(
+            "Historical",
+            PBOX_LABEL_W,
+            box_plot(&data.hist_won_poe),
+            range,
+            axis,
+            None,
+            hist_style(),
+        ),
     ];
     if let Some((lo, hi)) = range {
-        lines.push(axis_line(lo, hi, width));
+        lines.push(axis_line(lo, hi, width, PBOX_LABEL_W));
     }
     lines.push(Line::from(Span::styled(
-        "◆ last win",
+        "Legend:",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  ✦ - Last Win",
         Style::default().fg(Color::Cyan),
     )));
     lines
 }
 
-/// Chart 1 — bar graph of won-fight PoE (first two, then the latest that fit),
-/// with a historical box & whiskers on the last row.
-fn poe_bar_lines(data: &ChartData, width: usize, height: usize) -> Vec<Line<'static>> {
+/// Chart 1 — signed PoE bars for concluded fights, newest at top. The mini box
+/// shows at most the latest 5; the `enlarged` popup shows as many as fit. Bars
+/// share a zero baseline so a lost fight (negative PoE) extends left in red; the
+/// "#N" indices are right-aligned with a two-space gap before the bars. A
+/// historical box & whiskers sits on the last row.
+fn poe_bar_lines(data: &ChartData, width: usize, height: usize, enlarged: bool) -> Vec<Line<'static>> {
     let mut lines = Vec::new();
-    let vals = &data.cur_won_poe;
-    if vals.is_empty() {
+    let all = &data.cur_fight_poe;
+    if all.is_empty() {
         lines.push(Line::from(Span::styled(
             "no fights yet",
             Style::default().fg(Color::DarkGray),
         )));
     } else {
-        let hi = vals.iter().copied().fold(1.0_f64, f64::max);
-        let bar_cols = width.saturating_sub(14); // "#NN " + value
-        let cap = height.saturating_sub(2).max(1); // leave a row for the hist box
-        for slot in pick_bars(vals.len(), cap) {
-            match slot {
-                Some(i) => {
-                    let v = vals[i];
-                    let filled = if hi > 0.0 {
-                        ((v / hi) * bar_cols as f64).round() as usize
-                    } else {
-                        0
-                    };
-                    let bar = "█".repeat(filled.min(bar_cols));
-                    lines.push(Line::from(Span::styled(
-                        format!("#{:<3}{bar} {}", i + 1, commas(v.round() as i64)),
-                        cur_style(),
-                    )));
-                }
-                None => lines.push(Line::from(Span::styled(
-                    "  …",
-                    Style::default().fg(Color::DarkGray),
-                ))),
-            }
+        // How many bars fit (leave a row for the hist box). The mini box also
+        // caps at the latest 5; the popup shows as many as fit.
+        let fits = height.saturating_sub(1).max(1);
+        let cap = if enlarged { fits } else { fits.min(5) };
+        let start = all.len().saturating_sub(cap);
+        // Latest first (newest at top), keeping each fight's 1-based index.
+        let shown: Vec<(usize, f64)> = all
+            .iter()
+            .enumerate()
+            .skip(start)
+            .map(|(i, &v)| (i + 1, v))
+            .rev()
+            .collect();
+
+        // Column widths: right-aligned "#N" labels, right-aligned value field.
+        let idx_w = shown
+            .iter()
+            .map(|(i, _)| format!("#{i}").chars().count())
+            .max()
+            .unwrap_or(2);
+        let vals_s: Vec<String> = shown.iter().map(|(_, v)| commas(v.round() as i64)).collect();
+        let val_w = vals_s.iter().map(|s| s.chars().count()).max().unwrap_or(1);
+        let bar_cols = width.saturating_sub(idx_w + 2 + 1 + val_w).max(1);
+
+        // Shared zero-baseline scale across the shown rows.
+        let lo = shown.iter().map(|(_, v)| *v).fold(0.0_f64, f64::min);
+        let hi = shown.iter().map(|(_, v)| *v).fold(0.0_f64, f64::max);
+
+        for ((i, v), vs) in shown.iter().zip(&vals_s) {
+            let label = format!("{:>idx_w$}", format!("#{i}"));
+            let bar = signed_bar(*v, lo, hi, bar_cols);
+            let style = if *v < 0.0 {
+                Style::default().fg(Color::Red)
+            } else {
+                cur_style()
+            };
+            lines.push(Line::from(Span::styled(
+                format!("{label}  {bar} {vs:>val_w$}"),
+                style,
+            )));
         }
     }
     // Historical reference box on the final row.
     let axis = width.saturating_sub(5);
     if let Some(range) = combined_range(&[data.hist_won_poe.as_slice()]) {
         lines.push(box_or_msg(
-            "hist ",
+            "hist",
+            5,
             box_plot(&data.hist_won_poe),
             Some(range),
             axis,
@@ -547,61 +608,94 @@ fn poe_bar_lines(data: &ChartData, width: usize, height: usize) -> Vec<Line<'sta
     lines
 }
 
-/// Chart 2 — this voyage's total value as a single point against a historical
-/// box & whiskers of past voyages' totals.
+/// A horizontal bar of `cols` cells sharing a zero baseline over `[lo, hi]`: the
+/// run between the zero column and `v`'s column is filled, so negatives extend
+/// left of zero and positives right.
+fn signed_bar(v: f64, lo: f64, hi: f64, cols: usize) -> String {
+    let w = cols.max(1);
+    let mut cells = vec![' '; w];
+    let zc = val_col(0.0, lo, hi, w);
+    let vc = val_col(v, lo, hi, w);
+    let (a, b) = if vc <= zc { (vc, zc) } else { (zc, vc) };
+    for cell in cells.iter_mut().take(b + 1).skip(a) {
+        *cell = '█';
+    }
+    cells.into_iter().collect()
+}
+
+/// Chart 2 — total value, drawn like chart 0: this voyage's total as a single
+/// point (the Current row) against a historical box & whiskers of past voyages'
+/// totals, sharing one axis, with a legend below. No popup.
 fn total_value_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
-    let axis = width.saturating_sub(5);
+    let axis = width.saturating_sub(PBOX_LABEL_W);
     let mut all = data.hist_totals.clone();
     all.push(data.cur_total);
     let range = combined_range(&[all.as_slice()]);
-    let mut lines = vec![box_or_msg(
-        "hist ",
-        box_plot(&data.hist_totals),
-        range,
-        axis,
-        Some(data.cur_total),
-        hist_style(),
-    )];
-    let hist_med = box_plot(&data.hist_totals).map(|b| commas(b.median.round() as i64));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "◆ this {}   ·   hist median {}",
-            commas(data.cur_total.round() as i64),
-            hist_med.unwrap_or_else(|| "—".to_string())
+    let mut lines = vec![
+        box_or_msg(
+            "Current",
+            PBOX_LABEL_W,
+            box_plot(&[data.cur_total]),
+            range,
+            axis,
+            None,
+            cur_style(),
         ),
+        box_or_msg(
+            "Historical",
+            PBOX_LABEL_W,
+            box_plot(&data.hist_totals),
+            range,
+            axis,
+            None,
+            hist_style(),
+        ),
+    ];
+    if let Some((lo, hi)) = range {
+        lines.push(axis_line(lo, hi, width, PBOX_LABEL_W));
+    }
+    lines.push(Line::from(Span::styled(
+        "Legend:",
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines.push(Line::from(Span::styled(
+        "  ● - This Voyage",
         Style::default().fg(Color::Cyan),
     )));
     lines
 }
 
-/// A 5-char-prefixed box-and-whiskers row, or a dim "no data" message.
+/// A box-and-whiskers row prefixed by `label` (padded to `label_w` columns), or
+/// a dim "no data" message.
 fn box_or_msg(
-    prefix: &str,
+    label: &str,
+    label_w: usize,
     bp: Option<BoxPlot>,
     range: Option<(f64, f64)>,
     axis: usize,
-    marker: Option<f64>,
+    marker: Option<(f64, char)>,
     style: Style,
 ) -> Line<'static> {
     match (bp, range) {
         (Some(bp), Some((lo, hi))) if axis > 0 => Line::from(Span::styled(
-            format!("{prefix}{}", box_line(axis, lo, hi, &bp, marker)),
+            format!("{label:<label_w$}{}", box_line(axis, lo, hi, &bp, marker)),
             style,
         )),
         _ => Line::from(Span::styled(
-            format!("{prefix}(no data)"),
+            format!("{label:<label_w$}(no data)"),
             Style::default().fg(Color::DarkGray),
         )),
     }
 }
 
-/// A "lo …… hi" axis label line.
-fn axis_line(lo: f64, hi: f64, width: usize) -> Line<'static> {
+/// A "lo …… hi" axis label line, its numbers aligned under a `label_w`-indented
+/// box row.
+fn axis_line(lo: f64, hi: f64, width: usize, label_w: usize) -> Line<'static> {
     let lo_s = commas(lo.round() as i64);
     let hi_s = commas(hi.round() as i64);
-    let gap = width.saturating_sub(5 + lo_s.len() + hi_s.len()).max(1);
+    let gap = width.saturating_sub(label_w + lo_s.len() + hi_s.len()).max(1);
     Line::from(Span::styled(
-        format!("     {lo_s}{}{hi_s}", " ".repeat(gap)),
+        format!("{}{lo_s}{}{hi_s}", " ".repeat(label_w), " ".repeat(gap)),
         Style::default().fg(Color::DarkGray),
     ))
 }
@@ -617,8 +711,8 @@ fn val_col(v: f64, lo: f64, hi: f64, width: usize) -> usize {
 }
 
 /// Build a horizontal box-and-whiskers string of `width` cells over `[lo, hi]`.
-/// `n == 1` renders a single point; `marker` overlays a `◆` at its value.
-fn box_line(width: usize, lo: f64, hi: f64, bp: &BoxPlot, marker: Option<f64>) -> String {
+/// `n == 1` renders a single point; `marker` overlays its char at its value.
+fn box_line(width: usize, lo: f64, hi: f64, bp: &BoxPlot, marker: Option<(f64, char)>) -> String {
     let w = width.max(1);
     let mut cells = vec![' '; w];
     if bp.n == 1 {
@@ -638,8 +732,8 @@ fn box_line(width: usize, lo: f64, hi: f64, bp: &BoxPlot, marker: Option<f64>) -
         cells[cmax] = '┤';
         cells[val_col(bp.median, lo, hi, w)] = '┃';
     }
-    if let Some(m) = marker {
-        cells[val_col(m, lo, hi, w)] = '◆';
+    if let Some((m, ch)) = marker {
+        cells[val_col(m, lo, hi, w)] = ch;
     }
     cells.into_iter().collect()
 }
@@ -655,21 +749,6 @@ fn combined_range(slices: &[&[f64]]) -> Option<(f64, f64)> {
         }
     }
     any.then_some((lo, hi))
-}
-
-/// Choose which bar indices to show given `cap` rows: all if they fit, else the
-/// first two, an ellipsis (`None`), then the latest that fit.
-fn pick_bars(n: usize, cap: usize) -> Vec<Option<usize>> {
-    if n <= cap {
-        return (0..n).map(Some).collect();
-    }
-    if cap < 4 {
-        return (n - cap..n).map(Some).collect();
-    }
-    let mut v = vec![Some(0), Some(1), None];
-    let tail = cap - 3;
-    v.extend((n - tail..n).map(Some));
-    v
 }
 
 /// A focusable stat: which built line it lives on, and the tooltip to show
@@ -759,85 +838,109 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
     // Timing — every number from here on is focusable with a tooltip.
     out.section("Timing");
     out.stat(
-        "In pillage",
+        "At Sea",
         opt_dur(view.elapsed_secs.map(|s| s as f64)),
         "Total time from setting sail to putting into port.",
     );
     out.stat(
-        "Avg sea battle",
-        opt_dur(b.avg_battle_secs),
+        "Time Sailing",
+        b.time_at_sea_secs.map(dur).unwrap_or_else(dash),
+        "Time searching and sailing, not fighting — total time minus time in battle.",
+    );
+    out.stat(
+        "Time in Battle",
+        dur(b.time_in_battle_secs),
+        "Total fighting time this voyage — every sea engagement's length summed.",
+    );
+    out.stat(
+        "Avg. Sea Battle",
+        with_sd(opt_dur(b.avg_battle_secs), b.avg_battle_sd, sd_secs),
         "Average length of a sea engagement, interception to resolution.",
     );
     out.stat(
-        "  · naval (→grapple)",
-        opt_dur(b.avg_naval_secs),
-        "Average time from interception to grappling — the naval phase.",
+        "  Battle Navigation",
+        with_sd(
+            b.avg_naval_secs.map(turns).unwrap_or_else(dash),
+            b.avg_naval_sd,
+            sd_turns,
+        ),
+        "Average turns spent navigating to grapple (35s per turn) — the naval phase.",
     );
     out.stat(
-        "  · boarding",
-        opt_dur(b.avg_boarding_secs),
+        "  Swordfight/Rumble",
+        with_sd(opt_dur(b.avg_boarding_secs), b.avg_boarding_sd, sd_secs),
         "Average time from grapple to Game Over — the boarding melee.",
-    );
-    out.stat(
-        "Time in battle",
-        dur(b.time_in_battle_secs),
-        "Total time spent in sea engagements this voyage.",
-    );
-    out.stat(
-        "Time at Sea",
-        b.time_at_sea_secs.map(dur).unwrap_or_else(|| "—".to_string()),
-        "Time spent searching and sailing — pillage time minus battle time.",
     );
     out.blank();
 
     // Loot.
     out.section("Loot");
     out.stat(
-        "PoE / fight (won)",
-        opt_commas(b.poe_per_fight_won),
+        "PoE per win",
+        with_sd(opt_commas(b.poe_per_fight_won), b.poe_per_fight_won_sd, sd_commas),
         "Average pieces of eight plundered per won fight.",
     );
     out.stat(
-        "PoE / fight (net)",
-        opt_commas(b.poe_per_fight_net),
-        "Average PoE per fight, counting lost fights as negative.",
+        "PoE per engagement",
+        with_sd(opt_commas(b.poe_per_fight_net), b.poe_per_fight_net_sd, sd_commas),
+        "Average net PoE per decisive fight, counting losses as negative.",
     );
     out.stat(
-        "Goods / fight",
-        opt1(b.goods_per_fight),
-        "Average units of goods won per fight (a count — the log never itemizes).",
-    );
-    out.stat(
-        "PoE total (net)",
+        "Net PoE gained",
         commas(b.poe_net_total),
         "Net pieces of eight across every fight (losses subtracted).",
     );
     out.stat(
-        "PoE / crew",
+        "PoE per crew",
         opt_commas(b.poe_per_crew),
         "Net PoE divided by the time-weighted average crew aboard.",
     );
     out.stat(
-        "PoE / crew / fight (W)",
+        "PoE per crew per win",
         opt_commas(b.poe_per_crew_per_fight_won),
         "Won PoE per crew member per won fight.",
     );
     out.stat(
-        "PoE / crew / fight (W+L)",
+        "PoE per crew per engagement",
         opt_commas(b.poe_per_crew_per_fight_all),
-        "Net PoE per crew member per fight, wins and losses together.",
+        "Net PoE per crew member per decisive fight, wins and losses together.",
+    );
+    out.stat(
+        "Goods per win",
+        with_sd(opt1(b.goods_per_fight), b.goods_per_fight_sd, sd_one),
+        "Average units of goods won per won fight (a count — the log never itemizes).",
+    );
+    out.stat(
+        "Goods per engagement",
+        with_sd(opt1(b.goods_per_engagement), b.goods_per_engagement_sd, sd_one),
+        "Average net goods per decisive fight — goods lost in defeats subtract.",
     );
     out.blank();
 
-    // Enemies by category — only categories that occurred (no zero rows).
+    // Enemies by category — only categories that occurred (no zero rows). The
+    // value is `total (wins+losses+disengages)`. Named brigand kings are pulled
+    // out of the flat list and grouped, indented, under a "Brigand King" header.
     if !b.categories.is_empty() {
         out.section("Enemies");
-        for (label, count) in &b.categories {
-            out.stat(
-                label,
-                count.to_string(),
-                &format!("Sea battles fought against {label}."),
-            );
+        let mut kings: Vec<(&str, &CategoryTally)> = Vec::new();
+        for (label, t) in &b.categories {
+            match label.strip_prefix("King: ") {
+                Some(name) => kings.push((name, t)),
+                None => out.stat(label, enemy_value(t), &enemy_tip(label, t)),
+            }
+        }
+        if !kings.is_empty() {
+            out.line(Line::from(Span::styled(
+                "Brigand King".to_string(),
+                Style::default().fg(Color::Gray),
+            )));
+            for (name, t) in kings {
+                out.stat(
+                    &format!("  {name}"),
+                    enemy_value(t),
+                    &enemy_tip(&format!("King {name}"), t),
+                );
+            }
         }
         out.blank();
     }
@@ -847,16 +950,24 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
         out.section("Advantage (avg)");
         out.stat(
             "Damage advantage",
-            b.avg_advantage_dmg
-                .map(|a| format!("{:+.0}%", a * 100.0))
-                .unwrap_or_else(|| "—".to_string()),
+            with_sd(
+                b.avg_advantage_dmg
+                    .map(|a| format!("{:+.0}%", a * 100.0))
+                    .unwrap_or_else(dash),
+                b.avg_advantage_dmg_sd,
+                sd_pct,
+            ),
             "Average morale-damage edge over the enemy, from the Damage calculator.",
         );
         out.stat(
             "Crew advantage",
-            b.avg_advantage_crew
-                .map(|a| format!("{a:+.1}"))
-                .unwrap_or_else(|| "—".to_string()),
+            with_sd(
+                b.avg_advantage_crew
+                    .map(|a| format!("{a:+.1}"))
+                    .unwrap_or_else(dash),
+                b.avg_advantage_crew_sd,
+                sd_one,
+            ),
             "Average headcount edge: our crew vs the enemy's, weighted by morale.",
         );
         out.blank();
@@ -865,16 +976,16 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
     // Consumption.
     out.section("Consumption");
     let balls_label = format!(
-        "Cannonballs ({})",
-        view.cannon_label.clone().unwrap_or_else(|| "—".to_string())
+        "Cannon Balls ({})",
+        view.cannon_label.clone().unwrap_or_else(dash)
     );
     out.stat(
         &balls_label,
         opt_u64(c.balls),
-        "Cannonballs fired this voyage (Restock minus Stock for the ship's size).",
+        "Cannon balls fired this voyage (Restock minus Stock for the ship's size).",
     );
     out.stat(
-        "  · per battle",
+        "  per battle",
         opt1(c.balls_per_battle),
         "Average cannonballs fired per sea battle.",
     );
@@ -884,12 +995,12 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
         "Alcohol consumed, weighted by potency (swill 2 / grog 3 / fine rum 6).",
     );
     out.stat(
-        "  · per crew",
+        "  per crew",
         opt1(c.alcohol_per_crew),
         "Alcohol per crew member aboard.",
     );
     out.stat(
-        "  · per crew / min",
+        "  per crew / min",
         opt2(c.alcohol_per_crew_per_min),
         "Alcohol per crew member per minute of the run.",
     );
@@ -899,12 +1010,12 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
         "Rum spice consumed this voyage.",
     );
     out.stat(
-        "  · per swabbie",
+        "  per swabbie",
         opt1(c.rum_spice_per_swabbie),
         "Rum spice per swabbie — spice mainly fuels swabbies.",
     );
     out.stat(
-        "  · per swabbie / min",
+        "  per swabbie / min",
         opt2(c.rum_spice_per_swabbie_per_min),
         "Rum spice per swabbie per minute (approximate — see the note below).",
     );
@@ -956,6 +1067,57 @@ fn stat(label: &str, value: String, width: usize) -> Line<'static> {
 }
 
 // -- value formatters --
+
+/// The em-dash placeholder for a missing value.
+fn dash() -> String {
+    "—".to_string()
+}
+
+/// Append a `", σ = …"` suffix to `value` when a standard deviation is present
+/// (the stats layer leaves it `None` for fewer than three data points, so this
+/// naturally shows nothing then). `fmt` renders the σ in the stat's own units.
+fn with_sd(value: String, sd: Option<f64>, fmt: fn(f64) -> String) -> String {
+    match sd {
+        Some(s) => format!("{value}, σ = {}", fmt(s)),
+        None => value,
+    }
+}
+
+/// A duration in seconds → `"4.2 turns"` (35 seconds per battle-navigation turn).
+fn turns(secs: f64) -> String {
+    format!("{:.1} turns", secs / 35.0)
+}
+
+/// An enemy row's value: `total (wins+losses+disengages)`.
+fn enemy_value(t: &CategoryTally) -> String {
+    let total = t.wins + t.losses + t.disengages;
+    format!("{total} ({}+{}+{})", t.wins, t.losses, t.disengages)
+}
+
+/// Tooltip for an enemy row, spelling out the W/L/D breakdown.
+fn enemy_tip(label: &str, t: &CategoryTally) -> String {
+    format!(
+        "Vs {label}: {} won, {} lost, {} disengaged.",
+        t.wins, t.losses, t.disengages
+    )
+}
+
+/// σ formatters, one per stat unit. For time, σ is shown plainly in seconds.
+fn sd_secs(s: f64) -> String {
+    format!("{}s", s.round() as i64)
+}
+fn sd_turns(s: f64) -> String {
+    format!("{:.1}", s / 35.0)
+}
+fn sd_commas(s: f64) -> String {
+    commas(s.round() as i64)
+}
+fn sd_one(s: f64) -> String {
+    format!("{s:.1}")
+}
+fn sd_pct(s: f64) -> String {
+    format!("{:.0}%", s * 100.0)
+}
 
 /// `12,345`-style thousands grouping for a signed integer.
 fn commas(n: i64) -> String {
