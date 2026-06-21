@@ -91,7 +91,8 @@ pub async fn fetch_commodities() -> Result<Vec<Commodity>, String> {
             .json()
             .await
             .map_err(|e| format!("failed to parse commodities: {}", e))?;
-    commodities.sort_by_key(|c| c.id);
+    // Canonical (in-game) order; anything not in our list sorts last.
+    commodities.sort_by_key(|c| crate::commodities::sort_key(&c.name));
     Ok(commodities)
 }
 

@@ -9,6 +9,12 @@ pub struct SavedInventoryRow {
     pub restock: String,
     pub stock: String,
     pub booty: String,
+    /// Manually-entered prices (used when Market is unavailable). Defaulted
+    /// for backward compatibility with caches written before they existed.
+    #[serde(default)]
+    pub sell: String,
+    #[serde(default)]
+    pub buy: String,
 }
 
 #[derive(Serialize, Deserialize, Default)]
@@ -46,19 +52,18 @@ pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInven
         if rows.iter().any(|r: &InventoryRow| r.commod_id == id) {
             continue;
         }
-        let pos = rows
-            .binary_search_by_key(&id, |r: &InventoryRow| r.commod_id)
-            .unwrap_err();
-        rows.insert(
-            pos,
-            InventoryRow {
-                commod_id: id,
-                restock: saved_row.restock,
-                stock: saved_row.stock,
-                booty: saved_row.booty,
-            },
-        );
+        rows.push(InventoryRow {
+            commod_id: id,
+            restock: saved_row.restock,
+            stock: saved_row.stock,
+            booty: saved_row.booty,
+            sell: saved_row.sell,
+            buy: saved_row.buy,
+        });
     }
+
+    // Keep rows in canonical (in-game) commodity order.
+    rows.sort_by_key(|r| crate::commodities::sort_key(crate::app::commod_name(commodities, r.commod_id)));
 
     LoadedInventory {
         rows,
@@ -82,6 +87,8 @@ pub fn to_saved(
                 restock: r.restock.clone(),
                 stock: r.stock.clone(),
                 booty: r.booty.clone(),
+                sell: r.sell.clone(),
+                buy: r.buy.clone(),
             })
             .collect(),
         restocking_island: restocking_island.to_owned(),

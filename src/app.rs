@@ -550,9 +550,9 @@ impl AppShell {
         self.global_focus = GlobalFocus::Content;
         // Entering the Jobbers page lands on the Vessels button (the top widget).
         self.jobbers_ui.focus = JobberFocus::Vessels;
-        // Entering Profits lands on the topmost widget (the first parameter),
-        // not the search box at the bottom of the stack.
-        self.profits.focus_panel(0);
+        // Entering Profits lands on the topmost widget — the inventory table
+        // (or the search box when the inventory is empty).
+        self.profits.focus_table_top();
     }
 
     /// The Voyage Statistics page is inert: ↑ or Esc returns focus to the bar,
@@ -1002,8 +1002,9 @@ impl AppShell {
                         .to_owned();
                         self.profits.popup = Some(crate::profits::PopupKind::DeleteConfirm {
                             row_idx: row,
+                            // Default to Yes so a quick Enter confirms the delete.
                             name,
-                            yes_focused: false,
+                            yes_focused: true,
                         });
                         self.profits.focus = crate::profits::Focus::Popup;
                     }
@@ -1053,8 +1054,8 @@ impl AppShell {
                 self.process_input_result(result, tx);
             }
             ClickTarget::ProfitsPopupOk => {
-                self.profits.popup = None;
-                self.profits.focus = crate::profits::Focus::Input;
+                self.global_focus = GlobalFocus::Content;
+                self.profits.dismiss_ok_popup();
             }
             ClickTarget::DamageCell { row, side } => {
                 self.global_focus = GlobalFocus::Content;

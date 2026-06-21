@@ -15,7 +15,10 @@ use crate::utils::{text_similarity, parse_rate, FieldKind, PromptField};
 
 pub const PANEL_COUNT: usize = 6;
 pub const FIRST_COL: usize = 1;
+/// Rightmost editable column when prices come from Market (Booty).
 pub const LAST_COL: usize = 3;
+/// Rightmost editable column when prices are entered manually (Buy Price).
+pub const LAST_COL_OFFLINE: usize = 5;
 
 pub struct ProfitResult {
     pub goods_value: u64,
@@ -31,6 +34,10 @@ pub enum PopupKind {
     ReQueryConfirm { yes_focused: bool },
     DeleteConfirm { row_idx: usize, name: String, yes_focused: bool },
     RestockWarning { missing: Vec<String>, ocean_wide_focused: bool },
+    /// Offline calc is blocked: these goods are missing a manually-entered
+    /// price. `need_buy` need a Buy Price (they require restocking); `need_sell`
+    /// need a Sell Price (they have excess to sell).
+    PriceBlock { need_buy: Vec<String>, need_sell: Vec<String> },
     ProfitResult(ProfitResult),
 }
 
@@ -39,6 +46,10 @@ pub struct InventoryRow {
     pub restock: String,
     pub stock: String,
     pub booty: String,
+    /// Manual prices used when Market is unavailable. `sell` is what you sell
+    /// excess goods for; `buy` is what you pay to restock.
+    pub sell: String,
+    pub buy: String,
 }
 
 impl InventoryRow {
@@ -48,6 +59,8 @@ impl InventoryRow {
             restock: String::new(),
             stock: String::new(),
             booty: String::new(),
+            sell: String::new(),
+            buy: String::new(),
         }
     }
 
@@ -56,6 +69,8 @@ impl InventoryRow {
             1 => Some(&mut self.restock),
             2 => Some(&mut self.stock),
             3 => Some(&mut self.booty),
+            4 => Some(&mut self.sell),
+            5 => Some(&mut self.buy),
             _ => None,
         }
     }
@@ -85,6 +100,10 @@ pub struct ProfitsApp {
     pub popup: Option<PopupKind>,
     pub calc_error: Option<String>,
     pub fetch_purpose: FetchPurpose,
+    /// CLI-revealed parameter rows (otherwise hidden from the panel). When
+    /// hidden, the corresponding deduction is treated as zero in the breakdown.
+    pub show_co_rate: bool,
+    pub show_donation: bool,
 }
 
 impl ProfitsApp {
@@ -107,6 +126,43 @@ impl ProfitsApp {
             popup: None,
             calc_error: None,
             fetch_purpose: FetchPurpose::Profits,
+            show_co_rate: false,
+            show_donation: false,
+        }
+    }
+
+    // -- visible parameter rows --
+
+    /// Panel indices that are actually shown (and thus navigable), in order.
+    /// The Restocking Island row only matters with Market pricing; the C.O.
+    /// Rate and Crew Donation rows are revealed by CLI flags.
+    pub fn visible_panels(&self, market_supported: bool) -> Vec<usize> {
+        (0..PANEL_COUNT)
+            .filter(|&i| match i {
+                0 => market_supported,
+                2 => self.show_co_rate,
+                3 => self.show_donation,
+                _ => true,
+            })
+            .collect()
+    }
+
+    fn first_visible_panel(&self, market: bool) -> Option<usize> {
+        self.visible_panels(market).first().copied()
+    }
+
+    fn last_visible_panel(&self, market: bool) -> Option<usize> {
+        self.visible_panels(market).last().copied()
+    }
+
+    /// Step to the previous/next visible panel from `idx`, or `None` at the end.
+    fn step_visible_panel(&self, idx: usize, forward: bool, market: bool) -> Option<usize> {
+        let vis = self.visible_panels(market);
+        let pos = vis.iter().position(|&i| i == idx)?;
+        if forward {
+            vis.get(pos + 1).copied()
+        } else {
+            pos.checked_sub(1).map(|p| vis[p])
         }
     }
 
@@ -179,10 +235,12 @@ impl ProfitsApp {
         match self.suggest(commodities) {
             Some(id) => {
                 if !self.rows.iter().any(|r| r.commod_id == id) {
-                    let pos = self
-                        .rows
-                        .binary_search_by_key(&id, |r| r.commod_id)
-                        .unwrap_err();
+                    // Keep rows in canonical (in-game) commodity order.
+                    let key = |cid: u64| {
+                        crate::commodities::sort_key(app::commod_name(commodities, cid))
+                    };
+                    let new_key = key(id);
+                    let pos = self.rows.partition_point(|r| key(r.commod_id) < new_key);
                     self.rows.insert(pos, InventoryRow::new(id));
                     changed = true;
                 }
@@ -311,9 +369,19 @@ impl ProfitsApp {
         }
     }
 
-    pub fn table_right(&mut self) {
+    /// The rightmost editable column: Booty when prices come from Market, or
+    /// Buy Price when prices are entered manually (offline).
+    pub fn last_editable_col(&self, market_supported: bool) -> usize {
+        if market_supported {
+            LAST_COL
+        } else {
+            LAST_COL_OFFLINE
+        }
+    }
+
+    pub fn table_right(&mut self, last_col: usize) {
         if let Some(col) = self.table_state.selected_column() {
-            if col < LAST_COL {
+            if col < last_col {
                 self.table_state.select_column(Some(col + 1));
             }
         }
@@ -366,6 +434,29 @@ impl ProfitsApp {
         missing
     }
 
+    /// Offline price check: every row that needs to buy (restock) must have a
+    /// Buy Price, and every row with excess to sell must have a Sell Price.
+    /// Returns the goods missing each, so the calc can be blocked until filled.
+    pub fn missing_prices(&self, shared: &SharedState) -> (Vec<String>, Vec<String>) {
+        let mut need_buy = Vec::new();
+        let mut need_sell = Vec::new();
+        for row in &self.rows {
+            let restock = row.restock.parse::<u64>().unwrap_or(0);
+            let stock = row.stock.parse::<u64>().unwrap_or(0);
+            let booty = row.booty.parse::<u64>().unwrap_or(0);
+            let name = app::commod_name(shared.commodities, row.commod_id);
+
+            if restock > stock + booty {
+                if row.buy.trim().is_empty() {
+                    need_buy.push(name.to_owned());
+                }
+            } else if stock + booty > restock && row.sell.trim().is_empty() {
+                need_sell.push(name.to_owned());
+            }
+        }
+        (need_buy, need_sell)
+    }
+
     pub fn calculate_or_warn(&mut self, shared: &SharedState) {
         let query = self.panel[0].value.trim();
         if let Some(island) = app::suggest_island(query, shared.available_islands)
@@ -398,11 +489,24 @@ impl ProfitsApp {
         let mut restock_value: u64 = 0;
 
         for row in &self.rows {
-            let name = app::commod_name(shared.commodities, row.commod_id);
             let restock = row.restock.parse::<u64>().unwrap_or(0);
             let stock = row.stock.parse::<u64>().unwrap_or(0);
             let booty = row.booty.parse::<u64>().unwrap_or(0);
 
+            if !shared.market_supported {
+                // Offline: value the excess/shortfall at the manually-entered
+                // Sell/Buy prices instead of Market offers.
+                if restock < booty + stock {
+                    let sell_price = row.sell.parse::<u64>().unwrap_or(0);
+                    goods_value += (booty + stock - restock) * sell_price;
+                } else {
+                    let buy_price = row.buy.parse::<u64>().unwrap_or(0);
+                    restock_value += (restock - stock - booty) * buy_price;
+                }
+                continue;
+            }
+
+            let name = app::commod_name(shared.commodities, row.commod_id);
             let Some(cached) = shared.cached_offers.get(name) else {
                 continue;
             };
@@ -452,8 +556,9 @@ impl ProfitsApp {
         }
 
         let booty_money = self.panel[1].value.parse::<f64>().unwrap_or(0.0);
-        let co_rate = parse_rate(&self.panel[2]);
-        let donation_rate = parse_rate(&self.panel[3]);
+        // A hidden parameter row means that deduction doesn't apply.
+        let co_rate = if self.show_co_rate { parse_rate(&self.panel[2]) } else { 0.0 };
+        let donation_rate = if self.show_donation { parse_rate(&self.panel[3]) } else { 0.0 };
         let restocking_rate = parse_rate(&self.panel[4]);
 
         // Back-compute total money reward: booty_money = M * (1-R) / 2
@@ -523,12 +628,27 @@ impl ProfitsApp {
                 self.popup = None;
                 self.focus = Focus::Panel(0);
             }
+            Some(PopupKind::PriceBlock { .. }) => self.dismiss_ok_popup(),
             _ => {
                 self.popup = None;
                 self.focus = Focus::Input;
             }
         }
         InputResult::Consumed
+    }
+
+    /// Dismiss an informational "Ok" popup (PriceBlock / ProfitResult). After a
+    /// PriceBlock the user needs to fill prices, so land back in the inventory
+    /// table; otherwise return to the search box.
+    pub fn dismiss_ok_popup(&mut self) {
+        let to_table =
+            matches!(self.popup, Some(PopupKind::PriceBlock { .. })) && !self.rows.is_empty();
+        self.popup = None;
+        if to_table {
+            self.focus_table_top();
+        } else {
+            self.focus_input();
+        }
     }
 
     fn handle_input_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
@@ -544,7 +664,19 @@ impl ProfitsApp {
             KeyCode::Right => self.input_move_right(),
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
-            KeyCode::Up => self.focus_table_bottom(),
+            KeyCode::Up => {
+                // The inventory table sits directly above the search box; ↑ from
+                // here climbs into it (or to the top bar when empty).
+                if self.rows.is_empty() {
+                    return InputResult::Exit;
+                }
+                self.focus_table_bottom();
+            }
+            KeyCode::Down => {
+                if let Some(i) = self.first_visible_panel(shared.market_supported) {
+                    self.focus_panel(i);
+                }
+            }
             KeyCode::Char(c) => self.input_insert_char(c),
             _ => {}
         }
@@ -554,13 +686,12 @@ impl ProfitsApp {
     fn handle_table_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
         match key.code {
             KeyCode::Up => {
-                // The Calculate button sits directly above the inventory table;
-                // ↑ from the first row focuses it.
+                // The inventory table is the topmost widget; ↑ from the first row
+                // returns to the top bar.
                 if self.table_state.selected() == Some(0) {
-                    self.focus = Focus::Button;
-                } else {
-                    self.table_up();
+                    return InputResult::Exit;
                 }
+                self.table_up();
             }
             KeyCode::Down => self.table_down(),
             KeyCode::Left => {
@@ -570,7 +701,10 @@ impl ProfitsApp {
                     }
                 }
             }
-            KeyCode::Right => self.table_right(),
+            KeyCode::Right => {
+                let last = self.last_editable_col(shared.market_supported);
+                self.table_right(last);
+            }
             KeyCode::Char(d) if d.is_ascii_digit() => self.table_insert_digit(d),
             KeyCode::Backspace => self.table_delete_digit(),
             KeyCode::Delete => {
@@ -580,7 +714,8 @@ impl ProfitsApp {
                     self.popup = Some(PopupKind::DeleteConfirm {
                         row_idx: row,
                         name,
-                        yes_focused: false,
+                        // Default to Yes so a quick Enter confirms the delete.
+                        yes_focused: true,
                     });
                     self.focus = Focus::Popup;
                 }
@@ -618,18 +753,16 @@ impl ProfitsApp {
                 }
             }
             KeyCode::Up => {
-                if 0 < idx {
-                    self.focus = Focus::Panel(idx - 1);
-                } else {
-                    // Top of the panel column — return focus to the top bar.
-                    return InputResult::Exit;
+                match self.step_visible_panel(idx, false, shared.market_supported) {
+                    Some(prev) => self.focus = Focus::Panel(prev),
+                    // Above the first parameter sits the Search box.
+                    None => self.focus_input(),
                 }
             }
             KeyCode::Down => {
-                if idx + 1 < PANEL_COUNT {
-                    self.focus = Focus::Panel(idx + 1);
-                } else {
-                    self.focus = Focus::Button;
+                match self.step_visible_panel(idx, true, shared.market_supported) {
+                    Some(next) => self.focus = Focus::Panel(next),
+                    None => self.focus = Focus::Button,
                 }
             }
             KeyCode::Left => {
@@ -674,12 +807,28 @@ impl ProfitsApp {
 
     pub fn handle_button_activate(&mut self, shared: &SharedState) -> InputResult {
         self.calc_error = None;
-        if !shared.market_supported {
-            self.calc_error =
-                Some("Profit calc needs a Market ocean (Emerald, Meridian, or Cerulean).".to_owned());
-        } else if self.rows.is_empty() {
+        if self.rows.is_empty() {
             self.calc_error = Some("Add commodities first".to_owned());
-        } else if !self.panel[0].value.trim().is_empty()
+            return InputResult::Consumed;
+        }
+
+        if !shared.market_supported {
+            // Offline: prices come from the manually-entered Buy/Sell columns.
+            // Block the calc if any required price is missing.
+            let (need_buy, need_sell) = self.missing_prices(shared);
+            if !need_buy.is_empty() || !need_sell.is_empty() {
+                self.popup = Some(PopupKind::PriceBlock { need_buy, need_sell });
+                self.focus = Focus::Popup;
+                return InputResult::Consumed;
+            }
+            // Everything priced — compute directly (no fetch / re-query).
+            let profit = self.calculate_profits(shared);
+            self.popup = Some(PopupKind::ProfitResult(profit));
+            self.focus = Focus::Popup;
+            return InputResult::Consumed;
+        }
+
+        if !self.panel[0].value.trim().is_empty()
             && app::suggest_island(self.panel[0].value.trim(), shared.available_islands)
                 .is_none()
         {
@@ -743,6 +892,8 @@ impl ProfitsApp {
                 self.popup = None;
                 self.focus = Focus::Input;
             }
+            // PriceBlock has a single "Ok" button handled via ProfitsPopupOk.
+            Some(PopupKind::PriceBlock { .. }) => {}
             None => {}
         }
         InputResult::Consumed
@@ -754,11 +905,11 @@ impl ProfitsApp {
                 return self.handle_button_activate(shared);
             }
             KeyCode::Up => {
-                self.focus = Focus::Panel(PANEL_COUNT - 1);
+                if let Some(i) = self.last_visible_panel(shared.market_supported) {
+                    self.focus = Focus::Panel(i);
+                }
             }
-            KeyCode::Down => {
-                self.focus_table_top();
-            }
+            // The button is the bottom of the focus chain; ↓ goes nowhere.
             _ => {}
         }
         InputResult::Consumed
@@ -828,10 +979,9 @@ impl ProfitsApp {
                 }
                 _ => {}
             },
-            Some(PopupKind::ProfitResult(_)) => {
+            Some(PopupKind::ProfitResult(_)) | Some(PopupKind::PriceBlock { .. }) => {
                 if key.code == KeyCode::Enter {
-                    self.popup = None;
-                    self.focus = Focus::Input;
+                    self.dismiss_ok_popup();
                 }
             }
             None => {}

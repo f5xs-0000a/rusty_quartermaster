@@ -18,6 +18,7 @@ mod app;
 mod cache;
 mod chatlog;
 mod clickmap;
+mod commodities;
 mod damage;
 mod jobbers;
 mod ocean;
@@ -86,6 +87,19 @@ struct Args {
     /// (market prices and commodity list).
     #[arg(long, hide = true)]
     query_market: bool,
+
+    /// Reveal the "Crew Donation Share Rate" row in Profits and apply it.
+    ///
+    /// When set, a parameter row appears for the share of voyage earnings
+    /// donated to your crew, and that donation is deducted in the breakdown.
+    /// Off by default (no donation row, no donation deducted).
+    #[arg(long)]
+    donate_to_crew: bool,
+
+    /// Reveal the "C.O. Rate" (commanding officer cut) row in Profits and apply
+    /// it. Hidden; off by default (no C.O. row, no C.O. cut deducted).
+    #[arg(long, hide = true)]
+    pay_commanding_officer: bool,
 }
 
 fn parse_ocean(s: &str) -> Result<Ocean, String> {
@@ -176,6 +190,8 @@ async fn main() -> io::Result<()> {
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
+    shell.profits.show_co_rate = args.pay_commanding_officer;
+    shell.profits.show_donation = args.donate_to_crew;
     // Pre-seed pirate stats from the cache. They're refreshed lazily: a cached
     // pirate is only re-queried once it's both relevant (seen in the log) and
     // past its staleness TTL, so startup never blocks on a refetch burst.
