@@ -264,7 +264,11 @@ pub struct GameState {
     /// The vessel we're aboard right now, if any.
     pub current: Option<Arc<str>>,
 
-    /// Crewmates/hearties currently logged on (global; wiped on relog).
+    /// Crewmates/hearties currently logged on (global; wiped on relog). Tracked
+    /// from presence lines but not yet surfaced anywhere — kept for a future
+    /// "who's online" view. (No longer feeds the fetch worklist, which is now
+    /// scoped to the aboard/planked sets.)
+    #[allow(dead_code)]
     pub online: HashSet<String>,
 
     /// Date as we currently believe it to be: the most recent
@@ -667,19 +671,6 @@ impl GameState {
             }
         }
         set
-    }
-
-    /// Every distinct pirate name we've recorded — the fetch worklist. NPCs and
-    /// other unparseable names are filtered out later by name normalization.
-    pub fn all_pirate_names(&self) -> HashSet<String> {
-        let mut names = HashSet::new();
-        for v in self.vessels.values() {
-            names.extend(v.crewmates.iter().cloned());
-            names.extend(v.greedy_by_pirate.keys().cloned());
-            names.extend(v.planked_by_us.iter().cloned());
-        }
-        names.extend(self.online.iter().cloned());
-        names
     }
 }
 

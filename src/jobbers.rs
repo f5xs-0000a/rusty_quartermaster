@@ -183,23 +183,37 @@ pub enum JobberPane {
 // Global pirate stat cache
 // ---------------------------------------------------------------------------
 
+/// One yoweb page for a pirate. The background scheduler fetches at most one
+/// page at a time, basic before trophies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PiratePage {
+    Basic,
+    Trophies,
+}
+
+/// The single most important page to fetch right now, with the priority tier it
+/// came from (lower = more urgent: 0 on-demand, 1 aboard, 2 planked).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FetchOrder {
+    pub norm: String,
+    pub page: PiratePage,
+    pub tier: u8,
+}
+
 /// Yoweb stats fetched per pirate, keyed by normalized name, plus bookkeeping
-/// so the background fetcher never requests the same pirate twice and knows when
-/// a cached entry has gone stale.
+/// so the background fetcher knows what's stale and what's been requested.
 #[derive(Default)]
 pub struct PirateCache {
     /// Successfully fetched pirates, keyed by normalized name. Each entry
     /// carries its basic profile, trophies, and per-part fetch timestamps.
     pub fetched: HashMap<String, CachedPirate>,
-    /// Normalized names currently being fetched — dedups the worklist and, via
-    /// its length, bounds in-flight concurrency.
-    pub in_flight: HashSet<String>,
     /// Normalized names confirmed not to exist on yoweb this session (the page
     /// loaded but named no pirate). Never auto-fetched again; a force-requery
     /// clears the name so it can be retried.
     pub gone: HashSet<String>,
-    /// Normalized names queued for a full re-query regardless of staleness, set
-    /// by the force-refresh UI. Drained as each is dispatched.
+    /// Normalized names the user explicitly requested (clicked) — fetched at top
+    /// priority and in full (both pages), ignoring staleness. Cleared once the
+    /// trophies page (the last in the sequence) lands.
     pub forced: HashSet<String>,
 }
 
@@ -220,20 +234,26 @@ impl PirateCache {
             .and_then(|n| self.fetched.get(&n))
     }
 
-    /// Queue `name` for a full re-query on the next worklist pass, ignoring
-    /// staleness and any prior not-found result. Used by the force-refresh UI
-    /// (still to be wired up).
-    #[allow(dead_code)]
+    /// Queue `name` for a full, top-priority re-query, ignoring staleness and any
+    /// prior not-found result. Used by the on-demand path (clicking a pirate).
+    /// Marks both pages stale so the (TTL-based) scheduler refetches them now, and
+    /// raises the pirate to tier 0 until its trophies page lands.
     pub fn force_requery(&mut self, name: &str) {
         if let Ok(norm) = pirate::normalize_name(name) {
             self.gone.remove(&norm);
+            if let Some(c) = self.fetched.get_mut(&norm) {
+                c.basic_fetched_at = DateTime::<Utc>::MIN_UTC;
+                c.trophies_fetched_at = DateTime::<Utc>::MIN_UTC;
+            }
             self.forced.insert(norm);
         }
     }
 
-    /// Decide which yoweb pages to (re)fetch for an already-normalized `norm`,
-    /// or `None` if nothing is due. A forced or never-seen pirate fetches both
-    /// pages; otherwise each page is fetched only once its TTL has elapsed.
+    /// Decide which yoweb pages are due for an already-normalized `norm`, or
+    /// `None` if nothing is. A never-seen pirate needs both pages; otherwise each
+    /// page is due only once its TTL has elapsed. A forced re-query expresses
+    /// itself by stale timestamps (see [`Self::force_requery`]), so it flows
+    /// through this same TTL logic rather than a special case.
     pub fn fetch_plan(
         &self,
         norm: &str,
@@ -241,9 +261,6 @@ impl PirateCache {
         trophy_ttl: Duration,
         now: DateTime<Utc>,
     ) -> Option<FetchPlan> {
-        if self.forced.contains(norm) {
-            return Some(FetchPlan { basic: true, trophies: true });
-        }
         match self.fetched.get(norm) {
             None => Some(FetchPlan { basic: true, trophies: true }),
             Some(c) => {
@@ -254,52 +271,151 @@ impl PirateCache {
         }
     }
 
-    /// Fold a completed fetch for `norm` into the cache, swapping in whichever
-    /// parts came back fresh, and clear the name's in-flight/forced bookkeeping.
+    /// Fold a completed single-page fetch for `norm` into the cache, swapping in
+    /// whichever part came back fresh. An on-demand (`forced`) request is cleared
+    /// only once its trophies page — the last in the basic→trophies sequence —
+    /// lands, so a forced pirate fetches both pages before dropping off tier 0.
     pub fn apply_update(&mut self, norm: String, update: PirateUpdate) {
-        self.in_flight.remove(&norm);
-        self.forced.remove(&norm);
         match update {
-            PirateUpdate::Refreshed { basic, trophies } => match self.fetched.get_mut(&norm) {
-                Some(entry) => {
-                    if let Some((info, at)) = basic {
-                        entry.basic = info;
-                        entry.basic_fetched_at = at;
+            PirateUpdate::Refreshed { basic, trophies } => {
+                // The trophies page is the tail of the sequence: once it lands an
+                // on-demand request is satisfied.
+                if trophies.is_some() {
+                    self.forced.remove(&norm);
+                }
+                match self.fetched.get_mut(&norm) {
+                    Some(entry) => {
+                        if let Some((info, at)) = basic {
+                            entry.basic = info;
+                            entry.basic_fetched_at = at;
+                        }
+                        if let Some((t, at)) = trophies {
+                            entry.trophies = t;
+                            entry.trophies_fetched_at = at;
+                        }
                     }
-                    if let Some((t, at)) = trophies {
-                        entry.trophies = t;
-                        entry.trophies_fetched_at = at;
+                    // A pirate's basic page is always fetched before its trophies,
+                    // so for a brand-new entry `basic` is present; trophies lag
+                    // behind, left stale (MIN_UTC) so the next pass fetches them.
+                    None => {
+                        if let Some((info, basic_at)) = basic {
+                            let (trophies, trophies_at) = match trophies {
+                                Some((t, at)) => (t, at),
+                                None => (Default::default(), DateTime::<Utc>::MIN_UTC),
+                            };
+                            self.fetched.insert(
+                                norm,
+                                CachedPirate {
+                                    basic: info,
+                                    trophies,
+                                    basic_fetched_at: basic_at,
+                                    trophies_fetched_at: trophies_at,
+                                },
+                            );
+                        }
                     }
                 }
-                // A brand-new pirate always fetches the basic page first, so
-                // `basic` is present here; trophies may lag behind, left stale so
-                // the next pass retries them.
-                None => {
-                    if let Some((info, basic_at)) = basic {
-                        let (trophies, trophies_at) = match trophies {
-                            Some((t, at)) => (t, at),
-                            None => (Default::default(), DateTime::<Utc>::MIN_UTC),
-                        };
-                        self.fetched.insert(
-                            norm,
-                            CachedPirate {
-                                basic: info,
-                                trophies,
-                                basic_fetched_at: basic_at,
-                                trophies_fetched_at: trophies_at,
-                            },
-                        );
-                    }
-                }
-            },
+            }
             PirateUpdate::NotFound => {
                 self.fetched.remove(&norm);
+                self.forced.remove(&norm);
                 self.gone.insert(norm);
             }
-            // Transport/server error: keep whatever we have; the name stays
-            // eligible for a later requery.
-            PirateUpdate::Error(_) => {}
+            // Transport/server error: keep whatever we have and give up the forced
+            // request (don't hammer a failing page); natural staleness may retry.
+            PirateUpdate::Error(_) => {
+                self.forced.remove(&norm);
+            }
         }
+    }
+
+    /// Which page (if any) is due for an already-normalized `norm`: basic before
+    /// trophies. `None` means nothing is due.
+    fn due_page(
+        &self,
+        norm: &str,
+        basic_ttl: Duration,
+        trophy_ttl: Duration,
+        now: DateTime<Utc>,
+    ) -> Option<PiratePage> {
+        let plan = self.fetch_plan(norm, basic_ttl, trophy_ttl, now)?;
+        if plan.basic {
+            Some(PiratePage::Basic)
+        } else if plan.trophies {
+            Some(PiratePage::Trophies)
+        } else {
+            None
+        }
+    }
+
+    /// The priority tier of an already-normalized `norm` against the current
+    /// sets, or `None` if it's no longer relevant (so an in-flight fetch for it
+    /// can be cancelled). 0 = on-demand, 1 = aboard/self, 2 = planked.
+    pub fn tier_of(
+        &self,
+        norm: &str,
+        aboard: &HashSet<String>,
+        planked: &HashSet<String>,
+    ) -> Option<u8> {
+        if self.forced.contains(norm) {
+            Some(0)
+        } else if aboard.contains(norm) {
+            Some(1)
+        } else if planked.contains(norm) {
+            Some(2)
+        } else {
+            None
+        }
+    }
+
+    /// The single most important page to fetch right now, scanning tiers in
+    /// priority order (on-demand ▸ aboard/self ▸ planked) and, within a tier,
+    /// pirates in a stable order — basic before trophies per pirate. All name
+    /// sets are already normalized. `None` means nothing is due.
+    pub fn next_order(
+        &self,
+        aboard: &HashSet<String>,
+        planked: &HashSet<String>,
+        basic_ttl: Duration,
+        trophy_ttl: Duration,
+        now: DateTime<Utc>,
+    ) -> Option<FetchOrder> {
+        let due = |norm: &str| self.due_page(norm, basic_ttl, trophy_ttl, now);
+
+        // Tier 0: on-demand. Stable order for determinism.
+        let mut forced: Vec<&String> = self.forced.iter().collect();
+        forced.sort_unstable();
+        for norm in forced {
+            if let Some(page) = due(norm) {
+                return Some(FetchOrder { norm: norm.clone(), page, tier: 0 });
+            }
+        }
+
+        // Tier 1: aboard + self (skipping gone / already-forced).
+        let mut aboard_v: Vec<&String> = aboard.iter().collect();
+        aboard_v.sort_unstable();
+        for norm in aboard_v {
+            if self.gone.contains(norm) || self.forced.contains(norm) {
+                continue;
+            }
+            if let Some(page) = due(norm) {
+                return Some(FetchOrder { norm: norm.clone(), page, tier: 1 });
+            }
+        }
+
+        // Tier 2: planked (skipping gone / forced / already covered as aboard).
+        let mut planked_v: Vec<&String> = planked.iter().collect();
+        planked_v.sort_unstable();
+        for norm in planked_v {
+            if self.gone.contains(norm) || self.forced.contains(norm) || aboard.contains(norm) {
+                continue;
+            }
+            if let Some(page) = due(norm) {
+                return Some(FetchOrder { norm: norm.clone(), page, tier: 2 });
+            }
+        }
+
+        None
     }
 }
 

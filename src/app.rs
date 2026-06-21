@@ -791,6 +791,8 @@ impl AppShell {
         let names = jobbers::pane_pirates(&self.chatlog, &key, pane);
         let sel = self.jobbers_pane_sel(pane);
         if let Some(name) = names.get(sel) {
+            // On-demand: jump this pirate to the top of the fetch queue.
+            self.pirate_cache.force_requery(name);
             self.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: name.clone(),
                 button: 0,
@@ -822,14 +824,17 @@ impl AppShell {
 
     /// Open the trophies popup for the pirate in the stats popup.
     fn open_trophy_popup(&mut self) {
-        if let Some(pp) = &self.jobbers_ui.pirate_popup {
-            self.jobbers_ui.trophy_popup = Some(TrophyPopup {
-                name: pp.name.clone(),
-                search: String::new(),
-                offset: 0,
-                view_h: 0,
-            });
-        }
+        let Some(name) = self.jobbers_ui.pirate_popup.as_ref().map(|pp| pp.name.clone()) else {
+            return;
+        };
+        // On-demand: ensure this pirate's trophies are (re)fetched at top priority.
+        self.pirate_cache.force_requery(&name);
+        self.jobbers_ui.trophy_popup = Some(TrophyPopup {
+            name,
+            search: String::new(),
+            offset: 0,
+            view_h: 0,
+        });
     }
 
     /// Modal key handling for the trophies popup: type to filter, ↑/↓ scroll,
