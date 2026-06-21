@@ -595,12 +595,19 @@ impl AppShell {
         let panes = self.jobbers_ui.voyage_type.panes();
         let first_pane = panes.first().map(|p| Self::pane_focus(*p));
         let poisoned = self.selected_poisoned();
+        let implemented = self.jobbers_ui.voyage_type.implemented();
+        // Vikings sits its leaderboard *beside* the panes (a horizontal split)
+        // rather than above them, so ←/→ — not ↑/↓ — cross between the two.
+        let panes_beside = self.jobbers_ui.voyage_type.panes_beside_top_jobbers();
         // The voyage box's bottom row: Unpoison when poisoned, else Voyage Type.
         let box_bottom = if poisoned { Unpoison } else { VoyageType };
-        // The Skill Distribution button (Vampirates) sits between the box and the
-        // panes, so it's the row entered just below the box and just above the panes.
+        // The Skill Distribution button (Vampirates) sits between the leaderboard and
+        // the panes, so it's the row just below the leaderboard and above the panes.
         let has_button = self.jobbers_ui.voyage_type.has_skill_distribution();
         let after_box = if has_button { Some(SkillDist) } else { first_pane };
+        // Descending out of the voyage box lands on the Skill Leaderboard first
+        // (when the layout is implemented), then the button / panes below it.
+        let into_content = if implemented { Some(Leaderboard) } else { after_box };
 
         match key.code {
             KeyCode::Esc => return InputResult::Exit,
@@ -610,14 +617,30 @@ impl AppShell {
                 ShipType => self.jobbers_ui.focus = Vessels,
                 VoyageType => self.jobbers_ui.focus = ShipType,
                 Unpoison => self.jobbers_ui.focus = VoyageType,
-                // The button sits below the box; ↑ returns to the box's bottom row.
-                SkillDist => self.jobbers_ui.focus = box_bottom,
+                // Within the leaderboard ↑ walks up the column; at the top it leaves
+                // for the box's bottom row.
+                Leaderboard => {
+                    if self.leaderboard_current_len() == 0 || self.jobbers_ui.top_sel == 0 {
+                        self.jobbers_ui.focus = box_bottom;
+                    } else {
+                        self.jobbers_ui.top_sel -= 1;
+                    }
+                }
+                // The button sits below the leaderboard; ↑ returns to it.
+                SkillDist => self.jobbers_ui.focus = Leaderboard,
                 Aboard | Greedy | Planked => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     // At the top of a pane (or an empty one), ↑ leaves for whatever's
-                    // above the panes: the button if shown, else the box's bottom row.
+                    // above the panes: the button if shown, else (side-by-side) the
+                    // box's bottom row, else the leaderboard stacked above.
                     if self.jobbers_pane_count(pane) == 0 || self.jobbers_pane_sel(pane) == 0 {
-                        self.jobbers_ui.focus = if has_button { SkillDist } else { box_bottom };
+                        self.jobbers_ui.focus = if has_button {
+                            SkillDist
+                        } else if panes_beside {
+                            box_bottom
+                        } else {
+                            Leaderboard
+                        };
                     } else {
                         self.jobbers_pane_select_delta(pane, -1);
                     }
@@ -630,12 +653,24 @@ impl AppShell {
                     self.jobbers_ui.focus = if poisoned {
                         Unpoison
                     } else {
-                        after_box.unwrap_or(VoyageType)
+                        into_content.unwrap_or(VoyageType)
                     };
                 }
                 Unpoison => {
-                    if let Some(next) = after_box {
+                    if let Some(next) = into_content {
                         self.jobbers_ui.focus = next;
+                    }
+                }
+                // Within the leaderboard ↓ walks down the column; at the bottom it
+                // leaves for the button / panes below.
+                Leaderboard => {
+                    let len = self.leaderboard_current_len();
+                    if len == 0 || self.jobbers_ui.top_sel + 1 >= len {
+                        if let Some(next) = after_box {
+                            self.jobbers_ui.focus = next;
+                        }
+                    } else {
+                        self.jobbers_ui.top_sel += 1;
                     }
                 }
                 // ↓ from the button drops into the first pane.
@@ -649,24 +684,49 @@ impl AppShell {
                     self.jobbers_pane_select_delta(pane, 1);
                 }
             },
-            KeyCode::Left => {
-                if let Some(cur) = Self::focus_pane(self.jobbers_ui.focus) {
+            KeyCode::Left => match self.jobbers_ui.focus {
+                // ← walks to the previous leaderboard column.
+                Leaderboard => {
+                    if self.jobbers_ui.top_col > 0 {
+                        self.jobbers_ui.top_col -= 1;
+                        self.leaderboard_clamp();
+                    }
+                }
+                Aboard | Greedy | Planked => {
+                    let cur = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     if let Some(i) = panes.iter().position(|p| *p == cur) {
                         if i > 0 {
                             self.jobbers_ui.focus = Self::pane_focus(panes[i - 1]);
+                        } else if panes_beside {
+                            // The leftmost pane sits to the right of the leaderboard.
+                            self.jobbers_ui.focus = Leaderboard;
                         }
                     }
                 }
-            }
-            KeyCode::Right => {
-                if let Some(cur) = Self::focus_pane(self.jobbers_ui.focus) {
+                _ => {}
+            },
+            KeyCode::Right => match self.jobbers_ui.focus {
+                Leaderboard => {
+                    if panes_beside {
+                        // The leaderboard sits to the left of the pane(s).
+                        if let Some(pane) = first_pane {
+                            self.jobbers_ui.focus = pane;
+                        }
+                    } else if self.jobbers_ui.top_col + 1 < self.leaderboard_ncols() {
+                        self.jobbers_ui.top_col += 1;
+                        self.leaderboard_clamp();
+                    }
+                }
+                Aboard | Greedy | Planked => {
+                    let cur = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     if let Some(i) = panes.iter().position(|p| *p == cur) {
                         if i + 1 < panes.len() {
                             self.jobbers_ui.focus = Self::pane_focus(panes[i + 1]);
                         }
                     }
                 }
-            }
+                _ => {}
+            },
             KeyCode::Enter => match self.jobbers_ui.focus {
                 Vessels => self.open_vessel_popup(),
                 ShipType => self.open_ship_popup(),
@@ -675,6 +735,7 @@ impl AppShell {
                     self.jobbers_unpoison();
                     self.jobbers_ui.focus = Vessels;
                 }
+                Leaderboard => self.open_leaderboard_popup(),
                 SkillDist => self.open_skill_dist_popup(),
                 Aboard | Greedy | Planked => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
@@ -817,6 +878,67 @@ impl AppShell {
                 button: 0,
             });
         }
+    }
+
+    /// The Skill Leaderboard's columns of ranked pirate names for the selected
+    /// vessel (column-major), or empty when no vessel is selected.
+    fn leaderboard_cols(&self) -> Vec<Vec<String>> {
+        let Some(key) = self.jobbers_ui.selected.as_ref() else {
+            return Vec::new();
+        };
+        jobbers::leaderboard_columns(
+            &self.chatlog,
+            &self.pirate_cache,
+            key,
+            self.jobbers_ui.voyage_type,
+        )
+    }
+
+    /// Number of leaderboard columns for the selected vessel's voyage type.
+    fn leaderboard_ncols(&self) -> usize {
+        self.leaderboard_cols().len()
+    }
+
+    /// Number of ranked pirates in the currently-selected leaderboard column.
+    fn leaderboard_current_len(&self) -> usize {
+        self.leaderboard_cols()
+            .get(self.jobbers_ui.top_col)
+            .map_or(0, |c| c.len())
+    }
+
+    /// Clamp the leaderboard cursor to the live column/row shape (after a column
+    /// switch, or when the aboard set changes under it).
+    fn leaderboard_clamp(&mut self) {
+        let cols = self.leaderboard_cols();
+        if cols.is_empty() {
+            self.jobbers_ui.top_col = 0;
+            self.jobbers_ui.top_sel = 0;
+            return;
+        }
+        self.jobbers_ui.top_col = self.jobbers_ui.top_col.min(cols.len() - 1);
+        let len = cols[self.jobbers_ui.top_col].len();
+        self.jobbers_ui.top_sel = if len == 0 {
+            0
+        } else {
+            self.jobbers_ui.top_sel.min(len - 1)
+        };
+    }
+
+    /// Open the pirate-stats popup for the leaderboard's selected pirate, jumping it
+    /// to the top of the fetch queue (mirrors [`Self::open_pirate_popup`]).
+    fn open_leaderboard_popup(&mut self) {
+        let cols = self.leaderboard_cols();
+        let Some(name) = cols
+            .get(self.jobbers_ui.top_col)
+            .and_then(|c| c.get(self.jobbers_ui.top_sel))
+        else {
+            return;
+        };
+        self.pirate_cache.force_requery(name);
+        self.jobbers_ui.pirate_popup = Some(PiratePopup {
+            name: name.clone(),
+            button: 0,
+        });
     }
 
     /// Modal key handling for the pirate-stats popup: ←/→ toggle the two buttons,
@@ -1253,6 +1375,17 @@ impl AppShell {
                 }
                 self.jobbers_ui.focus = JobberFocus::Vessels;
             }
+            ClickTarget::JobberLeaderboard => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Leaderboard;
+            }
+            ClickTarget::JobberLeaderboardPirate { col, row } => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Leaderboard;
+                self.jobbers_ui.top_col = col;
+                self.jobbers_ui.top_sel = row;
+                self.leaderboard_clamp();
+            }
             ClickTarget::JobberAboardList => {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Aboard;
@@ -1368,6 +1501,20 @@ impl AppShell {
                 }
                 // The pirate-stats popup has nothing to scroll.
                 if self.jobbers_ui.pirate_popup.is_some() {
+                    return;
+                }
+                // The wheel over the Skill Leaderboard moves its selection within the
+                // current column (the shared window auto-scrolls to follow it).
+                if let Some(
+                    ClickTarget::JobberLeaderboard | ClickTarget::JobberLeaderboardPirate { .. },
+                ) = clickmap::hit_test(&self.click_regions, col, row)
+                {
+                    let len = self.leaderboard_current_len();
+                    if len > 0 {
+                        let next = (self.jobbers_ui.top_sel as i32 + delta.signum())
+                            .clamp(0, len as i32 - 1) as usize;
+                        self.jobbers_ui.top_sel = next;
+                    }
                     return;
                 }
                 // Otherwise move the selection of whichever pane the cursor is over

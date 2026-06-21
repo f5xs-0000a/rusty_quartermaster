@@ -28,6 +28,11 @@ pub enum ClickTarget {
     JobberVoyageType,
     JobberVoyageItem(usize),
     JobberUnpoison,
+    /// The Skill Leaderboard panel as a whole (focus it).
+    JobberLeaderboard,
+    /// A pirate row in the Skill Leaderboard: `col` is the column index, `row` the
+    /// rank within that column. Selecting it can open the pirate-stats popup.
+    JobberLeaderboardPirate { col: usize, row: usize },
     JobberAboardList,
     JobberGreedyList,
     JobberPlankedList,

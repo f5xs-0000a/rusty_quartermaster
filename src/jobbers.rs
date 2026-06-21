@@ -32,6 +32,8 @@ const CODE_LEN: usize = 7;
 const NAME_CODE_GAP: usize = 2;
 /// Spaces between Top Jobbers skill columns.
 const COLUMN_GAP: u16 = 3;
+/// Indent on each pirate name under the Aboard pane's "Pirates (n):" header.
+const ABOARD_INDENT: usize = 2;
 
 /// Label on the Vampirates "View Skill Distribution" button.
 const SKILL_DIST_BUTTON_LABEL: &str = "View Skill Distribution";
@@ -536,8 +538,11 @@ pub enum JobberFocus {
     ShipType,
     VoyageType,
     Unpoison,
-    /// The "View Skill Distribution" button (Vampirates only), between Top Jobbers
-    /// and the panes.
+    /// The Skill Leaderboard panel (the ranked per-skill columns). Selectable: a
+    /// 2D cursor (`top_col`/`top_sel`) walks its columns, Enter opens the pirate.
+    Leaderboard,
+    /// The "View Skill Distribution" button (Vampirates only), between the Skill
+    /// Leaderboard and the panes.
     SkillDist,
     Aboard,
     Greedy,
@@ -558,6 +563,12 @@ pub struct JobbersUi {
     pub aboard_sel: usize,
     pub greedy_sel: usize,
     pub planked_sel: usize,
+    /// Skill Leaderboard cursor: which column (`top_col`) and which rank within it
+    /// (`top_sel`), plus the shared vertical scroll offset (`top_offset`) — all
+    /// columns share one window so their ranks stay aligned row-for-row.
+    pub top_col: usize,
+    pub top_sel: usize,
+    pub top_offset: usize,
     /// The voyage type being crewed; gates the Pillage-only layout.
     pub voyage_type: VoyageType,
     /// How many entries each Top Jobbers column shows. `None` (the default) shows
@@ -732,6 +743,9 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
             } else {
                 Vec::new()
             }
+        }
+        JobberFocus::Leaderboard => {
+            vec!["Enter: pirate stats \u{00b7} \u{2190}/\u{2192} columns \u{00b7} \u{2191}/\u{2193} scroll"]
         }
         JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
             vec!["Enter: pirate stats \u{00b7} \u{2190}/\u{2192} panes \u{00b7} \u{2191}/\u{2193} select"]
@@ -1023,37 +1037,51 @@ pub fn render(
     let swabbies = vessel.map_or(0, |v| v.swabbies);
     let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], aboard_set.len(), swabbies));
 
-    // ---- Top Jobbers + panes sizing (only used when the layout is implemented) ----
-    // Most voyage types cap Top Jobbers at 5 per column (an explicit leaderboard
-    // size overrides it) and let the panes fill the page. Vampirates flips this:
-    // Top Jobbers is the headline list, uncapped and page-filling, while the panes
-    // are pinned short — so it ignores the cap.
+    // ---- Skill Leaderboard + panes sizing (only used when implemented) ----
+    // The leaderboard ranks *everyone* aboard per skill (no truncation) so it can be
+    // scrolled through; what varies is the viewport height. Most voyage types cap it
+    // to a short window (the leaderboard size, default 5) and let the panes fill the
+    // page; Vampirates flips this (`top_jobbers_fills`) — the leaderboard is the
+    // page-filling headline and the panes are pinned short.
     let top_jobbers_fills = ui.voyage_type.top_jobbers_fills();
-    let lb_limit = if top_jobbers_fills {
-        None
+    let top_columns = rank_columns(ui.voyage_type.top_jobbers(), &aboard_set, cache, None);
+    let total_rows = top_columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
+    // Viewport rows: the whole list when it fills the page, else a capped window
+    // (anything beyond scrolls). At least one row so the box never collapses flat.
+    let view_rows = if top_jobbers_fills {
+        total_rows
     } else {
-        ui.leaderboard_size.or(Some(5))
+        total_rows.min(ui.leaderboard_size.unwrap_or(5)).max(1)
     };
-    let top_columns = rank_columns(ui.voyage_type.top_jobbers(), &aboard_set, cache, lb_limit);
-    let top_rows = top_columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
-    let top_h = top_rows as u16 + 3;
+    let top_h = view_rows as u16 + 3;
     let top_panel_w = top_panel_width(&top_columns);
 
-    // The Aboard pane gains dragoon tally footers on voyage types that spawn them.
+    // The Aboard pane gains a single dragoon tally footer on voyage types that spawn
+    // them (Atlantis): "and o to p dragoons" — a range folding lone dragoons aboard
+    // and the 3–6-strong monster boarding parties (see `dragoons_footer`).
     let dragoon_w = if ui.voyage_type.tracks_dragoons() {
         let d = vessel.map_or(0, |v| v.dragoons_aboard);
         let b = vessel.map_or(0, |v| v.dragoon_boardings);
-        dragoons_footer(d).len().max(boardings_footer(b).len())
+        let low = d.saturating_add(b.saturating_mul(3));
+        let high = d.saturating_add(b.saturating_mul(6));
+        // No dragoons aboard → no footer, so no width reserved for it.
+        if high > 0 {
+            dragoons_footer(low, high).len()
+        } else {
+            0
+        }
     } else {
         0
     };
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at title.
+    // Aboard now leads with a "Pirates (n):" header and indents each name two spaces.
     let aboard_cw = aboard_set
         .iter()
-        .map(|n| n.chars().count())
+        .map(|n| n.chars().count() + ABOARD_INDENT)
         .max()
         .unwrap_or(0)
+        .max(aboard_header(aboard_set.len()).len())
         .max(if swabbies > 0 {
             swabbie_footer(swabbies).len()
         } else {
@@ -1253,13 +1281,14 @@ pub fn render(
     let pane_h = if top_jobbers_fills {
         const PANE_BODY_CAP: usize = 5;
         let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
-        let dragoon_footers = if ui.voyage_type.tracks_dragoons() { 2 } else { 0 };
+        let dragoon_footers = usize::from(ui.voyage_type.tracks_dragoons());
         let body = |names: usize, footers: usize| names.min(PANE_BODY_CAP) + footers;
         let lines = panes
             .iter()
             .map(|p| match p {
+                // Aboard: a header line + names + swabbie/dragoon footers.
                 JobberPane::Aboard => {
-                    body(aboard_set.len(), usize::from(swabbies > 0) + dragoon_footers)
+                    body(aboard_set.len(), 1 + usize::from(swabbies > 0) + dragoon_footers)
                 }
                 JobberPane::Greedy => body(greedy.len(), 0),
                 JobberPane::Planked => body(planked_n, 0),
@@ -1319,10 +1348,10 @@ pub fn render(
         if let Some(s) = &stats {
             render_stats_box(frame, rows[1], s, focused);
         }
-        // Top Jobbers (its natural width) on the left, the pane(s) filling the rest.
+        // Skill Leaderboard (its natural width) on the left, the pane(s) filling the rest.
         let main = Layout::horizontal([Constraint::Length(top_panel_w), Constraint::Min(0)])
             .split(rows[2]);
-        render_top_panel(frame, main[0], &top_columns, focused);
+        render_top_panel(frame, main[0], &top_columns, ui, focused, regions);
         render_panes(
             frame, main[1], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
             panes, &pane_widths, regions,
@@ -1332,7 +1361,7 @@ pub fn render(
         if let Some(s) = &stats {
             render_stats_box(frame, rows[1], s, focused);
         }
-        render_top_panel(frame, rows[2], &top_columns, focused);
+        render_top_panel(frame, rows[2], &top_columns, ui, focused, regions);
         if show_skill_dist {
             render_skill_dist_button(
                 frame,
@@ -1879,6 +1908,11 @@ fn clamp_sel(sel: usize, n: usize) -> usize {
     }
 }
 
+/// The Aboard pane's "Pirates (n):" header, where `n` is the number aboard.
+fn aboard_header(n: usize) -> String {
+    format!("Pirates ({n}):")
+}
+
 /// The Aboard pane's swabbie footer, pluralised: "and 1 swabbie" / "and N
 /// swabbies".
 fn swabbie_footer(n: u32) -> String {
@@ -1889,23 +1923,14 @@ fn swabbie_footer(n: u32) -> String {
     }
 }
 
-/// The Aboard pane's lone-dragoon tally (Atlantis): "1 dragoon aboard" / "N
-/// dragoons aboard".
-fn dragoons_footer(n: u32) -> String {
-    if n == 1 {
-        "1 dragoon aboard".to_string()
+/// The Aboard pane's dragoon footer (Atlantis): "and o to p dragoons" — a count, or
+/// a range when monster boarding parties of unseen size (3–6 each) are folded in
+/// (see [`dragoons_boarded_value`] for the `low`/`high` derivation).
+fn dragoons_footer(low: u32, high: u32) -> String {
+    if low == high && low == 1 {
+        "and 1 dragoon".to_string()
     } else {
-        format!("{n} dragoons aboard")
-    }
-}
-
-/// The Aboard pane's monster-boarding tally (Atlantis): each is a party of 3/4/6
-/// dragoons we can't count, so we report the party count.
-fn boardings_footer(n: u32) -> String {
-    if n == 1 {
-        "1 monster boarding".to_string()
-    } else {
-        format!("{n} monster boardings")
+        format!("and {} dragoons", dragoons_boarded_value(low, high))
     }
 }
 
@@ -1946,6 +1971,23 @@ pub fn pane_pirates(state: &GameState, key: &Arc<str>, pane: JobberPane) -> Vec<
             v
         }
     }
+}
+
+/// The pirate names in each Skill Leaderboard column, ranked exactly as
+/// `render_top_panel` shows them (best standing, then experience, then name) with no
+/// truncation — column-major. Used to resolve a `(top_col, top_sel)` cursor to a
+/// pirate and to size leaderboard navigation. Mirrors [`pane_pirates`].
+pub fn leaderboard_columns(
+    state: &GameState,
+    cache: &PirateCache,
+    key: &Arc<str>,
+    voyage_type: VoyageType,
+) -> Vec<Vec<String>> {
+    let aboard = state.aboard(key);
+    rank_columns(voyage_type.top_jobbers(), &aboard, cache, None)
+        .into_iter()
+        .map(|c| c.rows.into_iter().map(|r| r.name).collect())
+        .collect()
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2030,33 +2072,46 @@ fn render_panes(
     for (i, pane) in panes.iter().enumerate() {
         let col = cols[i];
         match pane {
-            // -- Aboard (alphabetical) + swabbie footer (non-selectable) --
+            // -- Aboard: a pinned "Pirates (n):" header, an indented scrollable name
+            //    list, then pinned swabbie / dragoon footers. --
             JobberPane::Aboard => {
                 let mut aboard: Vec<&String> = aboard_set.iter().collect();
                 aboard.sort_unstable();
-                let mut rows: Vec<(Line, Option<usize>)> = aboard
+                let header = Line::from(Span::raw(aboard_header(aboard.len())));
+                let names: Vec<Line> = aboard
                     .iter()
-                    .enumerate()
-                    .map(|(i, n)| (Line::from(Span::styled((*n).clone(), style_for(n))), Some(i)))
+                    .map(|n| {
+                        Line::from(vec![
+                            Span::raw(" ".repeat(ABOARD_INDENT)),
+                            Span::styled((*n).clone(), style_for(n)),
+                        ])
+                    })
                     .collect();
+                let mut footers: Vec<Line> = Vec::new();
                 let swabbies = vessel.map_or(0, |v| v.swabbies);
                 if swabbies > 0 {
-                    rows.push((
-                        Line::from(Span::styled(swabbie_footer(swabbies), Style::default().italic())),
-                        None,
-                    ));
+                    footers.push(Line::from(Span::styled(
+                        swabbie_footer(swabbies),
+                        Style::default().italic(),
+                    )));
                 }
-                // Hostile dragoon tallies, in red, for Atlantis runs.
+                // The hostile dragoon tally (a count or 3–6-per-party range), in red —
+                // shown only once any have actually boarded.
                 if show_dragoons {
-                    let hostile = Style::default().fg(Color::Red).italic();
                     let d = vessel.map_or(0, |v| v.dragoons_aboard);
                     let b = vessel.map_or(0, |v| v.dragoon_boardings);
-                    rows.push((Line::from(Span::styled(dragoons_footer(d), hostile)), None));
-                    rows.push((Line::from(Span::styled(boardings_footer(b), hostile)), None));
+                    let low = d.saturating_add(b.saturating_mul(3));
+                    let high = d.saturating_add(b.saturating_mul(6));
+                    if high > 0 {
+                        footers.push(Line::from(Span::styled(
+                            dragoons_footer(low, high),
+                            Style::default().fg(Color::Red).italic(),
+                        )));
+                    }
                 }
-                render_pane(
-                    frame, col, "Aboard", rows, ui.aboard_sel, &mut ui.aboard_offset, focused,
-                    ui.focus == JobberFocus::Aboard, JobberPane::Aboard, regions,
+                render_aboard_pane(
+                    frame, col, header, names, footers, ui.aboard_sel, &mut ui.aboard_offset,
+                    focused, ui.focus == JobberFocus::Aboard, regions,
                 );
             }
             // -- Greedy (total desc, then alphabetical) --
@@ -2161,6 +2216,98 @@ fn render_pane(
                 target: ClickTarget::JobberPirate { pane, idx: *idx },
             });
         }
+    }
+}
+
+/// Render the Aboard pane: a pinned `header` row at the top, a scrollable list of
+/// `names` (each its own selectable pirate row) in the middle, and pinned `footers`
+/// (swabbies / dragoons) at the bottom. Only the name list scrolls; the header and
+/// footers stay put. `sel` is the selected name index; `offset` the name window.
+#[allow(clippy::too_many_arguments)]
+fn render_aboard_pane(
+    frame: &mut Frame,
+    area: Rect,
+    header: Line<'static>,
+    names: Vec<Line<'static>>,
+    footers: Vec<Line<'static>>,
+    sel: usize,
+    offset: &mut usize,
+    page_focused: bool,
+    active: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(box_border(page_focused, active))
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Aboard").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Whole-pane focus region first, so per-row regions pushed below win the hit test.
+    regions.push(ClickRegion {
+        rect: area,
+        target: pane_focus_target(JobberPane::Aboard),
+    });
+
+    let h = inner.height as usize;
+    if h == 0 {
+        return;
+    }
+
+    // Carve the inner height into pinned header, pinned footers, and a scrollable
+    // body for the names — the header wins the first row, footers the last rows.
+    let header_h = 1.min(h);
+    let footer_h = footers.len().min(h - header_h);
+    let body_h = h - header_h - footer_h;
+
+    // Header (pinned top).
+    frame.render_widget(
+        Paragraph::new(header),
+        Rect::new(inner.x, inner.y, inner.width, 1),
+    );
+
+    // Auto-scroll the name window to keep the selection visible.
+    if body_h > 0 && !names.is_empty() {
+        if sel < *offset {
+            *offset = sel;
+        } else if sel >= *offset + body_h {
+            *offset = sel + 1 - body_h;
+        }
+        let max_off = names.len().saturating_sub(body_h);
+        if *offset > max_off {
+            *offset = max_off;
+        }
+    } else {
+        *offset = 0;
+    }
+
+    let body_y = inner.y + header_h as u16;
+    for (vis, line) in names.iter().enumerate().skip(*offset).take(body_h) {
+        let row_area = Rect::new(inner.x, body_y + (vis - *offset) as u16, inner.width, 1);
+        let is_sel = page_focused && active && vis == sel;
+        let para = if is_sel {
+            Paragraph::new(line.clone()).style(Style::default().bg(Color::White).fg(Color::Black))
+        } else {
+            Paragraph::new(line.clone())
+        };
+        frame.render_widget(para, row_area);
+        regions.push(ClickRegion {
+            rect: row_area,
+            target: ClickTarget::JobberPirate {
+                pane: JobberPane::Aboard,
+                idx: vis,
+            },
+        });
+    }
+
+    // Footers (pinned bottom).
+    let footer_y = inner.y + (header_h + body_h) as u16;
+    for (i, line) in footers.iter().take(footer_h).enumerate() {
+        frame.render_widget(
+            Paragraph::new(line.clone()),
+            Rect::new(inner.x, footer_y + i as u16, inner.width, 1),
+        );
     }
 }
 
@@ -2294,27 +2441,72 @@ fn top_panel_inner_width(columns: &[RankedColumn], show_codes: bool) -> u16 {
     top_panel_col_widths(columns, show_codes).iter().sum::<u16>() + gaps
 }
 
-/// The Top Jobbers panel's natural outer width (codes shown): columns + gaps +
-/// padding + borders, with a floor so the title stays readable. This drives the
+/// The Skill Leaderboard panel's natural outer width (codes shown): columns + gaps
+/// + padding + borders, with a floor so the title stays readable. This drives the
 /// block sizing, so codes are dropped only when the terminal can't fit this.
 fn top_panel_width(columns: &[RankedColumn]) -> u16 {
     // Floor so the title stays readable when no jobbers have fetched stats yet.
-    const FLOOR: u16 = offset_title_width("Top Jobbers");
+    const FLOOR: u16 = offset_title_width("Skill Leaderboard");
     (top_panel_inner_width(columns, true) + 4).max(FLOOR)
 }
 
-fn render_top_panel(frame: &mut Frame, region: Rect, columns: &[RankedColumn], focused: bool) {
+/// Build one Skill Leaderboard body row's spans (name + EEE/SSS codes / marker).
+fn leaderboard_row_spans(j: &RankedJobber, name_w: usize, show_codes: bool) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw(format!("{:<name_w$}", truncate(&j.name, name_w)))];
+    if show_codes {
+        spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
+        spans.push(Span::styled(experience_abbr(j.experience), experience_style(j.experience)));
+        spans.push(Span::raw("/"));
+        spans.push(Span::styled(standing_abbr(j.standing), standing_style(j.standing)));
+        // Merged columns flag which puzzle the jobber is strongest at.
+        if let Some(m) = j.marker {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
+        }
+    } else if let Some(m) = j.marker {
+        // Codes dropped for width, but the marker is "which puzzle", not a
+        // standing/experience, so keep it.
+        spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
+        spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
+    }
+    spans
+}
+
+/// The Skill Leaderboard: ranked per-skill columns sharing one scroll window so
+/// their ranks stay aligned row-for-row. The header pins to the top; the body
+/// scrolls. The cursor (`ui.top_col`/`ui.top_sel`) is highlighted when the panel is
+/// the active widget, and every body row is a click target opening that pirate.
+fn render_top_panel(
+    frame: &mut Frame,
+    region: Rect,
+    columns: &[RankedColumn],
+    ui: &mut JobbersUi,
+    page_focused: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
     // The panel fills its region: the region's width was derived from this
     // panel's natural width back in `render`, so it already hugs the content.
     let area = region;
+    let active = ui.focus == JobberFocus::Leaderboard;
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_style(border_style(focused))
+        .border_style(box_border(page_focused, active))
         .padding(Padding::horizontal(1))
-        .title(offset_title("Top Jobbers").0);
+        .title(offset_title("Skill Leaderboard").0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Whole-panel focus region first, so per-row regions pushed below win the
+    // reverse-iterating hit test on overlap.
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::JobberLeaderboard,
+    });
+
+    if inner.height == 0 || columns.is_empty() {
+        return;
+    }
 
     // Responsive degradation: show the EEE/SSS codes only while the full layout
     // fits the available width; when it doesn't, drop the codes first (names — and
@@ -2337,39 +2529,68 @@ fn render_top_panel(frame: &mut Frame, region: Rect, columns: &[RankedColumn], f
     constraints.push(Constraint::Fill(1));
     let cols = Layout::horizontal(constraints).split(inner);
 
+    // Header pins to the top row; the rest is the scrollable body window.
+    let body_h = (inner.height as usize).saturating_sub(1);
+
+    // Clamp the cursor to the live shape, then nudge the shared window to keep the
+    // selected rank visible (offset capped to the longest column so no over-scroll).
+    if ui.top_col >= columns.len() {
+        ui.top_col = columns.len() - 1;
+    }
+    let cur_len = columns[ui.top_col].rows.len();
+    if ui.top_sel >= cur_len {
+        ui.top_sel = cur_len.saturating_sub(1);
+    }
+    let max_rows = columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
+    if body_h > 0 {
+        if ui.top_sel < ui.top_offset {
+            ui.top_offset = ui.top_sel;
+        } else if ui.top_sel >= ui.top_offset + body_h {
+            ui.top_offset = ui.top_sel + 1 - body_h;
+        }
+        let max_off = max_rows.saturating_sub(body_h);
+        if ui.top_offset > max_off {
+            ui.top_offset = max_off;
+        }
+    } else {
+        ui.top_offset = 0;
+    }
+    let offset = ui.top_offset;
+
     for (ci, column) in columns.iter().enumerate() {
+        // Columns are laid out as [Fill, col, gap, col, gap, …, Fill] — the real
+        // column areas start after the leading spacer at odd indices.
+        let col_area = cols[1 + ci * 2];
         let detail = detail_width(column.marked, show_codes);
         let name_w = (col_w[ci] as usize)
             .saturating_sub(if detail > 0 { NAME_CODE_GAP + detail } else { 0 });
 
-        let mut lines: Vec<Line> = Vec::with_capacity(column.rows.len() + 1);
-        lines.push(
-            Line::from(Span::styled(column.header, Style::default().bold().underlined())).centered(),
+        // Header row (pinned).
+        frame.render_widget(
+            Paragraph::new(
+                Line::from(Span::styled(column.header, Style::default().bold().underlined())).centered(),
+            ),
+            Rect::new(col_area.x, inner.y, col_area.width, 1),
         );
-        for j in &column.rows {
-            let mut spans = vec![Span::raw(format!("{:<name_w$}", truncate(&j.name, name_w)))];
-            if show_codes {
-                spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
-                spans.push(Span::styled(experience_abbr(j.experience), experience_style(j.experience)));
-                spans.push(Span::raw("/"));
-                spans.push(Span::styled(standing_abbr(j.standing), standing_style(j.standing)));
-                // Merged columns flag which puzzle the jobber is strongest at.
-                if let Some(m) = j.marker {
-                    spans.push(Span::raw(" "));
-                    spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
-                }
-            } else if let Some(m) = j.marker {
-                // Codes dropped for width, but the marker is "which puzzle", not a
-                // standing/experience, so keep it.
-                spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
-                spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
-            }
-            lines.push(Line::from(spans));
-        }
 
-        // Columns are laid out as [Fill, col, gap, col, gap, …, Fill] — the real
-        // column areas start after the leading spacer at odd indices.
-        frame.render_widget(Paragraph::new(lines), cols[1 + ci * 2]);
+        // Body rows in the shared window.
+        for (vis, j) in column.rows.iter().enumerate().skip(offset).take(body_h) {
+            let row_area =
+                Rect::new(col_area.x, inner.y + 1 + (vis - offset) as u16, col_area.width, 1);
+            let spans = leaderboard_row_spans(j, name_w, show_codes);
+            let is_sel = page_focused && active && ci == ui.top_col && vis == ui.top_sel;
+            let para = if is_sel {
+                Paragraph::new(Line::from(spans))
+                    .style(Style::default().bg(Color::White).fg(Color::Black))
+            } else {
+                Paragraph::new(Line::from(spans))
+            };
+            frame.render_widget(para, row_area);
+            regions.push(ClickRegion {
+                rect: row_area,
+                target: ClickTarget::JobberLeaderboardPirate { col: ci, row: vis },
+            });
+        }
     }
 }
 
