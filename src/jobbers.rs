@@ -1554,10 +1554,17 @@ struct RankedColumn {
     rows: Vec<RankedJobber>,
 }
 
-/// Width of a column's code cell: `EEE/SSS`, plus a space + marker for merged
-/// columns.
-fn code_cell_width(marked: bool) -> usize {
-    CODE_LEN + if marked { 2 } else { 0 }
+/// Width of the per-row detail that trails a jobber's name, and whether anything
+/// trails it at all. With codes shown it's `EEE/SSS` (+` X` marker on merged
+/// columns); when the panel is too narrow we drop the code first, leaving only the
+/// merged-column marker (or nothing). `0` means name-only — no trailing gap.
+fn detail_width(marked: bool, show_codes: bool) -> usize {
+    match (show_codes, marked) {
+        (true, true) => CODE_LEN + 2, // EEE/SSS + " X"
+        (true, false) => CODE_LEN,    // EEE/SSS
+        (false, true) => 1,           // marker letter only
+        (false, false) => 0,          // name only
+    }
 }
 
 /// Rank the aboard jobbers for each column. Within a column a jobber is scored by
@@ -1612,31 +1619,36 @@ fn rank_columns(
 }
 
 /// Per-column outer widths for the Top Jobbers panel: each is the wider of its
-/// header and its widest `name + gap + code (+ marker)` row.
-fn top_panel_col_widths(columns: &[RankedColumn]) -> Vec<u16> {
+/// header and its widest `name (+ gap + detail)` row, where the detail depends on
+/// `show_codes` (see [`detail_width`]).
+fn top_panel_col_widths(columns: &[RankedColumn], show_codes: bool) -> Vec<u16> {
     columns
         .iter()
         .map(|c| {
             let name_w = c.rows.iter().map(|j| j.name.chars().count()).max().unwrap_or(0);
-            (name_w + NAME_CODE_GAP + code_cell_width(c.marked)).max(c.header.chars().count()) as u16
+            let detail = detail_width(c.marked, show_codes);
+            let row_w = if detail > 0 { name_w + NAME_CODE_GAP + detail } else { name_w };
+            row_w.max(c.header.chars().count()) as u16
         })
         .collect()
 }
 
-/// The Top Jobbers panel's natural outer width: columns + gaps + padding +
-/// borders, with a floor so the title stays readable.
+/// Total inner width (columns + gaps) the panel needs in a given mode.
+fn top_panel_inner_width(columns: &[RankedColumn], show_codes: bool) -> u16 {
+    let gaps = columns.len().saturating_sub(1) as u16 * COLUMN_GAP;
+    top_panel_col_widths(columns, show_codes).iter().sum::<u16>() + gaps
+}
+
+/// The Top Jobbers panel's natural outer width (codes shown): columns + gaps +
+/// padding + borders, with a floor so the title stays readable. This drives the
+/// block sizing, so codes are dropped only when the terminal can't fit this.
 fn top_panel_width(columns: &[RankedColumn]) -> u16 {
     // Floor so the title stays readable when no jobbers have fetched stats yet.
     const FLOOR: u16 = offset_title_width("Top Jobbers");
-    let gaps = columns.len().saturating_sub(1) as u16 * COLUMN_GAP;
-    let inner_w = top_panel_col_widths(columns).iter().sum::<u16>() + gaps;
-    (inner_w + 4).max(FLOOR)
+    (top_panel_inner_width(columns, true) + 4).max(FLOOR)
 }
 
 fn render_top_panel(frame: &mut Frame, region: Rect, columns: &[RankedColumn], focused: bool) {
-    // Size each column to its content: max(header, widest name + gap + code).
-    let col_w: Vec<u16> = top_panel_col_widths(columns);
-
     // The panel fills its region: the region's width was derived from this
     // panel's natural width back in `render`, so it already hugs the content.
     let area = region;
@@ -1648,6 +1660,13 @@ fn render_top_panel(frame: &mut Frame, region: Rect, columns: &[RankedColumn], f
         .title(offset_title("Top Jobbers").0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // Responsive degradation: show the EEE/SSS codes only while the full layout
+    // fits the available width; when it doesn't, drop the codes first (names — and
+    // the merged-column marker — stay). The block width comes from the natural
+    // (codes-shown) width, so this only triggers when the terminal is too narrow.
+    let show_codes = top_panel_inner_width(columns, true) <= inner.width;
+    let col_w: Vec<u16> = top_panel_col_widths(columns, show_codes);
 
     // Interleave a gap between each pair of columns, with equal slack on both
     // sides so the column group sits centered when the panel is wider than its
@@ -1664,24 +1683,30 @@ fn render_top_panel(frame: &mut Frame, region: Rect, columns: &[RankedColumn], f
     let cols = Layout::horizontal(constraints).split(inner);
 
     for (ci, column) in columns.iter().enumerate() {
-        let name_w =
-            (col_w[ci] as usize).saturating_sub(NAME_CODE_GAP + code_cell_width(column.marked));
+        let detail = detail_width(column.marked, show_codes);
+        let name_w = (col_w[ci] as usize)
+            .saturating_sub(if detail > 0 { NAME_CODE_GAP + detail } else { 0 });
 
         let mut lines: Vec<Line> = Vec::with_capacity(column.rows.len() + 1);
         lines.push(
             Line::from(Span::styled(column.header, Style::default().bold().underlined())).centered(),
         );
         for j in &column.rows {
-            let mut spans = vec![
-                Span::raw(format!("{:<name_w$}", truncate(&j.name, name_w))),
-                Span::raw(" ".repeat(NAME_CODE_GAP)),
-                Span::styled(experience_abbr(j.experience), experience_style(j.experience)),
-                Span::raw("/"),
-                Span::styled(standing_abbr(j.standing), standing_style(j.standing)),
-            ];
-            // Merged columns flag which puzzle the jobber is strongest at.
-            if let Some(m) = j.marker {
-                spans.push(Span::raw(" "));
+            let mut spans = vec![Span::raw(format!("{:<name_w$}", truncate(&j.name, name_w)))];
+            if show_codes {
+                spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
+                spans.push(Span::styled(experience_abbr(j.experience), experience_style(j.experience)));
+                spans.push(Span::raw("/"));
+                spans.push(Span::styled(standing_abbr(j.standing), standing_style(j.standing)));
+                // Merged columns flag which puzzle the jobber is strongest at.
+                if let Some(m) = j.marker {
+                    spans.push(Span::raw(" "));
+                    spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
+                }
+            } else if let Some(m) = j.marker {
+                // Codes dropped for width, but the marker is "which puzzle", not a
+                // standing/experience, so keep it.
+                spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
                 spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
             }
             lines.push(Line::from(spans));
