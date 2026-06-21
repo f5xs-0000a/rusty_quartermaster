@@ -92,6 +92,15 @@ const CURSED_ISLES_TOP_JOBBERS: &[JobberColumn] = &[
     JobberColumn { label: None, skills: &[Skill::Bilging] },
 ];
 
+/// Top Jobbers columns for a Vampirates run: treasure haulers, carpenters, and
+/// swordfighters. Unlike the other voyage types this list is the headline (it
+/// grows to fill the page — see [`VoyageType::top_jobbers_fills`]).
+const VAMPIRATES_TOP_JOBBERS: &[JobberColumn] = &[
+    JobberColumn { label: None, skills: &[Skill::TreasureHaul] },
+    JobberColumn { label: None, skills: &[Skill::Carpentry] },
+    JobberColumn { label: None, skills: &[Skill::Swordfighting] },
+];
+
 /// Skills in each family, in yoweb display order. The pirate-stats popup renders
 /// one table per family using these.
 const PIRACY_SKILLS: &[Skill] = &[
@@ -164,7 +173,10 @@ impl VoyageType {
     pub fn implemented(self) -> bool {
         matches!(
             self,
-            VoyageType::Pillage | VoyageType::Atlantis | VoyageType::CursedIsles
+            VoyageType::Pillage
+                | VoyageType::Atlantis
+                | VoyageType::CursedIsles
+                | VoyageType::Vampirates
         )
     }
 
@@ -176,11 +188,20 @@ impl VoyageType {
             VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
             VoyageType::Atlantis => ATLANTIS_TOP_JOBBERS,
             VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
+            VoyageType::Vampirates => VAMPIRATES_TOP_JOBBERS,
             // Unimplemented types fall back to Pillage's columns for now; they
             // render the "coming soon" placeholder instead of the panel anyway.
             // Give each its own columns as it gets wired up.
-            VoyageType::Vampirates | VoyageType::Vikings => PILLAGE_TOP_JOBBERS,
+            VoyageType::Vikings => PILLAGE_TOP_JOBBERS,
         }
+    }
+
+    /// Whether Top Jobbers is the headline list that grows to fill the page — and
+    /// the Aboard/Planked panes below it are pinned to a short fixed height —
+    /// rather than the usual layout where the panes fill and Top Jobbers is capped.
+    /// Vampirates flips it: the ranked jobbers are the main event.
+    pub fn top_jobbers_fills(self) -> bool {
+        matches!(self, VoyageType::Vampirates)
     }
 
     /// The bottom panes this voyage type shows, in left-to-right order. Pillage
@@ -191,7 +212,8 @@ impl VoyageType {
             VoyageType::Pillage => PILLAGE_PANES,
             VoyageType::Atlantis => ATLANTIS_PANES,
             VoyageType::CursedIsles => CURSED_ISLES_PANES,
-            VoyageType::Vampirates | VoyageType::Vikings => &[],
+            VoyageType::Vampirates => VAMPIRATES_PANES,
+            VoyageType::Vikings => &[],
         }
     }
 
@@ -199,6 +221,12 @@ impl VoyageType {
     /// the dragoon tallies). Only Atlantis does.
     pub fn tracks_dragoons(self) -> bool {
         matches!(self, VoyageType::Atlantis)
+    }
+
+    /// Whether this voyage type fights vampirates (so the Vampirates Stats box
+    /// shows). Only Vampirates does.
+    pub fn tracks_vampirates(self) -> bool {
+        matches!(self, VoyageType::Vampirates)
     }
 }
 
@@ -211,6 +239,10 @@ const ATLANTIS_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked]
 
 /// Bottom panes for a Cursed Isles run: aboard and planked, same as Atlantis.
 const CURSED_ISLES_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
+
+/// Bottom panes for a Vampirates run: aboard and planked, pinned short below the
+/// headline Top Jobbers list (see [`VoyageType::top_jobbers_fills`]).
+const VAMPIRATES_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
 
 /// A pirate pane along the bottom of the layout. Which panes show is voyage-type
 /// dependent ([`VoyageType::panes`]); Pillage shows all three.
@@ -841,8 +873,16 @@ pub fn render(
     let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], aboard_set.len(), swabbies));
 
     // ---- Top Jobbers + panes sizing (only used when the layout is implemented) ----
-    // Top Jobbers caps at 5 per column; an explicit leaderboard size overrides it.
-    let lb_limit = ui.leaderboard_size.or(Some(5));
+    // Most voyage types cap Top Jobbers at 5 per column (an explicit leaderboard
+    // size overrides it) and let the panes fill the page. Vampirates flips this:
+    // Top Jobbers is the headline list, uncapped and page-filling, while the panes
+    // are pinned short — so it ignores the cap.
+    let top_jobbers_fills = ui.voyage_type.top_jobbers_fills();
+    let lb_limit = if top_jobbers_fills {
+        None
+    } else {
+        ui.leaderboard_size.or(Some(5))
+    };
     let top_columns = rank_columns(ui.voyage_type.top_jobbers(), &aboard_set, cache, lb_limit);
     let top_rows = top_columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
@@ -905,31 +945,38 @@ pub fn render(
         .collect();
     let panes_w: u16 = pane_widths.iter().sum();
 
-    // ---- Atlantis Stats box sizing (only on dragoon voyages) ----
-    // A single `Dragoons Boarded | low to high` row; the range counts the lone
-    // dragoons plus 3..6 per monster boarding party (we can't see the party size).
-    let show_atlantis_stats = ui.voyage_type.tracks_dragoons();
-    let (dragoon_low, dragoon_high) = {
+    // ---- Stats box sizing (Atlantis dragoons / Vampirates waves) ----
+    // A small non-selectable `label | value` table between Voyage and Top Jobbers.
+    // Atlantis tallies boarded dragoons (a single count, or a low..high range when
+    // monster boarding parties of unseen size are involved — see
+    // `dragoons_boarded_value`); Vampirates tracks wave counts (0 for now).
+    let stats: Option<StatsBox> = if ui.voyage_type.tracks_dragoons() {
         let d = vessel.map_or(0, |v| v.dragoons_aboard);
         let b = vessel.map_or(0, |v| v.dragoon_boardings);
-        (
-            d.saturating_add(b.saturating_mul(3)),
-            d.saturating_add(b.saturating_mul(6)),
-        )
-    };
-    let atlantis_w = if show_atlantis_stats {
-        let value = dragoons_boarded_value(dragoon_low, dragoon_high);
-        (("Dragoons Boarded".len() + 2 + value.len()) as u16 + 4)
-            .max(offset_title_width("Atlantis Stats"))
+        let low = d.saturating_add(b.saturating_mul(3));
+        let high = d.saturating_add(b.saturating_mul(6));
+        Some(StatsBox {
+            title: "Atlantis Stats",
+            rows: vec![("Dragoons Boarded".to_string(), dragoons_boarded_value(low, high))],
+        })
+    } else if ui.voyage_type.tracks_vampirates() {
+        Some(StatsBox {
+            title: "Vampirates Stats",
+            rows: vec![
+                ("Vampirates Defeated".to_string(), "0".to_string()),
+                ("Next Wave's Vampirates".to_string(), "0".to_string()),
+            ],
+        })
     } else {
-        0
+        None
     };
-    let atlantis_h: u16 = if show_atlantis_stats { 3 } else { 0 };
+    let stats_h = stats.as_ref().map_or(0, |s| s.rows.len() as u16 + 2);
+    let stats_w = stats.as_ref().map_or(0, stats_box_width);
 
     // ---- Block geometry: centered horizontally, full content height so the panes
     //      can run the whole way down. ----
     let block_w = if implemented {
-        voyage_w.max(top_panel_w).max(panes_w).max(atlantis_w)
+        voyage_w.max(top_panel_w).max(panes_w).max(stats_w)
     } else {
         voyage_w.max(offset_title_width("Coming Soon"))
     };
@@ -958,14 +1005,46 @@ pub fn render(
     };
     let tip_h = tooltip_lines.len() as u16;
 
+    // In Top-Jobbers-fills mode (Vampirates) the panes are pinned to a short fixed
+    // height instead of filling the page: at most PANE_BODY_CAP pirate rows, plus
+    // any footers (swabbies / dragoon tallies), plus borders. Otherwise they flex.
+    let pane_h = if top_jobbers_fills {
+        const PANE_BODY_CAP: usize = 5;
+        let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
+        let dragoon_footers = if ui.voyage_type.tracks_dragoons() { 2 } else { 0 };
+        let body = |names: usize, footers: usize| names.min(PANE_BODY_CAP) + footers;
+        let lines = panes
+            .iter()
+            .map(|p| match p {
+                JobberPane::Aboard => {
+                    body(aboard_set.len(), usize::from(swabbies > 0) + dragoon_footers)
+                }
+                JobberPane::Greedy => body(greedy.len(), 0),
+                JobberPane::Planked => body(planked_n, 0),
+            })
+            .max()
+            .unwrap_or(0);
+        lines as u16 + 2 // borders
+    } else {
+        0
+    };
+
     let rows = if implemented {
-        // The Atlantis Stats row sits between Voyage and Top Jobbers; it collapses
-        // to zero height (rendering nothing) on voyage types without dragoons.
+        // The stats row sits between Voyage and Top Jobbers; it collapses to zero
+        // height (rendering nothing) on voyage types without a stats box. Which of
+        // Top Jobbers / the panes flexes to fill the page is voyage-type dependent:
+        // normally the panes fill; Vampirates makes Top Jobbers the page-filler and
+        // pins the panes to `pane_h` instead.
+        let (top_constraint, panes_constraint) = if top_jobbers_fills {
+            (Constraint::Min(0), Constraint::Length(pane_h))
+        } else {
+            (Constraint::Length(top_h), Constraint::Min(0))
+        };
         Layout::vertical([
             Constraint::Length(voyage_h),
-            Constraint::Length(atlantis_h),
-            Constraint::Length(top_h),
-            Constraint::Min(0),
+            Constraint::Length(stats_h),
+            top_constraint,
+            panes_constraint,
             Constraint::Length(tip_h),
         ])
         .split(block)
@@ -984,8 +1063,8 @@ pub fn render(
     );
 
     let tip_area = if implemented {
-        if show_atlantis_stats {
-            render_atlantis_stats(frame, rows[1], dragoon_low, dragoon_high, focused);
+        if let Some(s) = &stats {
+            render_stats_box(frame, rows[1], s, focused);
         }
         render_top_panel(frame, rows[2], &top_columns, focused);
         render_panes(
@@ -1169,31 +1248,53 @@ fn dragoons_boarded_value(low: u32, high: u32) -> String {
     }
 }
 
-/// The Atlantis Stats box: a single, non-selectable `Dragoons Boarded | value` row
-/// spanning the box's inner width. See [`dragoons_boarded_value`] for the count vs.
-/// range rule.
-fn render_atlantis_stats(frame: &mut Frame, area: Rect, low: u32, high: u32, focused: bool) {
+/// A small non-selectable `label | value` table shown between the Voyage box and
+/// Top Jobbers: the Atlantis dragoon tally or the Vampirates wave counts. One box,
+/// one row per stat.
+struct StatsBox {
+    title: &'static str,
+    rows: Vec<(String, String)>,
+}
+
+/// Natural outer width of a stats box: the widest `label  value` row (with a
+/// 2-space gap) plus borders + padding, floored so the title stays readable.
+fn stats_box_width(stats: &StatsBox) -> u16 {
+    let content = stats
+        .rows
+        .iter()
+        .map(|(label, value)| label.chars().count() + 2 + value.chars().count())
+        .max()
+        .unwrap_or(0);
+    (content as u16 + 4).max(offset_title_width(stats.title))
+}
+
+/// Render a [`StatsBox`]: a bordered box of non-selectable `label | value` rows,
+/// label bold on the left, value right-aligned on the right, each spanning the
+/// inner width.
+fn render_stats_box(frame: &mut Frame, area: Rect, stats: &StatsBox, focused: bool) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border_style(focused))
         .padding(Padding::horizontal(1))
-        .title(offset_title("Atlantis Stats").0);
+        .title(offset_title(stats.title).0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-    if inner.height == 0 {
-        return;
-    }
 
-    let row = Rect::new(inner.x, inner.y, inner.width, 1);
-    let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(row);
-    frame.render_widget(
-        Paragraph::new(Span::styled("Dragoons Boarded", Style::default().bold())),
-        cols[0],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(dragoons_boarded_value(low, high)).right_aligned()),
-        cols[1],
-    );
+    for (i, (label, value)) in stats.rows.iter().enumerate() {
+        if i as u16 >= inner.height {
+            break;
+        }
+        let row = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
+        let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(row);
+        frame.render_widget(
+            Paragraph::new(Span::styled(label.clone(), Style::default().bold())),
+            cols[0],
+        );
+        frame.render_widget(
+            Paragraph::new(Line::from(value.clone()).right_aligned()),
+            cols[1],
+        );
+    }
 }
 
 /// Placeholder shown in place of the Pillage-only Top Jobbers + panes when the
