@@ -198,6 +198,19 @@ fn parse_pillaging(rest: &str) -> Option<JobKind> {
 }
 
 // ---------------------------------------------------------------------------
+// Vampirate lair wave model
+// ---------------------------------------------------------------------------
+
+/// Vampirate lair wave growth. Wave 1 = pirates aboard; each subsequent wave is
+/// ~+20% larger. The projected "next wave" count is bracketed as a [low, high]
+/// range with these multipliers; the midpoint [`LAIR_WAVE_GROWTH`] advances the
+/// anchor used to project further waves. (Derived from a real lair run — see
+/// `/tmp/ypp_runs` analysis; observed waves track 1.2× closely.)
+pub const LAIR_WAVE_GROWTH: f64 = 1.2;
+pub const LAIR_WAVE_LO: f64 = 1.175;
+pub const LAIR_WAVE_HI: f64 = 1.225;
+
+// ---------------------------------------------------------------------------
 // Vessel
 // ---------------------------------------------------------------------------
 
@@ -223,6 +236,30 @@ pub struct Vessel {
     /// the monster — we can't tell which — so we count the parties, not the heads.
     /// Reset alongside [`Self::dragoons_aboard`] when invaders are repelled.
     pub dragoon_boardings: u32,
+    /// --- Vampirate lair tracking (Vampirates voyages) ---
+    /// Whether we're currently inside a vampire lair (between `Welcome to the
+    /// vampire sanctum.` / first `slaps mother` and the first lost `Game over`).
+    pub lair_active: bool,
+    /// Which wave we're in: 1 on lair entry, +1 per swordfight conclusion (`Game
+    /// over` the crew won). Stays at the final wave after the lair ends (a lost
+    /// swordfight); `0` if no lair has happened this run.
+    pub lair_wave: u32,
+    /// Real pirates aboard at lair entry — wave 1's vampire count (the anchor the
+    /// per-wave projection grows from at ~+20%).
+    pub lair_pirates: u32,
+    /// Vampires defeated this lair so far (cumulative `<NPC> is eliminated!`). Note:
+    /// undercounts while we're out of the fight — see [`Self::lair_warn`].
+    pub vampires_defeated: u32,
+    /// Vampires eliminated in the current wave only (reset each wave); checked
+    /// against the wave's projected range to detect that we left the fight.
+    pub wave_observed: u32,
+    /// Projected `[low, high]` vampire count for the *current* wave (wave 1 =
+    /// pirates exactly). Set on entry and on each wave advance.
+    pub wave_lo: u32,
+    pub wave_hi: u32,
+    /// Latched once any wave's observed count falls outside its projected range —
+    /// i.e. we left the swordfight and miscounted. Drives the on-screen reminder.
+    pub lair_warn: bool,
     /// Greedy strikes tallied per attacking pirate, over the whole run.
     pub greedy_by_pirate: HashMap<String, u32>,
     /// Greedy strikes during the current/most-recent battle only. Reset when a
@@ -395,10 +432,38 @@ impl GameState {
         // `dragoons_aboard`/`dragoon_boardings` are non-zero is a noteworthy case
         // worth recording. No state change today — wire it here when that log lands.
 
+        // Vampirates: we entered a lair (wave 1 begins). Waves run from here (and
+        // the first slap of Mother) through each swordfight conclusion below — the
+        // "rustling in coffins" line is only a "swordfight imminent" herald and does
+        // NOT delimit waves, so it isn't parsed.
+        if body.starts_with("Welcome to the vampire sanctum") {
+            self.on_lair_enter();
+            return;
+        }
+        // Vampirates: someone slapping Mother is the wave-1 fight kickoff and a
+        // fallback lair-start signal if we missed the sanctum line (only starts a
+        // lair if we aren't already in one).
+        if body.ends_with(" slaps mother") {
+            self.on_lair_slap();
+            return;
+        }
+        // Vampirates: a defeated unit. NPC vampires have a space (e.g. "Stygian
+        // Lilith"); a single-word name is a crew member's KO — count only vampires,
+        // and only while in a lair.
+        if let Some(name) = body.strip_suffix(" is eliminated!") {
+            if !pirate::is_player_name(name) {
+                self.on_vampire_defeated();
+            }
+            return;
+        }
+
         // Battle end: "Game over.  Winners: a, b, Playerone." — if we're in the
-        // winning side, it's an authoritative roster of who's aboard.
+        // winning side, it's an authoritative roster of who's aboard; if the winners
+        // are vampires, we lost the board, which ends a lair.
         if let Some(summary) = body.strip_prefix("Game over.") {
-            self.on_battle_end(summary.trim_start());
+            let summary = summary.trim_start();
+            self.on_battle_end(summary);
+            self.on_lair_gameover(summary);
             return;
         }
 
@@ -587,6 +652,84 @@ impl GameState {
         if let Some(v) = self.current_vessel_mut() {
             v.dragoons_aboard = 0;
             v.dragoon_boardings = 0;
+        }
+    }
+
+    /// Entered a vampire lair — wave 1 begins with one vampire per pirate aboard.
+    /// Resets the lair counters (a re-entry / new lair starts fresh).
+    fn on_lair_enter(&mut self) {
+        // Real pirates aboard = tracked crewmates + ourselves (NPC swabbies don't
+        // count). This is wave 1's vampire count.
+        let pirates = self
+            .current_vessel()
+            .map(|v| v.crewmates.len() as u32 + 1)
+            .unwrap_or(0);
+        if let Some(v) = self.current_vessel_mut() {
+            v.lair_active = true;
+            v.lair_wave = 1;
+            v.lair_pirates = pirates;
+            v.vampires_defeated = 0;
+            v.wave_observed = 0;
+            v.wave_lo = pirates; // wave 1 is exactly the pirate count
+            v.wave_hi = pirates;
+            v.lair_warn = false;
+        }
+    }
+
+    /// A `slaps mother` line: start the lair only if we aren't already in one (so
+    /// repeated slaps mid-fight don't reset the counters).
+    fn on_lair_slap(&mut self) {
+        if !self.current_vessel().is_some_and(|v| v.lair_active) {
+            self.on_lair_enter();
+        }
+    }
+
+    /// A vampire was defeated (only counted while in a lair).
+    fn on_vampire_defeated(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            if v.lair_active {
+                v.vampires_defeated = v.vampires_defeated.saturating_add(1);
+                v.wave_observed = v.wave_observed.saturating_add(1);
+            }
+        }
+    }
+
+    /// A swordfight concluded (`Game over`) — the boundary between lair waves. While
+    /// in a lair we close out the current wave (flagging if its observed count fell
+    /// outside the projection — i.e. we left the fight), then either:
+    ///   * the winners are all vampires => we lost => the lair ends (first loss), or
+    ///   * the crew won => advance to the next wave, projecting its range from the
+    ///     concluded wave's anchor count (`pirates * growth^(wave-1)`).
+    fn on_lair_gameover(&mut self, summary: &str) {
+        let Some((_, list)) = summary.split_once(':') else {
+            return;
+        };
+        let players_won = list
+            .trim()
+            .trim_end_matches('.')
+            .split(", ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .any(pirate::is_player_name);
+        if let Some(v) = self.current_vessel_mut() {
+            if !v.lair_active {
+                return;
+            }
+            // Close out the wave that just concluded.
+            if v.wave_observed < v.wave_lo || v.wave_observed > v.wave_hi {
+                v.lair_warn = true;
+            }
+            if !players_won {
+                // First loss ends the lair.
+                v.lair_active = false;
+                return;
+            }
+            // Crew won: advance to the next wave and project its range.
+            let base = v.lair_pirates as f64 * LAIR_WAVE_GROWTH.powi((v.lair_wave - 1) as i32);
+            v.lair_wave += 1;
+            v.wave_observed = 0;
+            v.wave_lo = (base * LAIR_WAVE_LO).round() as u32;
+            v.wave_hi = (base * LAIR_WAVE_HI).round() as u32;
         }
     }
 
@@ -1126,6 +1269,46 @@ mod tests {
         gs.process_line("[01:30:00] Game over.  Winners: Master Hogan, Brigand Bob.");
         let v = gs.current_vessel().unwrap();
         assert!(v.crewmates.contains("Mateseven")); // untouched — we weren't listed
+    }
+
+    #[test]
+    fn vampire_lair_tracks_waves_and_flags_leaving() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Thin Tigerfish...");
+        gs.process_line("[01:00:01] Matetwo has come aboard.");
+        gs.process_line("[01:00:02] Matethree has come aboard.");
+        // Enter the lair: wave 1's vampires = pirates aboard (Playerone + 2 = 3).
+        gs.process_line("[01:01:00] Welcome to the vampire sanctum. ");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert!(v.lair_active);
+            assert_eq!(v.lair_wave, 1);
+            assert_eq!(v.lair_pirates, 3);
+        }
+        // Wave 1: 3 vampires defeated (NPCs have a space); a crew KO must not count.
+        gs.process_line("[01:01:10] Stygian Lilith is eliminated!");
+        gs.process_line("[01:01:11] Matethree is eliminated!"); // crew KO — ignored
+        gs.process_line("[01:01:12] Immortal Schreck is eliminated!");
+        gs.process_line("[01:01:13] Craving Silvia is eliminated!");
+        // Wave 1's swordfight concludes with a crew win -> advance to wave 2. Wave 1
+        // hit its target (3 = pirates), so no warning yet.
+        gs.process_line("[01:02:00] Game over.  Winners: Playerone, Matetwo.");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.lair_wave, 2);
+            assert_eq!(v.vampires_defeated, 3);
+            assert!(!v.lair_warn);
+        }
+        // Wave 2 should hold ~4 vampires, but we leave the fight and see only 1...
+        gs.process_line("[01:02:10] Sunless Collins is eliminated!");
+        // ...then lose the next swordfight (winners all vampires), ending the lair.
+        gs.process_line("[01:03:00] Game over.  Winners: Revenant Drac, Gloaming Lucy.");
+        let v = gs.current_vessel().unwrap();
+        assert!(!v.lair_active);
+        assert_eq!(v.lair_wave, 2);
+        assert_eq!(v.vampires_defeated, 4);
+        assert!(v.lair_warn); // wave 2 fell short of its projection -> we left
     }
 
     #[test]

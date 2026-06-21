@@ -17,7 +17,7 @@ use chrono::{DateTime, Duration, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
-use crate::chatlog::GameState;
+use crate::chatlog::{GameState, LAIR_WAVE_GROWTH, LAIR_WAVE_HI, LAIR_WAVE_LO};
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::pirate::{
     self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, SkillRecord,
@@ -104,6 +104,11 @@ const VAMPIRATES_TOP_JOBBERS: &[JobberColumn] = &[
     JobberColumn { label: None, skills: &[Skill::Swordfighting] },
 ];
 
+/// Top Jobbers columns for a Vikings run: gunners only. It sits beside the Planked
+/// pane rather than above it — see [`VoyageType::panes_beside_top_jobbers`].
+const VIKINGS_TOP_JOBBERS: &[JobberColumn] =
+    &[JobberColumn { label: None, skills: &[Skill::Gunning] }];
+
 /// Skills in each family, in yoweb display order. The pirate-stats popup renders
 /// one table per family using these.
 const PIRACY_SKILLS: &[Skill] = &[
@@ -180,6 +185,7 @@ impl VoyageType {
                 | VoyageType::Atlantis
                 | VoyageType::CursedIsles
                 | VoyageType::Vampirates
+                | VoyageType::Vikings
         )
     }
 
@@ -192,10 +198,7 @@ impl VoyageType {
             VoyageType::Atlantis => ATLANTIS_TOP_JOBBERS,
             VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
             VoyageType::Vampirates => VAMPIRATES_TOP_JOBBERS,
-            // Unimplemented types fall back to Pillage's columns for now; they
-            // render the "coming soon" placeholder instead of the panel anyway.
-            // Give each its own columns as it gets wired up.
-            VoyageType::Vikings => PILLAGE_TOP_JOBBERS,
+            VoyageType::Vikings => VIKINGS_TOP_JOBBERS,
         }
     }
 
@@ -216,8 +219,21 @@ impl VoyageType {
             VoyageType::Atlantis => ATLANTIS_PANES,
             VoyageType::CursedIsles => CURSED_ISLES_PANES,
             VoyageType::Vampirates => VAMPIRATES_PANES,
-            VoyageType::Vikings => &[],
+            VoyageType::Vikings => VIKINGS_PANES,
         }
+    }
+
+    /// Whether the panes sit *beside* the Top Jobbers list (a horizontal split)
+    /// rather than below it. Vikings does this: its single Gunnery column shares the
+    /// row with the Planked pane.
+    pub fn panes_beside_top_jobbers(self) -> bool {
+        matches!(self, VoyageType::Vikings)
+    }
+
+    /// Whether this voyage type shows the Vikings Statistics box (a Gunnery-standing
+    /// breakdown of the crew aboard). Only Vikings does.
+    pub fn tracks_vikings(self) -> bool {
+        matches!(self, VoyageType::Vikings)
     }
 
     /// Whether this voyage type spawns dragoons (so the Aboard pane should show
@@ -252,6 +268,10 @@ const CURSED_ISLES_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Plan
 /// Bottom panes for a Vampirates run: aboard and planked, pinned short below the
 /// headline Top Jobbers list (see [`VoyageType::top_jobbers_fills`]).
 const VAMPIRATES_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
+
+/// Bottom panes for a Vikings run: just Planked, sat beside the Gunnery Top Jobbers
+/// list (see [`VoyageType::panes_beside_top_jobbers`]).
+const VIKINGS_PANES: &[JobberPane] = &[JobberPane::Planked];
 
 /// A pirate pane along the bottom of the layout. Which panes show is voyage-type
 /// dependent ([`VoyageType::panes`]); Pillage shows all three.
@@ -1080,7 +1100,7 @@ pub fn render(
     // A small non-selectable `label | value` table between Voyage and Top Jobbers.
     // Atlantis tallies boarded dragoons (a single count, or a low..high range when
     // monster boarding parties of unseen size are involved — see
-    // `dragoons_boarded_value`); Vampirates tracks wave counts (0 for now).
+    // `dragoons_boarded_value`); Vampirates tracks the lair wave model.
     let stats: Option<StatsBox> = if ui.voyage_type.tracks_dragoons() {
         let d = vessel.map_or(0, |v| v.dragoons_aboard);
         let b = vessel.map_or(0, |v| v.dragoon_boardings);
@@ -1088,20 +1108,87 @@ pub fn render(
         let high = d.saturating_add(b.saturating_mul(6));
         Some(StatsBox {
             title: "Atlantis Stats",
-            rows: vec![("Dragoons Boarded".to_string(), dragoons_boarded_value(low, high))],
+            rows: vec![StatRow::new("Dragoons Boarded", dragoons_boarded_value(low, high))],
+            notes: Vec::new(),
         })
     } else if ui.voyage_type.tracks_vampirates() {
+        let active = vessel.is_some_and(|v| v.lair_active);
+        let wave = vessel.map_or(0, |v| v.lair_wave);
+        let defeated = vessel.map_or(0, |v| v.vampires_defeated);
+        // Next wave's vampires: a [low, high] range projected from the current
+        // wave's anchor while in a lair; before a lair it's just wave 1 = the
+        // pirates aboard (an exact single number).
+        let next = if active {
+            let base =
+                vessel.map_or(0.0, |v| v.lair_pirates as f64) * LAIR_WAVE_GROWTH.powi((wave.max(1) - 1) as i32);
+            let lo = (base * LAIR_WAVE_LO).round() as u32;
+            let hi = (base * LAIR_WAVE_HI).round() as u32;
+            if lo == hi {
+                lo.to_string()
+            } else {
+                format!("{lo} to {hi}")
+            }
+        } else {
+            aboard_set.len().to_string()
+        };
+        let mut notes: Vec<Line<'static>> = Vec::new();
+        // From wave 5 on, Mother o' Nyght herself enters the fight.
+        if active && wave >= 5 {
+            notes.push(Line::from(Span::styled(
+                "Mother o' Nyght has joined the fray!",
+                Style::default().fg(Color::Red).bold(),
+            )));
+        }
+        // A wave whose kill count missed its projection means we left the fight.
+        if vessel.is_some_and(|v| v.lair_warn) {
+            notes.push(Line::from(Span::styled(
+                "Please do not leave the Swordfight even if you lose.",
+                Style::default().fg(Color::Red).italic(),
+            )));
+        }
         Some(StatsBox {
             title: "Vampirates Stats",
             rows: vec![
-                ("Vampirates Defeated".to_string(), "0".to_string()),
-                ("Next Wave's Vampirates".to_string(), "0".to_string()),
+                StatRow::new("Wave", wave.to_string()),
+                StatRow::new("Vampirates Defeated", defeated.to_string()),
+                StatRow::new("Next Wave's Vampirates", next),
             ],
+            notes,
         })
+    } else if ui.voyage_type.tracks_vikings() {
+        // A breakdown of the crew's Gunnery standing: a "Gunnery Standing" header
+        // followed by one indented row per standing (highest first) with the count
+        // aboard, then a final "Not queried yet" row for pirates whose Gunnery stat
+        // hasn't been fetched.
+        let mut counts = [0u32; 9];
+        let mut unqueried = 0u32;
+        for name in &aboard_set {
+            match cache.get(name).and_then(|i| i.skills.get(&Skill::Gunning)) {
+                Some(rec) => counts[rec.standing as usize] += 1,
+                None => unqueried += 1,
+            }
+        }
+        let mut rows = vec![StatRow::new("Gunnery Standing", "")];
+        rows.extend(
+            STANDINGS
+                .iter()
+                .rev()
+                .map(|s| StatRow::new(format!("  {s}"), counts[*s as usize].to_string())),
+        );
+        rows.push(StatRow::styled(
+            "  Not queried yet",
+            unqueried.to_string(),
+            Style::default().fg(Color::DarkGray).italic(),
+        ));
+        Some(StatsBox { title: "Vikings Statistics", rows, notes: Vec::new() })
     } else {
         None
     };
-    let stats_h = stats.as_ref().map_or(0, |s| s.rows.len() as u16 + 2);
+    // Rows + (blank separator + notes, when present) + borders(2).
+    let stats_h = stats.as_ref().map_or(0, |s| {
+        let notes = if s.notes.is_empty() { 0 } else { s.notes.len() as u16 + 1 };
+        s.rows.len() as u16 + notes + 2
+    });
     let stats_w = stats.as_ref().map_or(0, stats_box_width);
 
     // ---- "View Skill Distribution" button sizing (Vampirates only) ----
@@ -1115,9 +1202,15 @@ pub fn render(
         0
     };
 
+    // Vikings lays Top Jobbers and its pane(s) side by side in one row instead of
+    // stacking them; the block must be wide enough for both together.
+    let side_by_side = implemented && ui.voyage_type.panes_beside_top_jobbers();
+
     // ---- Block geometry: centered horizontally, full content height so the panes
     //      can run the whole way down. ----
-    let block_w = if implemented {
+    let block_w = if side_by_side {
+        voyage_w.max(stats_w).max(top_panel_w + panes_w)
+    } else if implemented {
         voyage_w
             .max(top_panel_w)
             .max(panes_w)
@@ -1178,7 +1271,17 @@ pub fn render(
         0
     };
 
-    let rows = if implemented {
+    let rows = if side_by_side {
+        // Vikings: Voyage, stats, then one page-filling row that holds Top Jobbers
+        // beside the pane(s) (split horizontally at render time), then the tip.
+        Layout::vertical([
+            Constraint::Length(voyage_h),
+            Constraint::Length(stats_h),
+            Constraint::Min(0),
+            Constraint::Length(tip_h),
+        ])
+        .split(block)
+    } else if implemented {
         // The stats row sits between Voyage and Top Jobbers; it collapses to zero
         // height (rendering nothing) on voyage types without a stats box. Which of
         // Top Jobbers / the panes flexes to fill the page is voyage-type dependent:
@@ -1212,7 +1315,20 @@ pub fn render(
         focused, regions,
     );
 
-    let tip_area = if implemented {
+    let tip_area = if side_by_side {
+        if let Some(s) = &stats {
+            render_stats_box(frame, rows[1], s, focused);
+        }
+        // Top Jobbers (its natural width) on the left, the pane(s) filling the rest.
+        let main = Layout::horizontal([Constraint::Length(top_panel_w), Constraint::Min(0)])
+            .split(rows[2]);
+        render_top_panel(frame, main[0], &top_columns, focused);
+        render_panes(
+            frame, main[1], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
+            panes, &pane_widths, regions,
+        );
+        rows[3]
+    } else if implemented {
         if let Some(s) = &stats {
             render_stats_box(frame, rows[1], s, focused);
         }
@@ -1414,22 +1530,47 @@ fn dragoons_boarded_value(low: u32, high: u32) -> String {
 
 /// A small non-selectable `label | value` table shown between the Voyage box and
 /// Top Jobbers: the Atlantis dragoon tally or the Vampirates wave counts. One box,
-/// one row per stat.
+/// one row per stat, plus optional centered note lines below (e.g. the Vampirates
+/// "Mother o' Nyght has joined the fray!" / leave-the-fight reminder).
 struct StatsBox {
     title: &'static str,
-    rows: Vec<(String, String)>,
+    rows: Vec<StatRow>,
+    notes: Vec<Line<'static>>,
 }
 
-/// Natural outer width of a stats box: the widest `label  value` row (with a
-/// 2-space gap) plus borders + padding, floored so the title stays readable.
+/// One `label | value` line in a [`StatsBox`]. By default the label is bold and the
+/// value plain; a row may carry a `style` override applied to the whole row instead
+/// (e.g. the Vikings "Not queried yet" row, dimmed and italic).
+struct StatRow {
+    label: String,
+    value: String,
+    style: Option<Style>,
+}
+
+impl StatRow {
+    /// A normal row: bold label, plain value.
+    fn new(label: impl Into<String>, value: impl Into<String>) -> Self {
+        Self { label: label.into(), value: value.into(), style: None }
+    }
+
+    /// A row whose label and value both use `style` instead of the default.
+    fn styled(label: impl Into<String>, value: impl Into<String>, style: Style) -> Self {
+        Self { label: label.into(), value: value.into(), style: Some(style) }
+    }
+}
+
+/// Natural outer width of a stats box: the widest of its `label  value` rows (with
+/// a 2-space gap) and its centered note lines, plus borders + padding, floored so
+/// the title stays readable.
 fn stats_box_width(stats: &StatsBox) -> u16 {
-    let content = stats
+    let rows = stats
         .rows
         .iter()
-        .map(|(label, value)| label.chars().count() + 2 + value.chars().count())
+        .map(|r| r.label.chars().count() + 2 + r.value.chars().count())
         .max()
         .unwrap_or(0);
-    (content as u16 + 4).max(offset_title_width(stats.title))
+    let notes = stats.notes.iter().map(|l| l.width()).max().unwrap_or(0);
+    (rows.max(notes) as u16 + 4).max(offset_title_width(stats.title))
 }
 
 /// Render a [`StatsBox`]: a bordered box of non-selectable `label | value` rows,
@@ -1444,20 +1585,37 @@ fn render_stats_box(frame: &mut Frame, area: Rect, stats: &StatsBox, focused: bo
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    for (i, (label, value)) in stats.rows.iter().enumerate() {
+    for (i, r) in stats.rows.iter().enumerate() {
         if i as u16 >= inner.height {
             break;
         }
         let row = Rect::new(inner.x, inner.y + i as u16, inner.width, 1);
         let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(row);
+        // A styled row uses its style for both cells; otherwise the label is bold
+        // and the value plain.
+        let label_style = r.style.unwrap_or_else(|| Style::default().bold());
+        let value_style = r.style.unwrap_or_default();
         frame.render_widget(
-            Paragraph::new(Span::styled(label.clone(), Style::default().bold())),
+            Paragraph::new(Span::styled(r.label.clone(), label_style)),
             cols[0],
         );
         frame.render_widget(
-            Paragraph::new(Line::from(value.clone()).right_aligned()),
+            Paragraph::new(Line::from(Span::styled(r.value.clone(), value_style)).right_aligned()),
             cols[1],
         );
+    }
+
+    // Centered note lines below the rows, separated by one blank line.
+    let mut y = stats.rows.len() as u16 + 1;
+    for note in &stats.notes {
+        if y >= inner.height {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(note.clone()).centered(),
+            Rect::new(inner.x, inner.y + y, inner.width, 1),
+        );
+        y += 1;
     }
 }
 
