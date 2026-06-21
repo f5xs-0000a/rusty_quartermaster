@@ -255,9 +255,9 @@ pub struct AppShell {
     pub chatlog: GameState,
     pub pirate_cache: PirateCache,
     pub jobbers_ui: JobbersUi,
-    pub voyage_ui: crate::voyage_ui::VoyageStatsUi,
+    pub voyage_ui: crate::voyage::ui::VoyageStatsUi,
     /// Persisted voyage history (loaded from / written to `voyages_path`).
-    pub voyage_history: crate::voyage_persist::SavedVoyages,
+    pub voyage_history: crate::voyage::persistence::SavedVoyages,
     /// Where voyage history lives on disk (a `voyages.json` sibling of `--cache`).
     pub voyages_path: Option<std::path::PathBuf>,
     // click regions rebuilt each render
@@ -281,8 +281,8 @@ impl AppShell {
             chatlog: GameState::new(),
             pirate_cache: PirateCache::new(),
             jobbers_ui: JobbersUi::default(),
-            voyage_ui: crate::voyage_ui::VoyageStatsUi::default(),
-            voyage_history: crate::voyage_persist::SavedVoyages::default(),
+            voyage_ui: crate::voyage::ui::VoyageStatsUi::default(),
+            voyage_history: crate::voyage::persistence::SavedVoyages::default(),
             voyages_path: None,
             click_regions: Vec::new(),
         }
@@ -369,7 +369,7 @@ impl AppShell {
             }
             AppId::Voyage => {
                 let view = self.build_voyage_view();
-                crate::voyage_ui::render(
+                crate::voyage::ui::render(
                     frame,
                     content_area,
                     &view,
@@ -560,7 +560,7 @@ impl AppShell {
     /// (←/→ select, Enter confirm, S/D shortcut, Esc cancel). Otherwise: Esc
     /// returns to the bar, ↑/↓ (and PageUp/Down) scroll, S/D open the prompt.
     fn handle_voyage_key(&mut self, key: KeyEvent) -> InputResult {
-        use crate::voyage_ui::SaveChoice;
+        use crate::voyage::ui::SaveChoice;
 
         // Chart enlarge popup is modal: Esc/Enter close it.
         if self.voyage_ui.chart_popup.is_some() {
@@ -629,7 +629,7 @@ impl AppShell {
             }
             KeyCode::Right => {
                 self.voyage_ui.chart_sel =
-                    (self.voyage_ui.chart_sel + 1).min(crate::voyage_ui::CHART_TITLES.len() - 1);
+                    (self.voyage_ui.chart_sel + 1).min(crate::voyage::ui::CHART_TITLES.len() - 1);
                 InputResult::Consumed
             }
             KeyCode::Enter => {
@@ -652,8 +652,8 @@ impl AppShell {
     /// vessel/voyage to show, the chosen ship's cannon size, and the aggregated
     /// battle + consumption stats. Shows the current vessel's live run, or its
     /// most recent completed run.
-    fn build_voyage_view(&self) -> crate::voyage_ui::VoyageView {
-        use crate::voyage_ui::VoyageView;
+    fn build_voyage_view(&self) -> crate::voyage::ui::VoyageView {
+        use crate::voyage::ui::VoyageView;
 
         // Vessel: the jobbers selection if still live, else the latest boarded.
         let key = self
@@ -708,18 +708,18 @@ impl AppShell {
             .or_else(|| vessel.and_then(|v| v.job_kind.as_ref()))
             .map(|j| j.to_string());
 
-        let consumption = crate::voyage_stats::consumption_stats(
+        let consumption = crate::voyage::stats::consumption_stats(
             voyage,
             &self.profits.rows,
             &self.commodities,
             cannon_size,
         );
-        let battle = crate::voyage_stats::battle_stats(voyage);
+        let battle = crate::voyage::stats::battle_stats(voyage);
 
         // Chart series: current voyage vs persisted history (won-fight PoE +
         // per-voyage totals). Total value is net PoE for now; goods fold in later.
         let charts = {
-            use crate::chatlog::BattleOutcome::Won;
+            use crate::voyage::BattleOutcome::Won;
             let cur_won_poe: Vec<f64> = voyage
                 .battles
                 .iter()
@@ -751,7 +751,7 @@ impl AppShell {
                 }
                 hist_totals.push(total as f64);
             }
-            crate::voyage_ui::ChartData {
+            crate::voyage::ui::ChartData {
                 cur_won_poe,
                 hist_won_poe,
                 last_win,
@@ -801,7 +801,7 @@ impl AppShell {
     /// Open the save/discard prompt if the displayed run is finished and unsaved.
     fn open_voyage_save_prompt(&mut self) {
         if self.build_voyage_view().saveable {
-            self.voyage_ui.prompt = Some(crate::voyage_ui::SaveChoice::Save);
+            self.voyage_ui.prompt = Some(crate::voyage::ui::SaveChoice::Save);
         }
     }
 
@@ -823,13 +823,13 @@ impl AppShell {
             if voyage.saved {
                 return;
             }
-            let saved = crate::voyage_persist::from_voyage(voyage, Some(&vessel_name));
+            let saved = crate::voyage::persistence::from_voyage(voyage, Some(&vessel_name));
             voyage.saved = true;
             saved
         };
         self.voyage_history.voyages.push(saved);
         if let Some(path) = &self.voyages_path {
-            crate::voyage_persist::save(path, &self.voyage_history);
+            crate::voyage::persistence::save(path, &self.voyage_history);
         }
     }
 

@@ -5,7 +5,7 @@
 //! pinned footer. Charts (PoE box-&-whiskers, PoE-per-fight bars, total-value
 //! point-vs-box — each this voyage vs historical) enlarge to a popup. The page
 //! shows the current vessel's live or most-recent-completed run. All figures are
-//! computed up-front (see [`crate::voyage_stats`]) and handed in via
+//! computed up-front (see [`crate::voyage::stats`]) and handed in via
 //! [`VoyageView`]; this module is pure rendering. See the
 //! `voyage-statistics-model` memory.
 
@@ -14,7 +14,7 @@ use ratatui::widgets::{Block, Borders, Clear, Paragraph};
 
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::offset_title;
-use crate::voyage_stats::{box_plot, BattleStats, BoxPlot, ConsumptionStats};
+use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, ConsumptionStats};
 
 /// The three charts, in display order.
 pub const CHART_TITLES: [&str; 3] = ["PoE won", "PoE per fight", "Total value"];

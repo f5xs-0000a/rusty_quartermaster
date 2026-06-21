@@ -5,12 +5,12 @@
 //! starts with the Restock amount of each commodity and ends with the Stock
 //! amount, so whatever's missing was used (`Restock - Stock`). Booty is goods
 //! *won* and isn't consumable, so it's ignored here. See the
-//! `voyage-statistics-model` memory and [`crate::chatlog::Voyage`].
+//! `voyage-statistics-model` memory and [`crate::voyage::Voyage`].
 
 use crate::api::Commodity;
-use crate::chatlog::{BattleCategory, BattleOutcome, Voyage};
 use crate::profits::InventoryRow;
 use crate::ships::CannonSize;
+use crate::voyage::{BattleCategory, BattleOutcome, Voyage};
 
 /// Caveat to show beside the rum-spice figures: spice consumption can't be read
 /// accurately from a stock delta when swabbies are aboard (they share the pool)
@@ -325,7 +325,7 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chatlog::{Battle, BattleCategory, BattleOutcome, CrewSample, Voyage};
+    use crate::voyage::{Battle, BattleCategory, BattleOutcome, CrewSample, Voyage};
     use chrono::{NaiveDate, NaiveDateTime};
 
     fn dt(h: u32, m: u32, s: u32) -> NaiveDateTime {

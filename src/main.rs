@@ -28,9 +28,7 @@ mod ratelimit;
 mod ships;
 mod startup;
 mod utils;
-mod voyage_persist;
-mod voyage_stats;
-mod voyage_ui;
+mod voyage;
 
 use api::{CachedOffers, Commodity, SavedCommodity};
 use app::AppShell;
@@ -210,7 +208,7 @@ async fn main() -> io::Result<()> {
     // are appended when the user confirms the save prompt.
     shell.voyages_path = args.cache.as_deref().map(|p| p.with_file_name("voyages.json"));
     if let Some(path) = &shell.voyages_path {
-        shell.voyage_history = voyage_persist::load(path);
+        shell.voyage_history = voyage::persistence::load(path);
     }
     shell.profits.show_co_rate = args.pay_commanding_officer;
     shell.profits.show_donation = args.donate_to_crew;

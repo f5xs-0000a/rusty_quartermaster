@@ -1,6 +1,6 @@
 //! On-disk persistence for completed voyages.
 //!
-//! This is the **only** path from the in-RAM [`crate::chatlog::Voyage`] data to
+//! This is the **only** path from the in-RAM [`crate::voyage::Voyage`] data to
 //! disk — written when the user confirms via the save/discard prompt, never
 //! automatically. The file is **per-user-behind-keyboard** (one human's history
 //! across all their pirates), a `voyages.json` sibling of the `--cache` file.
@@ -15,7 +15,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::chatlog::{BattleCategory, BattleOutcome, Voyage};
+use crate::voyage::{BattleCategory, BattleOutcome, Voyage};
 
 /// One persisted sea battle (enough to rebuild the loot/timing histograms).
 #[derive(Serialize, Deserialize, Clone, Default)]
