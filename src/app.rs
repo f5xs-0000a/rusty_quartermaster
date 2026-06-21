@@ -507,7 +507,9 @@ impl AppShell {
                     || self.jobbers_ui.trophy_popup.is_some()
                     || self.jobbers_ui.skill_dist_popup.is_some()
             }
-            AppId::Voyage => self.voyage_ui.prompt.is_some(),
+            AppId::Voyage => {
+                self.voyage_ui.prompt.is_some() || self.voyage_ui.chart_popup.is_some()
+            }
             AppId::Exit => false,
         }
     }
@@ -560,6 +562,14 @@ impl AppShell {
     fn handle_voyage_key(&mut self, key: KeyEvent) -> InputResult {
         use crate::voyage_ui::SaveChoice;
 
+        // Chart enlarge popup is modal: Esc/Enter close it.
+        if self.voyage_ui.chart_popup.is_some() {
+            if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
+                self.voyage_ui.chart_popup = None;
+            }
+            return InputResult::Consumed;
+        }
+
         if let Some(choice) = self.voyage_ui.prompt {
             match key.code {
                 KeyCode::Esc => self.voyage_ui.prompt = None,
@@ -611,6 +621,19 @@ impl AppShell {
             }
             KeyCode::Down => {
                 self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(1);
+                InputResult::Consumed
+            }
+            KeyCode::Left => {
+                self.voyage_ui.chart_sel = self.voyage_ui.chart_sel.saturating_sub(1);
+                InputResult::Consumed
+            }
+            KeyCode::Right => {
+                self.voyage_ui.chart_sel =
+                    (self.voyage_ui.chart_sel + 1).min(crate::voyage_ui::CHART_TITLES.len() - 1);
+                InputResult::Consumed
+            }
+            KeyCode::Enter => {
+                self.voyage_ui.chart_popup = Some(self.voyage_ui.chart_sel);
                 InputResult::Consumed
             }
             KeyCode::PageUp => {
@@ -669,6 +692,7 @@ impl AppShell {
                 saveable: false,
                 battle: Default::default(),
                 consumption: Default::default(),
+                charts: Default::default(),
             };
         };
 
@@ -692,6 +716,50 @@ impl AppShell {
         );
         let battle = crate::voyage_stats::battle_stats(voyage);
 
+        // Chart series: current voyage vs persisted history (won-fight PoE +
+        // per-voyage totals). Total value is net PoE for now; goods fold in later.
+        let charts = {
+            use crate::chatlog::BattleOutcome::Won;
+            let cur_won_poe: Vec<f64> = voyage
+                .battles
+                .iter()
+                .filter(|b| b.outcome == Won)
+                .filter_map(|b| b.poe)
+                .filter(|p| *p > 0)
+                .map(|p| p as f64)
+                .collect();
+            let last_win = voyage
+                .battles
+                .iter()
+                .rev()
+                .find(|b| b.outcome == Won)
+                .and_then(|b| b.poe)
+                .map(|p| p as f64);
+            let cur_total = voyage.battles.iter().filter_map(|b| b.poe).sum::<i64>() as f64;
+
+            let mut hist_won_poe = Vec::new();
+            let mut hist_totals = Vec::new();
+            for v in &self.voyage_history.voyages {
+                let mut total = 0i64;
+                for bt in &v.battles {
+                    if let Some(p) = bt.poe {
+                        total += p;
+                        if p > 0 && bt.outcome == "won" {
+                            hist_won_poe.push(p as f64);
+                        }
+                    }
+                }
+                hist_totals.push(total as f64);
+            }
+            crate::voyage_ui::ChartData {
+                cur_won_poe,
+                hist_won_poe,
+                last_win,
+                cur_total,
+                hist_totals,
+            }
+        };
+
         VoyageView {
             has_voyage: true,
             vessel: vessel_name,
@@ -702,6 +770,7 @@ impl AppShell {
             saveable: ported && !voyage.saved,
             battle,
             consumption,
+            charts,
         }
     }
 
@@ -1651,6 +1720,13 @@ impl AppShell {
             }
             ClickTarget::VoyageSaveCancel => {
                 self.voyage_ui.prompt = None;
+            }
+            ClickTarget::VoyageChart { idx } => {
+                self.voyage_ui.chart_sel = idx;
+                self.voyage_ui.chart_popup = Some(idx);
+            }
+            ClickTarget::VoyageChartClose => {
+                self.voyage_ui.chart_popup = None;
             }
         }
     }

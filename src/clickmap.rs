@@ -54,6 +54,10 @@ pub enum ClickTarget {
     VoyageSaveDiscard,
     /// The backdrop / cancel of the save/discard prompt.
     VoyageSaveCancel,
+    /// A selectable mini-chart on the Voyage Statistics page.
+    VoyageChart { idx: usize },
+    /// The backdrop behind an enlarged chart popup; clicking it closes.
+    VoyageChartClose,
 }
 
 #[derive(Clone)]
