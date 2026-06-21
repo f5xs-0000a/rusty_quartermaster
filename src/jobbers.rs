@@ -867,10 +867,31 @@ pub fn render(
         .collect();
     let panes_w: u16 = pane_widths.iter().sum();
 
+    // ---- Atlantis Stats box sizing (only on dragoon voyages) ----
+    // A single `Dragoons Boarded | low to high` row; the range counts the lone
+    // dragoons plus 3..6 per monster boarding party (we can't see the party size).
+    let show_atlantis_stats = ui.voyage_type.tracks_dragoons();
+    let (dragoon_low, dragoon_high) = {
+        let d = vessel.map_or(0, |v| v.dragoons_aboard);
+        let b = vessel.map_or(0, |v| v.dragoon_boardings);
+        (
+            d.saturating_add(b.saturating_mul(3)),
+            d.saturating_add(b.saturating_mul(6)),
+        )
+    };
+    let atlantis_w = if show_atlantis_stats {
+        let value = dragoons_boarded_value(dragoon_low, dragoon_high);
+        (("Dragoons Boarded".len() + 2 + value.len()) as u16 + 4)
+            .max(offset_title_width("Atlantis Stats"))
+    } else {
+        0
+    };
+    let atlantis_h: u16 = if show_atlantis_stats { 3 } else { 0 };
+
     // ---- Block geometry: centered horizontally, full content height so the panes
     //      can run the whole way down. ----
     let block_w = if implemented {
-        voyage_w.max(top_panel_w).max(panes_w)
+        voyage_w.max(top_panel_w).max(panes_w).max(atlantis_w)
     } else {
         voyage_w.max(offset_title_width("Coming Soon"))
     };
@@ -900,8 +921,11 @@ pub fn render(
     let tip_h = tooltip_lines.len() as u16;
 
     let rows = if implemented {
+        // The Atlantis Stats row sits between Voyage and Top Jobbers; it collapses
+        // to zero height (rendering nothing) on voyage types without dragoons.
         Layout::vertical([
             Constraint::Length(voyage_h),
+            Constraint::Length(atlantis_h),
             Constraint::Length(top_h),
             Constraint::Min(0),
             Constraint::Length(tip_h),
@@ -922,12 +946,15 @@ pub fn render(
     );
 
     let tip_area = if implemented {
-        render_top_panel(frame, rows[1], &ranked, columns, focused);
+        if show_atlantis_stats {
+            render_atlantis_stats(frame, rows[1], dragoon_low, dragoon_high, focused);
+        }
+        render_top_panel(frame, rows[2], &ranked, columns, focused);
         render_panes(
-            frame, rows[2], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
+            frame, rows[3], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
             panes, &pane_widths, regions,
         );
-        rows[3]
+        rows[4]
     } else {
         render_placeholder(frame, rows[1], ui.voyage_type, focused);
         rows[2]
@@ -1091,6 +1118,44 @@ fn render_voyage_box(
             rows[warn_start + j],
         );
     }
+}
+
+/// The displayed "Dragoons Boarded" value. With no monster boardings the count is
+/// exact (`low == high`), so we show a single number; otherwise each boarding party
+/// hides 3..6 dragoons, so we report the span `low to high`.
+fn dragoons_boarded_value(low: u32, high: u32) -> String {
+    if low == high {
+        low.to_string()
+    } else {
+        format!("{low} to {high}")
+    }
+}
+
+/// The Atlantis Stats box: a single, non-selectable `Dragoons Boarded | value` row
+/// spanning the box's inner width. See [`dragoons_boarded_value`] for the count vs.
+/// range rule.
+fn render_atlantis_stats(frame: &mut Frame, area: Rect, low: u32, high: u32, focused: bool) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style(focused))
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Atlantis Stats").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    if inner.height == 0 {
+        return;
+    }
+
+    let row = Rect::new(inner.x, inner.y, inner.width, 1);
+    let cols = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(row);
+    frame.render_widget(
+        Paragraph::new(Span::styled("Dragoons Boarded", Style::default().bold())),
+        cols[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(dragoons_boarded_value(low, high)).right_aligned()),
+        cols[1],
+    );
 }
 
 /// Placeholder shown in place of the Pillage-only Top Jobbers + panes when the
