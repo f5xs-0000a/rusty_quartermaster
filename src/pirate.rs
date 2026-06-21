@@ -303,6 +303,36 @@ impl Skill {
             }
         }
     }
+
+    /// A compact, column-friendly label for the skill — used as a Top Jobbers
+    /// header where the full [`Display`](std::fmt::Display) name is too wide.
+    pub fn short_label(&self) -> &'static str {
+        use Skill::*;
+        match self {
+            Sailing => "Sailing",
+            Rigging => "Rigging",
+            Carpentry => "Carpentry",
+            Patching => "Patching",
+            Bilging => "Bilging",
+            Gunning => "Gunnery",
+            TreasureHaul => "T. Haul",
+            Navigating => "Navigation",
+            BattleNavigation => "B. Navigation",
+            Swordfighting => "Swordfight",
+            Rumble => "Rumble",
+            Drinking => "Drinking",
+            Spades => "Spades",
+            Hearts => "Hearts",
+            TreasureDrop => "T. Drop",
+            Poker => "Poker",
+            Distilling => "Distilling",
+            Alchemistry => "Alchemy",
+            Shipwrightery => "Shipwright",
+            Blacksmithing => "Smithing",
+            Foraging => "Foraging",
+            Weaving => "Weaving",
+        }
+    }
 }
 
 impl CrewRank {

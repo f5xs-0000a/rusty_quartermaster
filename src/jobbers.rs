@@ -39,11 +39,13 @@ pub const UNPOISON_TOOLTIP: [&str; 2] = [
     "Press Enter to ignore the warnings.",
 ];
 
-/// Skill columns shown in the top panel, with their display headers.
-const SKILL_COLUMNS: &[(Skill, &str)] = &[
-    (Skill::Gunning, "Gunnery"),
-    (Skill::Navigating, "Navigation"),
-    (Skill::BattleNavigation, "B. Navigation"),
+/// Top Jobbers skill columns for a Pillage: gunners, navigators, and battle
+/// navigators. Other voyage types prioritise different skills — see
+/// [`VoyageType::top_jobber_skills`].
+const PILLAGE_TOP_JOBBERS: &[Skill] = &[
+    Skill::Gunning,
+    Skill::Navigating,
+    Skill::BattleNavigation,
 ];
 
 /// Skills in each family, in yoweb display order. The pirate-stats popup renders
@@ -116,6 +118,22 @@ impl VoyageType {
     /// for this voyage type. Only Pillage is, for now.
     pub fn implemented(self) -> bool {
         matches!(self, VoyageType::Pillage)
+    }
+
+    /// The skills the Top Jobbers panel ranks for this voyage type, one column
+    /// each (in display order). Drives both who counts as a top jobber and the
+    /// panel's columns; new voyage types override this with the skills they need.
+    pub fn top_jobber_skills(self) -> &'static [Skill] {
+        match self {
+            VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
+            // Unimplemented types fall back to Pillage's skills for now; they
+            // render the "coming soon" placeholder instead of the panel anyway.
+            // Give each its own skill set as it gets wired up.
+            VoyageType::Atlantis
+            | VoyageType::CursedIsles
+            | VoyageType::Vampirates
+            | VoyageType::Vikings => PILLAGE_TOP_JOBBERS,
+        }
     }
 }
 
@@ -632,13 +650,14 @@ pub fn render(
     // Pillage caps its Top Jobbers at 5 per column; an explicit leaderboard size
     // overrides that default.
     let lb_limit = ui.leaderboard_size.or(Some(5));
-    let ranked: Vec<Vec<(String, Experience, Standing)>> = SKILL_COLUMNS
+    let columns = ui.voyage_type.top_jobber_skills();
+    let ranked: Vec<Vec<(String, Experience, Standing)>> = columns
         .iter()
-        .map(|(skill, _)| rank_for_skill(&aboard_set, cache, skill, lb_limit))
+        .map(|skill| rank_for_skill(&aboard_set, cache, skill, lb_limit))
         .collect();
     let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
-    let top_panel_w = top_panel_width(&ranked);
+    let top_panel_w = top_panel_width(&ranked, columns);
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at title.
     let aboard_cw = aboard_set
@@ -733,7 +752,7 @@ pub fn render(
     );
 
     let tip_area = if pillage {
-        render_top_panel(frame, rows[1], &ranked, focused);
+        render_top_panel(frame, rows[1], &ranked, columns, focused);
         render_panes(
             frame, rows[2], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
             aboard_w, greedy_w, planked_w, regions,
@@ -1231,27 +1250,31 @@ fn rank_for_skill(
 
 /// Per-skill column widths for the Top Jobbers panel: each is the wider of its
 /// header and its widest `name + gap + code` row.
-fn top_panel_col_widths(ranked: &[Vec<(String, Experience, Standing)>]) -> Vec<u16> {
-    SKILL_COLUMNS
+fn top_panel_col_widths(
+    ranked: &[Vec<(String, Experience, Standing)>],
+    columns: &[Skill],
+) -> Vec<u16> {
+    columns
         .iter()
         .enumerate()
-        .map(|(i, (_, header))| {
+        .map(|(i, skill)| {
             let name_w = ranked[i]
                 .iter()
                 .map(|(n, _, _)| n.chars().count())
                 .max()
                 .unwrap_or(0);
-            (name_w + NAME_CODE_GAP + CODE_LEN).max(header.chars().count()) as u16
+            (name_w + NAME_CODE_GAP + CODE_LEN).max(skill.short_label().chars().count()) as u16
         })
         .collect()
 }
 
 /// The Top Jobbers panel's natural outer width: columns + gaps + padding +
 /// borders, with a floor so the title stays readable.
-fn top_panel_width(ranked: &[Vec<(String, Experience, Standing)>]) -> u16 {
+fn top_panel_width(ranked: &[Vec<(String, Experience, Standing)>], columns: &[Skill]) -> u16 {
     // Floor so the title stays readable when no jobbers have fetched stats yet.
     const FLOOR: u16 = offset_title_width("Top Jobbers");
-    let inner_w = top_panel_col_widths(ranked).iter().sum::<u16>() + 2 * COLUMN_GAP;
+    let gaps = columns.len().saturating_sub(1) as u16 * COLUMN_GAP;
+    let inner_w = top_panel_col_widths(ranked, columns).iter().sum::<u16>() + gaps;
     (inner_w + 4).max(FLOOR)
 }
 
@@ -1259,10 +1282,11 @@ fn render_top_panel(
     frame: &mut Frame,
     region: Rect,
     ranked: &[Vec<(String, Experience, Standing)>],
+    columns: &[Skill],
     focused: bool,
 ) {
     // Size each column to its content: max(header, widest name + gap + code).
-    let col_w: Vec<u16> = top_panel_col_widths(ranked);
+    let col_w: Vec<u16> = top_panel_col_widths(ranked, columns);
 
     // The panel fills its region: the region's width was derived from this
     // panel's natural width back in `render`, so it already hugs the content.
@@ -1276,23 +1300,27 @@ fn render_top_panel(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let cols = Layout::horizontal([
-        Constraint::Length(col_w[0]),
-        Constraint::Length(COLUMN_GAP),
-        Constraint::Length(col_w[1]),
-        Constraint::Length(COLUMN_GAP),
-        Constraint::Length(col_w[2]),
-        Constraint::Min(0),
-    ])
-    .split(inner);
-    let col_areas = [cols[0], cols[2], cols[4]];
+    // Interleave a gap between each pair of columns, with equal slack on both
+    // sides so the column group sits centered when the panel is wider than its
+    // content (e.g. when the panes below dictate the block width).
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(columns.len() * 2 + 1);
+    constraints.push(Constraint::Fill(1));
+    for (i, w) in col_w.iter().enumerate() {
+        if i > 0 {
+            constraints.push(Constraint::Length(COLUMN_GAP));
+        }
+        constraints.push(Constraint::Length(*w));
+    }
+    constraints.push(Constraint::Fill(1));
+    let cols = Layout::horizontal(constraints).split(inner);
 
-    for (ci, (_, header)) in SKILL_COLUMNS.iter().enumerate() {
+    for (ci, skill) in columns.iter().enumerate() {
         let name_w = (col_w[ci] as usize).saturating_sub(NAME_CODE_GAP + CODE_LEN);
 
         let mut lines: Vec<Line> = Vec::with_capacity(ranked[ci].len() + 1);
         lines.push(
-            Line::from(Span::styled(*header, Style::default().bold().underlined())).centered(),
+            Line::from(Span::styled(skill.short_label(), Style::default().bold().underlined()))
+                .centered(),
         );
         for (name, exp, standing) in &ranked[ci] {
             lines.push(Line::from(vec![
@@ -1304,7 +1332,9 @@ fn render_top_panel(
             ]));
         }
 
-        frame.render_widget(Paragraph::new(lines), col_areas[ci]);
+        // Columns are laid out as [Fill, col, gap, col, gap, …, Fill] — the real
+        // column areas start after the leading spacer at odd indices.
+        frame.render_widget(Paragraph::new(lines), cols[1 + ci * 2]);
     }
 }
 
