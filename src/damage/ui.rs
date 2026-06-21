@@ -11,7 +11,14 @@ use super::{
 
 const COL_GAP: u16 = 3;
 
-pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp, focused: bool, regions: &mut Vec<ClickRegion>) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut DamageApp,
+    our_pirates: u32,
+    focused: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
     let max_ship_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0) as u16;
     let center_width = CENTER_LABELS
         .iter()
@@ -24,12 +31,13 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp, focused: bool,
     let box_height = ROW_COUNT as u16 + 2; // rows + borders
     let button_box_height = BUTTON_LABELS.len() as u16 + 2; // rows + borders
 
-    // Center vertically: box + button box + hint
+    // Center vertically: box + button box + advantage readout + hint
     let vchunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(box_height),
         Constraint::Length(button_box_height),
-        Constraint::Length(1),
+        Constraint::Length(1), // advantage readout
+        Constraint::Length(1), // hint
         Constraint::Fill(1),
     ])
     .split(area);
@@ -110,6 +118,27 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp, focused: bool,
         });
     }
 
+    // -- Advantage readout (Left = your ship, Right = the foe) --
+    {
+        let adv_dmg = app.advantage_dmg();
+        let adv_crew = app.advantage_crew(our_pirates);
+        let text = format!(
+            "Advantage  ·  damage {:+.0}%  ·  crew {:+.1}   (Left = you, Right = foe)",
+            adv_dmg * 100.0,
+            adv_crew
+        );
+        let adv_hchunks = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(box_width),
+            Constraint::Fill(1),
+        ])
+        .split(vchunks[3]);
+        frame.render_widget(
+            Paragraph::new(Span::styled(text, Style::default().fg(Color::Cyan))).centered(),
+            adv_hchunks[1],
+        );
+    }
+
     // -- Hint --
     if focused && app.popup.is_none() {
         let hint = if app.button_focused {
@@ -127,7 +156,7 @@ pub fn render(frame: &mut Frame, area: Rect, app: &mut DamageApp, focused: bool,
                 Constraint::Length(box_width),
                 Constraint::Fill(1),
             ])
-            .split(vchunks[3]);
+            .split(vchunks[4]);
 
             frame.render_widget(
                 Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray))),

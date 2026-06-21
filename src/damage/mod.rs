@@ -120,6 +120,41 @@ impl DamageApp {
         (morale_pct, hull_pct)
     }
 
+    // -- Ship-advantage metrics (Left = our ship, Right = the foe) --
+
+    /// A ship's combat advantage from its morale damage: 1.0 (100%) when healthy,
+    /// 0.5 (50%) when fully morale-damaged, linear in between.
+    pub fn ship_advantage(&self, side: Side) -> f64 {
+        let morale_pct = self.calculate_damage(side).0;
+        1.0 - morale_pct as f64 / 200.0
+    }
+
+    /// Damage advantage = our advantage − the foe's. Range `[-0.5, +0.5]`.
+    pub fn advantage_dmg(&self) -> f64 {
+        self.ship_advantage(Side::Left) - self.ship_advantage(Side::Right)
+    }
+
+    /// Headcount advantage = our pirates × our advantage − the foe ship's swabbie
+    /// complement × the foe's advantage. `our_pirates` is supplied live (chat log);
+    /// the foe complement is the Right ship type's pirate capacity.
+    pub fn advantage_crew(&self, our_pirates: u32) -> f64 {
+        let foe_complement = SHIPS[self.right_ship].max_pirates as f64;
+        our_pirates as f64 * self.ship_advantage(Side::Left)
+            - foe_complement * self.ship_advantage(Side::Right)
+    }
+
+    /// Whether any hits have been entered (so we only snapshot a fight we tracked).
+    pub fn has_input(&self) -> bool {
+        self.headon > 0 || self.left.iter().chain(&self.right).any(|&n| n > 0)
+    }
+
+    /// Clear the hit counts (keep ship selections) — ready for the next fight.
+    pub fn clear_counts(&mut self) {
+        self.left = [0; 3];
+        self.right = [0; 3];
+        self.headon = 0;
+    }
+
     /// Returns (shots-to-max-morale, shots-to-sink) for `side`: how many more
     /// shots from the opposing ship's cannons it would take, given the damage
     /// already entered. Each saturates at 0 once that threshold is reached.
@@ -353,6 +388,28 @@ mod tests {
     const CANNON: u32 = 960;
     const MORALE_HP: u32 = 5760;
     const HULL_HP: u32 = 9600;
+
+    #[test]
+    fn advantage_metrics() {
+        let mut app = DamageApp::new(); // both Sloops, no damage
+        assert!(!app.has_input());
+        // No damage: both ships fully healthy, so damage advantage is zero.
+        assert!((app.advantage_dmg() - 0.0).abs() < 1e-9);
+        // Crew: our pirates at full advantage minus the foe Sloop's complement.
+        let foe = SHIPS[app.right_ship].max_pirates as f64;
+        assert!((app.advantage_crew(5) - (5.0 - foe)).abs() < 1e-9);
+
+        // Land 3 shots on the foe (Right): 3*960 = 2880 = 50% of 5760 morale.
+        app.right[0] = 3;
+        assert!(app.has_input());
+        assert_eq!(app.calculate_damage(Side::Right).0, 50);
+        // Their advantage drops to 0.75, ours stays 1.0 -> +0.25.
+        assert!((app.advantage_dmg() - 0.25).abs() < 1e-9);
+
+        app.clear_counts();
+        assert!(!app.has_input());
+        assert!((app.advantage_dmg() - 0.0).abs() < 1e-9);
+    }
 
     #[test]
     fn shots_left_counts_down_from_full_health() {

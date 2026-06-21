@@ -545,15 +545,6 @@ fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Tex
     }
 }
 
-fn alcohol_multiplier(name: &str) -> u64 {
-    match () {
-        _ if name.eq_ignore_ascii_case("swill") => 2,
-        _ if name.eq_ignore_ascii_case("grog") => 3,
-        _ if name.eq_ignore_ascii_case("fine rum") => 6,
-        _ => 0,
-    }
-}
-
 /// Sum of `field`'s quantity weighted by each commodity's alcohol multiplier.
 fn compute_alcohol(
     app: &ProfitsApp,
@@ -565,7 +556,7 @@ fn compute_alcohol(
         .map(|r| {
             let name = app::commod_name(shared.commodities, r.commod_id);
             let qty = field(r).parse::<u64>().unwrap_or(0);
-            qty * alcohol_multiplier(name)
+            qty * crate::commodities::alcohol_multiplier(name)
         })
         .sum()
 }

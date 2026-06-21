@@ -211,6 +211,186 @@ pub const LAIR_WAVE_LO: f64 = 1.175;
 pub const LAIR_WAVE_HI: f64 = 1.225;
 
 // ---------------------------------------------------------------------------
+// Voyage statistics (per sail->port run)
+// ---------------------------------------------------------------------------
+
+/// How a single sea engagement ended, from our point of view.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum BattleOutcome {
+    /// Still in progress — no resolution line seen yet.
+    #[default]
+    Ongoing,
+    /// We won the boarding (our own name was among the `Game over` winners).
+    Won,
+    /// We lost (our name not among the winners) — the plundered PoE went to them.
+    Lost,
+    /// Ended without a boarding conclusion: someone disengaged, the enemy ported,
+    /// or we shook the pursuit.
+    Disengaged,
+}
+
+/// What we fought in a battle. Detected from log telltales; defaults to a
+/// generic `Brigand` when we can't tell (per the user: "brigands for those we
+/// cannot parse"). The monster variants are reserved — their reliable per-fight
+/// telltales live in other voyage types and are wired in a later pass.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[allow(dead_code)] // monster variants detected later
+pub enum BattleCategory {
+    #[default]
+    Brigand,
+    /// A named Brigand King / royalty (e.g. "Vargas the Mad", "Admiral Finius").
+    BrigandKing(String),
+    Vampirate,
+    Skelly,
+    Werewolf,
+    Zombie,
+}
+
+/// One sea engagement, from interception to its resolution. Both the naval phase
+/// (interception -> grapple) and the boarding melee (grapple -> `Game over`) are
+/// timed; either may be absent (e.g. a disengage before grappling).
+#[derive(Clone, Debug, Default)]
+pub struct Battle {
+    /// Enemy vessel name from the interception line (`None` if unparsed).
+    pub enemy: Option<String>,
+    /// True if we intercepted them; false if they intercepted us.
+    pub we_intercepted: bool,
+    /// Interception time — the engagement start.
+    pub started_at: Option<NaiveDateTime>,
+    /// Grapple time — the sea phase ends and the boarding melee begins. `None` if
+    /// the fight never reached a boarding.
+    pub grappled_at: Option<NaiveDateTime>,
+    /// Resolution time (`Game over`, disengage, or enemy ported).
+    pub ended_at: Option<NaiveDateTime>,
+    /// Outcome from our perspective.
+    pub outcome: BattleOutcome,
+    /// Gross PoE the victors plundered. We store it signed by [`Self::outcome`]:
+    /// positive when we won, negative when we lost (the PoE was taken from us).
+    pub poe: Option<i64>,
+    /// Units of goods in the plunder (a bare count — the log never itemizes).
+    pub goods: Option<u32>,
+    /// Our personal share from `Ye received N ... initial cut of the booty!`.
+    pub my_cut: Option<u64>,
+    /// Pirates aboard our vessel at resolution (real players incl. us).
+    pub pirates: u32,
+    /// Swabbies aboard our vessel at resolution.
+    pub swabbies: u32,
+    /// What we were fighting (best-effort; defaults to generic Brigand).
+    pub category: BattleCategory,
+    /// Damage advantage (ours − theirs) snapshotted from the Damage calculator at
+    /// resolution: `[-0.5, +0.5]`. `None` if no damage was tracked for this fight.
+    pub advantage_dmg: Option<f64>,
+    /// Headcount advantage snapshotted at resolution (our pirates × our advantage
+    /// − enemy swabbies × their advantage). `None` if no damage was tracked.
+    pub advantage_crew: Option<f64>,
+}
+
+impl Battle {
+    /// Naval-phase duration (interception -> grapple), in seconds.
+    pub fn sea_secs(&self) -> Option<i64> {
+        secs_between(self.started_at, self.grappled_at)
+    }
+    /// Boarding-melee duration (grapple -> resolution), in seconds.
+    pub fn boarding_secs(&self) -> Option<i64> {
+        secs_between(self.grappled_at, self.ended_at)
+    }
+    /// Whole-engagement duration (interception -> resolution), in seconds.
+    pub fn total_secs(&self) -> Option<i64> {
+        secs_between(self.started_at, self.ended_at)
+    }
+}
+
+/// A snapshot of the headcount aboard at one instant — the basis for the
+/// time-weighted average crew (the "integral" of crew over the run).
+#[derive(Clone, Copy, Debug)]
+pub struct CrewSample {
+    pub at: NaiveDateTime,
+    /// Real pirates aboard, including us.
+    pub pirates: u32,
+    /// Swabbies (NPC crew) aboard.
+    pub swabbies: u32,
+}
+
+/// One complete sail->port run aboard a vessel — the unit of voyage statistics.
+/// The job kind may change mid-run (`This vessel is now ...`) without resetting
+/// stats; we keep the declaration in force when we set sail as the headline.
+#[derive(Clone, Debug, Default)]
+pub struct Voyage {
+    /// Job kind in force when we set sail.
+    pub job_kind: Option<JobKind>,
+    /// When we set sail (first `set the vessel to sail` order of the run).
+    pub sailed_at: Option<NaiveDateTime>,
+    /// When we put into port — the end of the timed run. `None` while still out.
+    pub ported_at: Option<NaiveDateTime>,
+    /// The battle currently in progress, if any.
+    pub current_battle: Option<Battle>,
+    /// Resolved battles, in chronological order.
+    pub battles: Vec<Battle>,
+    /// Headcount samples at each crew change while underway (sail-time first).
+    /// Drives the time-weighted average used for per-crew consumption stats.
+    pub crew_samples: Vec<CrewSample>,
+    /// We left the vessel mid-run, so this voyage's data has gaps.
+    pub poisoned: bool,
+    /// Runtime-only: the user has saved or dismissed this run via the
+    /// save/discard prompt, so it shouldn't be offered again. Not persisted.
+    pub saved: bool,
+}
+
+impl Voyage {
+    /// Sail-to-port duration, in seconds (`None` until ported).
+    pub fn duration_secs(&self) -> Option<i64> {
+        secs_between(self.sailed_at, self.ported_at)
+    }
+
+    /// Time-weighted average of a crew field over the run (a step-function
+    /// integral from sail to port, divided by the duration). Crew before the
+    /// first sample is taken to equal the first sample. `None` until ported or
+    /// if no samples were collected.
+    #[allow(dead_code)] // reached only via avg_pirates/avg_swabbies (UI task #7)
+    fn avg_crew(&self, field: impl Fn(&CrewSample) -> u32) -> Option<f64> {
+        let start = self.sailed_at?;
+        let end = self.ported_at?;
+        let total = (end - start).num_seconds();
+        if total <= 0 || self.crew_samples.is_empty() {
+            return self.crew_samples.last().map(|s| field(s) as f64);
+        }
+        let mut area = 0.0f64;
+        for (i, s) in self.crew_samples.iter().enumerate() {
+            // Sample `i`'s value holds from its time (or `start` for the first)
+            // until the next sample's time (or `end` for the last), clamped.
+            let seg_start = if i == 0 { start } else { s.at.max(start) };
+            let seg_end = self
+                .crew_samples
+                .get(i + 1)
+                .map_or(end, |n| n.at)
+                .min(end);
+            let dur = (seg_end - seg_start).num_seconds();
+            if dur > 0 {
+                area += field(s) as f64 * dur as f64;
+            }
+        }
+        Some(area / total as f64)
+    }
+
+    /// Time-weighted average pirates aboard (incl. us) over the run.
+    #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
+    pub fn avg_pirates(&self) -> Option<f64> {
+        self.avg_crew(|s| s.pirates)
+    }
+
+    /// Time-weighted average swabbies aboard over the run.
+    #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
+    pub fn avg_swabbies(&self) -> Option<f64> {
+        self.avg_crew(|s| s.swabbies)
+    }
+}
+
+/// Seconds between two optional timestamps, or `None` if either is missing.
+fn secs_between(a: Option<NaiveDateTime>, b: Option<NaiveDateTime>) -> Option<i64> {
+    Some((b? - a?).num_seconds())
+}
+
+// ---------------------------------------------------------------------------
 // Vessel
 // ---------------------------------------------------------------------------
 
@@ -277,6 +457,12 @@ pub struct Vessel {
     /// Wall-clock time we last boarded, from the line's `[HH:MM:SS]` combined
     /// with the most recent `====== Y/M/D ======` date header. For display.
     pub boarded_at: Option<NaiveDateTime>,
+    /// The voyage currently underway aboard this vessel (sail -> port), if any.
+    /// Accumulates per-battle stats; promoted into [`Self::voyages`] at port/divvy.
+    pub current_voyage: Option<Voyage>,
+    /// Completed sail->port runs, in order. RAM-only this session — nothing is
+    /// written to disk until the user is prompted to save or discard (deferred).
+    pub voyages: Vec<Voyage>,
 }
 
 impl Vessel {
@@ -318,6 +504,10 @@ pub struct GameState {
     now: Option<NaiveDateTime>,
     /// Monotonic counter handing out [`Vessel::order`] values.
     order_counter: u64,
+    /// Set for the duration of one line when a sea battle just resolved
+    /// (`Game over` / disengage). Lets the app snapshot the Damage-calculator
+    /// advantage onto that battle. Reset at the top of each [`Self::process_line`].
+    battle_just_resolved: bool,
 }
 
 impl GameState {
@@ -332,6 +522,7 @@ impl GameState {
             last_time: None,
             now: None,
             order_counter: 0,
+            battle_just_resolved: false,
         }
     }
 
@@ -356,6 +547,7 @@ impl GameState {
 
     /// Parse a single log line and delegate to the appropriate handler.
     pub fn process_line(&mut self, line: &str) {
+        self.battle_just_resolved = false;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
@@ -406,10 +598,102 @@ impl GameState {
             }
         }
 
-        // Battle start: a fresh battle resets the current-battle greedy tally.
-        if body.starts_with("You intercepted") || body.starts_with("You have been intercepted") {
-            self.on_battle_start();
+        // Battle start: a fresh battle resets the current-battle greedy tally and
+        // opens a new [`Battle`] record. We capture the enemy vessel name and who
+        // initiated. Both "the X" forms end in `!` (live) or `.` (some variants).
+        let intercept = body
+            .strip_prefix("You intercepted the ")
+            .map(|r| (r, true))
+            .or_else(|| {
+                body.strip_prefix("You have been intercepted by the ")
+                    .map(|r| (r, false))
+            });
+        if let Some((rest, we_intercepted)) = intercept {
+            let enemy = rest.trim_end_matches(['!', '.']).trim();
+            self.on_battle_start(enemy, we_intercepted);
             return;
+        }
+        // Bare forms without a vessel name (e.g. "You intercepted the Brigands.").
+        if body.starts_with("You intercepted") || body.starts_with("You have been intercepted") {
+            let we_intercepted = body.starts_with("You intercepted");
+            self.on_battle_start("", we_intercepted);
+            return;
+        }
+
+        // Set-sail order: starts the voyage on its first occurrence (the order also
+        // fires on every subsequent navigation move — those are ignored once a
+        // voyage is underway).
+        if body.ends_with(" issued an order to set the vessel to sail.") {
+            self.on_set_sail();
+            return;
+        }
+        // Put-into-port order: ends the timed sail->port run.
+        if body.ends_with(" issued an order to put into port.") {
+            self.on_put_into_port();
+            return;
+        }
+        // A grapple begins the boarding melee: "<A> has grappled <B>. A melee
+        // breaks out between the crews!" (logged for both sides; we keep the first).
+        if body.contains(" has grappled ") && body.ends_with("A melee breaks out between the crews!")
+        {
+            self.on_grapple();
+            return;
+        }
+        // Disengagements end a battle with no boarding conclusion.
+        if body.ends_with(" issued an order to disengage.")
+            || body.ends_with(" disengaged from the battle.")
+            || body.starts_with("You are no longer being pursued by ")
+            || body.starts_with("Arr, ye can no longer pursue")
+        {
+            self.on_disengage();
+            return;
+        }
+        // Per-fight loot: "The victors plundered N pieces of eight and M units of
+        // goods from the defeated vessel." Attaches to the just-resolved battle.
+        if let Some(rest) = body.strip_prefix("The victors plundered ") {
+            self.on_plunder(rest);
+            return;
+        }
+        // Our cut: "Ye received N pieces of eight as your initial cut of the booty!"
+        if let Some(rest) = body
+            .strip_prefix("Ye received ")
+            .and_then(|s| s.strip_suffix(" as your initial cut of the booty!"))
+        {
+            if let Some(poe) = parse_num_commas(rest) {
+                self.on_my_cut(poe);
+            }
+            return;
+        }
+
+        // A Vampirate vessel closes in (fires right after interception, so the
+        // battle is open).
+        if body.starts_with("Avast! Yer blood runs cold") {
+            self.categorize_current(BattleCategory::Vampirate);
+            return;
+        }
+        // Werewolves catch our scent (same timing as the Vampirate herald).
+        if body.starts_with("Unearthly howling echos o'er the waves") {
+            self.categorize_current(BattleCategory::Werewolf);
+            return;
+        }
+
+        // Brigand King — the victory line names the king unambiguously ("<King>'s
+        // ship disappears into the mists."); the reward chest names them too.
+        // Both fire after `Game over`, so they tag the just-resolved battle.
+        if let Some(name) = body.strip_suffix("'s ship disappears into the mists.") {
+            if BRIGAND_KINGS.contains(&name) {
+                self.categorize_recent(BattleCategory::BrigandKing(name.to_string()));
+                return;
+            }
+        }
+        if let Some(name) = body
+            .strip_prefix("Ye have received one ")
+            .and_then(|s| s.strip_suffix(" Chest as part of yer reward!"))
+        {
+            if BRIGAND_KINGS.contains(&name) {
+                self.categorize_recent(BattleCategory::BrigandKing(name.to_string()));
+                return;
+            }
         }
 
         // Atlantis: a lone dragoon sneaks aboard.
@@ -462,8 +746,10 @@ impl GameState {
         // are vampires, we lost the board, which ends a lair.
         if let Some(summary) = body.strip_prefix("Game over.") {
             let summary = summary.trim_start();
-            self.on_battle_end(summary);
-            self.on_lair_gameover(summary);
+            self.on_battle_end(summary); // resync crew roster when we won
+            self.on_sea_battle_resolve(summary); // record the sea-battle outcome (pillage)
+            self.on_lair_gameover(summary); // vampirate wave engine
+            self.sample_crew(); // roster may have been resynced
             return;
         }
 
@@ -487,8 +773,20 @@ impl GameState {
             return;
         }
         if body == "The booty has been divided!" {
+            let now = self.now;
             if let Some(v) = self.current_vessel_mut() {
                 v.job_kind = None;
+                // Finalize the run if it wasn't already closed at port (defensive:
+                // some runs end at divvy without a port order we saw).
+                if let Some(mut voy) = v.current_voyage.take() {
+                    if voy.ported_at.is_none() {
+                        voy.ported_at = now;
+                    }
+                    if let Some(b) = voy.current_battle.take() {
+                        voy.battles.push(b);
+                    }
+                    v.voyages.push(voy);
+                }
             }
             return;
         }
@@ -504,6 +802,7 @@ impl GameState {
                     v.swabbies.saturating_sub(delta.unsigned_abs() as u32)
                 };
             }
+            self.sample_crew();
             return;
         }
 
@@ -515,6 +814,7 @@ impl GameState {
                 if let Some(v) = self.current_vessel_mut() {
                     v.crewmates.insert(name.to_string());
                 }
+                self.sample_crew();
             }
             return;
         }
@@ -522,6 +822,7 @@ impl GameState {
             if let Some(v) = self.current_vessel_mut() {
                 v.crewmates.remove(name);
             }
+            self.sample_crew();
             return;
         }
 
@@ -537,6 +838,7 @@ impl GameState {
         if let Some(mid) = body.strip_suffix(" to walk the plank.") {
             if let Some((planker, victim)) = mid.split_once(" forced ") {
                 self.on_plank(planker, victim);
+                self.sample_crew(); // a crewmate left the roster
                 return;
             }
         }
@@ -560,6 +862,16 @@ impl GameState {
             if let Some(name) = rest.strip_suffix(", has logged off.") {
                 self.online.remove(name);
                 return;
+            }
+        }
+
+        // Catch-all (runs only for otherwise-unhandled lines, so it can't swallow
+        // a `Game over` etc.): a Brigand King's engagement / flavour chant names
+        // the king. Tag the open battle. Player chatter is skipped so a mention of
+        // a king in chat doesn't mislabel a fight.
+        if !is_chat_line(body) {
+            if let Some(king) = find_brigand_king(body) {
+                self.categorize_current(BattleCategory::BrigandKing(king.to_string()));
             }
         }
     }
@@ -599,6 +911,9 @@ impl GameState {
             if v.job_kind.is_some() {
                 v.poisoned = true;
             }
+            if let Some(voy) = v.current_voyage.as_mut() {
+                voy.poisoned = true;
+            }
         }
         self.current = None;
     }
@@ -626,11 +941,251 @@ impl GameState {
         }
     }
 
-    /// A new battle began — start a fresh current-battle greedy tally.
-    fn on_battle_start(&mut self) {
+    /// A new battle began — start a fresh current-battle greedy tally and open a
+    /// new [`Battle`] record on the current voyage (creating the voyage if a fight
+    /// somehow starts before we saw a sail order). `enemy` empty => unknown vessel.
+    fn on_battle_start(&mut self, enemy: &str, we_intercepted: bool) {
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             v.greedy_current.clear();
         }
+        let enemy = (!enemy.is_empty()).then(|| enemy.to_string());
+        if let Some(voy) = self.ensure_voyage() {
+            // A still-open previous battle means we never saw its resolution; keep
+            // it as a dangling record rather than dropping it.
+            if let Some(prev) = voy.current_battle.take() {
+                voy.battles.push(prev);
+            }
+            voy.current_battle = Some(Battle {
+                enemy,
+                we_intercepted,
+                started_at: now,
+                ..Battle::default()
+            });
+        }
+    }
+
+    /// First `set the vessel to sail` order of a run starts the voyage; later move
+    /// orders during the run just backfill a missing sail time (if the voyage was
+    /// lazily created by an early battle).
+    fn on_set_sail(&mut self) {
+        let now = self.now;
+        let Some(v) = self.current_vessel_mut() else {
+            return;
+        };
+        match &mut v.current_voyage {
+            Some(voy) => {
+                if voy.sailed_at.is_none() {
+                    voy.sailed_at = now;
+                }
+            }
+            None => {
+                let job_kind = v.job_kind.clone();
+                v.current_voyage = Some(Voyage {
+                    job_kind,
+                    sailed_at: now,
+                    ..Voyage::default()
+                });
+            }
+        }
+        // Anchor the crew timeline at sail time with the starting headcount.
+        self.sample_crew();
+    }
+
+    /// A `put into port` order ends the timed run: stamp the port time, fold any
+    /// dangling battle in, and promote the voyage into the completed list.
+    fn on_put_into_port(&mut self) {
+        let now = self.now;
+        let Some(v) = self.current_vessel_mut() else {
+            return;
+        };
+        if let Some(mut voy) = v.current_voyage.take() {
+            voy.ported_at = now;
+            if let Some(mut b) = voy.current_battle.take() {
+                if b.outcome == BattleOutcome::Ongoing {
+                    b.outcome = BattleOutcome::Disengaged;
+                    b.ended_at = now;
+                }
+                voy.battles.push(b);
+            }
+            v.voyages.push(voy);
+        }
+    }
+
+    /// The boarding melee started — record the sea/boarding boundary once.
+    fn on_grapple(&mut self) {
+        let now = self.now;
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.current_battle.as_mut() {
+                if b.grappled_at.is_none() {
+                    b.grappled_at = now;
+                }
+            }
+        }
+    }
+
+    /// A battle ended without a boarding conclusion (someone disengaged / enemy
+    /// ported / we shook the pursuit). Resolve the open battle as `Disengaged`.
+    fn on_disengage(&mut self) {
+        let now = self.now;
+        let mut resolved = false;
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(mut b) = voy.current_battle.take() {
+                b.outcome = BattleOutcome::Disengaged;
+                b.ended_at = now;
+                voy.battles.push(b);
+                resolved = true;
+            }
+        }
+        self.battle_just_resolved |= resolved;
+    }
+
+    /// Resolve the open sea battle at `Game over`. Won iff our own name is among the
+    /// winners; otherwise we lost (and forfeit the plundered PoE). Skipped inside a
+    /// vampirate lair, whose per-wave swordfights aren't sea battles. Run *after*
+    /// [`Self::on_battle_end`] so the crew snapshot uses the resynced roster.
+    fn on_sea_battle_resolve(&mut self, summary: &str) {
+        if self.current_vessel().is_some_and(|v| v.lair_active) {
+            return;
+        }
+        let me = self.player_name.clone();
+        let me = me.as_deref();
+        let won = summary.split_once(':').is_some_and(|(_, list)| {
+            list.trim()
+                .trim_end_matches('.')
+                .split(", ")
+                .map(str::trim)
+                .any(|n| me.is_some_and(|me| n.eq_ignore_ascii_case(me)))
+        });
+        let (pirates, swabbies) = self
+            .current_vessel()
+            .map(|v| (v.crewmates.len() as u32 + 1, v.swabbies))
+            .unwrap_or((0, 0));
+        // A king on the winning side means we lost to that king — name the fight.
+        let king = find_brigand_king(summary);
+        let now = self.now;
+        let mut resolved = false;
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(mut b) = voy.current_battle.take() {
+                b.outcome = if won {
+                    BattleOutcome::Won
+                } else {
+                    BattleOutcome::Lost
+                };
+                b.ended_at = now;
+                b.pirates = pirates;
+                b.swabbies = swabbies;
+                if let Some(k) = king {
+                    b.category = BattleCategory::BrigandKing(k.to_string());
+                }
+                voy.battles.push(b);
+                resolved = true;
+            }
+        }
+        self.battle_just_resolved |= resolved;
+    }
+
+    /// Attach plundered PoE + goods to the most-recently-resolved battle. The
+    /// plunder line always follows a `Game over`, so `battles.last_mut()` is it.
+    /// PoE is signed by the battle's outcome (negative on a loss — it went to them).
+    fn on_plunder(&mut self, rest: &str) {
+        let poe = rest
+            .split(" pieces of eight")
+            .next()
+            .and_then(parse_num_commas);
+        let goods = rest.split(" and ").nth(1).and_then(|g| {
+            if g.starts_with("no goods") {
+                Some(0)
+            } else {
+                g.split(" units of goods")
+                    .next()
+                    .and_then(parse_num_commas)
+                    .map(|n| n as u32)
+            }
+        });
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.battles.last_mut() {
+                if let Some(poe) = poe {
+                    b.poe = Some(if b.outcome == BattleOutcome::Lost {
+                        -(poe as i64)
+                    } else {
+                        poe as i64
+                    });
+                }
+                if goods.is_some() {
+                    b.goods = goods;
+                }
+            }
+        }
+    }
+
+    /// Attach our personal cut to the most-recently-resolved battle.
+    fn on_my_cut(&mut self, poe: u64) {
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.battles.last_mut() {
+                b.my_cut = Some(poe);
+            }
+        }
+    }
+
+    /// Tag the battle currently in progress (engagement-time signals).
+    fn categorize_current(&mut self, cat: BattleCategory) {
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.current_battle.as_mut() {
+                b.category = cat;
+            }
+        }
+    }
+
+    /// Tag the open battle, or the just-resolved one if none is open (end-time
+    /// signals like the victory/reward lines arrive after `Game over`).
+    fn categorize_recent(&mut self, cat: BattleCategory) {
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.current_battle.as_mut().or_else(|| voy.battles.last_mut()) {
+                b.category = cat;
+            }
+        }
+    }
+
+    /// The current vessel's active voyage, mutably.
+    fn current_voyage_mut(&mut self) -> Option<&mut Voyage> {
+        self.current_vessel_mut()?.current_voyage.as_mut()
+    }
+
+    /// Record the current headcount onto the active voyage's crew timeline. A
+    /// no-op when not aboard, not on a voyage, or before the clock is set. Call
+    /// after any change to the crewmate/swabbie counts.
+    fn sample_crew(&mut self) {
+        let Some(now) = self.now else {
+            return;
+        };
+        let Some(v) = self.current_vessel_mut() else {
+            return;
+        };
+        let pirates = v.crewmates.len() as u32 + 1; // incl. us
+        let swabbies = v.swabbies;
+        if let Some(voy) = v.current_voyage.as_mut() {
+            voy.crew_samples.push(CrewSample {
+                at: now,
+                pirates,
+                swabbies,
+            });
+        }
+    }
+
+    /// Ensure the current vessel has an active voyage, creating a job-tagged one if
+    /// needed. `sailed_at` stays `None` for lazily-created voyages (a battle began
+    /// before we saw a sail order); [`Self::on_set_sail`] backfills it.
+    fn ensure_voyage(&mut self) -> Option<&mut Voyage> {
+        let v = self.current_vessel_mut()?;
+        if v.current_voyage.is_none() {
+            let job_kind = v.job_kind.clone();
+            v.current_voyage = Some(Voyage {
+                job_kind,
+                ..Voyage::default()
+            });
+        }
+        v.current_voyage.as_mut()
     }
 
     /// A lone dragoon splashed aboard (Atlantis).
@@ -788,6 +1343,43 @@ impl GameState {
         self.vessels.get(cur)
     }
 
+    /// The voyage currently underway aboard the current vessel, if any.
+    #[allow(dead_code)] // used in tests / UI
+    pub fn current_voyage(&self) -> Option<&Voyage> {
+        self.current_vessel()?.current_voyage.as_ref()
+    }
+
+    /// Timestamp of the most recently processed line (the chat-log "now"). Used
+    /// to show live elapsed time for an in-progress voyage.
+    #[allow(dead_code)] // used by the Voyage Statistics UI
+    pub fn now(&self) -> Option<NaiveDateTime> {
+        self.now
+    }
+
+    /// Take the "a sea battle just resolved this line" flag (true once per
+    /// resolution). The app uses it to snapshot the Damage-calculator advantage.
+    pub fn take_resolved(&mut self) -> bool {
+        std::mem::take(&mut self.battle_just_resolved)
+    }
+
+    /// Real pirates aboard the current vessel right now (crewmates + us), or 0.
+    pub fn current_pirates(&self) -> u32 {
+        self.current_vessel()
+            .map(|v| v.crewmates.len() as u32 + 1)
+            .unwrap_or(0)
+    }
+
+    /// Snapshot the advantage metrics onto the just-resolved (last) battle of the
+    /// current voyage.
+    pub fn set_last_battle_advantage(&mut self, dmg: f64, crew: f64) {
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.battles.last_mut() {
+                b.advantage_dmg = Some(dmg);
+                b.advantage_crew = Some(crew);
+            }
+        }
+    }
+
     /// Vessel keys ordered latest-boarded first (for the selector).
     pub fn vessels_by_recency(&self) -> Vec<Arc<str>> {
         let mut keys: Vec<Arc<str>> = self.vessels.keys().cloned().collect();
@@ -849,6 +1441,49 @@ fn parse_swabbie_delta(body: &str) -> Option<i64> {
         return Some(-(n as i64));
     }
     None
+}
+
+/// The eight Brigand Kings (full in-game names). Each king's chants, victory
+/// line, reward chest, and winners-list entry all carry the full name, so we key
+/// categorization off the name rather than per-king chant text — robust across
+/// every king without a brittle chant table. (Roster from yppedia.)
+const BRIGAND_KINGS: &[&str] = &[
+    "Admiral Finius",
+    "Azarbad the Great",
+    "Barnabas the Pale",
+    "Brynhild Skullsplitter",
+    "Gretchen Goldfang",
+    "Madam Yu Jian",
+    "The Widow Queen",
+    "Vargas the Mad",
+];
+
+/// The first Brigand King whose full name appears in `text`, if any.
+fn find_brigand_king(text: &str) -> Option<&'static str> {
+    BRIGAND_KINGS.iter().copied().find(|k| text.contains(k))
+}
+
+/// Whether a line is player chatter (so king names mentioned in chat don't
+/// mislabel a fight).
+fn is_chat_line(body: &str) -> bool {
+    body.contains(" says,") || body.contains(" chats,") || body.contains(" tells ye,")
+}
+
+/// Parse a leading integer that may contain thousands separators, ignoring any
+/// trailing text: `"7,756 pieces of eight"` -> `7756`. Returns `None` if no
+/// leading digits are present.
+fn parse_num_commas(s: &str) -> Option<u64> {
+    let digits: String = s
+        .trim_start()
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == ',')
+        .filter(|c| *c != ',')
+        .collect();
+    if digits.is_empty() {
+        None
+    } else {
+        digits.parse().ok()
+    }
 }
 
 /// Split a `[HH:MM:SS] <body>` line into its parsed time and message body.
@@ -1322,5 +1957,159 @@ mod tests {
         let order = gs.vessels_by_recency();
         let order: Vec<&str> = order.iter().map(|a| a.as_ref()).collect();
         assert_eq!(order, vec!["First Fish", "Third Fish", "Second Fish"]);
+    }
+
+    #[test]
+    fn records_voyage_battle_and_loot() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line("[02:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[02:00:05] This vessel is now Pillaging, Average to Hard Barbarians.");
+        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        // A later move order must NOT start a second voyage.
+        gs.process_line("[02:05:00] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[02:06:06] You have been intercepted by the Modest Sild!");
+        gs.process_line(
+            "[02:09:51] Modest Sild has grappled Test Vessel. A melee breaks out between the crews!",
+        );
+        gs.process_line("[02:14:43] Game over.  Winners: Matetwo, Playerone, A swabbie.");
+        gs.process_line(
+            "[02:15:02] The victors plundered 7,756 pieces of eight and 9 units of goods from the defeated vessel.",
+        );
+        gs.process_line("[02:15:02] Ye received 576 pieces of eight as your initial cut of the booty!");
+        gs.process_line("[02:20:00] Playerone issued an order to put into port.");
+
+        let v = &gs.vessels["Test Vessel"];
+        assert!(v.current_voyage.is_none()); // promoted to completed at port
+        assert_eq!(v.voyages.len(), 1);
+        let voy = &v.voyages[0];
+        assert_eq!(voy.duration_secs(), Some(1190)); // 02:00:10 -> 02:20:00
+        assert_eq!(voy.battles.len(), 1);
+        let b = &voy.battles[0];
+        assert_eq!(b.enemy.as_deref(), Some("Modest Sild"));
+        assert!(!b.we_intercepted);
+        assert_eq!(b.outcome, BattleOutcome::Won);
+        assert_eq!(b.sea_secs(), Some(225)); // 02:06:06 -> 02:09:51
+        assert_eq!(b.boarding_secs(), Some(292)); // 02:09:51 -> 02:14:43
+        assert_eq!(b.total_secs(), Some(517));
+        assert_eq!(b.poe, Some(7_756));
+        assert_eq!(b.goods, Some(9));
+        assert_eq!(b.my_cut, Some(576));
+        assert_eq!(b.pirates, 2); // Matetwo + us
+        assert_eq!(b.swabbies, 1); // A swabbie
+    }
+
+    #[test]
+    fn records_loss_with_negative_poe() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[00:20:00] Going aboard the Boring Gar...");
+        gs.process_line("[00:20:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[00:20:49] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[00:20:49] You have been intercepted by the Boring Gar!");
+        gs.process_line("[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.");
+        gs.process_line(
+            "[00:33:11] The victors plundered 27,460 pieces of eight and 350 units of goods from the defeated vessel.",
+        );
+        let voy = gs.current_voyage().unwrap();
+        let b = voy.battles.last().unwrap();
+        assert_eq!(b.outcome, BattleOutcome::Lost);
+        assert_eq!(b.poe, Some(-27_460)); // we lost it to them
+        assert_eq!(b.goods, Some(350));
+    }
+
+    #[test]
+    fn intercept_then_disengage_is_disengaged() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[23:27:00] Going aboard the Sea Lord...");
+        gs.process_line("[23:27:01] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[23:27:02] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[23:27:23] You have been intercepted by the Lucky Mackerel!");
+        gs.process_line("[23:28:00] Lucky Mackerel disengaged from the battle.");
+        let voy = gs.current_voyage().unwrap();
+        assert_eq!(voy.battles.len(), 1);
+        assert_eq!(voy.battles[0].outcome, BattleOutcome::Disengaged);
+        assert!(voy.battles[0].grappled_at.is_none()); // never boarded
+        assert!(voy.current_battle.is_none());
+    }
+
+    #[test]
+    fn back_to_back_fights_both_recorded() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[00:20:00] Going aboard the War Frigate...");
+        gs.process_line("[00:20:01] This vessel is now Pillaging, Hard Barbarians.");
+        gs.process_line("[00:20:02] Playerone issued an order to set the vessel to sail.");
+        // Lose to the Boring Gar...
+        gs.process_line("[00:20:49] You have been intercepted by the Boring Gar!");
+        gs.process_line("[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.");
+        gs.process_line(
+            "[00:33:11] The victors plundered 27,460 pieces of eight and no goods from the defeated vessel.",
+        );
+        // ...then immediately re-engage the same vessel and win.
+        gs.process_line("[00:33:25] You intercepted the Boring Gar!");
+        gs.process_line("[00:44:00] Game over.  Winners: Playerone.");
+        gs.process_line(
+            "[00:44:01] The victors plundered 5,000 pieces of eight and 2 units of goods from the defeated vessel.",
+        );
+        let voy = gs.current_voyage().unwrap();
+        assert_eq!(voy.battles.len(), 2); // both kept (no confirm-window data loss)
+        assert_eq!(voy.battles[0].outcome, BattleOutcome::Lost);
+        assert_eq!(voy.battles[0].poe, Some(-27_460));
+        assert_eq!(voy.battles[0].goods, Some(0));
+        assert_eq!(voy.battles[1].outcome, BattleOutcome::Won);
+        assert!(voy.battles[1].we_intercepted);
+        assert_eq!(voy.battles[1].poe, Some(5_000));
+    }
+
+    #[test]
+    fn categorizes_brigand_king_and_defaults_to_brigand() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the War Frigate...");
+        gs.process_line("[01:00:01] This vessel is now Pillaging, Hard Barbarians.");
+        gs.process_line("[01:00:02] Playerone issued an order to set the vessel to sail.");
+        // An ordinary fight -> generic Brigand.
+        gs.process_line("[01:00:10] You intercepted the Fat Mackerel!");
+        gs.process_line("[01:02:00] Game over.  Winners: Playerone.");
+        // A king fight: engagement chant tags it, victory line confirms the name.
+        gs.process_line("[01:03:00] You have been intercepted by the Simple Ling!");
+        gs.process_line(
+            "[01:03:01] Brace yourself! Vargas the Mad and his barbaric horde are looking for a rumble!",
+        );
+        gs.process_line("[01:08:00] Game over.  Winners: Playerone.");
+        gs.process_line("[01:08:01] Vargas the Mad's ship disappears into the mists.");
+
+        let voy = gs.current_voyage().unwrap();
+        assert_eq!(voy.battles[0].category, BattleCategory::Brigand);
+        assert_eq!(
+            voy.battles[1].category,
+            BattleCategory::BrigandKing("Vargas the Mad".to_string())
+        );
+    }
+
+    #[test]
+    fn categorizes_vampirate_and_werewolf_heralds() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the War Frigate...");
+        gs.process_line("[01:00:01] This vessel is now Pillaging, Hard Barbarians.");
+        gs.process_line("[01:00:02] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[01:00:10] You intercepted the Bloodstained Tigerfish!");
+        gs.process_line(
+            "[01:00:11] Avast! Yer blood runs cold beneath a gathering gloom and the air is a-flutter with leathern wings! Guard yer throat, a Vampirate vessel closes in!",
+        );
+        gs.process_line("[01:02:00] Game over.  Winners: Playerone.");
+        gs.process_line("[01:03:00] You intercepted the Snarling Pike!");
+        gs.process_line(
+            "[01:03:01] Unearthly howling echos o'er the waves, moonlight glints off curving fangs and hungry eyes watch ye from the dark! Beware! Werewolves have caught yer scent!",
+        );
+        gs.process_line("[01:05:00] Game over.  Winners: Playerone.");
+
+        let voy = gs.current_voyage().unwrap();
+        assert_eq!(voy.battles[0].category, BattleCategory::Vampirate);
+        assert_eq!(voy.battles[1].category, BattleCategory::Werewolf);
     }
 }

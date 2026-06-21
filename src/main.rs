@@ -28,6 +28,9 @@ mod ratelimit;
 mod ships;
 mod startup;
 mod utils;
+mod voyage_persist;
+mod voyage_stats;
+mod voyage_ui;
 
 use api::{CachedOffers, Commodity, SavedCommodity};
 use app::AppShell;
@@ -202,6 +205,13 @@ async fn main() -> io::Result<()> {
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
+    // Voyage history: a `voyages.json` sibling of the cache file (per-user-
+    // behind-keyboard). Load it now so it's available across sessions; new runs
+    // are appended when the user confirms the save prompt.
+    shell.voyages_path = args.cache.as_deref().map(|p| p.with_file_name("voyages.json"));
+    if let Some(path) = &shell.voyages_path {
+        shell.voyage_history = voyage_persist::load(path);
+    }
     shell.profits.show_co_rate = args.pay_commanding_officer;
     shell.profits.show_donation = args.donate_to_crew;
     // Pre-seed pirate stats from the cache. They're refreshed lazily: a cached
@@ -304,7 +314,7 @@ async fn main() -> io::Result<()> {
         }
 
         while let Ok(line) = chat_rx.try_recv() {
-            shell.chatlog.process_line(&line);
+            shell.feed_chat_line(&line);
         }
 
         // Absorb completed pirate fetches, folding each into the cache. Clear the

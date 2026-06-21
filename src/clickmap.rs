@@ -47,6 +47,13 @@ pub enum ClickTarget {
     JobberSkillDistCell { th: u8, carp: u8 },
     /// The backdrop behind the skill-distribution popup; clicking it closes.
     JobberSkillDistClose,
+    /// The "save voyage to history" prompt opener on the Voyage Statistics page.
+    VoyageSaveOpen,
+    /// Buttons inside the save/discard prompt.
+    VoyageSaveConfirm,
+    VoyageSaveDiscard,
+    /// The backdrop / cancel of the save/discard prompt.
+    VoyageSaveCancel,
 }
 
 #[derive(Clone)]

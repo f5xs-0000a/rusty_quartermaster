@@ -15,7 +15,7 @@ use crate::jobbers::{
     VOYAGE_TYPES,
 };
 use crate::profits::ProfitsApp;
-use crate::utils::{offset_title, text_similarity};
+use crate::utils::text_similarity;
 
 // ---------------------------------------------------------------------------
 // App routing
@@ -179,28 +179,6 @@ pub fn rebuild_island_list(
     islands
 }
 
-/// Inert "coming soon" page for the Voyage Statistics app. Navigable (the top
-/// bar can land on it) but draws nothing interactive yet.
-fn render_voyage_placeholder(frame: &mut Frame, area: Rect) {
-    let block = Block::default().borders(Borders::ALL).title(offset_title("Voyage Statistics").0);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let para = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(
-            "Voyage Statistics — coming soon.",
-            Style::default().bold(),
-        )),
-        Line::from(Span::styled(
-            "Per-voyage stats (Atlantis, Cursed Isles, Vampirates, …) will live here.",
-            Style::default().fg(Color::DarkGray),
-        )),
-    ])
-    .centered();
-    frame.render_widget(para, inner);
-}
-
 /// The Exit app: a single centered prompt. Pressing Enter or Esc while it is the
 /// open app quits the program.
 fn render_exit(frame: &mut Frame, area: Rect) {
@@ -277,6 +255,11 @@ pub struct AppShell {
     pub chatlog: GameState,
     pub pirate_cache: PirateCache,
     pub jobbers_ui: JobbersUi,
+    pub voyage_ui: crate::voyage_ui::VoyageStatsUi,
+    /// Persisted voyage history (loaded from / written to `voyages_path`).
+    pub voyage_history: crate::voyage_persist::SavedVoyages,
+    /// Where voyage history lives on disk (a `voyages.json` sibling of `--cache`).
+    pub voyages_path: Option<std::path::PathBuf>,
     // click regions rebuilt each render
     click_regions: Vec<ClickRegion>,
 }
@@ -298,6 +281,9 @@ impl AppShell {
             chatlog: GameState::new(),
             pirate_cache: PirateCache::new(),
             jobbers_ui: JobbersUi::default(),
+            voyage_ui: crate::voyage_ui::VoyageStatsUi::default(),
+            voyage_history: crate::voyage_persist::SavedVoyages::default(),
+            voyages_path: None,
             click_regions: Vec::new(),
         }
     }
@@ -360,10 +346,12 @@ impl AppShell {
                 );
             }
             AppId::Damage => {
+                let our_pirates = self.chatlog.current_pirates();
                 crate::damage::ui::render(
                     frame,
                     content_area,
                     &mut self.damage,
+                    our_pirates,
                     content_focused,
                     &mut self.click_regions,
                 );
@@ -380,7 +368,15 @@ impl AppShell {
                 );
             }
             AppId::Voyage => {
-                render_voyage_placeholder(frame, content_area);
+                let view = self.build_voyage_view();
+                crate::voyage_ui::render(
+                    frame,
+                    content_area,
+                    &view,
+                    &mut self.voyage_ui,
+                    content_focused,
+                    &mut self.click_regions,
+                );
             }
             AppId::Exit => {
                 render_exit(frame, content_area);
@@ -476,7 +472,7 @@ impl AppShell {
             }
             AppId::Damage => self.damage.handle_key(key),
             AppId::Chatlog => self.handle_jobbers_key(key),
-            AppId::Voyage => Self::handle_voyage_key(key),
+            AppId::Voyage => self.handle_voyage_key(key),
             // Handled above (Exit-app keys quit / return to the bar).
             AppId::Exit => InputResult::Consumed,
         };
@@ -511,7 +507,8 @@ impl AppShell {
                     || self.jobbers_ui.trophy_popup.is_some()
                     || self.jobbers_ui.skill_dist_popup.is_some()
             }
-            AppId::Voyage | AppId::Exit => false,
+            AppId::Voyage => self.voyage_ui.prompt.is_some(),
+            AppId::Exit => false,
         }
     }
 
@@ -557,12 +554,225 @@ impl AppShell {
         self.profits.focus_table_top();
     }
 
-    /// The Voyage Statistics page is inert: ↑ or Esc returns focus to the bar,
-    /// everything else is ignored.
-    fn handle_voyage_key(key: KeyEvent) -> InputResult {
+    /// Voyage Statistics keys. With the save/discard prompt open it's modal
+    /// (←/→ select, Enter confirm, S/D shortcut, Esc cancel). Otherwise: Esc
+    /// returns to the bar, ↑/↓ (and PageUp/Down) scroll, S/D open the prompt.
+    fn handle_voyage_key(&mut self, key: KeyEvent) -> InputResult {
+        use crate::voyage_ui::SaveChoice;
+
+        if let Some(choice) = self.voyage_ui.prompt {
+            match key.code {
+                KeyCode::Esc => self.voyage_ui.prompt = None,
+                KeyCode::Left | KeyCode::Right => {
+                    self.voyage_ui.prompt = Some(match choice {
+                        SaveChoice::Save => SaveChoice::Discard,
+                        SaveChoice::Discard => SaveChoice::Save,
+                    });
+                }
+                KeyCode::Enter => {
+                    match choice {
+                        SaveChoice::Save => self.save_displayed_voyage(),
+                        SaveChoice::Discard => self.discard_displayed_voyage(),
+                    }
+                    self.voyage_ui.prompt = None;
+                }
+                KeyCode::Char('s' | 'S') => {
+                    self.save_displayed_voyage();
+                    self.voyage_ui.prompt = None;
+                }
+                KeyCode::Char('d' | 'D') => {
+                    self.discard_displayed_voyage();
+                    self.voyage_ui.prompt = None;
+                }
+                _ => {}
+            }
+            return InputResult::Consumed;
+        }
+
         match key.code {
-            KeyCode::Up | KeyCode::Esc => InputResult::Exit,
+            KeyCode::Esc => InputResult::Exit,
+            KeyCode::Char('s' | 'S') => {
+                self.open_voyage_save_prompt();
+                InputResult::Consumed
+            }
+            KeyCode::Char('d' | 'D') => {
+                if self.build_voyage_view().saveable {
+                    self.voyage_ui.prompt = Some(SaveChoice::Discard);
+                }
+                InputResult::Consumed
+            }
+            KeyCode::Up => {
+                if self.voyage_ui.scroll == 0 {
+                    InputResult::Exit
+                } else {
+                    self.voyage_ui.scroll -= 1;
+                    InputResult::Consumed
+                }
+            }
+            KeyCode::Down => {
+                self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(1);
+                InputResult::Consumed
+            }
+            KeyCode::PageUp => {
+                self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_sub(10);
+                InputResult::Consumed
+            }
+            KeyCode::PageDown => {
+                self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(10);
+                InputResult::Consumed
+            }
             _ => InputResult::Consumed,
+        }
+    }
+
+    /// Build the computed view for the Voyage Statistics page: resolve which
+    /// vessel/voyage to show, the chosen ship's cannon size, and the aggregated
+    /// battle + consumption stats. Shows the current vessel's live run, or its
+    /// most recent completed run.
+    fn build_voyage_view(&self) -> crate::voyage_ui::VoyageView {
+        use crate::voyage_ui::VoyageView;
+
+        // Vessel: the jobbers selection if still live, else the latest boarded.
+        let key = self
+            .jobbers_ui
+            .selected
+            .clone()
+            .filter(|k| self.chatlog.vessels.contains_key(k))
+            .or_else(|| self.chatlog.vessels_by_recency().into_iter().next());
+        let vessel = key.as_ref().and_then(|k| self.chatlog.vessels.get(k));
+        let voyage = vessel.and_then(|v| v.current_voyage.as_ref().or_else(|| v.voyages.last()));
+
+        // Chosen ship -> cannon size + display label.
+        let cannon_size = key
+            .as_ref()
+            .and_then(|k| self.jobbers_ui.ship_types.get(k).copied())
+            .and_then(|i| crate::ships::SHIPS.get(i))
+            .map(|s| s.cannon_size);
+        let cannon_label = cannon_size.map(|sz| {
+            match sz {
+                crate::ships::CannonSize::Small => "Small",
+                crate::ships::CannonSize::Medium => "Medium",
+                crate::ships::CannonSize::Large => "Large",
+            }
+            .to_string()
+        });
+        let vessel_name = key.as_ref().map(|k| k.to_string());
+
+        let Some(voyage) = voyage else {
+            return VoyageView {
+                has_voyage: false,
+                vessel: vessel_name,
+                job: None,
+                ported: false,
+                elapsed_secs: None,
+                cannon_label,
+                saveable: false,
+                battle: Default::default(),
+                consumption: Default::default(),
+            };
+        };
+
+        let ported = voyage.ported_at.is_some();
+        // Final duration if ported, else live elapsed against the log clock.
+        let elapsed_secs = match (voyage.sailed_at, voyage.ported_at.or_else(|| self.chatlog.now())) {
+            (Some(start), Some(end)) => Some((end - start).num_seconds()),
+            _ => None,
+        };
+        let job = voyage
+            .job_kind
+            .as_ref()
+            .or_else(|| vessel.and_then(|v| v.job_kind.as_ref()))
+            .map(|j| j.to_string());
+
+        let consumption = crate::voyage_stats::consumption_stats(
+            voyage,
+            &self.profits.rows,
+            &self.commodities,
+            cannon_size,
+        );
+        let battle = crate::voyage_stats::battle_stats(voyage);
+
+        VoyageView {
+            has_voyage: true,
+            vessel: vessel_name,
+            job,
+            ported,
+            elapsed_secs,
+            cannon_label,
+            saveable: ported && !voyage.saved,
+            battle,
+            consumption,
+        }
+    }
+
+    /// Feed one live chat-log line. If a sea battle resolves on this line and the
+    /// Damage calculator has hits entered, snapshot its advantage onto that battle
+    /// (Left = our ship, Right = the foe) and clear the counts for the next fight.
+    pub fn feed_chat_line(&mut self, line: &str) {
+        self.chatlog.process_line(line);
+        if self.chatlog.take_resolved() && self.damage.has_input() {
+            let our_pirates = self.chatlog.current_pirates();
+            let dmg = self.damage.advantage_dmg();
+            let crew = self.damage.advantage_crew(our_pirates);
+            self.chatlog.set_last_battle_advantage(dmg, crew);
+            self.damage.clear_counts();
+        }
+    }
+
+    /// The vessel key whose voyage the page is currently showing (mirrors the
+    /// resolution in [`Self::build_voyage_view`]).
+    fn displayed_vessel_key(&self) -> Option<std::sync::Arc<str>> {
+        self.jobbers_ui
+            .selected
+            .clone()
+            .filter(|k| self.chatlog.vessels.contains_key(k))
+            .or_else(|| self.chatlog.vessels_by_recency().into_iter().next())
+    }
+
+    /// Open the save/discard prompt if the displayed run is finished and unsaved.
+    fn open_voyage_save_prompt(&mut self) {
+        if self.build_voyage_view().saveable {
+            self.voyage_ui.prompt = Some(crate::voyage_ui::SaveChoice::Save);
+        }
+    }
+
+    /// Persist the displayed (finished) voyage to history + disk, and mark it
+    /// saved so it isn't offered again.
+    fn save_displayed_voyage(&mut self) {
+        let Some(key) = self.displayed_vessel_key() else {
+            return;
+        };
+        let vessel_name = key.to_string();
+        let saved = {
+            let Some(v) = self.chatlog.vessels.get_mut(&key) else {
+                return;
+            };
+            // The saveable run is always the latest completed (ported) one.
+            let Some(voyage) = v.voyages.last_mut().filter(|vy| vy.ported_at.is_some()) else {
+                return;
+            };
+            if voyage.saved {
+                return;
+            }
+            let saved = crate::voyage_persist::from_voyage(voyage, Some(&vessel_name));
+            voyage.saved = true;
+            saved
+        };
+        self.voyage_history.voyages.push(saved);
+        if let Some(path) = &self.voyages_path {
+            crate::voyage_persist::save(path, &self.voyage_history);
+        }
+    }
+
+    /// Dismiss the displayed (finished) voyage without persisting it.
+    fn discard_displayed_voyage(&mut self) {
+        let Some(key) = self.displayed_vessel_key() else {
+            return;
+        };
+        if let Some(v) = self.chatlog.vessels.get_mut(&key) {
+            if let Some(voyage) = v.voyages.last_mut().filter(|vy| vy.ported_at.is_some()) {
+                voyage.saved = true;
+            }
         }
     }
 
@@ -1430,6 +1640,18 @@ impl AppShell {
             ClickTarget::JobberSkillDistClose => {
                 self.jobbers_ui.skill_dist_popup = None;
             }
+            ClickTarget::VoyageSaveOpen => self.open_voyage_save_prompt(),
+            ClickTarget::VoyageSaveConfirm => {
+                self.save_displayed_voyage();
+                self.voyage_ui.prompt = None;
+            }
+            ClickTarget::VoyageSaveDiscard => {
+                self.discard_displayed_voyage();
+                self.voyage_ui.prompt = None;
+            }
+            ClickTarget::VoyageSaveCancel => {
+                self.voyage_ui.prompt = None;
+            }
         }
     }
 
@@ -1539,7 +1761,14 @@ impl AppShell {
                 };
                 self.jobbers_pane_select_delta(pane, delta.signum());
             }
-            AppId::Voyage | AppId::Exit => {}
+            AppId::Voyage => {
+                if delta < 0 {
+                    self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_sub(1);
+                } else {
+                    self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(1);
+                }
+            }
+            AppId::Exit => {}
         }
     }
 
