@@ -39,21 +39,57 @@ pub const UNPOISON_TOOLTIP: [&str; 2] = [
     "Press Enter to ignore the warnings.",
 ];
 
-/// Top Jobbers skill columns for a Pillage: gunners, navigators, and battle
-/// navigators. Other voyage types prioritise different skills — see
-/// [`VoyageType::top_jobber_skills`].
-const PILLAGE_TOP_JOBBERS: &[Skill] = &[
-    Skill::Gunning,
-    Skill::Navigating,
-    Skill::BattleNavigation,
+/// A Top Jobbers column: the skill(s) it ranks aboard jobbers by, plus an optional
+/// explicit header. A single-skill column is the common case; a column with several
+/// skills (e.g. Sail+Rig) ranks each jobber by their *best* of those skills and
+/// flags which one with a marker letter — see [`rank_columns`].
+pub struct JobberColumn {
+    /// Header text; `None` derives it from the lone skill's short label.
+    label: Option<&'static str>,
+    /// The skills this column considers, in tie-irrelevant order; never empty.
+    skills: &'static [Skill],
+}
+
+impl JobberColumn {
+    /// The column header: the explicit label, else the single skill's short label.
+    fn header(&self) -> &'static str {
+        match self.label {
+            Some(l) => l,
+            None => self.skills[0].short_label(),
+        }
+    }
+
+    /// Whether this column merges several skills (so its rows carry a marker).
+    fn merged(&self) -> bool {
+        self.skills.len() > 1
+    }
+}
+
+/// Top Jobbers columns for a Pillage: gunners, navigators, and battle navigators.
+/// Other voyage types prioritise different skills — see [`VoyageType::top_jobbers`].
+const PILLAGE_TOP_JOBBERS: &[JobberColumn] = &[
+    JobberColumn { label: None, skills: &[Skill::Gunning] },
+    JobberColumn { label: None, skills: &[Skill::Navigating] },
+    JobberColumn { label: None, skills: &[Skill::BattleNavigation] },
 ];
 
-/// Top Jobbers skill columns for an Atlantis run: treasure haulers, gunners, and
-/// battle navigators.
-const ATLANTIS_TOP_JOBBERS: &[Skill] = &[
-    Skill::TreasureHaul,
-    Skill::Gunning,
-    Skill::BattleNavigation,
+/// Top Jobbers columns for an Atlantis run: treasure haulers, gunners, and battle
+/// navigators.
+const ATLANTIS_TOP_JOBBERS: &[JobberColumn] = &[
+    JobberColumn { label: None, skills: &[Skill::TreasureHaul] },
+    JobberColumn { label: None, skills: &[Skill::Gunning] },
+    JobberColumn { label: None, skills: &[Skill::BattleNavigation] },
+];
+
+/// Top Jobbers columns for a Cursed Isles run: foragers and battle navigators, the
+/// two merged station columns Sail+Rig (Sailing/Rigging) and Carp+Patch
+/// (Carpentry/Patching), and bilgers.
+const CURSED_ISLES_TOP_JOBBERS: &[JobberColumn] = &[
+    JobberColumn { label: None, skills: &[Skill::Foraging] },
+    JobberColumn { label: None, skills: &[Skill::BattleNavigation] },
+    JobberColumn { label: Some("Sail+Rig"), skills: &[Skill::Sailing, Skill::Rigging] },
+    JobberColumn { label: Some("Carp+Patch"), skills: &[Skill::Carpentry, Skill::Patching] },
+    JobberColumn { label: None, skills: &[Skill::Bilging] },
 ];
 
 /// Skills in each family, in yoweb display order. The pirate-stats popup renders
@@ -87,11 +123,11 @@ const CAROUSING_SKILLS: &[Skill] = &[
     Skill::Poker,
 ];
 
-/// The kind of voyage being crewed. Pillage and Atlantis are implemented; the
-/// rest are picker stubs that fall back to a "coming soon" placeholder. Each type
-/// drives its own Top Jobbers skill columns ([`VoyageType::top_jobber_skills`])
-/// and bottom panes ([`VoyageType::panes`]), so the enum can grow without
-/// disturbing the existing data model.
+/// The kind of voyage being crewed. Pillage, Atlantis, and Cursed Isles are
+/// implemented; the rest are picker stubs that fall back to a "coming soon"
+/// placeholder. Each type drives its own Top Jobbers columns
+/// ([`VoyageType::top_jobbers`]) and bottom panes ([`VoyageType::panes`]), so the
+/// enum can grow without disturbing the existing data model.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VoyageType {
     #[default]
@@ -124,35 +160,38 @@ impl VoyageType {
     }
 
     /// Whether the full jobbers layout (Top Jobbers + the panes) is wired up for
-    /// this voyage type. Pillage and Atlantis are, for now.
+    /// this voyage type. Pillage, Atlantis, and Cursed Isles are, for now.
     pub fn implemented(self) -> bool {
-        matches!(self, VoyageType::Pillage | VoyageType::Atlantis)
+        matches!(
+            self,
+            VoyageType::Pillage | VoyageType::Atlantis | VoyageType::CursedIsles
+        )
     }
 
-    /// The skills the Top Jobbers panel ranks for this voyage type, one column
-    /// each (in display order). Drives both who counts as a top jobber and the
-    /// panel's columns; new voyage types override this with the skills they need.
-    pub fn top_jobber_skills(self) -> &'static [Skill] {
+    /// The Top Jobbers columns this voyage type ranks, in display order. Each is
+    /// one or more skills (merged columns rank by a jobber's best of them); new
+    /// voyage types override this with the columns they need.
+    pub fn top_jobbers(self) -> &'static [JobberColumn] {
         match self {
             VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
             VoyageType::Atlantis => ATLANTIS_TOP_JOBBERS,
-            // Unimplemented types fall back to Pillage's skills for now; they
+            VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
+            // Unimplemented types fall back to Pillage's columns for now; they
             // render the "coming soon" placeholder instead of the panel anyway.
-            // Give each its own skill set as it gets wired up.
-            VoyageType::CursedIsles | VoyageType::Vampirates | VoyageType::Vikings => {
-                PILLAGE_TOP_JOBBERS
-            }
+            // Give each its own columns as it gets wired up.
+            VoyageType::Vampirates | VoyageType::Vikings => PILLAGE_TOP_JOBBERS,
         }
     }
 
     /// The bottom panes this voyage type shows, in left-to-right order. Pillage
-    /// gets all three; Atlantis drops Greedy. Unimplemented types get none (they
-    /// render the "coming soon" placeholder instead).
+    /// gets all three; Atlantis and Cursed Isles drop Greedy. Unimplemented types
+    /// get none (they render the "coming soon" placeholder instead).
     pub fn panes(self) -> &'static [JobberPane] {
         match self {
             VoyageType::Pillage => PILLAGE_PANES,
             VoyageType::Atlantis => ATLANTIS_PANES,
-            VoyageType::CursedIsles | VoyageType::Vampirates | VoyageType::Vikings => &[],
+            VoyageType::CursedIsles => CURSED_ISLES_PANES,
+            VoyageType::Vampirates | VoyageType::Vikings => &[],
         }
     }
 
@@ -169,6 +208,9 @@ const PILLAGE_PANES: &[JobberPane] =
 
 /// Bottom panes for an Atlantis run: aboard and planked, no greedy tally.
 const ATLANTIS_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
+
+/// Bottom panes for a Cursed Isles run: aboard and planked, same as Atlantis.
+const CURSED_ISLES_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
 
 /// A pirate pane along the bottom of the layout. Which panes show is voyage-type
 /// dependent ([`VoyageType::panes`]); Pillage shows all three.
@@ -801,14 +843,10 @@ pub fn render(
     // ---- Top Jobbers + panes sizing (only used when the layout is implemented) ----
     // Top Jobbers caps at 5 per column; an explicit leaderboard size overrides it.
     let lb_limit = ui.leaderboard_size.or(Some(5));
-    let columns = ui.voyage_type.top_jobber_skills();
-    let ranked: Vec<Vec<(String, Experience, Standing)>> = columns
-        .iter()
-        .map(|skill| rank_for_skill(&aboard_set, cache, skill, lb_limit))
-        .collect();
-    let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
+    let top_columns = rank_columns(ui.voyage_type.top_jobbers(), &aboard_set, cache, lb_limit);
+    let top_rows = top_columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
-    let top_panel_w = top_panel_width(&ranked, columns);
+    let top_panel_w = top_panel_width(&top_columns);
 
     // The Aboard pane gains dragoon tally footers on voyage types that spawn them.
     let dragoon_w = if ui.voyage_type.tracks_dragoons() {
@@ -949,7 +987,7 @@ pub fn render(
         if show_atlantis_stats {
             render_atlantis_stats(frame, rows[1], dragoon_low, dragoon_high, focused);
         }
-        render_top_panel(frame, rows[2], &ranked, columns, focused);
+        render_top_panel(frame, rows[2], &top_columns, focused);
         render_panes(
             frame, rows[3], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
             panes, &pane_widths, regions,
@@ -1497,74 +1535,107 @@ fn greedy_line(name: &str, total: u32, current: u32, width: usize, style: Style)
     ])
 }
 
-/// Currently-aboard jobbers ranked for a skill, by standing then experience then
-/// name. Pirates without fetched stats are skipped. `limit` caps the list length;
-/// `None` returns the whole ranked list.
-fn rank_for_skill(
-    aboard: &HashSet<String>,
-    cache: &PirateCache,
-    skill: &Skill,
-    limit: Option<usize>,
-) -> Vec<(String, Experience, Standing)> {
-    let mut ranked: Vec<(String, Experience, Standing)> = aboard
-        .iter()
-        .filter_map(|n| {
-            cache
-                .get(n)
-                .and_then(|p| p.skills.get(skill))
-                .map(|r| (n.clone(), r.experience, r.standing))
-        })
-        .collect();
-    ranked.sort_by(|a, b| {
-        b.2.cmp(&a.2)
-            .then(b.1.cmp(&a.1))
-            .then_with(|| a.0.cmp(&b.0))
-    });
-    if let Some(n) = limit {
-        ranked.truncate(n);
-    }
-    ranked
+/// One jobber's standing within a column: their best skill among the column's set
+/// (by standing, then experience), plus that skill's marker for merged columns.
+struct RankedJobber {
+    name: String,
+    experience: Experience,
+    standing: Standing,
+    /// The winning skill's marker (e.g. `C`/`P`), set only for merged columns.
+    marker: Option<char>,
 }
 
-/// Per-skill column widths for the Top Jobbers panel: each is the wider of its
-/// header and its widest `name + gap + code` row.
-fn top_panel_col_widths(
-    ranked: &[Vec<(String, Experience, Standing)>],
-    columns: &[Skill],
-) -> Vec<u16> {
+/// A Top Jobbers column paired with its ranked jobbers — all the sizing and render
+/// helpers need, so they take one slice instead of parallel column/row vecs.
+struct RankedColumn {
+    header: &'static str,
+    /// Whether rows carry a marker letter (true for merged columns).
+    marked: bool,
+    rows: Vec<RankedJobber>,
+}
+
+/// Width of a column's code cell: `EEE/SSS`, plus a space + marker for merged
+/// columns.
+fn code_cell_width(marked: bool) -> usize {
+    CODE_LEN + if marked { 2 } else { 0 }
+}
+
+/// Rank the aboard jobbers for each column. Within a column a jobber is scored by
+/// their *best* of the column's skills (by standing, then experience); a merged
+/// column also records which skill won, via its marker. Pirates without any of a
+/// column's skills fetched are skipped. `limit` caps each column; `None` is
+/// uncapped.
+fn rank_columns(
+    columns: &[JobberColumn],
+    aboard: &HashSet<String>,
+    cache: &PirateCache,
+    limit: Option<usize>,
+) -> Vec<RankedColumn> {
     columns
         .iter()
-        .enumerate()
-        .map(|(i, skill)| {
-            let name_w = ranked[i]
+        .map(|col| {
+            let mut rows: Vec<RankedJobber> = aboard
                 .iter()
-                .map(|(n, _, _)| n.chars().count())
-                .max()
-                .unwrap_or(0);
-            (name_w + NAME_CODE_GAP + CODE_LEN).max(skill.short_label().chars().count()) as u16
+                .filter_map(|n| {
+                    let info = cache.get(n)?;
+                    // Best of the column's skills for this pirate: highest standing,
+                    // then experience.
+                    let (skill, rec) = col
+                        .skills
+                        .iter()
+                        .filter_map(|s| info.skills.get(s).map(|r| (s, r)))
+                        .max_by(|a, b| {
+                            a.1.standing
+                                .cmp(&b.1.standing)
+                                .then(a.1.experience.cmp(&b.1.experience))
+                        })?;
+                    Some(RankedJobber {
+                        name: n.clone(),
+                        experience: rec.experience,
+                        standing: rec.standing,
+                        marker: col.merged().then(|| skill.marker()),
+                    })
+                })
+                .collect();
+            rows.sort_by(|a, b| {
+                b.standing
+                    .cmp(&a.standing)
+                    .then(b.experience.cmp(&a.experience))
+                    .then_with(|| a.name.cmp(&b.name))
+            });
+            if let Some(n) = limit {
+                rows.truncate(n);
+            }
+            RankedColumn { header: col.header(), marked: col.merged(), rows }
+        })
+        .collect()
+}
+
+/// Per-column outer widths for the Top Jobbers panel: each is the wider of its
+/// header and its widest `name + gap + code (+ marker)` row.
+fn top_panel_col_widths(columns: &[RankedColumn]) -> Vec<u16> {
+    columns
+        .iter()
+        .map(|c| {
+            let name_w = c.rows.iter().map(|j| j.name.chars().count()).max().unwrap_or(0);
+            (name_w + NAME_CODE_GAP + code_cell_width(c.marked)).max(c.header.chars().count()) as u16
         })
         .collect()
 }
 
 /// The Top Jobbers panel's natural outer width: columns + gaps + padding +
 /// borders, with a floor so the title stays readable.
-fn top_panel_width(ranked: &[Vec<(String, Experience, Standing)>], columns: &[Skill]) -> u16 {
+fn top_panel_width(columns: &[RankedColumn]) -> u16 {
     // Floor so the title stays readable when no jobbers have fetched stats yet.
     const FLOOR: u16 = offset_title_width("Top Jobbers");
     let gaps = columns.len().saturating_sub(1) as u16 * COLUMN_GAP;
-    let inner_w = top_panel_col_widths(ranked, columns).iter().sum::<u16>() + gaps;
+    let inner_w = top_panel_col_widths(columns).iter().sum::<u16>() + gaps;
     (inner_w + 4).max(FLOOR)
 }
 
-fn render_top_panel(
-    frame: &mut Frame,
-    region: Rect,
-    ranked: &[Vec<(String, Experience, Standing)>],
-    columns: &[Skill],
-    focused: bool,
-) {
+fn render_top_panel(frame: &mut Frame, region: Rect, columns: &[RankedColumn], focused: bool) {
     // Size each column to its content: max(header, widest name + gap + code).
-    let col_w: Vec<u16> = top_panel_col_widths(ranked, columns);
+    let col_w: Vec<u16> = top_panel_col_widths(columns);
 
     // The panel fills its region: the region's width was derived from this
     // panel's natural width back in `render`, so it already hugs the content.
@@ -1592,22 +1663,28 @@ fn render_top_panel(
     constraints.push(Constraint::Fill(1));
     let cols = Layout::horizontal(constraints).split(inner);
 
-    for (ci, skill) in columns.iter().enumerate() {
-        let name_w = (col_w[ci] as usize).saturating_sub(NAME_CODE_GAP + CODE_LEN);
+    for (ci, column) in columns.iter().enumerate() {
+        let name_w =
+            (col_w[ci] as usize).saturating_sub(NAME_CODE_GAP + code_cell_width(column.marked));
 
-        let mut lines: Vec<Line> = Vec::with_capacity(ranked[ci].len() + 1);
+        let mut lines: Vec<Line> = Vec::with_capacity(column.rows.len() + 1);
         lines.push(
-            Line::from(Span::styled(skill.short_label(), Style::default().bold().underlined()))
-                .centered(),
+            Line::from(Span::styled(column.header, Style::default().bold().underlined())).centered(),
         );
-        for (name, exp, standing) in &ranked[ci] {
-            lines.push(Line::from(vec![
-                Span::raw(format!("{:<name_w$}", truncate(name, name_w))),
+        for j in &column.rows {
+            let mut spans = vec![
+                Span::raw(format!("{:<name_w$}", truncate(&j.name, name_w))),
                 Span::raw(" ".repeat(NAME_CODE_GAP)),
-                Span::styled(experience_abbr(*exp), experience_style(*exp)),
+                Span::styled(experience_abbr(j.experience), experience_style(j.experience)),
                 Span::raw("/"),
-                Span::styled(standing_abbr(*standing), standing_style(*standing)),
-            ]));
+                Span::styled(standing_abbr(j.standing), standing_style(j.standing)),
+            ];
+            // Merged columns flag which puzzle the jobber is strongest at.
+            if let Some(m) = j.marker {
+                spans.push(Span::raw(" "));
+                spans.push(Span::styled(m.to_string(), Style::default().fg(Color::DarkGray)));
+            }
+            lines.push(Line::from(spans));
         }
 
         // Columns are laid out as [Fill, col, gap, col, gap, …, Fill] — the real

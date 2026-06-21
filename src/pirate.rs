@@ -333,6 +333,13 @@ impl Skill {
             Weaving => "Weaving",
         }
     }
+
+    /// A single-letter marker for the skill, used by merged Top Jobbers columns to
+    /// flag which of the column's puzzles a jobber is strongest at (e.g. `C` for
+    /// Carpentry, `P` for Patching, `S` for Sailing, `R` for Rigging).
+    pub fn marker(&self) -> char {
+        self.short_label().chars().next().unwrap_or('?')
+    }
 }
 
 impl CrewRank {
