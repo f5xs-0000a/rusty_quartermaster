@@ -1,16 +1,22 @@
 //! Rendering for the **Voyage Statistics** page (the entire app body).
 //!
-//! Layout: scrollable stat sections (Timing / Loot / Enemies / Advantage /
-//! Consumption) on top, a strip of three selectable mini-charts below, and a
-//! pinned footer. Charts (PoE box-&-whiskers, PoE-per-fight bars, total-value
-//! point-vs-box — each this voyage vs historical) enlarge to a popup. The page
-//! shows the current vessel's live or most-recent-completed run. All figures are
-//! computed up-front (see [`crate::voyage::stats`]) and handed in via
-//! [`VoyageView`]; this module is pure rendering. See the
+//! Layout: a centered, scrolling body — header, the Sea Battles table, the stat
+//! sections (Timing / Loot / Enemies / Advantage / Consumption), then the three
+//! charts as full-width bordered boxes — over a pinned footer, with a focus-bound
+//! tooltip strip below the whole widget. The stat numbers and the charts form one
+//! focus chain (↑/↓): pressing Down off the last number focuses the first chart.
+//! The body scrolls to keep the focused item visible; because the chart boxes are
+//! bordered, the body is rendered into an offscreen [`Buffer`] and the visible
+//! window blitted, so partially-scrolled boxes clip cleanly. Charts (PoE
+//! box-&-whiskers, PoE-per-fight bars, total-value point-vs-box — each this
+//! voyage vs historical) enlarge to a popup on Enter. The page shows the current
+//! vessel's live or most-recent-completed run. All figures are computed up-front
+//! (see [`crate::voyage::stats`]) and handed in via [`VoyageView`]. See the
 //! `voyage-statistics-model` memory.
 
+use ratatui::buffer::Buffer;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph};
+use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::offset_title;
@@ -18,6 +24,17 @@ use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, ConsumptionStats};
 
 /// The three charts, in display order.
 pub const CHART_TITLES: [&str; 3] = ["PoE won", "PoE per fight", "Total value"];
+
+/// One-liners shown below the widget when a chart is focused (parallel to
+/// [`CHART_TITLES`]).
+const CHART_TOOLTIPS: [&str; 3] = [
+    "Pieces of eight per won fight — this voyage's spread vs history. Enter to enlarge.",
+    "PoE of each won fight (oldest first, newest last) vs a historical box. Enter to enlarge.",
+    "This voyage's net value against past voyages. Enter to enlarge.",
+];
+
+/// Height in rows of each chart's bordered box in the scrolling body.
+const CHART_H: u16 = 7;
 
 /// Which button the save/discard prompt has focused.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -29,12 +46,19 @@ pub enum SaveChoice {
 /// Persistent UI state for the page (mouse/keyboard-driven).
 #[derive(Default)]
 pub struct VoyageStatsUi {
-    /// Vertical scroll offset, in lines.
+    /// Vertical scroll offset, in rows. Driven by [`Self::focus`] — the body
+    /// auto-scrolls to keep the focused item visible.
     pub scroll: u16,
+    /// Focused item index. Indices `0..n_stats` are the in-body focusables (the
+    /// Sea Battles section, then the Timing-onward stat numbers); `n_stats..
+    /// n_stats+3` are the three charts. The focused item's tooltip shows below
+    /// the widget.
+    pub focus: usize,
+    /// Number of non-chart focusables in the last render — the boundary at which
+    /// [`Self::focus`] crosses into the charts. Set by `render`.
+    pub n_stats: usize,
     /// When `Some`, the save/discard prompt is open with this button focused.
     pub prompt: Option<SaveChoice>,
-    /// Selected mini-chart index (0..3).
-    pub chart_sel: usize,
     /// When `Some(i)`, chart `i` is enlarged in a popup.
     pub chart_popup: Option<usize>,
 }
@@ -58,12 +82,13 @@ pub struct ChartData {
 /// module stays free of app-state plumbing.
 pub struct VoyageView {
     pub has_voyage: bool,
-    /// Vessel name shown in the subtitle.
+    /// Vessel name — the centered headline.
     pub vessel: Option<String>,
-    /// Job kind in force (e.g. "Pillaging, Average to Hard Barbarians").
-    pub job: Option<String>,
-    /// Whether the run has ported (finalized) vs. still at sea.
-    pub ported: bool,
+    /// Ship type (e.g. "War Frigate"), from the vessel's chosen ship.
+    pub ship_type: Option<String>,
+    /// The run's clock span, e.g. `"12:34 to 13:50"` (end = current time while
+    /// still at sea, or the port time once ported). `None` until we've sailed.
+    pub period: Option<String>,
     /// Elapsed run time — final duration if ported, else live elapsed.
     pub elapsed_secs: Option<i64>,
     /// Cannon-size label for the cannonball row ("Small"/"Medium"/"Large").
@@ -86,13 +111,17 @@ pub fn render(
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
-    // Shrink horizontally and center within the available area.
-    let width = BODY_WIDTH.min(full.width);
+    // Reserve a tooltip strip below the widget (focus-bound, full content width).
+    let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(full);
+    let (widget_area, tip_area) = (outer[0], outer[1]);
+
+    // Shrink horizontally and center the widget within the available area.
+    let width = BODY_WIDTH.min(widget_area.width);
     let area = Rect {
-        x: full.x + full.width.saturating_sub(width) / 2,
-        y: full.y,
+        x: widget_area.x + widget_area.width.saturating_sub(width) / 2,
+        y: widget_area.y,
         width,
-        height: full.height,
+        height: widget_area.height,
     };
 
     let (title, _) = offset_title("Voyage Statistics");
@@ -122,26 +151,142 @@ pub fn render(
         return;
     }
 
-    ui.chart_sel = ui.chart_sel.min(CHART_TITLES.len() - 1);
+    // Pinned header (ship name / type / clock span), kept out of the scroll so
+    // it never disappears. The scroll body starts at "Sea Battles".
+    let iw = inner.width as usize;
+    let mut header: Vec<Line<'static>> = vec![centered_line(
+        view.vessel.clone().unwrap_or_default(),
+        iw,
+        Style::default().bold(),
+    )];
+    if let Some(t) = &view.ship_type {
+        header.push(centered_line(t.clone(), iw, Style::default().fg(Color::Gray)));
+    }
+    if let Some(p) = &view.period {
+        header.push(centered_line(p.clone(), iw, Style::default().fg(Color::DarkGray)));
+    }
+    header.push(Line::from("")); // separator from the scrolling body
+    let header_h = header.len() as u16;
 
-    // Split: scrollable stats (top), a charts strip, then a pinned footer.
-    let charts_h = 8u16.min(inner.height.saturating_sub(2));
+    // Split: pinned header, the scrollable body (Sea Battles + stats + charts),
+    // then a pinned footer.
     let parts = Layout::vertical([
+        Constraint::Length(header_h),
         Constraint::Min(0),
-        Constraint::Length(charts_h),
         Constraint::Length(1),
     ])
     .split(inner);
-    let (body, charts_area, footer) = (parts[0], parts[1], parts[2]);
+    let (header_area, body, footer) = (parts[0], parts[1], parts[2]);
+    frame.render_widget(Paragraph::new(header), header_area);
 
-    let lines = build_lines(view);
-    let max_scroll = (lines.len() as u16).saturating_sub(body.height);
+    // Build the body lines and the parallel focusable list (Sea Battles, then
+    // the stat numbers). The three charts follow them in the focus order.
+    let mut built = build_lines(view, body.width as usize);
+    let n_stats = built.focusable.len();
+    let n_charts = CHART_TITLES.len();
+    let n_focus = n_stats + n_charts;
+    ui.n_stats = n_stats;
+    ui.focus = ui.focus.min(n_focus.saturating_sub(1));
+    let focused_chart = if ui.focus >= n_stats {
+        Some(ui.focus - n_stats)
+    } else {
+        None
+    };
+
+    // Content geometry: stat lines, a 1-row gap, then the stacked chart boxes.
+    let n_lines = built.lines.len() as u16;
+    let charts_top = n_lines + 1;
+    let total_h = charts_top + n_charts as u16 * CHART_H;
+
+    // Row + height of the focused item, for auto-scroll.
+    let (focus_row, focus_h) = match focused_chart {
+        Some(ci) => (charts_top + ci as u16 * CHART_H, CHART_H),
+        None if n_stats > 0 => (built.focusable[ui.focus].line as u16, 1),
+        None => (0, 0),
+    };
+    let max_scroll = total_h.saturating_sub(body.height);
+    if focused {
+        if focus_row < ui.scroll {
+            ui.scroll = focus_row;
+        } else if focus_row + focus_h > ui.scroll + body.height {
+            ui.scroll = (focus_row + focus_h).saturating_sub(body.height);
+        }
+    }
     ui.scroll = ui.scroll.min(max_scroll);
-    frame.render_widget(Paragraph::new(lines).scroll((ui.scroll, 0)), body);
 
-    render_mini_charts(frame, charts_area, &view.charts, ui, focused, regions);
+    // Highlight the focused stat row (charts highlight via their border below).
+    if focused && focused_chart.is_none() && n_stats > 0 {
+        let li = built.focusable[ui.focus].line;
+        built.lines[li] = built.lines[li]
+            .clone()
+            .patch_style(Style::default().fg(Color::Black).bg(Color::Cyan));
+    }
 
-    // Footer: save hint takes priority; otherwise the chart nav hint.
+    // Render the whole scroll content into an offscreen canvas, then blit the
+    // visible window — so partially-scrolled chart boxes clip cleanly.
+    let mut canvas = Buffer::empty(Rect::new(0, 0, body.width, total_h.max(1)));
+    Paragraph::new(built.lines).render(Rect::new(0, 0, body.width, n_lines), &mut canvas);
+    render_charts(
+        &mut canvas,
+        Rect::new(0, charts_top, body.width, n_charts as u16 * CHART_H),
+        &view.charts,
+        if focused { focused_chart } else { None },
+    );
+    for row in 0..body.height {
+        let src_y = ui.scroll + row;
+        if src_y >= total_h {
+            break;
+        }
+        for col in 0..body.width {
+            if let Some(src) = canvas.cell(Position::new(col, src_y)).cloned() {
+                if let Some(dst) = frame.buffer_mut().cell_mut(Position::new(body.x + col, body.y + row)) {
+                    *dst = src;
+                }
+            }
+        }
+    }
+
+    // Click regions: stat rows and chart boxes that fall within the body window.
+    for (i, f) in built.focusable.iter().enumerate() {
+        let line = f.line as u16;
+        if line >= ui.scroll && line < ui.scroll + body.height {
+            regions.push(ClickRegion {
+                rect: Rect::new(body.x, body.y + (line - ui.scroll), body.width, 1),
+                target: ClickTarget::VoyageStat { idx: i },
+            });
+        }
+    }
+    for i in 0..n_charts {
+        let top = charts_top + i as u16 * CHART_H;
+        let vis_top = top.max(ui.scroll);
+        let vis_bot = (top + CHART_H).min(ui.scroll + body.height);
+        if vis_top < vis_bot {
+            regions.push(ClickRegion {
+                rect: Rect::new(body.x, body.y + (vis_top - ui.scroll), body.width, vis_bot - vis_top),
+                target: ClickTarget::VoyageChart { idx: i },
+            });
+        }
+    }
+
+    // Tooltip for the focused item, below the widget.
+    if focused {
+        let tip = match focused_chart {
+            Some(ci) => CHART_TOOLTIPS[ci].to_string(),
+            None if n_stats > 0 => built.focusable[ui.focus].tooltip.clone(),
+            None => String::new(),
+        };
+        if !tip.is_empty() {
+            frame.render_widget(
+                Paragraph::new(Line::from(tip))
+                    .style(Style::default().fg(Color::DarkGray))
+                    .wrap(Wrap { trim: true })
+                    .centered(),
+                tip_area,
+            );
+        }
+    }
+
+    // Footer: save hint takes priority; otherwise the nav hint.
     if view.saveable {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
@@ -158,7 +303,7 @@ pub fn render(
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "←/→ select chart · Enter enlarge",
+                "↑/↓ move · Enter enlarge chart",
                 Style::default().fg(Color::DarkGray),
             )))
             .centered(),
@@ -259,47 +404,26 @@ fn hist_style() -> Style {
     Style::default().fg(Color::Gray)
 }
 
-/// Render the three selectable mini-charts (2 per row) and push their click
-/// regions.
-fn render_mini_charts(
-    frame: &mut Frame,
-    area: Rect,
-    data: &ChartData,
-    ui: &VoyageStatsUi,
-    focused: bool,
-    regions: &mut Vec<ClickRegion>,
-) {
-    if area.height < 3 || area.width < 6 {
-        return;
-    }
-    let half = area.height / 2;
-    let vrows = Layout::vertical([Constraint::Length(half), Constraint::Min(0)]).split(area);
-    let top = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(vrows[0]);
-    let bottom = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(vrows[1]);
-    let slots = [top[0], top[1], bottom[0]];
-
-    let active = focused && ui.chart_popup.is_none() && ui.prompt.is_none();
-    for (i, slot) in slots.iter().enumerate() {
-        let selected = active && i == ui.chart_sel;
-        let border = if selected {
+/// Render the three charts as full-width bordered boxes stacked down `area`,
+/// into `canvas` (an offscreen buffer the caller blits into the scroll body).
+/// `focused_chart` highlights one box's border.
+fn render_charts(canvas: &mut Buffer, area: Rect, data: &ChartData, focused_chart: Option<usize>) {
+    for i in 0..CHART_TITLES.len() {
+        let slot = Rect::new(area.x, area.y + i as u16 * CHART_H, area.width, CHART_H);
+        let border = if focused_chart == Some(i) {
             Style::default().fg(Color::Cyan).bold()
         } else {
             Style::default().fg(Color::DarkGray)
         };
+        let (title, _) = offset_title(CHART_TITLES[i]);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border)
-            .title(format!(" {} ", CHART_TITLES[i]));
-        let inner = block.inner(*slot);
-        frame.render_widget(block, *slot);
-        frame.render_widget(
-            Paragraph::new(chart_lines(i, data, inner.width as usize, inner.height as usize)),
-            inner,
-        );
-        regions.push(ClickRegion {
-            rect: *slot,
-            target: ClickTarget::VoyageChart { idx: i },
-        });
+            .title(title);
+        let inner = block.inner(slot);
+        block.render(slot, canvas);
+        Paragraph::new(chart_lines(i, data, inner.width as usize, inner.height as usize))
+            .render(inner, canvas);
     }
 }
 
@@ -324,10 +448,12 @@ fn render_chart_popup(
         height: h,
     };
     frame.render_widget(Clear, rect);
+    let (title, _) = offset_title(CHART_TITLES[idx]);
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
-        .title(format!(" {}  (Esc to close) ", CHART_TITLES[idx]));
+        .title(title)
+        .title_bottom(Line::from(" Esc to close ").right_aligned());
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     frame.render_widget(
@@ -546,135 +672,287 @@ fn pick_bars(n: usize, cap: usize) -> Vec<Option<usize>> {
     v
 }
 
-fn build_lines(view: &VoyageView) -> Vec<Line<'static>> {
+/// A focusable stat: which built line it lives on, and the tooltip to show
+/// below the widget when it's focused.
+struct Focusable {
+    line: usize,
+    tooltip: String,
+}
+
+/// The page body (everything below the pinned header): the rendered lines plus
+/// the parallel list of focusables in focus order — the Sea Battles section
+/// first, then every Timing-onward stat number.
+#[derive(Default)]
+struct Built {
+    lines: Vec<Line<'static>>,
+    focusable: Vec<Focusable>,
+    /// Content width, so section headers can center themselves.
+    width: usize,
+}
+
+impl Built {
+    fn line(&mut self, l: Line<'static>) {
+        self.lines.push(l);
+    }
+    fn blank(&mut self) {
+        self.lines.push(Line::from(""));
+    }
+    fn section(&mut self, title: &str) {
+        self.lines.push(section(title, self.width));
+    }
+    /// Push a section header that is itself focusable (its header line carries
+    /// the `tooltip`). Used for sections you can "enter", like Sea Battles.
+    fn focus_section(&mut self, title: &str, tooltip: &str) {
+        self.focusable.push(Focusable {
+            line: self.lines.len(),
+            tooltip: tooltip.to_string(),
+        });
+        self.lines.push(section(title, self.width));
+    }
+    /// Push a focusable `label .... value` stat row tied to `tooltip`.
+    fn stat(&mut self, label: &str, value: String, tooltip: &str) {
+        self.focusable.push(Focusable {
+            line: self.lines.len(),
+            tooltip: tooltip.to_string(),
+        });
+        self.lines.push(stat(label, value, self.width));
+    }
+}
+
+fn build_lines(view: &VoyageView, width: usize) -> Built {
     let b = &view.battle;
     let c = &view.consumption;
-    let mut lines: Vec<Line<'static>> = Vec::new();
-
-    // Header: vessel (bold), job (dim), status, winrate — one per line so the
-    // box can stay narrow.
-    let vessel = view.vessel.clone().unwrap_or_default();
-    lines.push(Line::from(Span::styled(vessel, Style::default().bold())));
-    if let Some(job) = &view.job {
-        lines.push(Line::from(Span::styled(
-            job.clone(),
-            Style::default().fg(Color::DarkGray),
-        )));
-    }
-    let status = match (view.ported, view.elapsed_secs) {
-        (true, Some(s)) => format!("ported · {}", dur(s)),
-        (false, Some(s)) => format!("at sea ({})", dur(s)),
-        _ => "—".to_string(),
+    let mut out = Built {
+        width,
+        ..Default::default()
     };
-    lines.push(Line::from(format!("Status: {status}")));
-    let decisive = b.wins + b.losses;
-    let winpct = if decisive > 0 {
-        format!("  ({}% win)", b.wins * 100 / decisive)
-    } else {
-        String::new()
-    };
-    lines.push(Line::from(Span::styled(
-        format!(
-            "Sea battles: {}W – {}L – {}D{winpct}",
-            b.wins, b.losses, b.disengages
-        ),
-        Style::default().bold(),
-    )));
-    lines.push(Line::from(""));
 
-    // Timing.
-    lines.push(section("Timing"));
-    lines.push(stat("In pillage", opt_dur(view.elapsed_secs.map(|s| s as f64))));
-    lines.push(stat("Avg sea battle", opt_dur(b.avg_battle_secs)));
-    lines.push(stat("  · naval (→grapple)", opt_dur(b.avg_naval_secs)));
-    lines.push(stat("  · boarding", opt_dur(b.avg_boarding_secs)));
-    lines.push(stat("Time in battle", dur(b.time_in_battle_secs)));
-    lines.push(stat(
-        "Time at sea",
-        b.time_at_sea_secs.map(dur).unwrap_or_else(|| "—".to_string()),
+    // Sea Battles — a focusable section over a full-width three-column table
+    // (labels over counts). The header (ship name/type/period) is pinned above
+    // the scroll, so the body starts here.
+    out.focus_section(
+        "Sea Battles",
+        "Win / loss / disengage tally — per-battle detail coming soon.",
+    );
+    let head = Style::default().fg(Color::DarkGray);
+    out.line(three_col(
+        width,
+        [
+            ("Wins".to_string(), head),
+            ("Losses".to_string(), head),
+            ("Disengages".to_string(), head),
+        ],
     ));
-    lines.push(Line::from(""));
+    out.line(three_col(
+        width,
+        [
+            (b.wins.to_string(), Style::default().fg(Color::Green).bold()),
+            (b.losses.to_string(), Style::default().fg(Color::Red).bold()),
+            (
+                b.disengages.to_string(),
+                Style::default().fg(Color::Yellow).bold(),
+            ),
+        ],
+    ));
+    out.blank();
+
+    // Timing — every number from here on is focusable with a tooltip.
+    out.section("Timing");
+    out.stat(
+        "In pillage",
+        opt_dur(view.elapsed_secs.map(|s| s as f64)),
+        "Total time from setting sail to putting into port.",
+    );
+    out.stat(
+        "Avg sea battle",
+        opt_dur(b.avg_battle_secs),
+        "Average length of a sea engagement, interception to resolution.",
+    );
+    out.stat(
+        "  · naval (→grapple)",
+        opt_dur(b.avg_naval_secs),
+        "Average time from interception to grappling — the naval phase.",
+    );
+    out.stat(
+        "  · boarding",
+        opt_dur(b.avg_boarding_secs),
+        "Average time from grapple to Game Over — the boarding melee.",
+    );
+    out.stat(
+        "Time in battle",
+        dur(b.time_in_battle_secs),
+        "Total time spent in sea engagements this voyage.",
+    );
+    out.stat(
+        "Time at Sea",
+        b.time_at_sea_secs.map(dur).unwrap_or_else(|| "—".to_string()),
+        "Time spent searching and sailing — pillage time minus battle time.",
+    );
+    out.blank();
 
     // Loot.
-    lines.push(section("Loot"));
-    lines.push(stat("PoE / fight (won)", opt_commas(b.poe_per_fight_won)));
-    lines.push(stat("PoE / fight (net)", opt_commas(b.poe_per_fight_net)));
-    lines.push(stat("Goods / fight", opt1(b.goods_per_fight)));
-    lines.push(stat("PoE total (net)", commas(b.poe_net_total)));
-    lines.push(stat("PoE / crew", opt_commas(b.poe_per_crew)));
-    lines.push(stat(
+    out.section("Loot");
+    out.stat(
+        "PoE / fight (won)",
+        opt_commas(b.poe_per_fight_won),
+        "Average pieces of eight plundered per won fight.",
+    );
+    out.stat(
+        "PoE / fight (net)",
+        opt_commas(b.poe_per_fight_net),
+        "Average PoE per fight, counting lost fights as negative.",
+    );
+    out.stat(
+        "Goods / fight",
+        opt1(b.goods_per_fight),
+        "Average units of goods won per fight (a count — the log never itemizes).",
+    );
+    out.stat(
+        "PoE total (net)",
+        commas(b.poe_net_total),
+        "Net pieces of eight across every fight (losses subtracted).",
+    );
+    out.stat(
+        "PoE / crew",
+        opt_commas(b.poe_per_crew),
+        "Net PoE divided by the time-weighted average crew aboard.",
+    );
+    out.stat(
         "PoE / crew / fight (W)",
         opt_commas(b.poe_per_crew_per_fight_won),
-    ));
-    lines.push(stat(
+        "Won PoE per crew member per won fight.",
+    );
+    out.stat(
         "PoE / crew / fight (W+L)",
         opt_commas(b.poe_per_crew_per_fight_all),
-    ));
-    lines.push(Line::from(""));
+        "Net PoE per crew member per fight, wins and losses together.",
+    );
+    out.blank();
 
     // Enemies by category — only categories that occurred (no zero rows).
     if !b.categories.is_empty() {
-        lines.push(section("Enemies"));
+        out.section("Enemies");
         for (label, count) in &b.categories {
-            lines.push(stat(label, count.to_string()));
+            out.stat(
+                label,
+                count.to_string(),
+                &format!("Sea battles fought against {label}."),
+            );
         }
-        lines.push(Line::from(""));
+        out.blank();
     }
 
     // Advantage (only when damage was tracked for at least one fight).
     if b.avg_advantage_dmg.is_some() || b.avg_advantage_crew.is_some() {
-        lines.push(section("Advantage (avg)"));
-        lines.push(stat(
+        out.section("Advantage (avg)");
+        out.stat(
             "Damage advantage",
             b.avg_advantage_dmg
                 .map(|a| format!("{:+.0}%", a * 100.0))
                 .unwrap_or_else(|| "—".to_string()),
-        ));
-        lines.push(stat(
+            "Average morale-damage edge over the enemy, from the Damage calculator.",
+        );
+        out.stat(
             "Crew advantage",
             b.avg_advantage_crew
                 .map(|a| format!("{a:+.1}"))
                 .unwrap_or_else(|| "—".to_string()),
-        ));
-        lines.push(Line::from(""));
+            "Average headcount edge: our crew vs the enemy's, weighted by morale.",
+        );
+        out.blank();
     }
 
     // Consumption.
-    lines.push(section("Consumption"));
+    out.section("Consumption");
     let balls_label = format!(
         "Cannonballs ({})",
         view.cannon_label.clone().unwrap_or_else(|| "—".to_string())
     );
-    lines.push(stat(&balls_label, opt_u64(c.balls)));
-    lines.push(stat("  · per battle", opt1(c.balls_per_battle)));
-    lines.push(stat("Alcohol", commas(c.alcohol as i64)));
-    lines.push(stat("  · per crew", opt1(c.alcohol_per_crew)));
-    lines.push(stat("  · per crew / min", opt2(c.alcohol_per_crew_per_min)));
-    lines.push(stat("Rum spice", commas(c.rum_spice as i64)));
-    lines.push(stat("  · per swabbie", opt1(c.rum_spice_per_swabbie)));
-    lines.push(stat(
+    out.stat(
+        &balls_label,
+        opt_u64(c.balls),
+        "Cannonballs fired this voyage (Restock minus Stock for the ship's size).",
+    );
+    out.stat(
+        "  · per battle",
+        opt1(c.balls_per_battle),
+        "Average cannonballs fired per sea battle.",
+    );
+    out.stat(
+        "Alcohol",
+        commas(c.alcohol as i64),
+        "Alcohol consumed, weighted by potency (swill 2 / grog 3 / fine rum 6).",
+    );
+    out.stat(
+        "  · per crew",
+        opt1(c.alcohol_per_crew),
+        "Alcohol per crew member aboard.",
+    );
+    out.stat(
+        "  · per crew / min",
+        opt2(c.alcohol_per_crew_per_min),
+        "Alcohol per crew member per minute of the run.",
+    );
+    out.stat(
+        "Rum spice",
+        commas(c.rum_spice as i64),
+        "Rum spice consumed this voyage.",
+    );
+    out.stat(
+        "  · per swabbie",
+        opt1(c.rum_spice_per_swabbie),
+        "Rum spice per swabbie — spice mainly fuels swabbies.",
+    );
+    out.stat(
         "  · per swabbie / min",
         opt2(c.rum_spice_per_swabbie_per_min),
-    ));
-    lines.push(Line::from(Span::styled(
-        "  ⚠ spice approx. (swabbies / ran out skew it)".to_string(),
+        "Rum spice per swabbie per minute (approximate — see the note below).",
+    );
+    out.line(Line::from(Span::styled(
+        "⚠ spice approx. (swabbies / ran out skew it)".to_string(),
         Style::default().fg(Color::DarkGray).italic(),
     )));
 
-    lines
+    out
 }
 
-/// A yellow section header line.
-fn section(title: &str) -> Line<'static> {
+/// A single line of `text` centered within `width` cells, styled.
+fn centered_line(text: String, width: usize, style: Style) -> Line<'static> {
+    let w = width.max(1);
+    Line::from(Span::styled(format!("{text:^w$}"), style))
+}
+
+/// A full-width row of three centered, individually-styled columns.
+fn three_col(width: usize, cells: [(String, Style); 3]) -> Line<'static> {
+    let col = (width / 3).max(1);
+    let spans: Vec<Span<'static>> = cells
+        .into_iter()
+        .map(|(s, style)| Span::styled(format!("{s:^col$}"), style))
+        .collect();
+    Line::from(spans)
+}
+
+/// A centered yellow section header line.
+fn section(title: &str, width: usize) -> Line<'static> {
+    let w = width.max(1);
     Line::from(Span::styled(
-        format!("── {title} "),
+        format!("{title:^w$}"),
         Style::default().fg(Color::Yellow).bold(),
     ))
 }
 
-/// A `  label .......... value` stat line (label left, value right-aligned).
-fn stat(label: &str, value: String) -> Line<'static> {
-    Line::from(format!("  {label:<26}{value:>12}"))
+/// A stat row spanning the whole `width`: label flush-left, value flush-right.
+/// When the two can't both fit (a narrow widget in a wider terminal), they fall
+/// back to a plain two-space separator (`label  value`).
+fn stat(label: &str, value: String, width: usize) -> Line<'static> {
+    let lw = label.chars().count();
+    let vw = value.chars().count();
+    let text = if width >= lw + 2 + vw {
+        format!("{label}{}{value}", " ".repeat(width - lw - vw))
+    } else {
+        format!("{label}  {value}")
+    };
+    Line::from(text)
 }
 
 // -- value formatters --

@@ -558,7 +558,10 @@ impl AppShell {
 
     /// Voyage Statistics keys. With the save/discard prompt open it's modal
     /// (←/→ select, Enter confirm, S/D shortcut, Esc cancel). Otherwise: Esc
-    /// returns to the bar, ↑/↓ (and PageUp/Down) scroll, S/D open the prompt.
+    /// returns to the bar, ↑/↓ (and PageUp/Down) move focus through the stat
+    /// numbers and then the charts (the focused item's tooltip shows below the
+    /// widget), Enter enlarges the focused chart, S/D open the save/discard
+    /// prompt.
     fn handle_voyage_key(&mut self, key: KeyEvent) -> InputResult {
         use crate::voyage::ui::SaveChoice;
 
@@ -611,37 +614,37 @@ impl AppShell {
                 }
                 InputResult::Consumed
             }
+            // ↑/↓ move the focused stat (the body auto-scrolls to follow it);
+            // ↑ off the first stat returns focus to the top bar.
             KeyCode::Up => {
-                if self.voyage_ui.scroll == 0 {
+                if self.voyage_ui.focus == 0 {
                     InputResult::Exit
                 } else {
-                    self.voyage_ui.scroll -= 1;
+                    self.voyage_ui.focus -= 1;
                     InputResult::Consumed
                 }
             }
             KeyCode::Down => {
-                self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(1);
+                self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(1);
                 InputResult::Consumed
             }
-            KeyCode::Left => {
-                self.voyage_ui.chart_sel = self.voyage_ui.chart_sel.saturating_sub(1);
-                InputResult::Consumed
-            }
-            KeyCode::Right => {
-                self.voyage_ui.chart_sel =
-                    (self.voyage_ui.chart_sel + 1).min(crate::voyage::ui::CHART_TITLES.len() - 1);
-                InputResult::Consumed
-            }
+            // Enter enlarges the focused chart (the Sea Battles section and the
+            // stat numbers come first in the focus order; the charts follow).
             KeyCode::Enter => {
-                self.voyage_ui.chart_popup = Some(self.voyage_ui.chart_sel);
+                if self.voyage_ui.focus >= self.voyage_ui.n_stats {
+                    let idx = self.voyage_ui.focus - self.voyage_ui.n_stats;
+                    if idx < crate::voyage::ui::CHART_TITLES.len() {
+                        self.voyage_ui.chart_popup = Some(idx);
+                    }
+                }
                 InputResult::Consumed
             }
             KeyCode::PageUp => {
-                self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_sub(10);
+                self.voyage_ui.focus = self.voyage_ui.focus.saturating_sub(5);
                 InputResult::Consumed
             }
             KeyCode::PageDown => {
-                self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(10);
+                self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(5);
                 InputResult::Consumed
             }
             _ => InputResult::Consumed,
@@ -680,13 +683,19 @@ impl AppShell {
             .to_string()
         });
         let vessel_name = key.as_ref().map(|k| k.to_string());
+        // Ship type label from the vessel's chosen ship (the jobbers picker).
+        let ship_type = key
+            .as_ref()
+            .and_then(|k| self.jobbers_ui.ship_types.get(k).copied())
+            .and_then(|i| crate::ships::SHIPS.get(i))
+            .map(|s| s.name.to_string());
 
         let Some(voyage) = voyage else {
             return VoyageView {
                 has_voyage: false,
                 vessel: vessel_name,
-                job: None,
-                ported: false,
+                ship_type,
+                period: None,
                 elapsed_secs: None,
                 cannon_label,
                 saveable: false,
@@ -697,16 +706,22 @@ impl AppShell {
         };
 
         let ported = voyage.ported_at.is_some();
+        // End of the run: the port time once ported, else the live log clock.
+        let end_at = voyage.ported_at.or_else(|| self.chatlog.now());
         // Final duration if ported, else live elapsed against the log clock.
-        let elapsed_secs = match (voyage.sailed_at, voyage.ported_at.or_else(|| self.chatlog.now())) {
+        let elapsed_secs = match (voyage.sailed_at, end_at) {
             (Some(start), Some(end)) => Some((end - start).num_seconds()),
             _ => None,
         };
-        let job = voyage
-            .job_kind
-            .as_ref()
-            .or_else(|| vessel.and_then(|v| v.job_kind.as_ref()))
-            .map(|j| j.to_string());
+        // Clock span "HH:MM to HH:MM" (end is the current time while still out).
+        let period = match (voyage.sailed_at, end_at) {
+            (Some(start), Some(end)) => Some(format!(
+                "{} to {}",
+                start.format("%H:%M"),
+                end.format("%H:%M")
+            )),
+            _ => None,
+        };
 
         let consumption = crate::voyage::stats::consumption_stats(
             voyage,
@@ -763,8 +778,8 @@ impl AppShell {
         VoyageView {
             has_voyage: true,
             vessel: vessel_name,
-            job,
-            ported,
+            ship_type,
+            period,
             elapsed_secs,
             cannon_label,
             saveable: ported && !voyage.saved,
@@ -1721,8 +1736,11 @@ impl AppShell {
             ClickTarget::VoyageSaveCancel => {
                 self.voyage_ui.prompt = None;
             }
+            ClickTarget::VoyageStat { idx } => {
+                self.voyage_ui.focus = idx;
+            }
             ClickTarget::VoyageChart { idx } => {
-                self.voyage_ui.chart_sel = idx;
+                self.voyage_ui.focus = self.voyage_ui.n_stats + idx;
                 self.voyage_ui.chart_popup = Some(idx);
             }
             ClickTarget::VoyageChartClose => {
@@ -1839,9 +1857,9 @@ impl AppShell {
             }
             AppId::Voyage => {
                 if delta < 0 {
-                    self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_sub(1);
+                    self.voyage_ui.focus = self.voyage_ui.focus.saturating_sub(1);
                 } else {
-                    self.voyage_ui.scroll = self.voyage_ui.scroll.saturating_add(1);
+                    self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(1);
                 }
             }
             AppId::Exit => {}

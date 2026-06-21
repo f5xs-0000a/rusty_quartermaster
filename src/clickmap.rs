@@ -54,6 +54,9 @@ pub enum ClickTarget {
     VoyageSaveDiscard,
     /// The backdrop / cancel of the save/discard prompt.
     VoyageSaveCancel,
+    /// A focusable stat number on the Voyage Statistics page (`idx` into the
+    /// page's focusable-stat list); clicking it focuses that stat's tooltip.
+    VoyageStat { idx: usize },
     /// A selectable mini-chart on the Voyage Statistics page.
     VoyageChart { idx: usize },
     /// The backdrop behind an enlarged chart popup; clicking it closes.
