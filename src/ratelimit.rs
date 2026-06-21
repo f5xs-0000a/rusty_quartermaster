@@ -10,6 +10,9 @@
 //! The gates live in a single global `OnceLock` map keyed by `Service`, and
 //! each gate's `Mutex` doubles as the serialization lock — only one request
 //! per service is in flight (or waiting out the interval) at a time.
+//!
+//! Intervals default to 1s (Market) and 60s (puzzlepirates) but can be
+//! overridden once at startup via [`configure`] (wired to CLI flags).
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -28,13 +31,34 @@ pub enum Service {
 }
 
 impl Service {
-    /// Minimum spacing between requests to this service.
+    /// Minimum spacing between requests to this service. Uses the value set by
+    /// [`configure`] when present, otherwise the built-in default.
     fn interval(self) -> Duration {
+        if let Some(secs) = INTERVALS.get().and_then(|m| m.get(&self).copied()) {
+            return Duration::from_secs(secs);
+        }
+        self.default_interval()
+    }
+
+    /// Built-in spacing used until [`configure`] runs (or if it never does).
+    fn default_interval(self) -> Duration {
         match self {
-            Service::PuzzlePirates => Duration::from_secs(1),
+            Service::PuzzlePirates => Duration::from_secs(60),
             Service::Market => Duration::from_secs(1),
         }
     }
+}
+
+/// Per-service request spacing (seconds), set once at startup from CLI flags.
+static INTERVALS: OnceLock<HashMap<Service, u64>> = OnceLock::new();
+
+/// Set the minimum spacing (in seconds) between requests to each service. Call
+/// once at startup before any request; later calls are ignored.
+pub fn configure(market_secs: u64, puzzle_pirates_secs: u64) {
+    let mut map = HashMap::new();
+    map.insert(Service::Market, market_secs);
+    map.insert(Service::PuzzlePirates, puzzle_pirates_secs);
+    let _ = INTERVALS.set(map);
 }
 
 /// One service's gate: the lock serializes requests, and the inner value is the

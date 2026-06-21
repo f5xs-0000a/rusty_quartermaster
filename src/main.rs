@@ -100,6 +100,15 @@ struct Args {
     /// it. Hidden; off by default (no C.O. row, no C.O. cut deducted).
     #[arg(long, hide = true)]
     pay_commanding_officer: bool,
+
+    /// Minimum seconds between requests to the Market API. Hidden.
+    #[arg(long, value_name = "SECONDS", default_value_t = 1, hide = true)]
+    market_query_rate: u64,
+
+    /// Minimum seconds between requests to puzzlepirates (yoweb pirate stats and
+    /// trophies). Higher is gentler on yoweb.
+    #[arg(long, value_name = "SECONDS", default_value_t = 60)]
+    ypp_query_rate: u64,
 }
 
 fn parse_ocean(s: &str) -> Result<Ocean, String> {
@@ -113,6 +122,9 @@ fn parse_ocean(s: &str) -> Result<Ocean, String> {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = Args::parse();
+
+    // Set per-service request spacing before any network call goes out.
+    ratelimit::configure(args.market_query_rate, args.ypp_query_rate);
 
     // -- Load the unified cache (inventory + commodities global; market +
     //    players per-ocean). Loaded before the setup popup so the popup can
