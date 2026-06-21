@@ -20,8 +20,8 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding
 use crate::chatlog::GameState;
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::pirate::{
-    self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, Standing,
-    TrophySection,
+    self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, SkillRecord,
+    Standing, TrophySection,
 };
 use crate::ships::{Ship, SHIPS};
 use crate::utils::{offset_title, offset_title_width, text_similarity};
@@ -32,6 +32,9 @@ const CODE_LEN: usize = 7;
 const NAME_CODE_GAP: usize = 2;
 /// Spaces between Top Jobbers skill columns.
 const COLUMN_GAP: u16 = 3;
+
+/// Label on the Vampirates "View Skill Distribution" button.
+const SKILL_DIST_BUTTON_LABEL: &str = "View Skill Distribution";
 
 /// Warning shown at the bottom of the app while the Unpoison button is focused.
 pub const UNPOISON_TOOLTIP: [&str; 2] = [
@@ -226,6 +229,12 @@ impl VoyageType {
     /// Whether this voyage type fights vampirates (so the Vampirates Stats box
     /// shows). Only Vampirates does.
     pub fn tracks_vampirates(self) -> bool {
+        matches!(self, VoyageType::Vampirates)
+    }
+
+    /// Whether to show the "View Skill Distribution" button (the Treasure Haul ×
+    /// Carpentry scatterplot). Only Vampirates, whose axes those skills are.
+    pub fn has_skill_distribution(self) -> bool {
         matches!(self, VoyageType::Vampirates)
     }
 }
@@ -507,6 +516,9 @@ pub enum JobberFocus {
     ShipType,
     VoyageType,
     Unpoison,
+    /// The "View Skill Distribution" button (Vampirates only), between Top Jobbers
+    /// and the panes.
+    SkillDist,
     Aboard,
     Greedy,
     Planked,
@@ -547,6 +559,9 @@ pub struct JobbersUi {
     pub pirate_popup: Option<PiratePopup>,
     /// When `Some`, the trophies popup is open (layered over the stats popup).
     pub trophy_popup: Option<TrophyPopup>,
+    /// When `Some`, the Vampirates skill-distribution scatterplot is open, with the
+    /// cursor parked on a grid cell.
+    pub skill_dist_popup: Option<SkillDistPopup>,
 }
 
 /// State of the open pirate-stats popup: the pirate being viewed and which of its
@@ -567,6 +582,117 @@ pub struct TrophyPopup {
     pub search: String,
     pub offset: usize,
     pub view_h: usize,
+}
+
+/// State of the open Vampirates skill-distribution popup: a scatterplot of aboard
+/// jobbers' Treasure Haul standing (x) against Carpentry standing (y). The cursor
+/// is the highlighted cell — moved by mouse hover or the arrow keys — whose pirates
+/// are listed in the right-hand panel.
+#[derive(Clone, Copy)]
+pub struct SkillDistPopup {
+    /// Cursor cell as `(treasure_haul_idx, carpentry_idx)`, each a [`Standing`]
+    /// `as u8` in `0..=8`.
+    pub cursor: (u8, u8),
+}
+
+/// Every standing, low → high, for iterating the scatterplot axes.
+const STANDINGS: [Standing; 9] = [
+    Standing::Able,
+    Standing::Proficient,
+    Standing::Distinguished,
+    Standing::Respected,
+    Standing::Master,
+    Standing::Renowned,
+    Standing::GrandMaster,
+    Standing::Legendary,
+    Standing::Ultimate,
+];
+
+/// The scatterplot axes: Treasure Haul along x (columns), Carpentry along y (rows).
+const SKILL_DIST_X: Skill = Skill::TreasureHaul;
+const SKILL_DIST_Y: Skill = Skill::Carpentry;
+
+/// One aboard jobber placed on the skill-distribution grid, with the two plotted
+/// skill records (for the right-hand detail panel).
+struct SkillDistEntry {
+    name: String,
+    x: SkillRecord,
+    y: SkillRecord,
+}
+
+/// Aboard jobbers bucketed for the skill-distribution plot. `entries` are the
+/// plottable pirates (both skills known); `unplotted` counts those aboard whose
+/// Treasure Haul or Carpentry stats aren't fetched yet (shown as a footer note).
+struct SkillDistData {
+    entries: Vec<SkillDistEntry>,
+    unplotted: usize,
+}
+
+impl SkillDistData {
+    /// Pirates sitting on cell `(th_idx, carp_idx)`, alphabetical.
+    fn at(&self, cell: (u8, u8)) -> Vec<&SkillDistEntry> {
+        let mut v: Vec<&SkillDistEntry> = self
+            .entries
+            .iter()
+            .filter(|e| (e.x.standing as u8, e.y.standing as u8) == cell)
+            .collect();
+        v.sort_by(|a, b| a.name.cmp(&b.name));
+        v
+    }
+
+    /// How many pirates sit on each cell, indexed `[th_idx][carp_idx]`.
+    fn counts(&self) -> [[u16; 9]; 9] {
+        let mut grid = [[0u16; 9]; 9];
+        for e in &self.entries {
+            grid[e.x.standing as usize][e.y.standing as usize] += 1;
+        }
+        grid
+    }
+
+    /// The most populated cell (tie-break: higher Treasure Haul, then Carpentry) —
+    /// a sensible place to park the cursor when the popup opens. `(0, 0)` if empty.
+    fn densest_cell(&self) -> (u8, u8) {
+        let grid = self.counts();
+        let mut best = (0u8, 0u8);
+        let mut best_n = 0u16;
+        for x in 0..9u8 {
+            for y in 0..9u8 {
+                let n = grid[x as usize][y as usize];
+                if n > best_n {
+                    best_n = n;
+                    best = (x, y);
+                }
+            }
+        }
+        best
+    }
+}
+
+/// The cell to park the cursor on when the skill-distribution popup opens: the
+/// most populated one (so the detail panel isn't empty), or `(0, 0)` if no aboard
+/// jobber has both skills fetched.
+pub fn default_skill_dist_cursor(aboard: &HashSet<String>, cache: &PirateCache) -> (u8, u8) {
+    skill_dist_data(aboard, cache).densest_cell()
+}
+
+/// Bucket aboard jobbers into the skill-distribution grid by their Treasure Haul
+/// and Carpentry standings. Pirates missing either skill's fetched stats are
+/// tallied into `unplotted` instead.
+fn skill_dist_data(aboard: &HashSet<String>, cache: &PirateCache) -> SkillDistData {
+    let mut entries = Vec::new();
+    let mut unplotted = 0;
+    for name in aboard {
+        let plotted = cache.get(name).and_then(|info| {
+            let x = info.skills.get(&SKILL_DIST_X)?;
+            let y = info.skills.get(&SKILL_DIST_Y)?;
+            Some((x.clone(), y.clone()))
+        });
+        match plotted {
+            Some((x, y)) => entries.push(SkillDistEntry { name: name.clone(), x, y }),
+            None => unplotted += 1,
+        }
+    }
+    SkillDistData { entries, unplotted }
 }
 
 /// Bottom-bar tooltip lines for the current focus (empty when nothing to say).
@@ -590,6 +716,7 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
         JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
             vec!["Enter: pirate stats \u{00b7} \u{2190}/\u{2192} panes \u{00b7} \u{2191}/\u{2193} select"]
         }
+        JobberFocus::SkillDist => vec!["Press Enter to view the skill distribution plot."],
     }
 }
 
@@ -834,6 +961,10 @@ pub fn render(
     if focused_pane.is_some_and(|p| !panes.contains(&p)) {
         ui.focus = JobberFocus::VoyageType;
     }
+    // The Skill Distribution button is only focusable on voyage types that show it.
+    if ui.focus == JobberFocus::SkillDist && !ui.voyage_type.has_skill_distribution() {
+        ui.focus = JobberFocus::VoyageType;
+    }
 
     // ---- Voyage box sizing ----
     // Longest ship name, computed at compile time — the Ship Type row's value must
@@ -973,10 +1104,25 @@ pub fn render(
     let stats_h = stats.as_ref().map_or(0, |s| s.rows.len() as u16 + 2);
     let stats_w = stats.as_ref().map_or(0, stats_box_width);
 
+    // ---- "View Skill Distribution" button sizing (Vampirates only) ----
+    // A focusable bordered button between Top Jobbers and the panes; opens the
+    // Treasure Haul × Carpentry scatterplot. Collapses to 0 height elsewhere.
+    let show_skill_dist = ui.voyage_type.has_skill_distribution();
+    let button_h: u16 = if show_skill_dist { 1 } else { 0 };
+    let button_w: u16 = if show_skill_dist {
+        SKILL_DIST_BUTTON_LABEL.len() as u16
+    } else {
+        0
+    };
+
     // ---- Block geometry: centered horizontally, full content height so the panes
     //      can run the whole way down. ----
     let block_w = if implemented {
-        voyage_w.max(top_panel_w).max(panes_w).max(stats_w)
+        voyage_w
+            .max(top_panel_w)
+            .max(panes_w)
+            .max(stats_w)
+            .max(button_w)
     } else {
         voyage_w.max(offset_title_width("Coming Soon"))
     };
@@ -998,7 +1144,10 @@ pub fn render(
 
     // The pirate-stats / trophies popups own the screen, so hide the page tooltip
     // underneath them.
-    let tooltip_lines = if ui.pirate_popup.is_some() || ui.trophy_popup.is_some() {
+    let tooltip_lines = if ui.pirate_popup.is_some()
+        || ui.trophy_popup.is_some()
+        || ui.skill_dist_popup.is_some()
+    {
         Vec::new()
     } else {
         tooltip(state, ui)
@@ -1044,6 +1193,7 @@ pub fn render(
             Constraint::Length(voyage_h),
             Constraint::Length(stats_h),
             top_constraint,
+            Constraint::Length(button_h),
             panes_constraint,
             Constraint::Length(tip_h),
         ])
@@ -1067,11 +1217,20 @@ pub fn render(
             render_stats_box(frame, rows[1], s, focused);
         }
         render_top_panel(frame, rows[2], &top_columns, focused);
+        if show_skill_dist {
+            render_skill_dist_button(
+                frame,
+                rows[3],
+                focused,
+                ui.focus == JobberFocus::SkillDist,
+                regions,
+            );
+        }
         render_panes(
-            frame, rows[3], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
+            frame, rows[4], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
             panes, &pane_widths, regions,
         );
-        rows[4]
+        rows[5]
     } else {
         render_placeholder(frame, rows[1], ui.voyage_type, focused);
         rows[2]
@@ -1103,6 +1262,11 @@ pub fn render(
     }
     if let Some(tp) = ui.trophy_popup.as_mut() {
         render_trophy_popup(frame, tp, cache, regions);
+    }
+
+    // The Vampirates skill-distribution scatterplot (its own modal).
+    if let Some(sd) = ui.skill_dist_popup {
+        render_skill_dist_popup(frame, sd, &aboard_set, cache, regions);
     }
 }
 
@@ -1295,6 +1459,238 @@ fn render_stats_box(frame: &mut Frame, area: Rect, stats: &StatsBox, focused: bo
             cols[1],
         );
     }
+}
+
+/// The "View Skill Distribution" button (Vampirates): a single unboxed centered
+/// line between Top Jobbers and the panes (styled like the Unpoison button). Its
+/// row is a click target that opens the scatterplot popup.
+fn render_skill_dist_button(
+    frame: &mut Frame,
+    area: Rect,
+    page_focused: bool,
+    active: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let label_style = if page_focused && active {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else {
+        Style::default().bold()
+    };
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(SKILL_DIST_BUTTON_LABEL, label_style)).centered()),
+        area,
+    );
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::JobberSkillDistButton,
+    });
+}
+
+/// The Vampirates skill-distribution popup: a Treasure Haul (x) × Carpentry (y)
+/// scatterplot of aboard jobbers by standing, with a right-hand panel listing the
+/// jobbers on the cursor cell. The cursor is moved by mouse hover (each cell is a
+/// click region) or the arrow keys.
+fn render_skill_dist_popup(
+    frame: &mut Frame,
+    popup: SkillDistPopup,
+    aboard: &HashSet<String>,
+    cache: &PirateCache,
+    regions: &mut Vec<ClickRegion>,
+) {
+    // Plot geometry. The left margin holds the vertical "Carpentry" axis title
+    // (its 9 letters line up with the 9 standing rows) and the per-row standing
+    // label; the columns hold the Treasure Haul standings.
+    const CELL_W: u16 = 5;
+    const VAXIS_W: u16 = 2; // vertical "Carpentry" letter + a space
+    const GUT: u16 = 4; // row standing abbr + "│", e.g. "Ult│"
+
+    let data = skill_dist_data(aboard, cache);
+    let counts = data.counts();
+    let cursor = (popup.cursor.0.min(8), popup.cursor.1.min(8));
+    let here = data.at(cursor);
+    let th_standing = STANDINGS[cursor.0 as usize];
+    let carp_standing = STANDINGS[cursor.1 as usize];
+
+    let area = frame.area();
+
+    // ---- geometry ----
+    let plot_w = VAXIS_W + GUT + 9 * CELL_W;
+    let plot_h: u16 = 1 /*x-axis title*/ + 1 /*column header*/ + 9 /*standing rows*/;
+
+    // Detail panel: a centered 3-line header naming the cursor cell's standings,
+    // then the jobbers there (names only — their standings are the cell itself).
+    let header = [
+        format!("{} jobber{} here with", here.len(), if here.len() == 1 { "" } else { "s" }),
+        format!("{carp_standing} Carpentry and"),
+        format!("{th_standing} Treasure Haul"),
+    ];
+    let name_w = here.iter().map(|e| e.name.chars().count()).max().unwrap_or(0);
+    // Width accounting uses the widest possible standing line — "<longest standing>
+    // Carpentry and" / "… Treasure Haul" — not the current cursor's, so the panel
+    // doesn't resize as the cursor moves between cells. (The longest standing name,
+    // "Distinguished", is even longer than "Grand-Master", so every cell fits.)
+    let widest_standing = STANDINGS
+        .iter()
+        .map(|s| s.to_string().chars().count())
+        .max()
+        .unwrap_or(0);
+    let standing_line_w = widest_standing + " Carpentry and".len().max(" Treasure Haul".len());
+    let detail_w = standing_line_w.max(name_w) as u16;
+
+    // The "not plotted" footer wraps to the detail width.
+    let note_lines: Vec<String> = if data.unplotted > 0 {
+        wrap_words(
+            &format!("({} aboard not plotted — stats pending)", data.unplotted),
+            detail_w as usize,
+        )
+    } else {
+        Vec::new()
+    };
+
+    let inner_w = plot_w + 2 + detail_w; // 2-col gap between plot and detail
+    // detail = 3 header lines + blank + names + (blank + wrapped note).
+    let mut detail_h = header.len() as u16 + 1 + here.len() as u16;
+    if !note_lines.is_empty() {
+        detail_h += 1 + note_lines.len() as u16;
+    }
+    let inner_h = plot_h.max(detail_h);
+
+    let popup_w = (inner_w + 4).min(area.width.max(1)); // +2 borders +2 padding
+    let popup_h = (inner_h + 2).min(area.height.max(1)); // +2 borders
+    let popup_area = Rect::new(
+        area.x + area.width.saturating_sub(popup_w) / 2,
+        area.y + area.height.saturating_sub(popup_h) / 2,
+        popup_w,
+        popup_h,
+    );
+
+    // Backdrop: a click anywhere outside the cells closes the popup. Pushed first so
+    // the per-cell regions below win the reverse-iterating hit test.
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::JobberSkillDistClose,
+    });
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style(true))
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Skill Distribution").0);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    let cols = Layout::horizontal([
+        Constraint::Length(plot_w),
+        Constraint::Length(2),
+        Constraint::Min(0),
+    ])
+    .split(inner);
+    let plot = cols[0];
+    let detail = cols[2];
+
+    // ---- plot: centered "Treasure Haul" x-axis title, the column header, then the
+    //      9 standing rows top (Ultimate) → bottom (Able), with the vertical
+    //      "Carpentry" y-axis title down the left margin. ----
+    let grid_x = plot.x + VAXIS_W + GUT;
+    let cols_w = 9 * CELL_W;
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "Treasure Haul",
+            Style::default().fg(Color::DarkGray),
+        )))
+        .centered(),
+        Rect::new(grid_x, plot.y, cols_w, 1),
+    );
+
+    let header_y = plot.y + 1;
+    for c in 0..9u16 {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                standing_abbr(STANDINGS[c as usize]),
+                Style::default().bold(),
+            )))
+            .centered(),
+            Rect::new(grid_x + c * CELL_W, header_y, CELL_W, 1),
+        );
+    }
+
+    let grid_y = header_y + 1;
+    // The vertical "Carpentry" axis title: its 9 letters align with the 9 rows.
+    let carp_axis: Vec<char> = "Carpentry".chars().collect();
+    for r in 0..9u16 {
+        // Rows run high → low, so the top row is the highest standing.
+        let carp = 8 - r;
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                carp_axis[r as usize].to_string(),
+                Style::default().fg(Color::DarkGray),
+            ))),
+            Rect::new(plot.x, grid_y + r, 1, 1),
+        );
+        // Row label (Carpentry standing).
+        frame.render_widget(
+            Paragraph::new(Line::from(format!(
+                "{:>3}│",
+                standing_abbr(STANDINGS[carp as usize])
+            ))),
+            Rect::new(plot.x + VAXIS_W, grid_y + r, GUT, 1),
+        );
+        for c in 0..9u16 {
+            let cell = (c as u8, carp as u8);
+            let n = counts[c as usize][carp as usize];
+            let is_cursor = cell == cursor;
+            let text = if n == 0 {
+                "·".to_string()
+            } else {
+                n.to_string()
+            };
+            let style = if is_cursor {
+                Style::default().bg(Color::White).fg(Color::Black).bold()
+            } else if n == 0 {
+                Style::default().fg(Color::DarkGray)
+            } else {
+                Style::default().bold()
+            };
+            let rect = Rect::new(grid_x + c * CELL_W, grid_y + r, CELL_W, 1);
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(text, style))).centered(),
+                rect,
+            );
+            regions.push(ClickRegion {
+                rect,
+                target: ClickTarget::JobberSkillDistCell { th: c as u8, carp: carp as u8 },
+            });
+        }
+    }
+
+    // ---- detail panel: centered header naming the cell's standings, then the
+    //      jobbers there (names only — their standings are the cell itself). ----
+    let mut lines: Vec<Line> = Vec::new();
+    // Line 0 is the count; lines 1–2 carry the standings, emphasised by tier.
+    lines.push(Line::from(Span::styled(header[0].clone(), Style::default().bold())).centered());
+    lines.push(Line::from(Span::styled(header[1].clone(), standing_style(carp_standing))).centered());
+    lines.push(Line::from(Span::styled(header[2].clone(), standing_style(th_standing))).centered());
+    lines.push(Line::from(""));
+    for e in &here {
+        lines.push(Line::from(e.name.clone()).centered());
+    }
+    if !note_lines.is_empty() {
+        lines.push(Line::from(""));
+        for note in &note_lines {
+            lines.push(
+                Line::from(Span::styled(
+                    note.clone(),
+                    Style::default().fg(Color::DarkGray).italic(),
+                ))
+                .centered(),
+            );
+        }
+    }
+    frame.render_widget(Paragraph::new(lines), detail);
 }
 
 /// Placeholder shown in place of the Pillage-only Top Jobbers + panes when the

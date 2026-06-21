@@ -11,7 +11,8 @@ use crate::chatlog::GameState;
 use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
 use crate::jobbers::{
-    self, JobberFocus, JobberPane, JobbersUi, PirateCache, PiratePopup, TrophyPopup, VOYAGE_TYPES,
+    self, JobberFocus, JobberPane, JobbersUi, PirateCache, PiratePopup, SkillDistPopup, TrophyPopup,
+    VOYAGE_TYPES,
 };
 use crate::profits::ProfitsApp;
 use crate::utils::{offset_title, text_similarity};
@@ -508,6 +509,7 @@ impl AppShell {
                     || self.jobbers_ui.voyage_popup.is_some()
                     || self.jobbers_ui.pirate_popup.is_some()
                     || self.jobbers_ui.trophy_popup.is_some()
+                    || self.jobbers_ui.skill_dist_popup.is_some()
             }
             AppId::Voyage | AppId::Exit => false,
         }
@@ -577,6 +579,9 @@ impl AppShell {
         if self.jobbers_ui.pirate_popup.is_some() {
             return self.handle_pirate_popup_key(key);
         }
+        if self.jobbers_ui.skill_dist_popup.is_some() {
+            return self.handle_skill_dist_popup_key(key);
+        }
         if let Some(sel) = self.jobbers_ui.ship_popup {
             return self.handle_ship_popup_key(key, sel);
         }
@@ -592,6 +597,10 @@ impl AppShell {
         let poisoned = self.selected_poisoned();
         // The voyage box's bottom row: Unpoison when poisoned, else Voyage Type.
         let box_bottom = if poisoned { Unpoison } else { VoyageType };
+        // The Skill Distribution button (Vampirates) sits between the box and the
+        // panes, so it's the row entered just below the box and just above the panes.
+        let has_button = self.jobbers_ui.voyage_type.has_skill_distribution();
+        let after_box = if has_button { Some(SkillDist) } else { first_pane };
 
         match key.code {
             KeyCode::Esc => return InputResult::Exit,
@@ -601,11 +610,14 @@ impl AppShell {
                 ShipType => self.jobbers_ui.focus = Vessels,
                 VoyageType => self.jobbers_ui.focus = ShipType,
                 Unpoison => self.jobbers_ui.focus = VoyageType,
+                // The button sits below the box; ↑ returns to the box's bottom row.
+                SkillDist => self.jobbers_ui.focus = box_bottom,
                 Aboard | Greedy | Planked => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                    // At the top of a pane (or an empty one), ↑ leaves for the box.
+                    // At the top of a pane (or an empty one), ↑ leaves for whatever's
+                    // above the panes: the button if shown, else the box's bottom row.
                     if self.jobbers_pane_count(pane) == 0 || self.jobbers_pane_sel(pane) == 0 {
-                        self.jobbers_ui.focus = box_bottom;
+                        self.jobbers_ui.focus = if has_button { SkillDist } else { box_bottom };
                     } else {
                         self.jobbers_pane_select_delta(pane, -1);
                     }
@@ -618,10 +630,16 @@ impl AppShell {
                     self.jobbers_ui.focus = if poisoned {
                         Unpoison
                     } else {
-                        first_pane.unwrap_or(VoyageType)
+                        after_box.unwrap_or(VoyageType)
                     };
                 }
                 Unpoison => {
+                    if let Some(next) = after_box {
+                        self.jobbers_ui.focus = next;
+                    }
+                }
+                // ↓ from the button drops into the first pane.
+                SkillDist => {
                     if let Some(pane) = first_pane {
                         self.jobbers_ui.focus = pane;
                     }
@@ -657,6 +675,7 @@ impl AppShell {
                     self.jobbers_unpoison();
                     self.jobbers_ui.focus = Vessels;
                 }
+                SkillDist => self.open_skill_dist_popup(),
                 Aboard | Greedy | Planked => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     self.open_pirate_popup(pane);
@@ -817,6 +836,38 @@ impl AppShell {
                     self.jobbers_ui.pirate_popup = None;
                 }
             }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Open the Vampirates skill-distribution popup, parking the cursor on the
+    /// most-populated cell so the detail panel starts non-empty.
+    fn open_skill_dist_popup(&mut self) {
+        let cursor = self
+            .jobbers_ui
+            .selected
+            .as_ref()
+            .map(|k| jobbers::default_skill_dist_cursor(&self.chatlog.aboard(k), &self.pirate_cache))
+            .unwrap_or((0, 0));
+        self.jobbers_ui.skill_dist_popup = Some(SkillDistPopup { cursor });
+        self.jobbers_ui.focus = JobberFocus::SkillDist;
+    }
+
+    /// Modal key handling for the skill-distribution popup: arrows move the cursor
+    /// over the 9×9 standing grid (x = Treasure Haul, y = Carpentry), Esc closes.
+    fn handle_skill_dist_popup_key(&mut self, key: KeyEvent) -> InputResult {
+        let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut() else {
+            return InputResult::Consumed;
+        };
+        let (th, carp) = sd.cursor;
+        match key.code {
+            KeyCode::Esc => self.jobbers_ui.skill_dist_popup = None,
+            KeyCode::Left => sd.cursor.0 = th.saturating_sub(1),
+            KeyCode::Right => sd.cursor.0 = (th + 1).min(8),
+            // ↑ raises Carpentry standing, ↓ lowers it (the grid runs high → low).
+            KeyCode::Up => sd.cursor.1 = (carp + 1).min(8),
+            KeyCode::Down => sd.cursor.1 = carp.saturating_sub(1),
             _ => {}
         }
         InputResult::Consumed
@@ -984,6 +1035,19 @@ impl AppShell {
             }
             MouseEventKind::ScrollDown => {
                 self.handle_scroll(1, mouse.column, mouse.row);
+            }
+            // Live hover: while the skill-distribution popup is open, moving the
+            // mouse over a cell parks the cursor there (updates the detail panel).
+            MouseEventKind::Moved => {
+                if self.jobbers_ui.skill_dist_popup.is_some() {
+                    if let Some(ClickTarget::JobberSkillDistCell { th, carp }) =
+                        clickmap::hit_test(&self.click_regions, mouse.column, mouse.row)
+                    {
+                        if let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut() {
+                            sd.cursor = (th, carp);
+                        }
+                    }
+                }
             }
             _ => {}
         }
@@ -1222,6 +1286,17 @@ impl AppShell {
             // The trophies popup is keyboard-driven; a click on it is a no-op (it
             // exists only so the scroll wheel has a target there).
             ClickTarget::JobberTrophyArea => {}
+            ClickTarget::JobberSkillDistButton => self.open_skill_dist_popup(),
+            // Clicking a cell parks the cursor there (same as hovering it).
+            ClickTarget::JobberSkillDistCell { th, carp } => {
+                if let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut() {
+                    sd.cursor = (th, carp);
+                }
+            }
+            // A click on the backdrop (outside the cells) dismisses the popup.
+            ClickTarget::JobberSkillDistClose => {
+                self.jobbers_ui.skill_dist_popup = None;
+            }
         }
     }
 

@@ -35,6 +35,13 @@ pub enum ClickTarget {
     JobberPirateSeeTrophies,
     JobberPirateClose,
     JobberTrophyArea,
+    /// The "View Skill Distribution" button (Vampirates).
+    JobberSkillDistButton,
+    /// A cell in the skill-distribution scatterplot, `(treasure_haul, carpentry)`
+    /// standing indices. Hovering or clicking it moves the cursor there.
+    JobberSkillDistCell { th: u8, carp: u8 },
+    /// The backdrop behind the skill-distribution popup; clicking it closes.
+    JobberSkillDistClose,
 }
 
 #[derive(Clone)]
