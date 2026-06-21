@@ -587,7 +587,8 @@ impl AppShell {
             return self.handle_voyage_popup_key(key, sel);
         }
 
-        let pillage = self.jobbers_ui.voyage_type.implemented();
+        let panes = self.jobbers_ui.voyage_type.panes();
+        let first_pane = panes.first().map(|p| Self::pane_focus(*p));
         let poisoned = self.selected_poisoned();
         // The voyage box's bottom row: Unpoison when poisoned, else Voyage Type.
         let box_bottom = if poisoned { Unpoison } else { VoyageType };
@@ -616,15 +617,13 @@ impl AppShell {
                 VoyageType => {
                     self.jobbers_ui.focus = if poisoned {
                         Unpoison
-                    } else if pillage {
-                        Aboard
                     } else {
-                        VoyageType
+                        first_pane.unwrap_or(VoyageType)
                     };
                 }
                 Unpoison => {
-                    if pillage {
-                        self.jobbers_ui.focus = Aboard;
+                    if let Some(pane) = first_pane {
+                        self.jobbers_ui.focus = pane;
                     }
                 }
                 Aboard | Greedy | Planked => {
@@ -632,16 +631,24 @@ impl AppShell {
                     self.jobbers_pane_select_delta(pane, 1);
                 }
             },
-            KeyCode::Left => match self.jobbers_ui.focus {
-                Greedy => self.jobbers_ui.focus = Aboard,
-                Planked => self.jobbers_ui.focus = Greedy,
-                _ => {}
-            },
-            KeyCode::Right => match self.jobbers_ui.focus {
-                Aboard => self.jobbers_ui.focus = Greedy,
-                Greedy => self.jobbers_ui.focus = Planked,
-                _ => {}
-            },
+            KeyCode::Left => {
+                if let Some(cur) = Self::focus_pane(self.jobbers_ui.focus) {
+                    if let Some(i) = panes.iter().position(|p| *p == cur) {
+                        if i > 0 {
+                            self.jobbers_ui.focus = Self::pane_focus(panes[i - 1]);
+                        }
+                    }
+                }
+            }
+            KeyCode::Right => {
+                if let Some(cur) = Self::focus_pane(self.jobbers_ui.focus) {
+                    if let Some(i) = panes.iter().position(|p| *p == cur) {
+                        if i + 1 < panes.len() {
+                            self.jobbers_ui.focus = Self::pane_focus(panes[i + 1]);
+                        }
+                    }
+                }
+            }
             KeyCode::Enter => match self.jobbers_ui.focus {
                 Vessels => self.open_vessel_popup(),
                 ShipType => self.open_ship_popup(),
@@ -871,6 +878,15 @@ impl AppShell {
             JobberFocus::Greedy => Some(JobberPane::Greedy),
             JobberFocus::Planked => Some(JobberPane::Planked),
             _ => None,
+        }
+    }
+
+    /// Map a [`JobberPane`] to the focus that lands on it.
+    fn pane_focus(pane: JobberPane) -> JobberFocus {
+        match pane {
+            JobberPane::Aboard => JobberFocus::Aboard,
+            JobberPane::Greedy => JobberFocus::Greedy,
+            JobberPane::Planked => JobberFocus::Planked,
         }
     }
 

@@ -48,6 +48,14 @@ const PILLAGE_TOP_JOBBERS: &[Skill] = &[
     Skill::BattleNavigation,
 ];
 
+/// Top Jobbers skill columns for an Atlantis run: treasure haulers, gunners, and
+/// battle navigators.
+const ATLANTIS_TOP_JOBBERS: &[Skill] = &[
+    Skill::TreasureHaul,
+    Skill::Gunning,
+    Skill::BattleNavigation,
+];
+
 /// Skills in each family, in yoweb display order. The pirate-stats popup renders
 /// one table per family using these.
 const PIRACY_SKILLS: &[Skill] = &[
@@ -79,10 +87,11 @@ const CAROUSING_SKILLS: &[Skill] = &[
     Skill::Poker,
 ];
 
-/// The kind of voyage being crewed. Only [`VoyageType::Pillage`] is implemented;
-/// the rest are picker stubs that fall back to a "coming soon" placeholder. New
-/// types only *augment* the Pillage layout with extra stats, so the enum can grow
-/// without disturbing the existing data model.
+/// The kind of voyage being crewed. Pillage and Atlantis are implemented; the
+/// rest are picker stubs that fall back to a "coming soon" placeholder. Each type
+/// drives its own Top Jobbers skill columns ([`VoyageType::top_jobber_skills`])
+/// and bottom panes ([`VoyageType::panes`]), so the enum can grow without
+/// disturbing the existing data model.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VoyageType {
     #[default]
@@ -114,10 +123,10 @@ impl VoyageType {
         }
     }
 
-    /// Whether the full jobbers layout (Top Jobbers + the three panes) is wired up
-    /// for this voyage type. Only Pillage is, for now.
+    /// Whether the full jobbers layout (Top Jobbers + the panes) is wired up for
+    /// this voyage type. Pillage and Atlantis are, for now.
     pub fn implemented(self) -> bool {
-        matches!(self, VoyageType::Pillage)
+        matches!(self, VoyageType::Pillage | VoyageType::Atlantis)
     }
 
     /// The skills the Top Jobbers panel ranks for this voyage type, one column
@@ -126,18 +135,43 @@ impl VoyageType {
     pub fn top_jobber_skills(self) -> &'static [Skill] {
         match self {
             VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
+            VoyageType::Atlantis => ATLANTIS_TOP_JOBBERS,
             // Unimplemented types fall back to Pillage's skills for now; they
             // render the "coming soon" placeholder instead of the panel anyway.
             // Give each its own skill set as it gets wired up.
-            VoyageType::Atlantis
-            | VoyageType::CursedIsles
-            | VoyageType::Vampirates
-            | VoyageType::Vikings => PILLAGE_TOP_JOBBERS,
+            VoyageType::CursedIsles | VoyageType::Vampirates | VoyageType::Vikings => {
+                PILLAGE_TOP_JOBBERS
+            }
         }
+    }
+
+    /// The bottom panes this voyage type shows, in left-to-right order. Pillage
+    /// gets all three; Atlantis drops Greedy. Unimplemented types get none (they
+    /// render the "coming soon" placeholder instead).
+    pub fn panes(self) -> &'static [JobberPane] {
+        match self {
+            VoyageType::Pillage => PILLAGE_PANES,
+            VoyageType::Atlantis => ATLANTIS_PANES,
+            VoyageType::CursedIsles | VoyageType::Vampirates | VoyageType::Vikings => &[],
+        }
+    }
+
+    /// Whether this voyage type spawns dragoons (so the Aboard pane should show
+    /// the dragoon tallies). Only Atlantis does.
+    pub fn tracks_dragoons(self) -> bool {
+        matches!(self, VoyageType::Atlantis)
     }
 }
 
-/// One of the three pirate panes along the bottom of the Pillage layout.
+/// Bottom panes for a Pillage: who's aboard, who's been greedy, who we planked.
+const PILLAGE_PANES: &[JobberPane] =
+    &[JobberPane::Aboard, JobberPane::Greedy, JobberPane::Planked];
+
+/// Bottom panes for an Atlantis run: aboard and planked, no greedy tally.
+const ATLANTIS_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
+
+/// A pirate pane along the bottom of the layout. Which panes show is voyage-type
+/// dependent ([`VoyageType::panes`]); Pillage shows all three.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobberPane {
     Aboard,
@@ -588,11 +622,12 @@ pub fn render(
         .or_else(|| ordered.first().cloned());
     ui.selected = selected.clone();
 
-    let pillage = ui.voyage_type.implemented();
+    let implemented = ui.voyage_type.implemented();
+    let panes = ui.voyage_type.panes();
 
-    // The Unpoison button is only focusable while the vessel is poisoned, and the
-    // three panes only exist on the Pillage layout — bounce focus out of either
-    // when it no longer applies.
+    // The Unpoison button is only focusable while the vessel is poisoned, and a
+    // pane is only focusable when this voyage type actually shows it — bounce
+    // focus out of either when it no longer applies.
     let sel_poisoned = selected
         .as_ref()
         .and_then(|k| state.vessels.get(k))
@@ -600,12 +635,13 @@ pub fn render(
     if !sel_poisoned && ui.focus == JobberFocus::Unpoison {
         ui.focus = JobberFocus::Vessels;
     }
-    if !pillage
-        && matches!(
-            ui.focus,
-            JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked
-        )
-    {
+    let focused_pane = match ui.focus {
+        JobberFocus::Aboard => Some(JobberPane::Aboard),
+        JobberFocus::Greedy => Some(JobberPane::Greedy),
+        JobberFocus::Planked => Some(JobberPane::Planked),
+        _ => None,
+    };
+    if focused_pane.is_some_and(|p| !panes.contains(&p)) {
         ui.focus = JobberFocus::VoyageType;
     }
 
@@ -646,9 +682,8 @@ pub fn render(
     let swabbies = vessel.map_or(0, |v| v.swabbies);
     let warn = ship_idx.and_then(|i| staffing(&SHIPS[i], aboard_set.len(), swabbies));
 
-    // ---- Pillage-only sizing (Top Jobbers + the three panes) ----
-    // Pillage caps its Top Jobbers at 5 per column; an explicit leaderboard size
-    // overrides that default.
+    // ---- Top Jobbers + panes sizing (only used when the layout is implemented) ----
+    // Top Jobbers caps at 5 per column; an explicit leaderboard size overrides it.
     let lb_limit = ui.leaderboard_size.or(Some(5));
     let columns = ui.voyage_type.top_jobber_skills();
     let ranked: Vec<Vec<(String, Experience, Standing)>> = columns
@@ -658,6 +693,15 @@ pub fn render(
     let top_rows = ranked.iter().map(Vec::len).max().unwrap_or(0);
     let top_h = top_rows as u16 + 3;
     let top_panel_w = top_panel_width(&ranked, columns);
+
+    // The Aboard pane gains dragoon tally footers on voyage types that spawn them.
+    let dragoon_w = if ui.voyage_type.tracks_dragoons() {
+        let d = vessel.map_or(0, |v| v.dragoons_aboard);
+        let b = vessel.map_or(0, |v| v.dragoon_boardings);
+        dragoons_footer(d).len().max(boardings_footer(b).len())
+    } else {
+        0
+    };
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at title.
     let aboard_cw = aboard_set
@@ -669,7 +713,8 @@ pub fn render(
             swabbie_footer(swabbies).len()
         } else {
             0
-        });
+        })
+        .max(dragoon_w);
     let greedy: Vec<(&String, u32, u32)> = vessel
         .map(|v| {
             v.greedy_by_pirate
@@ -695,11 +740,20 @@ pub fn render(
     let aboard_w = pane_w(aboard_cw, "Aboard");
     let greedy_w = pane_w(greedy_cw, "Greedy");
     let planked_w = pane_w(planked_cw, "Planked");
-    let panes_w = aboard_w + greedy_w + planked_w;
+    // Only the panes this voyage type shows contribute to the block width.
+    let pane_widths: Vec<u16> = panes
+        .iter()
+        .map(|p| match p {
+            JobberPane::Aboard => aboard_w,
+            JobberPane::Greedy => greedy_w,
+            JobberPane::Planked => planked_w,
+        })
+        .collect();
+    let panes_w: u16 = pane_widths.iter().sum();
 
     // ---- Block geometry: centered horizontally, full content height so the panes
     //      can run the whole way down. ----
-    let block_w = if pillage {
+    let block_w = if implemented {
         voyage_w.max(top_panel_w).max(panes_w)
     } else {
         voyage_w.max(offset_title_width("Coming Soon"))
@@ -729,7 +783,7 @@ pub fn render(
     };
     let tip_h = tooltip_lines.len() as u16;
 
-    let rows = if pillage {
+    let rows = if implemented {
         Layout::vertical([
             Constraint::Length(voyage_h),
             Constraint::Length(top_h),
@@ -751,11 +805,11 @@ pub fn render(
         focused, regions,
     );
 
-    let tip_area = if pillage {
+    let tip_area = if implemented {
         render_top_panel(frame, rows[1], &ranked, columns, focused);
         render_panes(
             frame, rows[2], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
-            aboard_w, greedy_w, planked_w, regions,
+            panes, &pane_widths, regions,
         );
         rows[3]
     } else {
@@ -961,6 +1015,26 @@ fn swabbie_footer(n: u32) -> String {
     }
 }
 
+/// The Aboard pane's lone-dragoon tally (Atlantis): "1 dragoon aboard" / "N
+/// dragoons aboard".
+fn dragoons_footer(n: u32) -> String {
+    if n == 1 {
+        "1 dragoon aboard".to_string()
+    } else {
+        format!("{n} dragoons aboard")
+    }
+}
+
+/// The Aboard pane's monster-boarding tally (Atlantis): each is a party of 3/4/6
+/// dragoons we can't count, so we report the party count.
+fn boardings_footer(n: u32) -> String {
+    if n == 1 {
+        "1 monster boarding".to_string()
+    } else {
+        format!("{n} monster boardings")
+    }
+}
+
 fn pane_focus_target(pane: JobberPane) -> ClickTarget {
     match pane {
         JobberPane::Aboard => ClickTarget::JobberAboardList,
@@ -1011,26 +1085,35 @@ fn render_panes(
     greedy: &[(&String, u32, u32)],
     ui: &mut JobbersUi,
     focused: bool,
-    aboard_w: u16,
-    greedy_w: u16,
-    planked_w: u16,
+    panes: &[JobberPane],
+    pane_widths: &[u16],
     regions: &mut Vec<ClickRegion>,
 ) {
+    let n = panes.len();
+    if n == 0 {
+        return;
+    }
+
     // Start from each pane's natural (content) width, then spread any slack — the
-    // block may be wider than the three panes combined when Top Jobbers or the
-    // Voyage box is the widest piece — evenly so it doesn't all dump into Planked.
-    let natural = aboard_w + greedy_w + planked_w;
+    // block may be wider than the panes combined when Top Jobbers or the Voyage
+    // box is the widest piece — evenly so it doesn't all dump into the last pane.
+    let natural: u16 = pane_widths.iter().sum();
     let slack = area.width.saturating_sub(natural);
-    let add = slack / 3;
-    let rem = slack % 3;
-    let a = aboard_w + add + u16::from(rem > 0);
-    let g = greedy_w + add + u16::from(rem > 1);
-    let cols = Layout::horizontal([
-        Constraint::Length(a),
-        Constraint::Length(g),
-        Constraint::Min(0),
-    ])
-    .split(area);
+    let add = slack / n as u16;
+    let rem = slack % n as u16;
+    let constraints: Vec<Constraint> = pane_widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            if i + 1 == n {
+                // The last pane absorbs the remainder so rounding leaves no gap.
+                Constraint::Min(0)
+            } else {
+                Constraint::Length(w + add + u16::from((i as u16) < rem))
+            }
+        })
+        .collect();
+    let cols = Layout::horizontal(constraints).split(area);
 
     // Same-crew / self emphasis, mirroring the old lists column.
     let my_crew: Option<String> = state
@@ -1060,69 +1143,83 @@ fn render_panes(
 
     let vessel = selected.and_then(|k| state.vessels.get(k));
 
-    // -- Aboard (alphabetical) + swabbie footer (non-selectable) --
-    let mut aboard: Vec<&String> = aboard_set.iter().collect();
-    aboard.sort_unstable();
-    let aboard_n = aboard.len();
-    let mut aboard_rows: Vec<(Line, Option<usize>)> = aboard
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (Line::from(Span::styled((*n).clone(), style_for(n))), Some(i)))
-        .collect();
-    let swabbies = vessel.map_or(0, |v| v.swabbies);
-    if swabbies > 0 {
-        aboard_rows.push((
-            Line::from(Span::styled(
-                swabbie_footer(swabbies),
-                Style::default().italic(),
-            )),
-            None,
-        ));
-    }
-
-    // -- Greedy (total desc, then alphabetical) --
-    let mut greedy_sorted: Vec<(&String, u32, u32)> = greedy.to_vec();
-    greedy_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
-    let greedy_n = greedy_sorted.len();
-    let greedy_inner_w =
-        (cols[1].width.saturating_sub(4) as usize).max(name_col_plus_value(&greedy_sorted));
-    let greedy_rows: Vec<(Line, Option<usize>)> = greedy_sorted
-        .iter()
-        .enumerate()
-        .map(|(i, (name, total, current))| {
-            (
-                greedy_line(name, *total, *current, greedy_inner_w, style_for(name)),
-                Some(i),
-            )
-        })
-        .collect();
-
-    // -- Planked (alphabetical) --
-    let mut planked: Vec<String> = vessel.map(|v| v.planked_by_us.clone()).unwrap_or_default();
-    planked.sort_unstable();
-    let planked_n = planked.len();
-    let planked_rows: Vec<(Line, Option<usize>)> = planked
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (Line::from(Span::styled(n.clone(), style_for(n))), Some(i)))
-        .collect();
-
-    ui.aboard_sel = clamp_sel(ui.aboard_sel, aboard_n);
-    ui.greedy_sel = clamp_sel(ui.greedy_sel, greedy_n);
+    // Clamp every pane's selection up front, whether or not it's shown.
+    ui.aboard_sel = clamp_sel(ui.aboard_sel, aboard_set.len());
+    ui.greedy_sel = clamp_sel(ui.greedy_sel, greedy.len());
+    let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
     ui.planked_sel = clamp_sel(ui.planked_sel, planked_n);
 
-    render_pane(
-        frame, cols[0], "Aboard", aboard_rows, ui.aboard_sel, &mut ui.aboard_offset, focused,
-        ui.focus == JobberFocus::Aboard, JobberPane::Aboard, regions,
-    );
-    render_pane(
-        frame, cols[1], "Greedy", greedy_rows, ui.greedy_sel, &mut ui.greedy_offset, focused,
-        ui.focus == JobberFocus::Greedy, JobberPane::Greedy, regions,
-    );
-    render_pane(
-        frame, cols[2], "Planked", planked_rows, ui.planked_sel, &mut ui.planked_offset, focused,
-        ui.focus == JobberFocus::Planked, JobberPane::Planked, regions,
-    );
+    // On dragoon voyages (Atlantis) the Aboard pane gains hostile tally footers.
+    let show_dragoons = ui.voyage_type.tracks_dragoons();
+
+    // Render only the panes this voyage type asks for, in order.
+    for (i, pane) in panes.iter().enumerate() {
+        let col = cols[i];
+        match pane {
+            // -- Aboard (alphabetical) + swabbie footer (non-selectable) --
+            JobberPane::Aboard => {
+                let mut aboard: Vec<&String> = aboard_set.iter().collect();
+                aboard.sort_unstable();
+                let mut rows: Vec<(Line, Option<usize>)> = aboard
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (Line::from(Span::styled((*n).clone(), style_for(n))), Some(i)))
+                    .collect();
+                let swabbies = vessel.map_or(0, |v| v.swabbies);
+                if swabbies > 0 {
+                    rows.push((
+                        Line::from(Span::styled(swabbie_footer(swabbies), Style::default().italic())),
+                        None,
+                    ));
+                }
+                // Hostile dragoon tallies, in red, for Atlantis runs.
+                if show_dragoons {
+                    let hostile = Style::default().fg(Color::Red).italic();
+                    let d = vessel.map_or(0, |v| v.dragoons_aboard);
+                    let b = vessel.map_or(0, |v| v.dragoon_boardings);
+                    rows.push((Line::from(Span::styled(dragoons_footer(d), hostile)), None));
+                    rows.push((Line::from(Span::styled(boardings_footer(b), hostile)), None));
+                }
+                render_pane(
+                    frame, col, "Aboard", rows, ui.aboard_sel, &mut ui.aboard_offset, focused,
+                    ui.focus == JobberFocus::Aboard, JobberPane::Aboard, regions,
+                );
+            }
+            // -- Greedy (total desc, then alphabetical) --
+            JobberPane::Greedy => {
+                let mut greedy_sorted: Vec<(&String, u32, u32)> = greedy.to_vec();
+                greedy_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+                let inner_w =
+                    (col.width.saturating_sub(4) as usize).max(name_col_plus_value(&greedy_sorted));
+                let rows: Vec<(Line, Option<usize>)> = greedy_sorted
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, total, current))| {
+                        (greedy_line(name, *total, *current, inner_w, style_for(name)), Some(i))
+                    })
+                    .collect();
+                render_pane(
+                    frame, col, "Greedy", rows, ui.greedy_sel, &mut ui.greedy_offset, focused,
+                    ui.focus == JobberFocus::Greedy, JobberPane::Greedy, regions,
+                );
+            }
+            // -- Planked (alphabetical) --
+            JobberPane::Planked => {
+                let mut planked: Vec<String> =
+                    vessel.map(|v| v.planked_by_us.clone()).unwrap_or_default();
+                planked.sort_unstable();
+                let rows: Vec<(Line, Option<usize>)> = planked
+                    .iter()
+                    .enumerate()
+                    .map(|(i, n)| (Line::from(Span::styled(n.clone(), style_for(n))), Some(i)))
+                    .collect();
+                render_pane(
+                    frame, col, "Planked", rows, ui.planked_sel, &mut ui.planked_offset, focused,
+                    ui.focus == JobberFocus::Planked, JobberPane::Planked, regions,
+                );
+            }
+        }
+    }
 }
 
 /// Render a single pane: a bordered, auto-scrolling list of pirate rows. `rows`

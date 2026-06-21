@@ -214,6 +214,15 @@ pub struct Vessel {
     /// fight (see [`on_battle_end`]). Departures saturate at zero so a poisoned
     /// vessel (we missed lines while away) can't underflow.
     pub swabbies: u32,
+    /// Lone dragoons currently aboard on an Atlantis run: +1 per "Ye hear a
+    /// splash, and the sound of foreign footsteps." line. Reset to zero once the
+    /// crew repels all invaders. Always zero on voyage types without dragoons.
+    pub dragoons_aboard: u32,
+    /// Monster boarding parties currently aboard: +1 per "Dragoons from the
+    /// monster took advantage..." line. Each party is 3/4/6 dragoons depending on
+    /// the monster — we can't tell which — so we count the parties, not the heads.
+    /// Reset alongside [`Self::dragoons_aboard`] when invaders are repelled.
+    pub dragoon_boardings: u32,
     /// Greedy strikes tallied per attacking pirate, over the whole run.
     pub greedy_by_pirate: HashMap<String, u32>,
     /// Greedy strikes during the current/most-recent battle only. Reset when a
@@ -361,6 +370,26 @@ impl GameState {
             self.on_battle_start();
             return;
         }
+
+        // Atlantis: a lone dragoon sneaks aboard.
+        if body == "Ye hear a splash, and the sound of foreign footsteps." {
+            self.on_dragoon_aboard();
+            return;
+        }
+        // Atlantis: the monster lands a whole boarding party (3/4/6 dragoons).
+        if body == "Dragoons from the monster took advantage of their proximity to board yer vessel!"
+        {
+            self.on_dragoon_boarding();
+            return;
+        }
+        // Atlantis: invaders cleared — the dragoons aboard are gone.
+        if body == "Arr! Yer crew has managed to repel all invaders!" {
+            self.on_invaders_repelled();
+            return;
+        }
+        // FUTURE (anomaly log): "Yer ship has entered a citadel!" arriving while
+        // `dragoons_aboard`/`dragoon_boardings` are non-zero is a noteworthy case
+        // worth recording. No state change today — wire it here when that log lands.
 
         // Battle end: "Game over.  Winners: a, b, Playerone." — if we're in the
         // winning side, it's an authoritative roster of who's aboard.
@@ -532,6 +561,28 @@ impl GameState {
     fn on_battle_start(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
             v.greedy_current.clear();
+        }
+    }
+
+    /// A lone dragoon splashed aboard (Atlantis).
+    fn on_dragoon_aboard(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.dragoons_aboard = v.dragoons_aboard.saturating_add(1);
+        }
+    }
+
+    /// The monster landed a boarding party of dragoons (Atlantis).
+    fn on_dragoon_boarding(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.dragoon_boardings = v.dragoon_boardings.saturating_add(1);
+        }
+    }
+
+    /// The crew repelled all invaders — clear the dragoons aboard.
+    fn on_invaders_repelled(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.dragoons_aboard = 0;
+            v.dragoon_boardings = 0;
         }
     }
 
@@ -864,6 +915,26 @@ mod tests {
         gs.process_line("[01:10:00] Going aboard the Enchanting Pike..."); // return
         assert_eq!(gs.current.as_deref(), Some("Enchanting Pike"));
         assert!(gs.current_vessel().unwrap().poisoned);
+    }
+
+    #[test]
+    fn counts_dragoons_and_resets_on_repel() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
+        gs.process_line("[01:00:05] This vessel is now Atlantis.");
+        gs.process_line("[01:01:00] Ye hear a splash, and the sound of foreign footsteps.");
+        gs.process_line("[01:01:30] Ye hear a splash, and the sound of foreign footsteps.");
+        gs.process_line(
+            "[01:02:00] Dragoons from the monster took advantage of their proximity to board yer vessel!",
+        );
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.dragoons_aboard, 2);
+        assert_eq!(v.dragoon_boardings, 1);
+
+        gs.process_line("[01:03:00] Arr! Yer crew has managed to repel all invaders!");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.dragoons_aboard, 0);
+        assert_eq!(v.dragoon_boardings, 0);
     }
 
     #[test]
