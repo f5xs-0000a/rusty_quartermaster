@@ -1067,10 +1067,10 @@ impl AppShell {
     }
 
     /// Key handling while the Sea Battles popup is open. Three focus zones chained
-    /// top→bottom — the pager (←/→ change fight, wrapping), the always-editable
-    /// calculator (arrows drive it), and the record toggle (Enter/Space flips it) —
-    /// moved between with ↑/↓. Esc closes the editor's ship picker / reset confirm
-    /// first, otherwise the popup.
+    /// top→bottom — the pager (←/→ change fight, wrapping), the record toggle
+    /// (Enter/Space flips it), and the always-editable calculator (arrows drive
+    /// it) — moved between with ↑/↓. Esc closes the editor's ship picker / reset
+    /// confirm first, otherwise the popup.
     fn handle_battles_key(&mut self, key: KeyEvent) -> InputResult {
         use crate::damage::{ROW_HEADON, ROW_SHIP, Side};
         use crate::voyage::ui::BattlesFocus::{Calc, Pager, Record};
@@ -1095,34 +1095,35 @@ impl AppShell {
             Pager => match key.code {
                 KeyCode::Left | KeyCode::PageUp => self.battles_page(-1),
                 KeyCode::Right | KeyCode::PageDown => self.battles_page(1),
+                KeyCode::Down => self.voyage_ui.battles_focus = Record,
+                _ => {}
+            },
+            // The toggle sits between the pager and the calculator, matching its
+            // on-screen position (directly under the page number, above the calc).
+            Record => match key.code {
+                KeyCode::Up => self.voyage_ui.battles_focus = Pager,
                 KeyCode::Down => {
                     self.voyage_ui.battles_focus = Calc;
                     self.voyage_ui.battle_editor.focus_row = ROW_SHIP;
                     self.voyage_ui.battle_editor.focus_side = Side::Left;
                 }
+                KeyCode::Enter | KeyCode::Char(' ') => self.toggle_battle_record(),
                 _ => {}
             },
             Calc => {
-                // ↑ off the top row / ↓ off the bottom row leave the calculator.
+                // ↑ off the top row returns to the toggle; ↓ off the bottom row has
+                // nowhere to go (the calculator is the last control).
                 if key.code == KeyCode::Up && self.voyage_ui.battle_editor.focus_row == ROW_SHIP {
-                    self.voyage_ui.battles_focus = Pager;
+                    self.voyage_ui.battles_focus = Record;
                 } else if key.code == KeyCode::Down
                     && self.voyage_ui.battle_editor.focus_row == ROW_HEADON
                 {
-                    self.voyage_ui.battles_focus = Record;
+                    // bottom of the chain — stay put.
                 } else {
                     self.voyage_ui.battle_editor.handle_key(key);
                     self.sync_battle_editor();
                 }
             }
-            Record => match key.code {
-                KeyCode::Up => {
-                    self.voyage_ui.battles_focus = Calc;
-                    self.voyage_ui.battle_editor.focus_row = ROW_HEADON;
-                }
-                KeyCode::Enter | KeyCode::Char(' ') => self.toggle_battle_record(),
-                _ => {}
-            },
         }
         InputResult::Consumed
     }

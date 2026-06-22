@@ -51,17 +51,18 @@ pub enum SaveChoice {
     Discard,
 }
 
-/// Which control the Sea Battles popup has focused. The chain runs top→bottom:
-/// the fight pager, the (always-editable) calculator, then the record toggle.
+/// Which control the Sea Battles popup has focused. The chain runs top→bottom,
+/// matching the on-screen order: the fight pager, the record toggle (rendered
+/// directly under the pager), then the (always-editable) calculator below it.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
 pub enum BattlesFocus {
     /// "Battle n of m" — ←/→ change fight (wrapping).
     #[default]
     Pager,
-    /// The embedded Damage calculator grid.
-    Calc,
     /// The "Recorded / Not Recorded" toggle.
     Record,
+    /// The embedded Damage calculator grid.
+    Calc,
 }
 
 /// Persistent UI state for the page (mouse/keyboard-driven).
