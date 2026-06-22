@@ -222,6 +222,12 @@ pub struct Vessel {
     pub job_kind: Option<JobKind>,
     /// Pirates currently aboard with us.
     pub crewmates: HashSet<String>,
+    /// Crewmates whose client has dropped — between their `X has disconnected.` and
+    /// `X has reconnected.` lines. A disconnected pirate still holds a melee slot
+    /// (and stays on the winners roster) but doesn't actually fight, so they're
+    /// excluded from a battle's crew strength / manpower advantage. Cleared on
+    /// reconnect or when they leave the vessel.
+    pub disconnected: HashSet<String>,
     /// Swabbies (NPC crew) aboard. There's no absolute count line, so this is a
     /// running tally from the four "swabbie(s) (has|have) come aboard / left the
     /// vessel" delta lines, snapped to the authoritative roster whenever we win a
@@ -657,8 +663,27 @@ impl GameState {
         if let Some(name) = body.strip_suffix(" has left the vessel.") {
             if let Some(v) = self.current_vessel_mut() {
                 v.crewmates.remove(name);
+                v.disconnected.remove(name); // gone for good — not just a dropout
             }
             self.sample_crew();
+            return;
+        }
+
+        // A crewmate's client dropped / came back. They stay aboard (and on the
+        // winners roster) while disconnected, but don't fight — tracked so they're
+        // excluded from a battle's crew strength. Players only (NPCs don't drop).
+        if let Some(name) = body.strip_suffix(" has disconnected.") {
+            if pirate::is_player_name(name) {
+                if let Some(v) = self.current_vessel_mut() {
+                    v.disconnected.insert(name.to_string());
+                }
+            }
+            return;
+        }
+        if let Some(name) = body.strip_suffix(" has reconnected.") {
+            if let Some(v) = self.current_vessel_mut() {
+                v.disconnected.remove(name);
+            }
             return;
         }
 
@@ -858,13 +883,17 @@ impl GameState {
         }
     }
 
-    /// The boarding melee started — record the sea/boarding boundary once.
+    /// The boarding melee started — record the sea/boarding boundary once, and
+    /// snapshot the crew aboard so a crewmate who leaves mid-melee still counts as
+    /// a boarder (our manpower is "who fought", measured at boarding start).
     fn on_grapple(&mut self) {
         let now = self.now;
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.current_battle.as_mut() {
+        if let Some(v) = self.current_vessel_mut() {
+            let roster: Vec<String> = v.crewmates.iter().cloned().collect();
+            if let Some(b) = v.current_voyage.as_mut().and_then(|voy| voy.current_battle.as_mut()) {
                 if b.grappled_at.is_none() {
                     b.grappled_at = now;
+                    b.grapple_roster = Some(roster);
                 }
             }
         }
@@ -913,10 +942,15 @@ impl GameState {
         let won = winners
             .iter()
             .any(|n| me.is_some_and(|me| n.eq_ignore_ascii_case(me)));
-        let (pirates, swabbies) = self
-            .current_vessel()
-            .map(|v| (v.crewmates.len() as u32 + 1, v.swabbies))
-            .unwrap_or((0, 0));
+        // Inputs for our manpower, captured before the mutable voyage borrow below.
+        // `live_crew` is the resynced roster after `on_battle_end` (on a win it's the
+        // winners' players, which catches crew we never saw board); it's unioned
+        // with the battle's grapple roster (which catches crew who left mid-melee).
+        let live_crew: HashSet<String> =
+            self.current_vessel().map(|v| v.crewmates.clone()).unwrap_or_default();
+        let disconnected: HashSet<String> =
+            self.current_vessel().map(|v| v.disconnected.clone()).unwrap_or_default();
+        let swabbies = self.current_vessel().map(|v| v.swabbies).unwrap_or(0);
         // A king on the winning side means we lost to that king — name the fight.
         let king = find_brigand_king(summary);
         // PvP on a loss: a winner who's a real player and not ours = an enemy
@@ -936,7 +970,20 @@ impl GameState {
                     BattleOutcome::Lost
                 };
                 b.ended_at = now;
-                b.pirates = pirates;
+                // Our manpower = who actually fought: the grapple roster unioned
+                // with the resynced crew, minus the disconnected (a held-but-idle
+                // melee slot), plus us. A leaver stays counted (in the grapple
+                // roster); a never-reconnecting dropout is dropped even if the
+                // winners roster still lists them.
+                let mut roster: HashSet<String> = live_crew;
+                if let Some(gr) = &b.grapple_roster {
+                    roster.extend(gr.iter().cloned());
+                }
+                let fought = roster
+                    .iter()
+                    .filter(|n| !disconnected.contains(n.as_str()))
+                    .count() as u32;
+                b.pirates = fought + 1;
                 b.swabbies = swabbies;
                 if foe_player {
                     b.is_pvp = true;
@@ -1262,6 +1309,15 @@ impl GameState {
     /// The foe headcount computed for the just-resolved (last) battle, if any.
     pub fn last_resolved_their_manpower(&self) -> Option<u32> {
         self.current_voyage()?.battles.last()?.their_manpower
+    }
+
+    /// Our crew strength (fighting pirates + swabbies) recorded for the
+    /// just-resolved (last) battle — the grapple-roster count with the
+    /// disconnected already subtracted. The app feeds this into the frozen
+    /// snapshot so the crew advantage matches the battle record.
+    pub fn last_resolved_our_strength(&self) -> Option<u32> {
+        let b = self.current_voyage()?.battles.last()?;
+        Some(b.pirates + b.swabbies)
     }
 
     /// Mutable access to the vessel we're currently aboard.
@@ -2017,6 +2073,88 @@ mod tests {
         assert_eq!(b.my_cut, Some(576));
         assert_eq!(b.pirates, 2); // Matetwo + us
         assert_eq!(b.swabbies, 1); // A swabbie
+    }
+
+    #[test]
+    fn manpower_counts_leaver_excludes_disconnect() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[02:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[02:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[02:00:20] Mateleaver has come aboard.");
+        gs.process_line("[02:00:21] Matedrop has come aboard.");
+        gs.process_line("[02:00:22] Matefighter has come aboard.");
+        gs.process_line("[02:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[02:02:00] Test Vessel has grappled Modest Sild. A melee breaks out between the crews!",
+        );
+        // Matedrop's client drops and never returns; Mateleaver bails mid-melee.
+        gs.process_line("[02:02:05] Matedrop has disconnected.");
+        gs.process_line("[02:02:30] Mateleaver has left the vessel.");
+        gs.process_line("[02:03:00] Grim Bart is eliminated!");
+        // We win. Matedrop is still rostered (a disconnect isn't a departure), so
+        // he's in the winners; Mateleaver isn't (he left).
+        gs.process_line("[02:04:00] Game over.  Winners: Playerone, Matefighter, Matedrop, A swabbie.");
+        let b = gs.current_voyage().unwrap().battles.last().unwrap();
+        assert_eq!(b.outcome, BattleOutcome::Won);
+        // Fought = Mateleaver (left, but fought) + Matefighter + us = 3. Matedrop is
+        // excluded — disconnected and never reconnected, even though he's a winner.
+        assert_eq!(b.pirates, 3);
+        assert_eq!(b.swabbies, 1);
+    }
+
+    #[test]
+    fn manpower_counts_reconnected_dropout() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[02:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[02:00:20] Matedrop has come aboard.");
+        gs.process_line("[02:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[02:02:00] Modest Sild has grappled Test Vessel. A melee breaks out between the crews!",
+        );
+        gs.process_line("[02:02:05] Matedrop has disconnected.");
+        gs.process_line("[02:02:10] Matedrop has reconnected.");
+        gs.process_line("[02:04:00] Game over.  Winners: Playerone, Matedrop.");
+        let b = gs.current_voyage().unwrap().battles.last().unwrap();
+        // Matedrop came back and fought, so he counts: Matedrop + us = 2.
+        assert_eq!(b.pirates, 2);
+    }
+
+    #[test]
+    fn pvp_detected_from_enemy_player_elimination() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[03:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[03:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[03:01:00] You intercepted the Bloody Nightmare!");
+        gs.process_line(
+            "[03:02:00] Test Vessel has grappled Bloody Nightmare. A melee breaks out between the crews!",
+        );
+        gs.process_line("[03:02:30] Enemyone is eliminated!"); // single-word, not our crew
+        gs.process_line("[03:02:40] Sea Lawyer is eliminated!"); // NPC mercenary (has a space)
+        gs.process_line("[03:04:00] Game over.  Winners: Playerone.");
+        let b = gs.current_voyage().unwrap().battles.last().unwrap();
+        assert!(b.is_pvp); // an enemy real player was eliminated
+    }
+
+    #[test]
+    fn pvp_detected_from_winners_on_loss() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[04:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[04:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[04:01:00] You have been intercepted by the Bloody Nightmare!");
+        gs.process_line(
+            "[04:02:00] Bloody Nightmare has grappled Test Vessel. A melee breaks out between the crews!",
+        );
+        // We lose with no enemy KO'd — only the winners list reveals the foe players.
+        gs.process_line("[04:04:00] Game over.  Winners: Enemyone, Enemytwo, Deck Swab.");
+        let b = gs.current_voyage().unwrap().battles.last().unwrap();
+        assert_eq!(b.outcome, BattleOutcome::Lost);
+        assert!(b.is_pvp);
     }
 
     #[test]

@@ -146,6 +146,13 @@ pub struct Battle {
     /// foe ship; `None` when the hull is unknown and left to the user. Distinct
     /// from a [`BattleSnapshot::foe_ship`], which is whatever the user last set.
     pub foe_ship: Option<usize>,
+    /// Real-player crewmates aboard at the grapple (boarding start). Captured here
+    /// — rather than read live at resolution — so a crewmate who *leaves* mid-melee
+    /// still counts toward our manpower (they fought, then bailed). At resolution
+    /// it's unioned with the winners-resynced roster (which catches crew we never
+    /// saw board) and the disconnected are subtracted. `None` until grappled; not
+    /// persisted.
+    pub grapple_roster: Option<Vec<String>>,
 }
 
 impl Battle {

@@ -874,8 +874,12 @@ impl AppShell {
             self.damage.right_ship = idx;
         }
         if self.chatlog.take_resolved() && self.damage.has_input() {
-            // Our manpower = full crew aboard: real pirates + swabbies/mercenaries.
-            let crew_n = self.chatlog.current_pirates() + self.chatlog.current_swabbies();
+            // Our manpower = the crew that actually fought, as recorded on the
+            // just-resolved battle (grapple roster minus the disconnected). Falls
+            // back to the live count if that battle didn't record one.
+            let crew_n = self.chatlog.last_resolved_our_strength().unwrap_or_else(|| {
+                self.chatlog.current_pirates() + self.chatlog.current_swabbies()
+            });
             // Their manpower came from the melee at resolution; fall back to the
             // foe ship type's pirate capacity if the fight had no melee count.
             let their = self.chatlog.last_resolved_their_manpower().unwrap_or_else(|| {

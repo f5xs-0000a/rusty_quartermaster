@@ -618,9 +618,21 @@ fn render_battles_popup(
     let enemy = row.enemy.clone().unwrap_or_else(|| "Unknown vessel".to_string());
     let ship_line = format!("{enemy} ({})", SHIPS[ui.battle_editor.right_ship].name);
     frame.render_widget(Paragraph::new(ship_line).centered(), parts[3]);
+    // A PvP fight is flagged in magenta. A generic brigand fight is already
+    // relabelled "Players" upstream; other categories (kings, etc.) get a "· PvP"
+    // tag appended so the player-vs-player nature is never hidden by the label.
+    let cat_text = if row.is_pvp && row.category != "Players" {
+        format!("{} · PvP", row.category)
+    } else {
+        row.category.clone()
+    };
+    let cat_style = if row.is_pvp {
+        Style::default().fg(Color::Magenta)
+    } else {
+        Style::default().fg(Color::Gray)
+    };
     frame.render_widget(
-        Paragraph::new(Span::styled(row.category.clone(), Style::default().fg(Color::Gray)))
-            .centered(),
+        Paragraph::new(Span::styled(cat_text, cat_style)).centered(),
         parts[4],
     );
     frame.render_widget(
@@ -1235,7 +1247,8 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
                 b.avg_advantage_dmg_sd,
                 sd_pct,
             ),
-            "Average morale-damage edge over the enemy, from the Damage calculator.",
+            "Advantage is the difference of the working melee space between one \
+             member of our crew against the opposing member of their crew.",
         );
         out.stat(
             "Crew advantage",
@@ -1246,7 +1259,8 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
                 b.avg_advantage_crew_sd,
                 sd_one,
             ),
-            "Average headcount edge: our crew vs the enemy's, weighted by morale.",
+            "Manpower advantage is the total sum of working melee space for our \
+             crew, against the total working melee space of the opposing crew.",
         );
         out.blank();
     }

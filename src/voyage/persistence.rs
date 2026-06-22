@@ -67,6 +67,9 @@ pub struct SavedBattle {
     /// data (`snapshot` + advantages) on disk.
     #[serde(default)]
     pub recorded: bool,
+    /// Player-vs-player: the foe fielded at least one real player.
+    #[serde(default)]
+    pub is_pvp: bool,
     #[serde(default)]
     pub snapshot: Option<SavedSnapshot>,
 }
@@ -149,6 +152,7 @@ pub fn from_voyage(v: &Voyage, vessel: Option<&str>) -> SavedVoyage {
                 advantage_dmg: b.recorded.then_some(b.advantage_dmg).flatten(),
                 advantage_crew: b.recorded.then_some(b.advantage_crew).flatten(),
                 recorded: b.recorded,
+                is_pvp: b.is_pvp,
                 snapshot: if b.recorded {
                     b.snapshot.map(saved_snapshot)
                 } else {
