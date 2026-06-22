@@ -992,6 +992,22 @@ impl AppShell {
                 app
             }
         };
+        // #16: when the foe's hull is *unknown* (no special encounter announced it)
+        // and the observed headcount can't fit the currently-seeded hull, bump the
+        // foe ship to the smallest hull that can man that crew — a sloop can't hold
+        // 18 boarders. Special encounters that announce their hull (Monkey Boats,
+        // and the Black Ship, which can be staffed beyond any hull's capacity) carry
+        // `foe_ship = Some(..)` and are left untouched.
+        if row.foe_ship.is_none() {
+            if let Some(their) = row.their_manpower {
+                let cur = crate::ships::SHIPS[self.voyage_ui.battle_editor.right_ship].max_pirates;
+                if (cur as u32) < their {
+                    if let Some(idx) = crate::ships::smallest_ship_for(their) {
+                        self.voyage_ui.battle_editor.right_ship = idx;
+                    }
+                }
+            }
+        }
     }
 
     /// Step the open Sea Battles page by `delta`, **wrapping** at the ends, and

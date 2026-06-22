@@ -348,3 +348,17 @@ pub const SHIPS: &[Ship] = &[
 pub fn ship_index(name: &str) -> Option<usize> {
     SHIPS.iter().position(|s| s.name == name)
 }
+
+/// Index into [`SHIPS`] of the smallest-capacity hull that can carry `crew`
+/// pirates — the fitting hull with the fewest [`Ship::max_pirates`]. `None` when
+/// no hull is large enough (a crew beyond the Grand Frigate's capacity). Used to
+/// suggest a foe hull when an observed headcount exceeds the selected ship's
+/// pirate capacity.
+pub fn smallest_ship_for(crew: u32) -> Option<usize> {
+    SHIPS
+        .iter()
+        .enumerate()
+        .filter(|(_, s)| s.max_pirates as u32 >= crew)
+        .min_by_key(|(_, s)| s.max_pirates)
+        .map(|(i, _)| i)
+}
