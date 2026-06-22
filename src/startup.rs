@@ -441,7 +441,7 @@ fn render(frame: &mut Frame, state: &Setup) {
         .borders(Borders::ALL)
         .border_style(border_for(name_focused))
         .padding(Padding::horizontal(1))
-        .title(offset_title("Name").0);
+        .title(offset_title("Who are ye?").0);
     let name_inner = name_block.inner(rows[1]);
     frame.render_widget(name_block, rows[1]);
     let name_span = if state.name.value.is_empty() && !name_focused {

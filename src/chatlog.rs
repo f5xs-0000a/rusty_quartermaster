@@ -427,13 +427,11 @@ impl GameState {
     }
 
     fn classify(&mut self, body: &str) {
-        // Chat by a named speaker confirms our identity: the speaker attribution
-        // ("<Name> says,/chats,/tells ye,") is game-supplied, ahead of the
-        // spoofable message body, so the first marker always names the real
-        // speaker. A no-op for anyone but us.
-        if let Some(speaker) = chat_speaker(body) {
-            self.confirm_self(speaker);
-        }
+        // Chat is NOT an identity signal: "tells ye," is second-person (the
+        // speaker is by definition not us), and "says,"/"chats," only prove
+        // *someone* spoke — the name could be anyone. Identity is confirmed
+        // only by game-generated, position-bound signals (winners list,
+        // eliminations, issued orders); see confirm_self call sites.
 
         // Greedy strikes: "<attacker> <verb phrase> against <Brigand>, <tail>!"
         // We only care who landed it, not the flavour.
@@ -1626,19 +1624,6 @@ fn is_chat_line(body: &str) -> bool {
     body.contains(" says,") || body.contains(" chats,") || body.contains(" tells ye,")
 }
 
-/// The speaker name of a chat line (`"<Name> says, …"`), or `None` if the line
-/// isn't chat. The marker is matched at its *first* occurrence — which is the
-/// game's own speaker attribution, ahead of any text the speaker typed — so a
-/// player can't forge a different speaker by parroting the marker in their
-/// message body.
-fn chat_speaker(body: &str) -> Option<&str> {
-    [" says,", " chats,", " tells ye,"]
-        .iter()
-        .filter_map(|m| body.find(m))
-        .min()
-        .map(|idx| &body[..idx])
-}
-
 /// Parse a leading integer that may contain thousands separators, ignoring any
 /// trailing text: `"7,756 pieces of eight"` -> `7756`. Returns `None` if no
 /// leading digits are present.
@@ -2276,7 +2261,7 @@ mod tests {
         use crate::voyage::effective_outcome;
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
-        // A bare fight with no confirming signal yet (no order/chat/elimination,
+        // A bare fight with no confirming signal yet (no order/elimination,
         // and we're not among the winners).
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
         gs.process_line("[01:01:00] You have been intercepted by the Boring Gar!");
@@ -2285,8 +2270,9 @@ mod tests {
         let raw = gs.current_voyage().unwrap().battles.last().unwrap().outcome;
         assert_eq!(raw, BattleOutcome::Lost); // provisional verdict, stored
         assert_eq!(effective_outcome(raw, gs.self_confirmed), BattleOutcome::Unknown);
-        // A chat line much later confirms us — the earlier fight is revealed.
-        gs.process_line("[01:05:00] Playerone says, \"gg all\"");
+        // A game-generated order line much later confirms us — the earlier
+        // fight is revealed.
+        gs.process_line("[01:05:00] Playerone issued an order to set the vessel to sail.");
         assert!(gs.self_confirmed);
         let raw = gs.current_voyage().unwrap().battles.last().unwrap().outcome;
         assert_eq!(effective_outcome(raw, gs.self_confirmed), BattleOutcome::Lost);
