@@ -19,8 +19,10 @@ pub enum ClickTarget {
     DamageHeadon,
     DamageHeadonIncrement,
     DamageHeadonDecrement,
-    DamageButton(usize),
     DamageShipItem(usize),
+    /// Yes / No on the "Reset values?" confirm shown after a ship change.
+    DamageResetYes,
+    DamageResetNo,
     JobberVesselButton,
     JobberVesselItem(usize),
     JobberShipType,
@@ -61,6 +63,13 @@ pub enum ClickTarget {
     VoyageChart { idx: usize },
     /// The backdrop behind an enlarged chart popup; clicking it closes.
     VoyageChartClose,
+    /// The backdrop behind the Sea Battles popup; clicking it closes.
+    VoyageBattlesClose,
+    /// Previous / next page (fight) buttons in the Sea Battles popup.
+    VoyageBattlesPrev,
+    VoyageBattlesNext,
+    /// The "Record" toggle for the currently-shown fight in the Sea Battles popup.
+    VoyageBattlesRecord,
 }
 
 #[derive(Clone)]

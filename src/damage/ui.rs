@@ -5,53 +5,34 @@ use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::ships::SHIPS;
 use crate::utils::offset_title;
 use super::{
-    BUTTON_LABELS, CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON,
-    ROW_SHIP, ROW_SHOTS_LEFT, Side,
+    CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON, ROW_SHIP,
+    ROW_SHOTS_LEFT, Side,
 };
 
 const COL_GAP: u16 = 3;
 
-pub fn render(
+/// Outer dimensions `(width, height)` of the Damage-calculator box, so callers
+/// (the main page and the Sea Battles popup) can lay it out consistently.
+pub fn calc_box_size() -> (u16, u16) {
+    let max_ship_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0) as u16;
+    let center_width = CENTER_LABELS.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
+    let inner_width = max_ship_name + COL_GAP + center_width + COL_GAP + max_ship_name;
+    (inner_width + 4, ROW_COUNT as u16 + 2) // +2 borders +2 padding ; rows + borders
+}
+
+/// Render the bordered Damage-calculator grid into `box_area` (which should be
+/// exactly [`calc_box_size`]). This is the lone shared widget — the main page and
+/// the Sea Battles popup both call it. `focused` drives the cell highlight.
+pub fn render_calculator(
     frame: &mut Frame,
-    area: Rect,
-    app: &mut DamageApp,
-    our_pirates: u32,
+    box_area: Rect,
+    app: &DamageApp,
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
     let max_ship_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0) as u16;
-    let center_width = CENTER_LABELS
-        .iter()
-        .map(|l| l.len())
-        .max()
-        .unwrap_or(0) as u16;
+    let center_width = CENTER_LABELS.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
 
-    let inner_width = max_ship_name + COL_GAP + center_width + COL_GAP + max_ship_name;
-    let box_width = inner_width + 4; // +2 borders +2 padding
-    let box_height = ROW_COUNT as u16 + 2; // rows + borders
-    let button_box_height = BUTTON_LABELS.len() as u16 + 2; // rows + borders
-
-    // Center vertically: box + button box + advantage readout + hint
-    let vchunks = Layout::vertical([
-        Constraint::Fill(1),
-        Constraint::Length(box_height),
-        Constraint::Length(button_box_height),
-        Constraint::Length(1), // advantage readout
-        Constraint::Length(1), // hint
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    // Center horizontally
-    let hchunks = Layout::horizontal([
-        Constraint::Fill(1),
-        Constraint::Length(box_width),
-        Constraint::Fill(1),
-    ])
-    .split(vchunks[1]);
-
-    // -- Main box --
-    let box_area = hchunks[1];
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
@@ -59,14 +40,10 @@ pub fn render(
     let inner = block.inner(box_area);
     frame.render_widget(block, box_area);
 
-    // -- Rows --
-    let row_constraints: Vec<Constraint> =
-        (0..ROW_COUNT).map(|_| Constraint::Length(1)).collect();
+    let row_constraints: Vec<Constraint> = (0..ROW_COUNT).map(|_| Constraint::Length(1)).collect();
     let rows = Layout::vertical(row_constraints).split(inner);
 
-    let no_popup = app.popup.is_none();
-    let cells_active = focused && no_popup && !app.button_focused;
-    let buttons_active = focused && no_popup && app.button_focused;
+    let cells_active = focused && app.popup.is_none();
 
     for i in 0..ROW_COUNT {
         if i == ROW_GAP {
@@ -75,80 +52,55 @@ pub fn render(
             render_headon_row(frame, rows[i], app, max_ship_name, center_width, cells_active, regions);
         } else {
             render_standard_row(
-                frame,
-                rows[i],
-                i,
-                app,
-                max_ship_name,
-                center_width,
-                cells_active,
-                regions,
+                frame, rows[i], i, app, max_ship_name, center_width, cells_active, regions,
             );
         }
     }
 
-    // -- Button box --
-    let button_inner_w = BUTTON_LABELS.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
-    let button_box_w = button_inner_w + 4; // +2 borders +2 padding
-    let button_hchunks = Layout::horizontal([
+    // Ship-select popup (modal over the whole screen) when open.
+    if let Some(ref popup) = app.popup {
+        render_ship_popup(frame, popup, regions);
+    }
+    // "Reset values?" confirm (after a ship change) sits over everything.
+    if let Some(yes) = app.reset_prompt {
+        render_reset_prompt(frame, yes, regions);
+    }
+}
+
+/// The Damage Calculator page: the shared calculator grid centered in `area`,
+/// with a one-line hint below it.
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut DamageApp,
+    focused: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let (box_width, box_height) = calc_box_size();
+
+    let vchunks = Layout::vertical([
         Constraint::Fill(1),
-        Constraint::Length(button_box_w),
+        Constraint::Length(box_height),
+        Constraint::Length(1), // hint
         Constraint::Fill(1),
     ])
-    .split(vchunks[2]);
+    .split(area);
 
-    let button_box_area = button_hchunks[1];
-    let button_block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1));
-    let button_inner = button_block.inner(button_box_area);
-    frame.render_widget(button_block, button_box_area);
+    let hchunks = Layout::horizontal([
+        Constraint::Fill(1),
+        Constraint::Length(box_width),
+        Constraint::Fill(1),
+    ])
+    .split(vchunks[1]);
 
-    for (i, label) in BUTTON_LABELS.iter().enumerate() {
-        let btn_rect = Rect::new(button_inner.x, button_inner.y + i as u16, button_inner.width, 1);
-        let style = if buttons_active && app.button_index == i {
-            Style::default().bg(Color::White).fg(Color::Black)
-        } else {
-            Style::default()
-        };
-        frame.render_widget(Paragraph::new(*label).centered().style(style), btn_rect);
-        regions.push(ClickRegion {
-            rect: btn_rect,
-            target: ClickTarget::DamageButton(i),
-        });
-    }
-
-    // -- Advantage readout (Left = your ship, Right = the foe) --
-    {
-        let adv_dmg = app.advantage_dmg();
-        let adv_crew = app.advantage_crew(our_pirates);
-        let text = format!(
-            "Advantage  ·  damage {:+.0}%  ·  crew {:+.1}   (Left = you, Right = foe)",
-            adv_dmg * 100.0,
-            adv_crew
-        );
-        let adv_hchunks = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(box_width),
-            Constraint::Fill(1),
-        ])
-        .split(vchunks[3]);
-        frame.render_widget(
-            Paragraph::new(Span::styled(text, Style::default().fg(Color::Cyan))).centered(),
-            adv_hchunks[1],
-        );
-    }
+    render_calculator(frame, hchunks[1], app, focused, regions);
 
     // -- Hint --
     if focused && app.popup.is_none() {
-        let hint = if app.button_focused {
-            Some("Press Enter to activate")
-        } else {
-            match app.focus_row {
-                ROW_SHIP => Some("Press Enter to select a different ship"),
-                ROW_DAMAGE => None,
-                _ => Some("Space/Enter to increment, Backspace to decrement"),
-            }
+        let hint = match app.focus_row {
+            ROW_SHIP => Some("Press Enter to select a different ship"),
+            ROW_DAMAGE => None,
+            _ => Some("Space/Enter to increment, Backspace to decrement"),
         };
         if let Some(text) = hint {
             let hint_hchunks = Layout::horizontal([
@@ -156,18 +108,13 @@ pub fn render(
                 Constraint::Length(box_width),
                 Constraint::Fill(1),
             ])
-            .split(vchunks[4]);
+            .split(vchunks[2]);
 
             frame.render_widget(
                 Paragraph::new(Span::styled(text, Style::default().fg(Color::DarkGray))),
                 hint_hchunks[1],
             );
         }
-    }
-
-    // -- Ship select popup --
-    if let Some(ref popup) = app.popup {
-        render_ship_popup(frame, popup, regions);
     }
 }
 
@@ -442,6 +389,47 @@ fn apply_damage_bar(
             }
         }
     }
+}
+
+/// Modal: "Reset values?" with Yes/No buttons (`yes` = the focused choice).
+fn render_reset_prompt(frame: &mut Frame, yes: bool, regions: &mut Vec<ClickRegion>) {
+    let area = frame.area();
+    let (w, h) = (32u16, 5u16);
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(w) / 2,
+        area.y + area.height.saturating_sub(h) / 2,
+        w.min(area.width),
+        h.min(area.height),
+    );
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White))
+        .title(" Reset values? ");
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1), Constraint::Min(0)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new("Clear the hit tallies for this fight?")
+            .style(Style::default().fg(Color::Gray))
+            .centered(),
+        rows[0],
+    );
+    let btns = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)]).split(rows[2]);
+    let button = |label: &str, focused: bool| {
+        let style = if focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        Paragraph::new(Line::from(Span::styled(format!("[ {label} ]"), style))).centered()
+    };
+    frame.render_widget(button("Yes", yes), btns[0]);
+    frame.render_widget(button("No", !yes), btns[1]);
+    regions.push(ClickRegion { rect: btns[0], target: ClickTarget::DamageResetYes });
+    regions.push(ClickRegion { rect: btns[1], target: ClickTarget::DamageResetNo });
 }
 
 fn render_ship_popup(

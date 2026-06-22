@@ -6,6 +6,7 @@ use std::process::Command;
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::app::InputResult;
+use crate::clickmap::ClickTarget;
 use crate::ships::SHIPS;
 
 // ---------------------------------------------------------------------------
@@ -36,8 +37,6 @@ pub const ROW_DAMAGE: usize = 7;
 pub const ROW_COUNT: usize = 8;
 const LAST_INTERACTIVE_ROW: usize = 4;
 
-pub const BUTTON_LABELS: &[&str] = &["Reset values"];
-
 /// Labels for the center column. Head-on Collisions is rendered separately.
 pub const CENTER_LABELS: &[&str] = &[
     "Ship",
@@ -63,9 +62,16 @@ pub struct DamageApp {
     pub focus_row: usize,
     pub focus_side: Side,
     pub popup: Option<ShipSelectPopup>,
-    pub button_focused: bool,
-    pub button_index: usize,
+    /// When `Some`, the "Reset values?" confirm (shown after a ship change) is
+    /// open; the bool is the focused choice (`true` = Yes, the default).
+    pub reset_prompt: Option<bool>,
     pub temp_images: Vec<Option<PathBuf>>,
+}
+
+impl Default for DamageApp {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl DamageApp {
@@ -79,8 +85,7 @@ impl DamageApp {
             focus_row: 0,
             focus_side: Side::Left,
             popup: None,
-            button_focused: false,
-            button_index: 0,
+            reset_prompt: None,
             temp_images: vec![None; SHIPS.len()],
         }
     }
@@ -134,13 +139,42 @@ impl DamageApp {
         self.ship_advantage(Side::Left) - self.ship_advantage(Side::Right)
     }
 
-    /// Headcount advantage = our pirates × our advantage − the foe ship's swabbie
-    /// complement × the foe's advantage. `our_pirates` is supplied live (chat log);
-    /// the foe complement is the Right ship type's pirate capacity.
+    /// Headcount advantage = our crew × our advantage − their crew × the foe's
+    /// advantage, each side's headcount weighted by its ship's combat strength.
+    pub fn crew_advantage(&self, ours: u32, theirs: u32) -> f64 {
+        ours as f64 * self.ship_advantage(Side::Left)
+            - theirs as f64 * self.ship_advantage(Side::Right)
+    }
+
+    /// [`Self::crew_advantage`] against the Right ship type's pirate capacity — the
+    /// estimate used when the real foe headcount isn't known.
     pub fn advantage_crew(&self, our_pirates: u32) -> f64 {
-        let foe_complement = SHIPS[self.right_ship].max_pirates as f64;
-        our_pirates as f64 * self.ship_advantage(Side::Left)
-            - foe_complement * self.ship_advantage(Side::Right)
+        self.crew_advantage(our_pirates, SHIPS[self.right_ship].max_pirates as u32)
+    }
+
+    /// Capture the current calculator state as a [`BattleSnapshot`] for the Sea
+    /// Battles record. `our_pirates` is the live crew count at melee start.
+    pub fn snapshot(&self, our_pirates: u32) -> crate::voyage::BattleSnapshot {
+        crate::voyage::BattleSnapshot {
+            our_ship: self.left_ship,
+            foe_ship: self.right_ship,
+            our_hits: self.left,
+            foe_hits: self.right,
+            headon: self.headon,
+            our_pirates,
+        }
+    }
+
+    /// Build a (non-interactive) calculator from a recorded snapshot, so the Sea
+    /// Battles popup can reuse the damage/advantage math to render it read-only.
+    pub fn from_snapshot(s: &crate::voyage::BattleSnapshot) -> Self {
+        let mut app = Self::new();
+        app.left_ship = s.our_ship;
+        app.right_ship = s.foe_ship;
+        app.left = s.our_hits;
+        app.right = s.foe_hits;
+        app.headon = s.headon;
+        app
     }
 
     /// Whether any hits have been entered (so we only snapshot a fight we tracked).
@@ -234,16 +268,16 @@ impl DamageApp {
     // -- key handling --
 
     pub fn handle_key(&mut self, key: KeyEvent) -> InputResult {
+        if self.reset_prompt.is_some() {
+            return self.handle_reset_prompt_key(key);
+        }
+
         if key.code == KeyCode::Esc {
             return self.handle_esc();
         }
 
         if self.popup.is_some() {
             return self.handle_popup_key(key);
-        }
-
-        if self.button_focused {
-            return self.handle_button_key(key);
         }
 
         match key.code {
@@ -258,8 +292,6 @@ impl DamageApp {
             KeyCode::Down => {
                 if self.focus_row < LAST_INTERACTIVE_ROW {
                     self.focus_row += 1;
-                } else {
-                    self.button_focused = true;
                 }
             }
             KeyCode::Left => {
@@ -311,38 +343,31 @@ impl DamageApp {
         InputResult::Exit
     }
 
-    fn handle_button_key(&mut self, key: KeyEvent) -> InputResult {
+    /// Keys for the "Reset values?" confirm (default Yes). Enter/Space/Y on Yes
+    /// clears the hit counts; No / N / Esc dismisses it keeping the values.
+    fn handle_reset_prompt_key(&mut self, key: KeyEvent) -> InputResult {
         match key.code {
-            KeyCode::Up => {
-                self.button_focused = false;
-            }
-            KeyCode::Left => {
-                if 0 < self.button_index {
-                    self.button_index -= 1;
-                }
-            }
-            KeyCode::Right => {
-                if self.button_index + 1 < BUTTON_LABELS.len() {
-                    self.button_index += 1;
+            KeyCode::Left | KeyCode::Right => {
+                if let Some(yes) = self.reset_prompt.as_mut() {
+                    *yes = !*yes;
                 }
             }
             KeyCode::Enter | KeyCode::Char(' ') => {
-                self.activate_button();
+                if self.reset_prompt == Some(true) {
+                    self.clear_counts();
+                }
+                self.reset_prompt = None;
+            }
+            KeyCode::Char('y' | 'Y') => {
+                self.clear_counts();
+                self.reset_prompt = None;
+            }
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.reset_prompt = None;
             }
             _ => {}
         }
         InputResult::Consumed
-    }
-
-    pub fn activate_button(&mut self) {
-        match self.button_index {
-            0 => {
-                self.left = [0; 3];
-                self.right = [0; 3];
-                self.headon = 0;
-            }
-            _ => {}
-        }
     }
 
     fn handle_popup_key(&mut self, key: KeyEvent) -> InputResult {
@@ -368,6 +393,8 @@ impl DamageApp {
                     Side::Right => self.right_ship = idx,
                 }
                 self.popup = None;
+                // Changing ship invalidates the tallies — offer to reset (Yes default).
+                self.reset_prompt = Some(true);
             }
             KeyCode::Char('v') => {
                 let idx = popup.selected;
@@ -377,6 +404,72 @@ impl DamageApp {
         }
         InputResult::Consumed
     }
+}
+
+/// Apply a Damage-calculator click `target` to `app`, returning true iff it was
+/// a `Damage*` variant (so the caller knows it was consumed). Mirrors the live
+/// page's click arms but owns no global focus — used by the Sea Battles editor.
+pub fn apply_click(app: &mut DamageApp, target: &ClickTarget) -> bool {
+    match *target {
+        ClickTarget::DamageCell { row, side } => {
+            app.popup = None;
+            if row == ROW_SHIP {
+                let current = match side {
+                    Side::Left => app.left_ship,
+                    Side::Right => app.right_ship,
+                };
+                app.popup = Some(ShipSelectPopup { side, selected: current });
+            } else {
+                app.focus_row = row;
+                app.focus_side = side;
+            }
+        }
+        ClickTarget::DamageIncrement { row, side } => {
+            app.popup = None;
+            app.focus_row = row;
+            app.focus_side = side;
+            app.increment();
+        }
+        ClickTarget::DamageDecrement { row, side } => {
+            app.popup = None;
+            app.focus_row = row;
+            app.focus_side = side;
+            app.decrement();
+        }
+        ClickTarget::DamageHeadon => {
+            app.popup = None;
+            app.focus_row = ROW_HEADON;
+        }
+        ClickTarget::DamageHeadonIncrement => {
+            app.popup = None;
+            app.focus_row = ROW_HEADON;
+            app.increment();
+        }
+        ClickTarget::DamageHeadonDecrement => {
+            app.popup = None;
+            app.focus_row = ROW_HEADON;
+            app.decrement();
+        }
+        ClickTarget::DamageShipItem(i) => {
+            if let Some(ref popup) = app.popup {
+                match popup.side {
+                    Side::Left => app.left_ship = i,
+                    Side::Right => app.right_ship = i,
+                }
+                app.popup = None;
+                app.reset_prompt = Some(true);
+            }
+        }
+        ClickTarget::DamageResetYes => {
+            app.clear_counts();
+            app.reset_prompt = None;
+        }
+        ClickTarget::DamageResetNo => {
+            app.reset_prompt = None;
+        }
+        _ => return false,
+    }
+    true
 }
 
 #[cfg(test)]

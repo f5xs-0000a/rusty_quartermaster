@@ -15,7 +15,26 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
+use crate::ships::SHIPS;
 use crate::voyage::{BattleCategory, BattleOutcome, Voyage};
+
+/// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
+/// by name (robust to `SHIPS` reordering).
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct SavedSnapshot {
+    #[serde(default)]
+    pub our_ship: String,
+    #[serde(default)]
+    pub foe_ship: String,
+    #[serde(default)]
+    pub our_hits: [u32; 3],
+    #[serde(default)]
+    pub foe_hits: [u32; 3],
+    #[serde(default)]
+    pub headon: u32,
+    #[serde(default)]
+    pub our_pirates: u32,
+}
 
 /// One persisted sea battle (enough to rebuild the loot/timing histograms).
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -44,6 +63,12 @@ pub struct SavedBattle {
     pub advantage_dmg: Option<f64>,
     #[serde(default)]
     pub advantage_crew: Option<f64>,
+    /// Whether the fight was recorded — only recorded fights carry the calculator
+    /// data (`snapshot` + advantages) on disk.
+    #[serde(default)]
+    pub recorded: bool,
+    #[serde(default)]
+    pub snapshot: Option<SavedSnapshot>,
 }
 
 /// One persisted voyage.
@@ -117,10 +142,32 @@ pub fn from_voyage(v: &Voyage, vessel: Option<&str>) -> SavedVoyage {
                 total_secs: b.total_secs(),
                 naval_secs: b.sea_secs(),
                 boarding_secs: b.boarding_secs(),
-                advantage_dmg: b.advantage_dmg,
-                advantage_crew: b.advantage_crew,
+                // The calculator-derived data (advantages + snapshot) is written
+                // only for recorded fights — that's what "recording" means.
+                advantage_dmg: b.recorded.then_some(b.advantage_dmg).flatten(),
+                advantage_crew: b.recorded.then_some(b.advantage_crew).flatten(),
+                recorded: b.recorded,
+                snapshot: if b.recorded {
+                    b.snapshot.map(saved_snapshot)
+                } else {
+                    None
+                },
             })
             .collect(),
+    }
+}
+
+/// Convert an in-RAM [`crate::voyage::BattleSnapshot`] to its persisted form,
+/// resolving ship indices to names.
+fn saved_snapshot(s: crate::voyage::BattleSnapshot) -> SavedSnapshot {
+    let name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string()).unwrap_or_default();
+    SavedSnapshot {
+        our_ship: name(s.our_ship),
+        foe_ship: name(s.foe_ship),
+        our_hits: s.our_hits,
+        foe_hits: s.foe_hits,
+        headon: s.headon,
+        our_pirates: s.our_pirates,
     }
 }
 

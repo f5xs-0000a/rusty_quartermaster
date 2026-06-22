@@ -52,6 +52,23 @@ fn exit_index() -> usize {
     APP_LIST.iter().position(|a| *a == AppId::Exit).unwrap()
 }
 
+/// Whether `target` is one of the Damage-calculator click variants (so the Sea
+/// Battles popup can claim them for its embedded editor).
+fn is_damage_target(target: &ClickTarget) -> bool {
+    matches!(
+        target,
+        ClickTarget::DamageCell { .. }
+            | ClickTarget::DamageIncrement { .. }
+            | ClickTarget::DamageDecrement { .. }
+            | ClickTarget::DamageHeadon
+            | ClickTarget::DamageHeadonIncrement
+            | ClickTarget::DamageHeadonDecrement
+            | ClickTarget::DamageShipItem(_)
+            | ClickTarget::DamageResetYes
+            | ClickTarget::DamageResetNo
+    )
+}
+
 /// Top bar: two label lines, no border (a shaded strip).
 const TOPBAR_HEIGHT: u16 = 2;
 
@@ -346,12 +363,10 @@ impl AppShell {
                 );
             }
             AppId::Damage => {
-                let our_pirates = self.chatlog.current_pirates();
                 crate::damage::ui::render(
                     frame,
                     content_area,
                     &mut self.damage,
-                    our_pirates,
                     content_focused,
                     &mut self.click_regions,
                 );
@@ -508,7 +523,9 @@ impl AppShell {
                     || self.jobbers_ui.skill_dist_popup.is_some()
             }
             AppId::Voyage => {
-                self.voyage_ui.prompt.is_some() || self.voyage_ui.chart_popup.is_some()
+                self.voyage_ui.prompt.is_some()
+                    || self.voyage_ui.chart_popup.is_some()
+                    || self.voyage_ui.battles_popup.is_some()
             }
             AppId::Exit => false,
         }
@@ -564,6 +581,11 @@ impl AppShell {
     /// prompt.
     fn handle_voyage_key(&mut self, key: KeyEvent) -> InputResult {
         use crate::voyage::ui::SaveChoice;
+
+        // The Sea Battles popup is modal: it owns all keys until dismissed.
+        if self.voyage_ui.battles_popup.is_some() {
+            return self.handle_battles_key(key);
+        }
 
         // Chart enlarge popup is modal: Esc/Enter close it.
         if self.voyage_ui.chart_popup.is_some() {
@@ -628,10 +650,12 @@ impl AppShell {
                 self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(1);
                 InputResult::Consumed
             }
-            // Enter enlarges the focused chart (the Sea Battles section and the
-            // stat numbers come first in the focus order; the charts follow).
+            // Enter opens the focused item: the Sea Battles section (focus 0) opens
+            // the per-fight log; a focused chart enlarges (charts follow the stats).
             KeyCode::Enter => {
-                if self.voyage_ui.focus >= self.voyage_ui.n_stats {
+                if self.voyage_ui.focus == 0 {
+                    self.open_battles_popup();
+                } else if self.voyage_ui.focus >= self.voyage_ui.n_stats {
                     let idx = self.voyage_ui.focus - self.voyage_ui.n_stats;
                     if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true) {
                         self.voyage_ui.chart_popup = Some(idx);
@@ -702,6 +726,7 @@ impl AppShell {
                 battle: Default::default(),
                 consumption: Default::default(),
                 charts: Default::default(),
+                battles: Vec::new(),
             };
         };
 
@@ -730,6 +755,40 @@ impl AppShell {
             cannon_size,
         );
         let battle = crate::voyage::stats::battle_stats(voyage);
+
+        // Per-fight rows for the Sea Battles popup: resolved fights first, then the
+        // in-progress one (so it can be inspected mid-fight). Mirrors the indexing
+        // in `GameState::displayed_battle_mut`.
+        let battles: Vec<crate::voyage::ui::BattleRow> = voyage
+            .battles
+            .iter()
+            .chain(voyage.current_battle.iter())
+            .map(|b| crate::voyage::ui::BattleRow {
+                enemy: b.enemy.clone(),
+                outcome: b.outcome,
+                // PvP is mutually exclusive with the special encounters: only a
+                // generic brigand fight is reclassified as "Players" when the foe
+                // fielded a real player; kings/vampirates/monsters keep their label.
+                category: if b.is_pvp && matches!(b.category, crate::voyage::BattleCategory::Brigand)
+                {
+                    "Players".to_string()
+                } else {
+                    crate::voyage::stats::category_label(&b.category)
+                },
+                poe: b.poe,
+                goods: b.goods,
+                my_cut: b.my_cut,
+                total_secs: b.total_secs(),
+                sea_secs: b.sea_secs(),
+                boarding_secs: b.boarding_secs(),
+                pirates: b.pirates,
+                swabbies: b.swabbies,
+                snapshot: b.snapshot,
+                recorded: b.recorded,
+                is_pvp: b.is_pvp,
+                their_manpower: b.their_manpower,
+            })
+            .collect();
 
         // Chart series: current voyage vs persisted history (won-fight PoE +
         // per-voyage totals). Total value is net PoE for now; goods fold in later.
@@ -796,19 +855,29 @@ impl AppShell {
             battle,
             consumption,
             charts,
+            battles,
         }
     }
 
-    /// Feed one live chat-log line. If a sea battle resolves on this line and the
-    /// Damage calculator has hits entered, snapshot its advantage onto that battle
-    /// (Left = our ship, Right = the foe) and clear the counts for the next fight.
+    /// Feed one live chat-log line. When a fight resolves and the Damage calculator
+    /// has hits entered, freeze its full state + advantage onto that fight (Left =
+    /// our ship, Right = the foe) and clear the counts for the next fight — so a
+    /// fight we tracked live is recorded in the Sea Battles history automatically.
+    /// (The popup still lets the user amend a fight or hand-add one we missed.)
     pub fn feed_chat_line(&mut self, line: &str) {
         self.chatlog.process_line(line);
         if self.chatlog.take_resolved() && self.damage.has_input() {
-            let our_pirates = self.chatlog.current_pirates();
+            // Our manpower = full crew aboard: real pirates + swabbies/mercenaries.
+            let crew_n = self.chatlog.current_pirates() + self.chatlog.current_swabbies();
+            // Their manpower came from the melee at resolution; fall back to the
+            // foe ship type's pirate capacity if the fight had no melee count.
+            let their = self.chatlog.last_resolved_their_manpower().unwrap_or_else(|| {
+                crate::ships::SHIPS[self.damage.right_ship].max_pirates as u32
+            });
+            let snap = self.damage.snapshot(crew_n);
             let dmg = self.damage.advantage_dmg();
-            let crew = self.damage.advantage_crew(our_pirates);
-            self.chatlog.set_last_battle_advantage(dmg, crew);
+            let crew = self.damage.crew_advantage(crew_n, their);
+            self.chatlog.record_resolved_battle(snap, dmg, crew);
             self.damage.clear_counts();
         }
     }
@@ -868,6 +937,158 @@ impl AppShell {
                 voyage.saved = true;
             }
         }
+    }
+
+    // -- Sea Battles popup (per-fight log) --
+
+    /// Open the Sea Battles popup on the first fight, loading its editor. No-op if
+    /// the displayed voyage has no fights.
+    fn open_battles_popup(&mut self) {
+        if self.build_voyage_view().battles.is_empty() {
+            return;
+        }
+        self.voyage_ui.battles_popup = Some(0);
+        self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Pager;
+        self.load_battle_editor(0);
+    }
+
+    /// Load fight `page` of the displayed voyage into the Sea Battles editor,
+    /// seeding it from its snapshot (or a blank calculator). The calculator is
+    /// always editable; `editor_recorded` only mirrors the persistence flag.
+    fn load_battle_editor(&mut self, page: usize) {
+        let view = self.build_voyage_view();
+        let Some(row) = view.battles.get(page) else {
+            return;
+        };
+        self.voyage_ui.editor_recorded = row.recorded;
+        // "Our strength" = the full crew aboard our ship: real pirates PLUS swabbies
+        // / named mercenaries (all fight in the melee). Use the fight's resolution
+        // roster; for an as-yet-unresolved fight fall back to the live crew.
+        let crew = row.pirates + row.swabbies;
+        let crew = if crew > 0 {
+            crew
+        } else {
+            self.chatlog.current_pirates() + self.chatlog.current_swabbies()
+        };
+        self.voyage_ui.editor_crew = crew;
+        self.voyage_ui.editor_their = row.their_manpower;
+        self.voyage_ui.battle_editor = match row.snapshot {
+            Some(s) => crate::damage::DamageApp::from_snapshot(&s),
+            None => crate::damage::DamageApp::new(),
+        };
+    }
+
+    /// Step the open Sea Battles page by `delta`, **wrapping** at the ends, and
+    /// reload the editor. Paging always returns focus to the pager.
+    fn battles_page(&mut self, delta: isize) {
+        let Some(page) = self.voyage_ui.battles_popup else {
+            return;
+        };
+        let n = self.build_voyage_view().battles.len() as isize;
+        if n == 0 {
+            return;
+        }
+        let new = (page as isize + delta).rem_euclid(n) as usize;
+        self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Pager;
+        if new != page {
+            self.voyage_ui.battles_popup = Some(new);
+            self.load_battle_editor(new);
+        }
+    }
+
+    /// Write the editor's current state back onto the open fight, recomputing its
+    /// advantage. Always runs on an edit — the calculator is always live; recording
+    /// only governs persistence, not the in-RAM snapshot.
+    fn sync_battle_editor(&mut self) {
+        let Some(page) = self.voyage_ui.battles_popup else {
+            return;
+        };
+        let Some(key) = self.displayed_vessel_key() else {
+            return;
+        };
+        let ours = self.voyage_ui.editor_crew;
+        let their = self.voyage_ui.editor_their.unwrap_or_else(|| {
+            crate::ships::SHIPS[self.voyage_ui.battle_editor.right_ship].max_pirates as u32
+        });
+        let snap = self.voyage_ui.battle_editor.snapshot(ours);
+        let dmg = self.voyage_ui.battle_editor.advantage_dmg();
+        let crew = self.voyage_ui.battle_editor.crew_advantage(ours, their);
+        self.chatlog.set_battle_snapshot(&key, page, snap, dmg, crew);
+    }
+
+    /// Toggle whether the open fight is recorded (persisted to disk). Purely a
+    /// flag — the snapshot/calculator are untouched.
+    fn toggle_battle_record(&mut self) {
+        let Some(page) = self.voyage_ui.battles_popup else {
+            return;
+        };
+        let Some(key) = self.displayed_vessel_key() else {
+            return;
+        };
+        let now = !self.voyage_ui.editor_recorded;
+        self.chatlog.set_battle_recorded(&key, page, now);
+        self.voyage_ui.editor_recorded = now;
+    }
+
+    /// Key handling while the Sea Battles popup is open. Three focus zones chained
+    /// top→bottom — the pager (←/→ change fight, wrapping), the always-editable
+    /// calculator (arrows drive it), and the record toggle (Enter/Space flips it) —
+    /// moved between with ↑/↓. Esc closes the editor's ship picker / reset confirm
+    /// first, otherwise the popup.
+    fn handle_battles_key(&mut self, key: KeyEvent) -> InputResult {
+        use crate::damage::{ROW_HEADON, ROW_SHIP, Side};
+        use crate::voyage::ui::BattlesFocus::{Calc, Pager, Record};
+
+        // While the editor has its own modal (ship picker or reset confirm), every
+        // key — including Esc, which dismisses that modal keeping the ship — drives
+        // the calculator rather than the popup.
+        let editor_modal = self.voyage_ui.battle_editor.popup.is_some()
+            || self.voyage_ui.battle_editor.reset_prompt.is_some();
+        if editor_modal {
+            self.voyage_ui.battle_editor.handle_key(key);
+            self.sync_battle_editor();
+            return InputResult::Consumed;
+        }
+
+        if key.code == KeyCode::Esc {
+            self.voyage_ui.battles_popup = None;
+            return InputResult::Consumed;
+        }
+
+        match self.voyage_ui.battles_focus {
+            Pager => match key.code {
+                KeyCode::Left | KeyCode::PageUp => self.battles_page(-1),
+                KeyCode::Right | KeyCode::PageDown => self.battles_page(1),
+                KeyCode::Down => {
+                    self.voyage_ui.battles_focus = Calc;
+                    self.voyage_ui.battle_editor.focus_row = ROW_SHIP;
+                    self.voyage_ui.battle_editor.focus_side = Side::Left;
+                }
+                _ => {}
+            },
+            Calc => {
+                // ↑ off the top row / ↓ off the bottom row leave the calculator.
+                if key.code == KeyCode::Up && self.voyage_ui.battle_editor.focus_row == ROW_SHIP {
+                    self.voyage_ui.battles_focus = Pager;
+                } else if key.code == KeyCode::Down
+                    && self.voyage_ui.battle_editor.focus_row == ROW_HEADON
+                {
+                    self.voyage_ui.battles_focus = Record;
+                } else {
+                    self.voyage_ui.battle_editor.handle_key(key);
+                    self.sync_battle_editor();
+                }
+            }
+            Record => match key.code {
+                KeyCode::Up => {
+                    self.voyage_ui.battles_focus = Calc;
+                    self.voyage_ui.battle_editor.focus_row = ROW_HEADON;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') => self.toggle_battle_record(),
+                _ => {}
+            },
+        }
+        InputResult::Consumed
     }
 
     // -- jobbers (chat log) handling --
@@ -1484,6 +1705,16 @@ impl AppShell {
         target: ClickTarget,
         tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
     ) {
+        // While the Sea Battles popup is open, Damage* clicks belong to its
+        // embedded editor (edits go to the recorded fight; clicks on a read-only
+        // widget are swallowed) and must never reach the live calculator behind it.
+        if self.voyage_ui.battles_popup.is_some() && is_damage_target(&target) {
+            self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Calc;
+            crate::damage::apply_click(&mut self.voyage_ui.battle_editor, &target);
+            self.sync_battle_editor();
+            return;
+        }
+
         match target {
             ClickTarget::SidebarItem(i) => {
                 if i < APP_LIST.len() {
@@ -1571,7 +1802,6 @@ impl AppShell {
             ClickTarget::DamageCell { row, side } => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.button_focused = false;
                 if row == crate::damage::ROW_SHIP {
                     let current = match side {
                         crate::damage::Side::Left => self.damage.left_ship,
@@ -1589,7 +1819,6 @@ impl AppShell {
             ClickTarget::DamageIncrement { row, side } => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.button_focused = false;
                 self.damage.focus_row = row;
                 self.damage.focus_side = side;
                 self.damage.increment();
@@ -1597,7 +1826,6 @@ impl AppShell {
             ClickTarget::DamageDecrement { row, side } => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.button_focused = false;
                 self.damage.focus_row = row;
                 self.damage.focus_side = side;
                 self.damage.decrement();
@@ -1605,28 +1833,19 @@ impl AppShell {
             ClickTarget::DamageHeadon => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.button_focused = false;
                 self.damage.focus_row = crate::damage::ROW_HEADON;
             }
             ClickTarget::DamageHeadonIncrement => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.button_focused = false;
                 self.damage.focus_row = crate::damage::ROW_HEADON;
                 self.damage.increment();
             }
             ClickTarget::DamageHeadonDecrement => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.button_focused = false;
                 self.damage.focus_row = crate::damage::ROW_HEADON;
                 self.damage.decrement();
-            }
-            ClickTarget::DamageButton(i) => {
-                self.global_focus = GlobalFocus::Content;
-                self.damage.button_focused = true;
-                self.damage.button_index = i;
-                self.damage.activate_button();
             }
             ClickTarget::DamageShipItem(i) => {
                 if let Some(ref popup) = self.damage.popup {
@@ -1636,7 +1855,17 @@ impl AppShell {
                         crate::damage::Side::Right => self.damage.right_ship = i,
                     }
                     self.damage.popup = None;
+                    self.damage.reset_prompt = Some(true);
                 }
+            }
+            ClickTarget::DamageResetYes => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.clear_counts();
+                self.damage.reset_prompt = None;
+            }
+            ClickTarget::DamageResetNo => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.reset_prompt = None;
             }
             ClickTarget::JobberVesselButton => {
                 self.global_focus = GlobalFocus::Content;
@@ -1748,6 +1977,10 @@ impl AppShell {
             }
             ClickTarget::VoyageStat { idx } => {
                 self.voyage_ui.focus = idx;
+                // The Sea Battles section (focus 0) opens the per-fight log.
+                if idx == 0 {
+                    self.open_battles_popup();
+                }
             }
             ClickTarget::VoyageChart { idx } => {
                 self.voyage_ui.focus = self.voyage_ui.n_stats + idx;
@@ -1757,6 +1990,20 @@ impl AppShell {
             }
             ClickTarget::VoyageChartClose => {
                 self.voyage_ui.chart_popup = None;
+            }
+            ClickTarget::VoyageBattlesClose => {
+                // Closing the editor's ship picker takes priority over the popup.
+                if self.voyage_ui.battle_editor.popup.is_some() {
+                    self.voyage_ui.battle_editor.popup = None;
+                } else {
+                    self.voyage_ui.battles_popup = None;
+                }
+            }
+            ClickTarget::VoyageBattlesPrev => self.battles_page(-1),
+            ClickTarget::VoyageBattlesNext => self.battles_page(1),
+            ClickTarget::VoyageBattlesRecord => {
+                self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Record;
+                self.toggle_battle_record();
             }
         }
     }

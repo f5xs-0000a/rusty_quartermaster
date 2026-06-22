@@ -265,7 +265,7 @@ pub fn box_plot(values: &[f64]) -> Option<BoxPlot> {
 }
 
 /// Display label for an enemy category.
-fn category_label(c: &BattleCategory) -> String {
+pub fn category_label(c: &BattleCategory) -> String {
     match c {
         BattleCategory::Brigand => "Brigands and Barbarians".to_string(),
         BattleCategory::BrigandKing(name) => format!("King: {name}"),

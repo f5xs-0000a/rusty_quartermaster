@@ -22,7 +22,7 @@ use std::time::Duration;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::pirate;
-use crate::voyage::{Battle, BattleCategory, BattleOutcome, CrewSample, Voyage};
+use crate::voyage::{Battle, BattleCategory, BattleOutcome, BattleSnapshot, CrewSample, Voyage};
 
 // ---------------------------------------------------------------------------
 // Job kinds
@@ -325,9 +325,9 @@ pub struct GameState {
     now: Option<NaiveDateTime>,
     /// Monotonic counter handing out [`Vessel::order`] values.
     order_counter: u64,
-    /// Set for the duration of one line when a sea battle just resolved
-    /// (`Game over` / disengage). Lets the app snapshot the Damage-calculator
-    /// advantage onto that battle. Reset at the top of each [`Self::process_line`].
+    /// Set for the duration of one line when a sea battle just resolved (`Game
+    /// over` / disengage). Lets the app freeze the live Damage calculator onto
+    /// that fight. Reset at the top of each [`Self::process_line`].
     battle_just_resolved: bool,
 }
 
@@ -552,13 +552,9 @@ impl GameState {
             self.on_lair_slap();
             return;
         }
-        // Vampirates: a defeated unit. NPC vampires have a space (e.g. "Stygian
-        // Lilith"); a single-word name is a crew member's KO — count only vampires,
-        // and only while in a lair.
+        // A melee knockout: "<Name> is eliminated!".
         if let Some(name) = body.strip_suffix(" is eliminated!") {
-            if !pirate::is_player_name(name) {
-                self.on_vampire_defeated();
-            }
+            self.on_eliminated(name);
             return;
         }
 
@@ -871,19 +867,36 @@ impl GameState {
         }
         let me = self.player_name.clone();
         let me = me.as_deref();
-        let won = summary.split_once(':').is_some_and(|(_, list)| {
-            list.trim()
-                .trim_end_matches('.')
-                .split(", ")
-                .map(str::trim)
-                .any(|n| me.is_some_and(|me| n.eq_ignore_ascii_case(me)))
-        });
+        // The winners roster, parsed once. On a win it's our ship; on a loss it's
+        // the foe's crew.
+        let winners: Vec<String> = summary
+            .split_once(':')
+            .map(|(_, list)| {
+                list.trim()
+                    .trim_end_matches('.')
+                    .split(", ")
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let won = winners
+            .iter()
+            .any(|n| me.is_some_and(|me| n.eq_ignore_ascii_case(me)));
         let (pirates, swabbies) = self
             .current_vessel()
             .map(|v| (v.crewmates.len() as u32 + 1, v.swabbies))
             .unwrap_or((0, 0));
         // A king on the winning side means we lost to that king — name the fight.
         let king = find_brigand_king(summary);
+        // PvP on a loss: a winner who's a real player and not ours = an enemy
+        // player. (A win's eliminations already catch enemy players, since all
+        // enemies are eliminated.)
+        let foe_player = !won
+            && winners
+                .iter()
+                .any(|n| pirate::is_player_name(n) && !self.is_own_crew(n));
         let now = self.now;
         let mut resolved = false;
         if let Some(voy) = self.current_voyage_mut() {
@@ -896,6 +909,25 @@ impl GameState {
                 b.ended_at = now;
                 b.pirates = pirates;
                 b.swabbies = swabbies;
+                if foe_player {
+                    b.is_pvp = true;
+                }
+                // Foe headcount from the melee: on a win, all enemies are
+                // eliminated, so it's the KOs that aren't our crew (= not in the
+                // winners roster, which is our ship on a win); on a loss it's the
+                // size of the winners' (enemy) roster.
+                b.their_manpower = Some(if won {
+                    b.melee_kos
+                        .iter()
+                        .filter(|ko| {
+                            let ko = ko.as_str();
+                            !winners.iter().any(|w| w.eq_ignore_ascii_case(ko))
+                        })
+                        .count() as u32
+                } else {
+                    winners.len() as u32
+                });
+                b.melee_kos.clear();
                 if let Some(k) = king {
                     b.category = BattleCategory::BrigandKing(k.to_string());
                 }
@@ -1061,6 +1093,38 @@ impl GameState {
     }
 
     /// A vampire was defeated (only counted while in a lair).
+    /// A combatant was knocked out in a melee. In a vampirate lair, NPC names
+    /// count as defeated vampires. In a sea battle we record every KO on the open
+    /// fight (the basis for the foe's headcount) and flag PvP when an eliminated
+    /// real player isn't our own crew.
+    fn on_eliminated(&mut self, name: &str) {
+        // Vampirate lairs: just tally defeated vampires (NPC names).
+        if self.current_vessel().is_some_and(|v| v.lair_active) {
+            if !pirate::is_player_name(name) {
+                self.on_vampire_defeated();
+            }
+            return;
+        }
+        // Sea battle: record the KO and detect an enemy player.
+        let enemy_player = pirate::is_player_name(name) && !self.is_own_crew(name);
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.current_battle.as_mut() {
+                b.melee_kos.push(name.to_string());
+                if enemy_player {
+                    b.is_pvp = true;
+                }
+            }
+        }
+    }
+
+    /// Whether `name` is us or one of our current vessel's crewmates.
+    fn is_own_crew(&self, name: &str) -> bool {
+        if self.player_name.as_deref() == Some(name) {
+            return true;
+        }
+        self.current_vessel().is_some_and(|v| v.crewmates.contains(name))
+    }
+
     fn on_vampire_defeated(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
             if v.lair_active {
@@ -1151,6 +1215,11 @@ impl GameState {
         }
     }
 
+    /// The foe headcount computed for the just-resolved (last) battle, if any.
+    pub fn last_resolved_their_manpower(&self) -> Option<u32> {
+        self.current_voyage()?.battles.last()?.their_manpower
+    }
+
     /// Mutable access to the vessel we're currently aboard.
     fn current_vessel_mut(&mut self) -> Option<&mut Vessel> {
         let cur = self.current.clone()?;
@@ -1178,9 +1247,23 @@ impl GameState {
     }
 
     /// Take the "a sea battle just resolved this line" flag (true once per
-    /// resolution). The app uses it to snapshot the Damage-calculator advantage.
+    /// resolution). The app uses it to freeze the live Damage calculator onto
+    /// the fight that just ended.
     pub fn take_resolved(&mut self) -> bool {
         std::mem::take(&mut self.battle_just_resolved)
+    }
+
+    /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved
+    /// (last) battle of the current voyage. Called at Game over / disengage when the
+    /// calculator had input, so fights we tracked live land in the history recorded.
+    pub fn record_resolved_battle(&mut self, snap: BattleSnapshot, dmg: f64, crew: f64) {
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.battles.last_mut() {
+                b.snapshot = Some(snap);
+                b.advantage_dmg = Some(dmg);
+                b.advantage_crew = Some(crew);
+            }
+        }
     }
 
     /// Real pirates aboard the current vessel right now (crewmates + us), or 0.
@@ -1190,14 +1273,50 @@ impl GameState {
             .unwrap_or(0)
     }
 
-    /// Snapshot the advantage metrics onto the just-resolved (last) battle of the
-    /// current voyage.
-    pub fn set_last_battle_advantage(&mut self, dmg: f64, crew: f64) {
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.battles.last_mut() {
-                b.advantage_dmg = Some(dmg);
-                b.advantage_crew = Some(crew);
-            }
+    /// Swabbies (NPC crew, incl. named mercenaries) aboard the current vessel, or 0.
+    pub fn current_swabbies(&self) -> u32 {
+        self.current_vessel().map(|v| v.swabbies).unwrap_or(0)
+    }
+
+    /// The battle at display index `idx` of the displayed voyage on vessel `key`.
+    /// The displayed list is the resolved battles, then the in-progress one (if
+    /// any), so an index one past the resolved set addresses `current_battle`.
+    fn displayed_battle_mut(&mut self, key: &Arc<str>, idx: usize) -> Option<&mut Battle> {
+        let v = self.vessels.get_mut(key)?;
+        let voy = v.current_voyage.as_mut().or_else(|| v.voyages.last_mut())?;
+        let n = voy.battles.len();
+        if idx < n {
+            voy.battles.get_mut(idx)
+        } else if idx == n {
+            voy.current_battle.as_mut()
+        } else {
+            None
+        }
+    }
+
+    /// Write a fight's Damage-calculator snapshot + recomputed advantage. Driven
+    /// by the Sea Battles popup on every edit (the calculator is always editable;
+    /// this is independent of whether the fight is recorded).
+    pub fn set_battle_snapshot(
+        &mut self,
+        key: &Arc<str>,
+        idx: usize,
+        snap: BattleSnapshot,
+        dmg: f64,
+        crew: f64,
+    ) {
+        if let Some(b) = self.displayed_battle_mut(key, idx) {
+            b.snapshot = Some(snap);
+            b.advantage_dmg = Some(dmg);
+            b.advantage_crew = Some(crew);
+        }
+    }
+
+    /// Set whether a fight is recorded (persisted to disk). Does not touch its
+    /// snapshot/advantage — those always exist and display regardless.
+    pub fn set_battle_recorded(&mut self, key: &Arc<str>, idx: usize, recorded: bool) {
+        if let Some(b) = self.displayed_battle_mut(key, idx) {
+            b.recorded = recorded;
         }
     }
 

@@ -19,8 +19,11 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
 
 use crate::clickmap::{ClickRegion, ClickTarget};
+use crate::damage::DamageApp;
+use crate::ships::SHIPS;
 use crate::utils::offset_title;
 use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, CategoryTally, ConsumptionStats};
+use crate::voyage::{BattleOutcome, BattleSnapshot};
 
 /// The three charts, in display order.
 pub const CHART_TITLES: [&str; 3] = ["PoE won", "PoE per fight", "Total value"];
@@ -48,6 +51,19 @@ pub enum SaveChoice {
     Discard,
 }
 
+/// Which control the Sea Battles popup has focused. The chain runs top→bottom:
+/// the fight pager, the (always-editable) calculator, then the record toggle.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum BattlesFocus {
+    /// "Battle n of m" — ←/→ change fight (wrapping).
+    #[default]
+    Pager,
+    /// The embedded Damage calculator grid.
+    Calc,
+    /// The "Recorded / Not Recorded" toggle.
+    Record,
+}
+
 /// Persistent UI state for the page (mouse/keyboard-driven).
 #[derive(Default)]
 pub struct VoyageStatsUi {
@@ -66,6 +82,22 @@ pub struct VoyageStatsUi {
     pub prompt: Option<SaveChoice>,
     /// When `Some(i)`, chart `i` is enlarged in a popup.
     pub chart_popup: Option<usize>,
+    /// When `Some(i)`, the Sea Battles popup is open on page `i` (battle index).
+    pub battles_popup: Option<usize>,
+    /// Interactive Damage calculator bound to the open page's fight. Edits flow
+    /// back to that battle (when its recording is on). Reloaded on open/page-turn.
+    pub battle_editor: DamageApp,
+    /// Our full crew aboard for the open fight — real pirates + swabbies/named
+    /// mercenaries (the "Our strength" figure; also feeds the crew advantage).
+    pub editor_crew: u32,
+    /// The open fight's foe headcount from the melee, if known (`None` falls back
+    /// to the foe ship type's pirate capacity). Drives "Their strength".
+    pub editor_their: Option<u32>,
+    /// Mirrors the open fight's `recorded` flag (whether it persists to disk) —
+    /// drives the toggle label only; the calculator is always editable.
+    pub editor_recorded: bool,
+    /// Which control inside the Sea Battles popup currently has focus.
+    pub battles_focus: BattlesFocus,
 }
 
 /// Per-fight series for the charts: current voyage vs persisted history.
@@ -84,6 +116,35 @@ pub struct ChartData {
     pub cur_total: f64,
     /// Total value of each past voyage (one point each).
     pub hist_totals: Vec<f64>,
+}
+
+/// One fight's metadata for the Sea Battles popup. The editable Damage-calculator
+/// state lives in [`VoyageStatsUi::battle_editor`]; `snapshot` here is the stored
+/// value used to (re)load that editor and to tell whether the fight is recorded.
+#[derive(Clone, Default)]
+pub struct BattleRow {
+    /// Enemy vessel name, or `None` if the interception line was unparsed.
+    pub enemy: Option<String>,
+    pub outcome: BattleOutcome,
+    /// Display label for what we fought ("Brigands and Barbarians", "King: …").
+    pub category: String,
+    pub poe: Option<i64>,
+    pub goods: Option<u32>,
+    pub my_cut: Option<u64>,
+    pub total_secs: Option<i64>,
+    pub sea_secs: Option<i64>,
+    pub boarding_secs: Option<i64>,
+    pub pirates: u32,
+    pub swabbies: u32,
+    /// The Damage-calculator snapshot for this fight (always editable; may be
+    /// `None` until anything is captured/entered).
+    pub snapshot: Option<BattleSnapshot>,
+    /// Whether the fight is recorded (persisted to disk) — display-independent.
+    pub recorded: bool,
+    /// Whether the foe fielded a real player (PvP) vs all-NPC (PvE).
+    pub is_pvp: bool,
+    /// Foe headcount computed from the melee (`None` → use the ship-type estimate).
+    pub their_manpower: Option<u32>,
 }
 
 /// Everything the page needs to draw one voyage, computed by the caller so this
@@ -106,6 +167,9 @@ pub struct VoyageView {
     pub battle: BattleStats,
     pub consumption: ConsumptionStats,
     pub charts: ChartData,
+    /// Per-fight rows for the Sea Battles popup, in chronological order (resolved
+    /// fights first, then the in-progress one if any).
+    pub battles: Vec<BattleRow>,
 }
 
 /// Fixed widget width (the stat rows are narrow; a full-width box wastes space).
@@ -311,7 +375,7 @@ pub fn render(
     } else {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "↑/↓ move · Enter enlarge chart",
+                "↑/↓ move · Enter open/enlarge",
                 Style::default().fg(Color::DarkGray),
             )))
             .centered(),
@@ -319,9 +383,11 @@ pub fn render(
         );
     }
 
-    // Modal popups (chart enlarge takes priority over the save prompt). The
-    // chart popup uses the full content width, not the narrow body column.
-    if let Some(i) = ui.chart_popup {
+    // Modal popups. The Sea Battles and chart popups use the full content width,
+    // not the narrow body column. Only one modal is ever open at a time.
+    if ui.battles_popup.is_some() {
+        render_battles_popup(frame, full, view, ui, regions);
+    } else if let Some(i) = ui.chart_popup {
         render_chart_popup(frame, full, i, &view.charts, regions);
     } else if let Some(choice) = ui.prompt {
         render_save_prompt(frame, area, choice, regions);
@@ -398,6 +464,214 @@ fn render_save_prompt(
         )))
         .centered(),
         rows[3],
+    );
+}
+
+/// Colour for a battle outcome label.
+fn outcome_style(o: BattleOutcome) -> Style {
+    let c = match o {
+        BattleOutcome::Won => Color::Green,
+        BattleOutcome::Lost => Color::Red,
+        BattleOutcome::Disengaged => Color::Yellow,
+        BattleOutcome::Ongoing => Color::Gray,
+    };
+    Style::default().fg(c).bold()
+}
+
+fn outcome_label(o: BattleOutcome) -> &'static str {
+    match o {
+        BattleOutcome::Won => "Won",
+        BattleOutcome::Lost => "Lost",
+        BattleOutcome::Disengaged => "Disengaged",
+        BattleOutcome::Ongoing => "In progress",
+    }
+}
+
+/// Modal: the Sea Battles per-fight pager. Each page shows one fight's metadata,
+/// an always-editable Damage calculator bound to its snapshot, and the strengths
+/// + advantage derived from it. The Recorded/Not Recorded toggle only controls
+/// whether the fight persists to disk — it never gates the display.
+fn render_battles_popup(
+    frame: &mut Frame,
+    area: Rect,
+    view: &VoyageView,
+    ui: &VoyageStatsUi,
+    regions: &mut Vec<ClickRegion>,
+) {
+    // Backdrop swallows outside clicks (acts as close).
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::VoyageBattlesClose,
+    });
+
+    // Height = 6 fixed single rows (pager, toggle, blank, ship, category, outcome)
+    // + the calculator box + the 7-row stats table + 2 borders.
+    let (_, calc_h) = crate::damage::ui::calc_box_size();
+    let w = 60.min(area.width);
+    let h = (calc_h + 15).min(area.height);
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White))
+        .title(offset_title("Sea Battles").0);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let n = view.battles.len();
+    if n == 0 {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "No sea battles this voyage.",
+                    Style::default().bold(),
+                )),
+            ])
+            .centered(),
+            inner,
+        );
+        return;
+    }
+
+    let page = ui.battles_popup.unwrap_or(0).min(n - 1);
+    let row = &view.battles[page];
+    let recorded = ui.editor_recorded;
+    let focus = ui.battles_focus;
+    let editor_crew = ui.editor_crew;
+    let (box_w, box_h) = crate::damage::ui::calc_box_size();
+
+    // Allocate rows explicitly so a short popup never shrinks the calculator box:
+    // the 6 single header rows and the calculator get their height first, and the
+    // stats table takes only the leftover (the table clips before the calc does).
+    let body = inner.height.saturating_sub(6);
+    let calc_rows = box_h.min(body);
+    let table_h = body.saturating_sub(calc_rows);
+    let parts = Layout::vertical([
+        Constraint::Length(1),          // Battle n of m (pager)
+        Constraint::Length(1),          // (Not) Recorded toggle
+        Constraint::Length(1),          // space
+        Constraint::Length(1),          // enemy ship (type)
+        Constraint::Length(1),          // type of enemy (category)
+        Constraint::Length(1),          // won / lost
+        Constraint::Length(calc_rows),  // embedded damage calculator
+        Constraint::Length(table_h),    // per-fight stats table
+    ])
+    .split(inner);
+
+    // -- Pager: ‹ Prev | Battle k of n | Next › (the center is focusable) --
+    let nav = Layout::horizontal([
+        Constraint::Length(8),
+        Constraint::Min(0),
+        Constraint::Length(8),
+    ])
+    .split(parts[0]);
+    let arrow = |label: &str| Paragraph::new(Span::styled(
+        label.to_string(),
+        Style::default().fg(Color::Cyan),
+    ))
+    .centered();
+    frame.render_widget(arrow("‹ Prev"), nav[0]);
+    let pager_style = if focus == BattlesFocus::Pager {
+        Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+    } else {
+        Style::default().bold()
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(format!("Battle {} of {}", page + 1, n), pager_style))
+            .centered(),
+        nav[1],
+    );
+    frame.render_widget(arrow("Next ›"), nav[2]);
+    regions.push(ClickRegion { rect: nav[0], target: ClickTarget::VoyageBattlesPrev });
+    regions.push(ClickRegion { rect: nav[2], target: ClickTarget::VoyageBattlesNext });
+
+    // -- Record toggle (focusable), directly under the page number --
+    let rec_label = if recorded { "Recorded" } else { "Not Recorded" };
+    let rec_style = if focus == BattlesFocus::Record {
+        Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+    } else if recorded {
+        Style::default().fg(Color::Green).bold()
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    frame.render_widget(
+        Paragraph::new(Span::styled(rec_label, rec_style)).centered(),
+        parts[1],
+    );
+    regions.push(ClickRegion {
+        rect: parts[1],
+        target: ClickTarget::VoyageBattlesRecord,
+    });
+
+    // -- (blank parts[2]) then enemy ship "(type)", type of enemy, outcome. The
+    //    foe ship type always mirrors the calculator's Right column. --
+    let enemy = row.enemy.clone().unwrap_or_else(|| "Unknown vessel".to_string());
+    let ship_line = format!("{enemy} ({})", SHIPS[ui.battle_editor.right_ship].name);
+    frame.render_widget(Paragraph::new(ship_line).centered(), parts[3]);
+    frame.render_widget(
+        Paragraph::new(Span::styled(row.category.clone(), Style::default().fg(Color::Gray)))
+            .centered(),
+        parts[4],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(outcome_label(row.outcome), outcome_style(row.outcome)))
+            .centered(),
+        parts[5],
+    );
+
+    // -- Embedded Damage calculator (the shared widget; highlighted only while the
+    //    calculator zone holds focus). Always editable. --
+    let calc_box = Rect {
+        x: parts[6].x + parts[6].width.saturating_sub(box_w) / 2,
+        y: parts[6].y,
+        width: box_w.min(parts[6].width),
+        height: box_h.min(parts[6].height),
+    };
+    crate::damage::ui::render_calculator(
+        frame,
+        calc_box,
+        &ui.battle_editor,
+        focus == BattlesFocus::Calc,
+        regions,
+    );
+
+    // -- Per-fight stats table (label-left / value-right). PoE/Goods/Melee come
+    //    from the battle log; "Our strength" is our crew aboard; "Their strength"
+    //    is the foe headcount from the melee (falling back to the foe ship type's
+    //    pirate capacity); advantages come from the calculator. --
+    let their = row
+        .their_manpower
+        .unwrap_or_else(|| SHIPS[ui.battle_editor.right_ship].max_pirates as u32);
+    let table_rows: [(&str, String); 7] = [
+        ("PoE won", row.poe.map(commas).unwrap_or_else(dash)),
+        ("Goods", row.goods.map(|g| commas(g as i64)).unwrap_or_else(dash)),
+        ("Melee", row.boarding_secs.map(dur).unwrap_or_else(dash)),
+        ("Our strength", editor_crew.to_string()),
+        ("Their strength", their.to_string()),
+        (
+            "Advantage",
+            format!("{:+.0}%", ui.battle_editor.advantage_dmg() * 100.0),
+        ),
+        (
+            "Manpower Advantage",
+            format!("{:+.1}", ui.battle_editor.crew_advantage(editor_crew, their)),
+        ),
+    ];
+    let label_w = table_rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
+    let val_w = (parts[7].width as usize).saturating_sub(label_w + 2);
+    let stat_lines: Vec<Line> = table_rows
+        .iter()
+        .map(|(label, value)| Line::from(format!("{label:<label_w$}  {value:>val_w$}")))
+        .collect();
+    frame.render_widget(
+        Paragraph::new(stat_lines).style(Style::default().fg(Color::Gray)),
+        parts[7],
     );
 }
 
@@ -811,7 +1085,7 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
     // the scroll, so the body starts here.
     out.focus_section(
         "Sea Battles",
-        "Win / loss / disengage tally — per-battle detail coming soon.",
+        "Win / loss / disengage tally. Enter to open the per-fight log.",
     );
     let head = Style::default().fg(Color::DarkGray);
     out.line(three_col(

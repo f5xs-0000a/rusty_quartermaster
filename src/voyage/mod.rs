@@ -53,6 +53,28 @@ pub enum BattleCategory {
     Zombie,
 }
 
+/// A snapshot of the Damage Calculator's state, captured the instant the boarding
+/// melee begins (the grapple). By then the naval phase is over, so the
+/// accumulated ship damage is final for the fight. Drives the Sea Battles
+/// per-battle widget and the advantage metrics. Ship indices are into
+/// [`crate::ships::SHIPS`] (Left = our vessel, Right = the foe).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BattleSnapshot {
+    /// Our ship type (the Damage calculator's "Left").
+    pub our_ship: usize,
+    /// The foe's ship type (the Damage calculator's "Right").
+    pub foe_ship: usize,
+    /// Hits *we* took: `[shots, rocks, rams]`.
+    pub our_hits: [u32; 3],
+    /// Hits the *foe* took: `[shots, rocks, rams]`.
+    pub foe_hits: [u32; 3],
+    /// Head-on collisions.
+    pub headon: u32,
+    /// Our full crew aboard at capture — real pirates + swabbies/named mercenaries
+    /// (the manpower used for the crew advantage). Named `our_pirates` for history.
+    pub our_pirates: u32,
+}
+
 /// One sea engagement, from interception to its resolution. Both the naval phase
 /// (interception -> grapple) and the boarding melee (grapple -> `Game over`) are
 /// timed; either may be absent (e.g. a disengage before grappling).
@@ -85,11 +107,33 @@ pub struct Battle {
     /// What we were fighting (best-effort; defaults to generic Brigand).
     pub category: BattleCategory,
     /// Damage advantage (ours − theirs) snapshotted from the Damage calculator at
-    /// resolution: `[-0.5, +0.5]`. `None` if no damage was tracked for this fight.
+    /// the grapple (melee start): `[-0.5, +0.5]`. `None` if no damage was tracked.
     pub advantage_dmg: Option<f64>,
-    /// Headcount advantage snapshotted at resolution (our pirates × our advantage
-    /// − enemy swabbies × their advantage). `None` if no damage was tracked.
+    /// Headcount advantage snapshotted at the grapple (our pirates × our advantage
+    /// − enemy complement × their advantage). `None` if no damage was tracked.
     pub advantage_crew: Option<f64>,
+    /// The Damage-calculator state for this fight (auto-frozen from the live
+    /// calculator at resolution, and editable afterward in the Sea Battles popup).
+    /// `None` until anything is captured/entered. Always shown/editable — its
+    /// presence does NOT mean "recorded".
+    pub snapshot: Option<BattleSnapshot>,
+    /// Whether this fight is **recorded** — i.e. written to the voyage history on
+    /// disk. Independent of [`Self::snapshot`]: the calculator/strength/advantage
+    /// always display; this flag only governs persistence. Default `false`.
+    pub recorded: bool,
+    /// Player-vs-player: the foe fielded at least one real player (a single-word
+    /// name eliminated or among the winners who isn't our own crew). Default
+    /// `false` (player-vs-environment).
+    pub is_pvp: bool,
+    /// Names knocked out during this fight's melee (`<Name> is eliminated!`, both
+    /// sides), accumulated while the fight is open and cleared once resolved. The
+    /// basis for [`Self::their_manpower`].
+    pub melee_kos: Vec<String>,
+    /// The foe's headcount, computed at resolution from the melee: on a win, the
+    /// eliminations that aren't our crew (all enemies are eliminated); on a loss,
+    /// the size of the winners' (enemy) roster. `None` when no melee resolved it
+    /// (e.g. a disengage) — the UI then falls back to the ship-type estimate.
+    pub their_manpower: Option<u32>,
 }
 
 impl Battle {
