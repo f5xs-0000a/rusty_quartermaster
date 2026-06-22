@@ -142,8 +142,6 @@ pub struct BattleRow {
     pub snapshot: Option<BattleSnapshot>,
     /// Whether the fight is recorded (persisted to disk) — display-independent.
     pub recorded: bool,
-    /// Whether the foe fielded a real player (PvP) vs all-NPC (PvE).
-    pub is_pvp: bool,
     /// Foe headcount computed from the melee (`None` → use the ship-type estimate).
     pub their_manpower: Option<u32>,
     /// The foe's known hull type ([`crate::ships::SHIPS`] index) when the encounter
@@ -479,6 +477,7 @@ fn outcome_style(o: BattleOutcome) -> Style {
         BattleOutcome::Lost => Color::Red,
         BattleOutcome::Disengaged => Color::Yellow,
         BattleOutcome::Ongoing => Color::Gray,
+        BattleOutcome::Unknown => Color::DarkGray,
     };
     Style::default().fg(c).bold()
 }
@@ -489,6 +488,7 @@ fn outcome_label(o: BattleOutcome) -> &'static str {
         BattleOutcome::Lost => "Lost",
         BattleOutcome::Disengaged => "Disengaged",
         BattleOutcome::Ongoing => "In progress",
+        BattleOutcome::Unknown => "Unknown",
     }
 }
 
@@ -619,21 +619,15 @@ fn render_battles_popup(
     let enemy = row.enemy.clone().unwrap_or_else(|| "Unknown vessel".to_string());
     let ship_line = format!("{enemy} ({})", SHIPS[ui.battle_editor.right_ship].name);
     frame.render_widget(Paragraph::new(ship_line).centered(), parts[3]);
-    // A PvP fight is flagged in magenta. A generic brigand fight is already
-    // relabelled "Players" upstream; other categories (kings, etc.) get a "· PvP"
-    // tag appended so the player-vs-player nature is never hidden by the label.
-    let cat_text = if row.is_pvp && row.category != "Players" {
-        format!("{} · PvP", row.category)
-    } else {
-        row.category.clone()
-    };
-    let cat_style = if row.is_pvp {
+    // PvP is its own category, labelled "Players" and flagged in magenta.
+    let is_pvp = row.category == "Players";
+    let cat_style = if is_pvp {
         Style::default().fg(Color::Magenta)
     } else {
         Style::default().fg(Color::Gray)
     };
     frame.render_widget(
-        Paragraph::new(Span::styled(cat_text, cat_style)).centered(),
+        Paragraph::new(Span::styled(row.category.clone(), cat_style)).centered(),
         parts[4],
     );
     frame.render_widget(

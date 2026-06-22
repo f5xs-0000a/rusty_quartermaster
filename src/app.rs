@@ -748,13 +748,18 @@ impl AppShell {
             _ => None,
         };
 
+        // Identity confirmation gates win/loss: until our configured name is seen
+        // in the log, every win/loss shows as Unknown (and flips retroactively).
+        let confirmed = self.chatlog.self_confirmed;
+        let eff = |raw| crate::voyage::effective_outcome(raw, confirmed);
+
         let consumption = crate::voyage::stats::consumption_stats(
             voyage,
             &self.profits.rows,
             &self.commodities,
             cannon_size,
         );
-        let battle = crate::voyage::stats::battle_stats(voyage);
+        let battle = crate::voyage::stats::battle_stats(voyage, confirmed);
 
         // Per-fight rows for the Sea Battles popup: resolved fights first, then the
         // in-progress one (so it can be inspected mid-fight). Mirrors the indexing
@@ -763,31 +768,33 @@ impl AppShell {
             .battles
             .iter()
             .chain(voyage.current_battle.iter())
-            .map(|b| crate::voyage::ui::BattleRow {
-                enemy: b.enemy.clone(),
-                outcome: b.outcome,
-                // PvP is mutually exclusive with the special encounters: only a
-                // generic brigand fight is reclassified as "Players" when the foe
-                // fielded a real player; kings/vampirates/monsters keep their label.
-                category: if b.is_pvp && matches!(b.category, crate::voyage::BattleCategory::Brigand)
-                {
-                    "Players".to_string()
-                } else {
-                    crate::voyage::stats::category_label(&b.category)
-                },
-                poe: b.poe,
-                goods: b.goods,
-                my_cut: b.my_cut,
-                total_secs: b.total_secs(),
-                sea_secs: b.sea_secs(),
-                boarding_secs: b.boarding_secs(),
-                pirates: b.pirates,
-                swabbies: b.swabbies,
-                snapshot: b.snapshot,
-                recorded: b.recorded,
-                is_pvp: b.is_pvp,
-                their_manpower: b.their_manpower,
-                foe_ship: b.foe_ship,
+            .map(|b| {
+                let outcome = eff(b.outcome);
+                crate::voyage::ui::BattleRow {
+                    enemy: b.enemy.clone(),
+                    outcome,
+                    // PvP is its own category ("Players"); all categories carry
+                    // their own label now.
+                    category: crate::voyage::stats::category_label(&b.category),
+                    // A masked (unknown) verdict carries no signed PoE.
+                    poe: matches!(
+                        outcome,
+                        crate::voyage::BattleOutcome::Won | crate::voyage::BattleOutcome::Lost
+                    )
+                    .then_some(b.poe)
+                    .flatten(),
+                    goods: b.goods,
+                    my_cut: b.my_cut,
+                    total_secs: b.total_secs(),
+                    sea_secs: b.sea_secs(),
+                    boarding_secs: b.boarding_secs(),
+                    pirates: b.pirates,
+                    swabbies: b.swabbies,
+                    snapshot: b.snapshot,
+                    recorded: b.recorded,
+                    their_manpower: b.their_manpower(),
+                    foe_ship: b.foe_ship,
+                }
             })
             .collect();
 
@@ -795,11 +802,18 @@ impl AppShell {
         // per-voyage totals). Total value is net PoE for now; goods fold in later.
         let charts = {
             use crate::voyage::BattleOutcome::{Lost, Won};
+            // Signed PoE of a fight, but only for a *confirmed* win/loss (an
+            // unconfirmed/unknown verdict contributes nothing to the charts).
+            let decisive_poe = |b: &crate::voyage::Battle| {
+                matches!(eff(b.outcome), Won | Lost)
+                    .then_some(b.poe)
+                    .flatten()
+            };
             let cur_won_poe: Vec<f64> = voyage
                 .battles
                 .iter()
-                .filter(|b| b.outcome == Won)
-                .filter_map(|b| b.poe)
+                .filter(|b| eff(b.outcome) == Won)
+                .filter_map(&decisive_poe)
                 .filter(|p| *p > 0)
                 .map(|p| p as f64)
                 .collect();
@@ -808,18 +822,21 @@ impl AppShell {
             let cur_fight_poe: Vec<f64> = voyage
                 .battles
                 .iter()
-                .filter(|b| b.outcome == Won || b.outcome == Lost)
-                .filter_map(|b| b.poe)
+                .filter_map(&decisive_poe)
                 .map(|p| p as f64)
                 .collect();
             let last_win = voyage
                 .battles
                 .iter()
                 .rev()
-                .find(|b| b.outcome == Won)
-                .and_then(|b| b.poe)
+                .find(|b| eff(b.outcome) == Won)
+                .and_then(&decisive_poe)
                 .map(|p| p as f64);
-            let cur_total = voyage.battles.iter().filter_map(|b| b.poe).sum::<i64>() as f64;
+            let cur_total = voyage
+                .battles
+                .iter()
+                .filter_map(&decisive_poe)
+                .sum::<i64>() as f64;
 
             let mut hist_won_poe = Vec::new();
             let mut hist_totals = Vec::new();
@@ -917,6 +934,7 @@ impl AppShell {
             return;
         };
         let vessel_name = key.to_string();
+        let confirmed = self.chatlog.self_confirmed;
         let saved = {
             let Some(v) = self.chatlog.vessels.get_mut(&key) else {
                 return;
@@ -928,7 +946,8 @@ impl AppShell {
             if voyage.saved {
                 return;
             }
-            let saved = crate::voyage::persistence::from_voyage(voyage, Some(&vessel_name));
+            let saved =
+                crate::voyage::persistence::from_voyage(voyage, Some(&vessel_name), confirmed);
             voyage.saved = true;
             saved
         };

@@ -22,7 +22,9 @@ use std::time::Duration;
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::pirate;
-use crate::voyage::{Battle, BattleCategory, BattleOutcome, BattleSnapshot, CrewSample, Voyage};
+use crate::voyage::{
+    Battle, BattleCategory, BattleOutcome, BattleSnapshot, CrewSample, TeamSide, Voyage,
+};
 
 // ---------------------------------------------------------------------------
 // Job kinds
@@ -306,6 +308,13 @@ impl Vessel {
 pub struct GameState {
     /// Our own pirate name (from `--user`), used to attribute planks to us.
     pub player_name: Option<Arc<str>>,
+    /// True once [`Self::player_name`] has been *confirmed* present in the log via
+    /// a strong, unspoofable signal (a `Game over` winners list, an `X is
+    /// eliminated!`, or an `X issued an order` line). Until then a battle's
+    /// win/loss is indeterminate: our name not appearing among the winners could
+    /// mean we lost, or that the configured name is simply wrong/absent. Chat
+    /// (`X says`) is deliberately excluded — it's forgeable.
+    pub self_confirmed: bool,
     /// True once a chat log has been attached via `--chat-log`.
     pub attached: bool,
 
@@ -346,6 +355,7 @@ impl GameState {
     pub fn new() -> Self {
         Self {
             player_name: None,
+            self_confirmed: false,
             attached: false,
             vessels: HashMap::new(),
             current: None,
@@ -417,6 +427,14 @@ impl GameState {
     }
 
     fn classify(&mut self, body: &str) {
+        // Chat by a named speaker confirms our identity: the speaker attribution
+        // ("<Name> says,/chats,/tells ye,") is game-supplied, ahead of the
+        // spoofable message body, so the first marker always names the real
+        // speaker. A no-op for anyone but us.
+        if let Some(speaker) = chat_speaker(body) {
+            self.confirm_self(speaker);
+        }
+
         // Greedy strikes: "<attacker> <verb phrase> against <Brigand>, <tail>!"
         // We only care who landed it, not the flavour.
         const GREEDY: &[&str] = &[
@@ -433,36 +451,34 @@ impl GameState {
         }
 
         // Battle start: a fresh battle resets the current-battle greedy tally and
-        // opens a new [`Battle`] record. We capture the enemy vessel name and who
-        // initiated. Both "the X" forms end in `!` (live) or `.` (some variants).
+        // opens a new [`Battle`] record. We capture the enemy vessel name; the
+        // direction (who intercepted whom) isn't tracked. Both "the X" forms end
+        // in `!` (live) or `.` (some variants).
         let intercept = body
             .strip_prefix("You intercepted the ")
-            .map(|r| (r, true))
-            .or_else(|| {
-                body.strip_prefix("You have been intercepted by the ")
-                    .map(|r| (r, false))
-            });
-        if let Some((rest, we_intercepted)) = intercept {
+            .or_else(|| body.strip_prefix("You have been intercepted by the "));
+        if let Some(rest) = intercept {
             let enemy = rest.trim_end_matches(['!', '.']).trim();
-            self.on_battle_start(enemy, we_intercepted);
+            self.on_battle_start(enemy);
             return;
         }
         // Bare forms without a vessel name (e.g. "You intercepted the Brigands.").
         if body.starts_with("You intercepted") || body.starts_with("You have been intercepted") {
-            let we_intercepted = body.starts_with("You intercepted");
-            self.on_battle_start("", we_intercepted);
+            self.on_battle_start("");
             return;
         }
 
         // Set-sail order: starts the voyage on its first occurrence (the order also
         // fires on every subsequent navigation move — those are ignored once a
         // voyage is underway).
-        if body.ends_with(" issued an order to set the vessel to sail.") {
+        if let Some(who) = body.strip_suffix(" issued an order to set the vessel to sail.") {
+            self.confirm_self(who);
             self.on_set_sail();
             return;
         }
         // Put-into-port order: ends the timed sail->port run.
-        if body.ends_with(" issued an order to put into port.") {
+        if let Some(who) = body.strip_suffix(" issued an order to put into port.") {
+            self.confirm_self(who);
             self.on_put_into_port();
             return;
         }
@@ -805,7 +821,7 @@ impl GameState {
     /// A new battle began — start a fresh current-battle greedy tally and open a
     /// new [`Battle`] record on the current voyage (creating the voyage if a fight
     /// somehow starts before we saw a sail order). `enemy` empty => unknown vessel.
-    fn on_battle_start(&mut self, enemy: &str, we_intercepted: bool) {
+    fn on_battle_start(&mut self, enemy: &str) {
         let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             v.greedy_current.clear();
@@ -824,7 +840,6 @@ impl GameState {
             }
             let mut battle = Battle {
                 enemy,
-                we_intercepted,
                 started_at: now,
                 ..Battle::default()
             };
@@ -889,11 +904,14 @@ impl GameState {
     fn on_grapple(&mut self) {
         let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
-            let roster: Vec<String> = v.crewmates.iter().cloned().collect();
+            let players: Vec<String> = v.crewmates.iter().cloned().collect();
+            let swabbies = v.swabbies;
             if let Some(b) = v.current_voyage.as_mut().and_then(|voy| voy.current_battle.as_mut()) {
                 if b.grappled_at.is_none() {
                     b.grappled_at = now;
-                    b.grapple_roster = Some(roster);
+                    // Our side as it stood at boarding start; finalized at
+                    // resolution (resynced roster ∪ this, minus the disconnected).
+                    b.our_team = Some(TeamSide { players, swabbies });
                 }
             }
         }
@@ -915,10 +933,14 @@ impl GameState {
         self.battle_just_resolved |= resolved;
     }
 
-    /// Resolve the open sea battle at `Game over`. Won iff our own name is among the
-    /// winners; otherwise we lost (and forfeit the plundered PoE). Skipped inside a
-    /// vampirate lair, whose per-wave swordfights aren't sea battles. Run *after*
-    /// [`Self::on_battle_end`] so the crew snapshot uses the resynced roster.
+    /// Resolve the open sea battle at `Game over`. Won iff our own name is among
+    /// the winners. The verdict stored here is *provisional*: it's shown as
+    /// [`BattleOutcome::Unknown`] until our identity is confirmed (a strong signal
+    /// — winners list, elimination, order, or chat), at which point every past
+    /// fight is revealed retroactively. With no `--user` name there's nothing to
+    /// confirm against, so it stays Unknown. Skipped inside a vampirate lair, whose
+    /// per-wave swordfights aren't sea battles. Run *after* [`Self::on_battle_end`]
+    /// so the crew snapshot uses the resynced roster.
     fn on_sea_battle_resolve(&mut self, summary: &str) {
         if self.current_vessel().is_some_and(|v| v.lair_active) {
             return;
@@ -926,7 +948,7 @@ impl GameState {
         let me = self.player_name.clone();
         let me = me.as_deref();
         // The winners roster, parsed once. On a win it's our ship; on a loss it's
-        // the foe's crew.
+        // the foe's crew. On an unknown-identity fight we can't say which.
         let winners: Vec<String> = summary
             .split_once(':')
             .map(|(_, list)| {
@@ -939,13 +961,29 @@ impl GameState {
                     .collect()
             })
             .unwrap_or_default();
-        let won = winners
+        // Our name in the winners list both decides a win and confirms our
+        // identity (an unspoofable strong signal).
+        let in_winners = winners
             .iter()
             .any(|n| me.is_some_and(|me| n.eq_ignore_ascii_case(me)));
+        if in_winners {
+            self.self_confirmed = true;
+        }
+        // The *provisional* verdict, computed against the configured name. It's
+        // masked to [`BattleOutcome::Unknown`] at the view/stats/persistence layer
+        // (see [`crate::voyage::effective_outcome`]) until our identity is
+        // confirmed — so a confirmation arriving much later retroactively reveals
+        // every earlier fight. With no configured name there's nothing to confirm,
+        // so it stays genuinely unknown.
+        let outcome = match me {
+            None => BattleOutcome::Unknown,
+            Some(_) if in_winners => BattleOutcome::Won,
+            Some(_) => BattleOutcome::Lost,
+        };
         // Inputs for our manpower, captured before the mutable voyage borrow below.
         // `live_crew` is the resynced roster after `on_battle_end` (on a win it's the
         // winners' players, which catches crew we never saw board); it's unioned
-        // with the battle's grapple roster (which catches crew who left mid-melee).
+        // with the battle's grapple-time team (which catches crew who left mid-melee).
         let live_crew: HashSet<String> =
             self.current_vessel().map(|v| v.crewmates.clone()).unwrap_or_default();
         let disconnected: HashSet<String> =
@@ -954,59 +992,77 @@ impl GameState {
         // A king on the winning side means we lost to that king — name the fight.
         let king = find_brigand_king(summary);
         // PvP on a loss: a winner who's a real player and not ours = an enemy
-        // player. (A win's eliminations already catch enemy players, since all
-        // enemies are eliminated.)
-        let foe_player = !won
+        // player. (A win's eliminations already flagged PvP via `on_eliminated`,
+        // since all enemies are eliminated. On an unknown outcome we can't tell
+        // which side the winners are, so we rely solely on melee eliminations.)
+        let lost_to_players = outcome == BattleOutcome::Lost
             && winners
                 .iter()
                 .any(|n| pirate::is_player_name(n) && !self.is_own_crew(n));
+        // Split a roster into real players (kept by name) and a bare swabbie count.
+        let split_side = |names: &[String]| TeamSide {
+            players: names
+                .iter()
+                .filter(|n| pirate::is_player_name(n))
+                .cloned()
+                .collect(),
+            swabbies: names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32,
+        };
         let now = self.now;
         let mut resolved = false;
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(mut b) = voy.current_battle.take() {
-                b.outcome = if won {
-                    BattleOutcome::Won
-                } else {
-                    BattleOutcome::Lost
-                };
+                b.outcome = outcome;
                 b.ended_at = now;
-                // Our manpower = who actually fought: the grapple roster unioned
+                // Our manpower = who actually fought: the grapple-time team unioned
                 // with the resynced crew, minus the disconnected (a held-but-idle
-                // melee slot), plus us. A leaver stays counted (in the grapple
-                // roster); a never-reconnecting dropout is dropped even if the
-                // winners roster still lists them.
+                // melee slot), plus us. A leaver stays counted (captured at grapple);
+                // a never-reconnecting dropout is dropped even if the winners roster
+                // still lists them.
                 let mut roster: HashSet<String> = live_crew;
-                if let Some(gr) = &b.grapple_roster {
-                    roster.extend(gr.iter().cloned());
+                if let Some(team) = &b.our_team {
+                    roster.extend(team.players.iter().cloned());
                 }
-                let fought = roster
-                    .iter()
+                let mut our_players: Vec<String> = roster
+                    .into_iter()
                     .filter(|n| !disconnected.contains(n.as_str()))
-                    .count() as u32;
+                    .collect();
+                let fought = our_players.len() as u32;
                 b.pirates = fought + 1;
                 b.swabbies = swabbies;
-                if foe_player {
-                    b.is_pvp = true;
+                // Record our side by name (swabbies as a count). Include ourselves
+                // when our name is known so the roster is complete.
+                if let Some(me) = me {
+                    if !our_players.iter().any(|n| n.eq_ignore_ascii_case(me)) {
+                        our_players.push(me.to_string());
+                    }
                 }
-                // Foe headcount from the melee: on a win, all enemies are
-                // eliminated, so it's the KOs that aren't our crew (= not in the
-                // winners roster, which is our ship on a win); on a loss it's the
-                // size of the winners' (enemy) roster.
-                b.their_manpower = Some(if won {
-                    b.melee_kos
-                        .iter()
-                        .filter(|ko| {
-                            let ko = ko.as_str();
-                            !winners.iter().any(|w| w.eq_ignore_ascii_case(ko))
-                        })
-                        .count() as u32
-                } else {
-                    winners.len() as u32
-                });
-                b.melee_kos.clear();
-                if let Some(k) = king {
+                b.our_team = Some(TeamSide { players: our_players, swabbies });
+                // PvP (its own category) may already be set from the melee; a loss
+                // to a real-player crew flags it too. PvP overrides a king label.
+                if b.category == BattleCategory::Pvp || lost_to_players {
+                    b.category = BattleCategory::Pvp;
+                } else if let Some(k) = king {
                     b.category = BattleCategory::BrigandKing(k.to_string());
                 }
+                // The foe's side: on a win, the eliminations that aren't our crew
+                // (all enemies are eliminated, so they're the KOs not in the winners
+                // roster, which is our ship on a win); on a loss, the winners' (enemy)
+                // roster. On an unknown outcome we can't tell, so leave it absent.
+                b.their_team = match outcome {
+                    BattleOutcome::Won => {
+                        let foe: Vec<String> = b
+                            .melee_kos
+                            .iter()
+                            .filter(|ko| !winners.iter().any(|w| w.eq_ignore_ascii_case(ko)))
+                            .cloned()
+                            .collect();
+                        Some(split_side(&foe))
+                    }
+                    BattleOutcome::Lost => Some(split_side(&winners)),
+                    _ => None,
+                };
+                b.melee_kos.clear();
                 voy.battles.push(b);
                 resolved = true;
             }
@@ -1035,11 +1091,14 @@ impl GameState {
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.battles.last_mut() {
                 if let Some(poe) = poe {
-                    b.poe = Some(if b.outcome == BattleOutcome::Lost {
-                        -(poe as i64)
-                    } else {
-                        poe as i64
-                    });
+                    // Signed by the (provisional) outcome: positive on a win,
+                    // negative on a loss. With no candidate identity the direction
+                    // is unknowable, so we keep no signed value.
+                    b.poe = match b.outcome {
+                        BattleOutcome::Won => Some(poe as i64),
+                        BattleOutcome::Lost => Some(-(poe as i64)),
+                        _ => None,
+                    };
                 }
                 if goods.is_some() {
                     b.goods = goods;
@@ -1196,15 +1255,33 @@ impl GameState {
             }
             return;
         }
+        // Our own elimination is a strong, unspoofable confirmation we're here.
+        self.confirm_self(name);
         // Sea battle: record the KO and detect an enemy player.
         let enemy_player = pirate::is_player_name(name) && !self.is_own_crew(name);
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.current_battle.as_mut() {
                 b.melee_kos.push(name.to_string());
                 if enemy_player {
-                    b.is_pvp = true;
+                    // PvP is its own, mutually exclusive category — once set it
+                    // overrides any king/monster telltale.
+                    b.category = BattleCategory::Pvp;
                 }
             }
+        }
+    }
+
+    /// Confirm our identity if `name` matches our configured pirate name. Called
+    /// only from strong, unspoofable signals (winners list, elimination, order).
+    /// Once confirmed, a battle's win/loss becomes determinate; until then it
+    /// stays [`BattleOutcome::Unknown`]. A no-op when no name is configured.
+    fn confirm_self(&mut self, name: &str) {
+        if self
+            .player_name
+            .as_deref()
+            .is_some_and(|me| me.eq_ignore_ascii_case(name))
+        {
+            self.self_confirmed = true;
         }
     }
 
@@ -1308,7 +1385,7 @@ impl GameState {
 
     /// The foe headcount computed for the just-resolved (last) battle, if any.
     pub fn last_resolved_their_manpower(&self) -> Option<u32> {
-        self.current_voyage()?.battles.last()?.their_manpower
+        self.current_voyage()?.battles.last()?.their_manpower()
     }
 
     /// Our crew strength (fighting pirates + swabbies) recorded for the
@@ -1363,9 +1440,14 @@ impl GameState {
     /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved
     /// (last) battle of the current voyage. Called at Game over / disengage when the
     /// calculator had input, so fights we tracked live land in the history recorded.
+    /// A **disengaged** fight is skipped: there's nothing worth recording beyond the
+    /// disengage itself (who, how long), so we don't pin damage to it.
     pub fn record_resolved_battle(&mut self, snap: BattleSnapshot, dmg: f64, crew: f64) {
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.battles.last_mut() {
+                if b.outcome == BattleOutcome::Disengaged {
+                    return;
+                }
                 b.snapshot = Some(snap);
                 b.advantage_dmg = Some(dmg);
                 b.advantage_crew = Some(crew);
@@ -1542,6 +1624,19 @@ fn monkey_boat_ship(name: &str) -> Option<usize> {
 /// mislabel a fight).
 fn is_chat_line(body: &str) -> bool {
     body.contains(" says,") || body.contains(" chats,") || body.contains(" tells ye,")
+}
+
+/// The speaker name of a chat line (`"<Name> says, …"`), or `None` if the line
+/// isn't chat. The marker is matched at its *first* occurrence — which is the
+/// game's own speaker attribution, ahead of any text the speaker typed — so a
+/// player can't forge a different speaker by parroting the marker in their
+/// message body.
+fn chat_speaker(body: &str) -> Option<&str> {
+    [" says,", " chats,", " tells ye,"]
+        .iter()
+        .filter_map(|m| body.find(m))
+        .min()
+        .map(|idx| &body[..idx])
 }
 
 /// Parse a leading integer that may contain thousands separators, ignoring any
@@ -2063,7 +2158,6 @@ mod tests {
         assert_eq!(voy.battles.len(), 1);
         let b = &voy.battles[0];
         assert_eq!(b.enemy.as_deref(), Some("Modest Sild"));
-        assert!(!b.we_intercepted);
         assert_eq!(b.outcome, BattleOutcome::Won);
         assert_eq!(b.sea_secs(), Some(225)); // 02:06:06 -> 02:09:51
         assert_eq!(b.boarding_secs(), Some(292)); // 02:09:51 -> 02:14:43
@@ -2137,7 +2231,8 @@ mod tests {
         gs.process_line("[03:02:40] Sea Lawyer is eliminated!"); // NPC mercenary (has a space)
         gs.process_line("[03:04:00] Game over.  Winners: Playerone.");
         let b = gs.current_voyage().unwrap().battles.last().unwrap();
-        assert!(b.is_pvp); // an enemy real player was eliminated
+        // an enemy real player was eliminated → PvP, its own category
+        assert_eq!(b.category, BattleCategory::Pvp);
     }
 
     #[test]
@@ -2154,7 +2249,7 @@ mod tests {
         gs.process_line("[04:04:00] Game over.  Winners: Enemyone, Enemytwo, Deck Swab.");
         let b = gs.current_voyage().unwrap().battles.last().unwrap();
         assert_eq!(b.outcome, BattleOutcome::Lost);
-        assert!(b.is_pvp);
+        assert_eq!(b.category, BattleCategory::Pvp);
     }
 
     #[test]
@@ -2174,6 +2269,42 @@ mod tests {
         assert_eq!(b.outcome, BattleOutcome::Lost);
         assert_eq!(b.poe, Some(-27_460)); // we lost it to them
         assert_eq!(b.goods, Some(350));
+    }
+
+    #[test]
+    fn outcome_unknown_until_identity_confirmed_then_retroactive() {
+        use crate::voyage::effective_outcome;
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        // A bare fight with no confirming signal yet (no order/chat/elimination,
+        // and we're not among the winners).
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[01:01:00] You have been intercepted by the Boring Gar!");
+        gs.process_line("[01:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.");
+        assert!(!gs.self_confirmed);
+        let raw = gs.current_voyage().unwrap().battles.last().unwrap().outcome;
+        assert_eq!(raw, BattleOutcome::Lost); // provisional verdict, stored
+        assert_eq!(effective_outcome(raw, gs.self_confirmed), BattleOutcome::Unknown);
+        // A chat line much later confirms us — the earlier fight is revealed.
+        gs.process_line("[01:05:00] Playerone says, \"gg all\"");
+        assert!(gs.self_confirmed);
+        let raw = gs.current_voyage().unwrap().battles.last().unwrap().outcome;
+        assert_eq!(effective_outcome(raw, gs.self_confirmed), BattleOutcome::Lost);
+    }
+
+    #[test]
+    fn no_configured_name_is_always_unknown() {
+        let mut gs = GameState::new(); // no player_name
+        gs.process_line("[02:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[02:01:00] You have been intercepted by the Boring Gar!");
+        gs.process_line("[02:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.");
+        gs.process_line(
+            "[02:04:11] The victors plundered 9,000 pieces of eight and 3 units of goods from the defeated vessel.",
+        );
+        assert!(!gs.self_confirmed);
+        let b = gs.current_voyage().unwrap().battles.last().unwrap();
+        assert_eq!(b.outcome, BattleOutcome::Unknown);
+        assert_eq!(b.poe, None); // direction unknowable
     }
 
     #[test]
@@ -2217,7 +2348,6 @@ mod tests {
         assert_eq!(voy.battles[0].poe, Some(-27_460));
         assert_eq!(voy.battles[0].goods, Some(0));
         assert_eq!(voy.battles[1].outcome, BattleOutcome::Won);
-        assert!(voy.battles[1].we_intercepted);
         assert_eq!(voy.battles[1].poe, Some(5_000));
     }
 

@@ -10,7 +10,7 @@
 use crate::api::Commodity;
 use crate::profits::InventoryRow;
 use crate::ships::CannonSize;
-use crate::voyage::{BattleCategory, BattleOutcome, Voyage};
+use crate::voyage::{effective_outcome, BattleCategory, BattleOutcome, Voyage};
 
 /// Caveat to show beside the rum-spice figures: spice consumption can't be read
 /// accurately from a stock delta when swabbies are aboard (they share the pool)
@@ -275,12 +275,15 @@ pub fn category_label(c: &BattleCategory) -> String {
         BattleCategory::Zombie => "Zombies".to_string(),
         BattleCategory::BlackShip => "Black Ship".to_string(),
         BattleCategory::MonkeyBoat => "Monkey Boat".to_string(),
+        BattleCategory::Pvp => "Players".to_string(),
     }
 }
 
-/// Aggregate the per-battle records of a voyage. See [`BattleStats`].
+/// Aggregate the per-battle records of a voyage. See [`BattleStats`]. `self_confirmed`
+/// masks unconfirmed win/loss verdicts to [`BattleOutcome::Unknown`] (see
+/// [`effective_outcome`]), which then drop out of every win/loss/loot figure.
 #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
-pub fn battle_stats(voyage: &Voyage) -> BattleStats {
+pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
     let mut s = BattleStats::default();
     let (mut naval, mut boarding, mut total) = (Vec::new(), Vec::new(), Vec::new());
     let (mut adv_dmg, mut adv_crew) = (Vec::new(), Vec::new());
@@ -288,6 +291,12 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
     let (mut won_poe, mut net_decisive) = (Vec::new(), Vec::new());
     let (mut won_goods, mut net_goods_decisive) = (Vec::new(), Vec::new());
     for b in &voyage.battles {
+        // The verdict actually shown: an unconfirmed win/loss is Unknown and so
+        // contributes to no win/loss/loot figure. PoE is masked to match.
+        let outcome = effective_outcome(b.outcome, self_confirmed);
+        let poe = matches!(outcome, BattleOutcome::Won | BattleOutcome::Lost)
+            .then_some(b.poe)
+            .flatten();
         if let Some(a) = b.advantage_dmg {
             adv_dmg.push(a);
         }
@@ -305,16 +314,16 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
             }
         };
         let tally = &mut s.categories[idx].1;
-        match b.outcome {
+        match outcome {
             BattleOutcome::Won => tally.wins += 1,
             BattleOutcome::Lost => tally.losses += 1,
             BattleOutcome::Disengaged => tally.disengages += 1,
-            BattleOutcome::Ongoing => {}
+            BattleOutcome::Ongoing | BattleOutcome::Unknown => {}
         }
-        match b.outcome {
+        match outcome {
             BattleOutcome::Won => {
                 s.wins += 1;
-                let p = b.poe.unwrap_or(0) as f64;
+                let p = poe.unwrap_or(0) as f64;
                 let g = b.goods.unwrap_or(0) as f64;
                 won_poe.push(p);
                 net_decisive.push(p);
@@ -323,19 +332,19 @@ pub fn battle_stats(voyage: &Voyage) -> BattleStats {
             }
             BattleOutcome::Lost => {
                 s.losses += 1;
-                net_decisive.push(b.poe.unwrap_or(0) as f64);
+                net_decisive.push(poe.unwrap_or(0) as f64);
                 net_goods_decisive.push(-(b.goods.unwrap_or(0) as f64));
             }
             BattleOutcome::Disengaged => s.disengages += 1,
-            BattleOutcome::Ongoing => {}
+            BattleOutcome::Ongoing | BattleOutcome::Unknown => {}
         }
-        if let Some(p) = b.poe {
+        if let Some(p) = poe {
             s.poe_net_total += p;
-            if b.outcome == BattleOutcome::Won && p > 0 {
+            if outcome == BattleOutcome::Won && p > 0 {
                 s.poe_won_total += p;
             }
         }
-        if b.outcome == BattleOutcome::Won {
+        if outcome == BattleOutcome::Won {
             if let Some(g) = b.goods {
                 s.goods_won_total += g as u64;
             }
@@ -534,7 +543,7 @@ mod tests {
             }],
             ..Voyage::default()
         };
-        let s = battle_stats(&voy);
+        let s = battle_stats(&voy, true);
         assert_eq!((s.wins, s.losses, s.disengages), (1, 1, 1));
         assert_eq!(s.poe_won_total, 8000);
         assert_eq!(s.poe_net_total, 6000); // 8000 − 2000
@@ -590,7 +599,7 @@ mod tests {
             battles: vec![win(1000, 20), win(2000, 40), win(3000, 50)],
             ..Voyage::default()
         };
-        let s = battle_stats(&voy);
+        let s = battle_stats(&voy, true);
         approx(s.poe_per_fight_won.unwrap(), 2000.0);
         // σ of {1000,2000,3000} = sqrt(2_000_000/3) ≈ 816.5
         approx(s.poe_per_fight_won_sd.unwrap(), (2_000_000.0_f64 / 3.0).sqrt());

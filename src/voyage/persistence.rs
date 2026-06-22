@@ -16,7 +16,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::ships::SHIPS;
-use crate::voyage::{BattleCategory, BattleOutcome, Voyage};
+use crate::voyage::{effective_outcome, BattleCategory, BattleOutcome, TeamSide, Voyage};
 
 /// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
 /// by name (robust to `SHIPS` reordering).
@@ -36,13 +36,23 @@ pub struct SavedSnapshot {
     pub our_pirates: u32,
 }
 
+/// One side of a persisted melee — real players by name + a swabbie count.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct SavedTeam {
+    #[serde(default)]
+    pub players: Vec<String>,
+    #[serde(default)]
+    pub swabbies: u32,
+}
+
 /// One persisted sea battle (enough to rebuild the loot/timing histograms).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedBattle {
-    /// "won" / "lost" / "disengaged" / "ongoing".
+    /// "won" / "lost" / "disengaged" / "ongoing" / "unknown" (the last when our
+    /// identity wasn't confirmed, so win/loss couldn't be determined).
     #[serde(default)]
     pub outcome: String,
-    /// Enemy category: "Brigands", "King: <name>", "Vampirates", etc.
+    /// Enemy category: "Brigands", "King: <name>", "Vampirates", "Players" (PvP).
     #[serde(default)]
     pub category: String,
     #[serde(default)]
@@ -59,17 +69,18 @@ pub struct SavedBattle {
     pub naval_secs: Option<i64>,
     #[serde(default)]
     pub boarding_secs: Option<i64>,
+    /// Our side of the melee — players (by name) + swabbie count. Swabbie
+    /// identities are intentionally not stored.
     #[serde(default)]
-    pub advantage_dmg: Option<f64>,
+    pub our_team: Option<SavedTeam>,
+    /// The foe's side, when the melee resolved it. `None` for a disengage or an
+    /// unknown-identity fight.
     #[serde(default)]
-    pub advantage_crew: Option<f64>,
+    pub their_team: Option<SavedTeam>,
     /// Whether the fight was recorded — only recorded fights carry the calculator
-    /// data (`snapshot` + advantages) on disk.
+    /// snapshot on disk. (Damage advantage is derived from the snapshot, not stored.)
     #[serde(default)]
     pub recorded: bool,
-    /// Player-vs-player: the foe fielded at least one real player.
-    #[serde(default)]
-    pub is_pvp: bool,
     #[serde(default)]
     pub snapshot: Option<SavedSnapshot>,
 }
@@ -108,6 +119,7 @@ fn outcome_str(o: BattleOutcome) -> &'static str {
         BattleOutcome::Lost => "lost",
         BattleOutcome::Disengaged => "disengaged",
         BattleOutcome::Ongoing => "ongoing",
+        BattleOutcome::Unknown => "unknown",
     }
 }
 
@@ -121,12 +133,23 @@ fn category_str(c: &BattleCategory) -> String {
         BattleCategory::Zombie => "Zombies".to_string(),
         BattleCategory::BlackShip => "Black Ship".to_string(),
         BattleCategory::MonkeyBoat => "Monkey Boat".to_string(),
+        BattleCategory::Pvp => "Players".to_string(),
+    }
+}
+
+/// Persisted form of one melee side. Swabbie identities are dropped (count only).
+fn saved_team(t: &TeamSide) -> SavedTeam {
+    SavedTeam {
+        players: t.players.clone(),
+        swabbies: t.swabbies,
     }
 }
 
 /// Snapshot a completed voyage into its persisted form. Aggregates (duration,
-/// average crew) are computed now, while the run is finalized.
-pub fn from_voyage(v: &Voyage, vessel: Option<&str>) -> SavedVoyage {
+/// average crew) are computed now, while the run is finalized. `self_confirmed`
+/// masks unconfirmed win/loss verdicts (and their PoE sign) to "unknown" — see
+/// [`effective_outcome`].
+pub fn from_voyage(v: &Voyage, vessel: Option<&str>, self_confirmed: bool) -> SavedVoyage {
     SavedVoyage {
         ended_at: v.ported_at.map(|t| t.to_string()).unwrap_or_default(),
         vessel: vessel.map(str::to_string),
@@ -137,27 +160,33 @@ pub fn from_voyage(v: &Voyage, vessel: Option<&str>) -> SavedVoyage {
         battles: v
             .battles
             .iter()
-            .map(|b| SavedBattle {
-                outcome: outcome_str(b.outcome).to_string(),
-                category: category_str(&b.category),
-                poe: b.poe,
-                goods: b.goods,
-                pirates: b.pirates,
-                swabbies: b.swabbies,
-                total_secs: b.total_secs(),
-                naval_secs: b.sea_secs(),
-                boarding_secs: b.boarding_secs(),
-                // The calculator-derived data (advantages + snapshot) is written
-                // only for recorded fights — that's what "recording" means.
-                advantage_dmg: b.recorded.then_some(b.advantage_dmg).flatten(),
-                advantage_crew: b.recorded.then_some(b.advantage_crew).flatten(),
-                recorded: b.recorded,
-                is_pvp: b.is_pvp,
-                snapshot: if b.recorded {
-                    b.snapshot.map(saved_snapshot)
-                } else {
-                    None
-                },
+            .map(|b| {
+                let outcome = effective_outcome(b.outcome, self_confirmed);
+                // A masked (unknown) verdict can't carry a signed PoE.
+                let poe = matches!(outcome, BattleOutcome::Won | BattleOutcome::Lost)
+                    .then_some(b.poe)
+                    .flatten();
+                SavedBattle {
+                    outcome: outcome_str(outcome).to_string(),
+                    category: category_str(&b.category),
+                    poe,
+                    goods: b.goods,
+                    pirates: b.pirates,
+                    swabbies: b.swabbies,
+                    total_secs: b.total_secs(),
+                    naval_secs: b.sea_secs(),
+                    boarding_secs: b.boarding_secs(),
+                    our_team: b.our_team.as_ref().map(saved_team),
+                    their_team: b.their_team.as_ref().map(saved_team),
+                    // The calculator snapshot is written only for recorded fights —
+                    // that's what "recording" means. Advantage is derived from it.
+                    recorded: b.recorded,
+                    snapshot: if b.recorded {
+                        b.snapshot.map(saved_snapshot)
+                    } else {
+                        None
+                    },
+                }
             })
             .collect(),
     }

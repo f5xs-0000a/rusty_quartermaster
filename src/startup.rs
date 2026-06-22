@@ -346,6 +346,7 @@ fn tooltip_lines(state: &Setup) -> Vec<String> {
         Field::Name if state.name.value.trim().is_empty() => vec![
             "Press Enter to not identify yourself.".to_owned(),
             "Jobber functionality will be reduced as a result.".to_owned(),
+            "Voyage win/loss will also be indeterminate without a name.".to_owned(),
         ],
         Field::Name => {
             let name = state.name.value.trim();

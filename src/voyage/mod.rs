@@ -34,6 +34,11 @@ pub enum BattleOutcome {
     /// Ended without a boarding conclusion: someone disengaged, the enemy ported,
     /// or we shook the pursuit.
     Disengaged,
+    /// The fight reached a `Game over`, but we can't tell win from loss because
+    /// our own identity is unconfirmed — no `--user` name, or a name that never
+    /// actually appeared in the log (so a "loss" might be an undetected win). The
+    /// PoE sign is therefore unknowable; [`Battle::poe`] is left `None`.
+    Unknown,
 }
 
 /// What we fought in a battle. Detected from log telltales; defaults to a
@@ -57,6 +62,28 @@ pub enum BattleCategory {
     /// A monkey boat — a special encounter whose vessel name identifies its hull
     /// (see [`crate::chatlog`]'s monkey-boat table). The hull is on [`Battle::foe_ship`].
     MonkeyBoat,
+    /// Player-vs-player: the foe fielded at least one real player. Its own
+    /// category, mutually exclusive with the rest — once a fight is PvP it stays
+    /// PvP regardless of any king/monster telltale.
+    Pvp,
+}
+
+/// One side of a boarding melee — the players on it (by name) and a bare swabbie
+/// (NPC) count. Swabbie *identities* are intentionally dropped: we only persist
+/// who the real players were and how many swabbies fought beside them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TeamSide {
+    /// Real-player names on this side.
+    pub players: Vec<String>,
+    /// Swabbies (NPC crew, incl. named mercenaries) on this side.
+    pub swabbies: u32,
+}
+
+impl TeamSide {
+    /// Total headcount on this side (players + swabbies).
+    pub fn headcount(&self) -> u32 {
+        self.players.len() as u32 + self.swabbies
+    }
 }
 
 /// A snapshot of the Damage Calculator's state, captured the instant the boarding
@@ -88,8 +115,6 @@ pub struct BattleSnapshot {
 pub struct Battle {
     /// Enemy vessel name from the interception line (`None` if unparsed).
     pub enemy: Option<String>,
-    /// True if we intercepted them; false if they intercepted us.
-    pub we_intercepted: bool,
     /// Interception time — the engagement start.
     pub started_at: Option<NaiveDateTime>,
     /// Grapple time — the sea phase ends and the boarding melee begins. `None` if
@@ -99,8 +124,12 @@ pub struct Battle {
     pub ended_at: Option<NaiveDateTime>,
     /// Outcome from our perspective.
     pub outcome: BattleOutcome,
-    /// Gross PoE the victors plundered. We store it signed by [`Self::outcome`]:
+    /// Gross PoE the victors plundered, signed by the (provisional) [`Self::outcome`]:
     /// positive when we won, negative when we lost (the PoE was taken from us).
+    /// `None` only when there's no configured identity at all (direction
+    /// unknowable). When the outcome is provisional-but-unconfirmed the sign is
+    /// still stored, but the view layer presents it as absent until identity is
+    /// confirmed (mirrors [`effective_outcome`]).
     pub poe: Option<i64>,
     /// Units of goods in the plunder (a bare count — the log never itemizes).
     pub goods: Option<u32>,
@@ -127,35 +156,38 @@ pub struct Battle {
     /// disk. Independent of [`Self::snapshot`]: the calculator/strength/advantage
     /// always display; this flag only governs persistence. Default `false`.
     pub recorded: bool,
-    /// Player-vs-player: the foe fielded at least one real player (a single-word
-    /// name eliminated or among the winners who isn't our own crew). Default
-    /// `false` (player-vs-environment).
-    pub is_pvp: bool,
     /// Names knocked out during this fight's melee (`<Name> is eliminated!`, both
     /// sides), accumulated while the fight is open and cleared once resolved. The
-    /// basis for [`Self::their_manpower`].
+    /// basis for [`Self::their_team`].
     pub melee_kos: Vec<String>,
-    /// The foe's headcount, computed at resolution from the melee: on a win, the
-    /// eliminations that aren't our crew (all enemies are eliminated); on a loss,
-    /// the size of the winners' (enemy) roster. `None` when no melee resolved it
-    /// (e.g. a disengage) — the UI then falls back to the ship-type estimate.
-    pub their_manpower: Option<u32>,
+    /// Our side of the boarding melee — players (by name) + swabbie count.
+    /// Captured at the grapple (so a crewmate who leaves mid-melee still counts)
+    /// and finalized at resolution (unioned with the winners-resynced roster, the
+    /// disconnected subtracted). `None` until grappled.
+    pub our_team: Option<TeamSide>,
+    /// The foe's side — players (by name) + swabbie count, computed at resolution
+    /// from the melee: on a win, the eliminations that aren't our crew (all
+    /// enemies are eliminated); on a loss, the winners' (enemy) roster. `None`
+    /// when no melee resolved it (a disengage, or an unknown-identity fight where
+    /// we can't tell which side the winners are) — the UI then falls back to the
+    /// ship-type estimate.
+    pub their_team: Option<TeamSide>,
     /// The foe's *known* hull type, as a [`crate::ships::SHIPS`] index, when we can
     /// determine it from the encounter itself (special encounters like the Black
     /// Ship and Monkey Boats announce their hull). Seeds the Damage calculator's
     /// foe ship; `None` when the hull is unknown and left to the user. Distinct
     /// from a [`BattleSnapshot::foe_ship`], which is whatever the user last set.
     pub foe_ship: Option<usize>,
-    /// Real-player crewmates aboard at the grapple (boarding start). Captured here
-    /// — rather than read live at resolution — so a crewmate who *leaves* mid-melee
-    /// still counts toward our manpower (they fought, then bailed). At resolution
-    /// it's unioned with the winners-resynced roster (which catches crew we never
-    /// saw board) and the disconnected are subtracted. `None` until grappled; not
-    /// persisted.
-    pub grapple_roster: Option<Vec<String>>,
 }
 
 impl Battle {
+    /// The foe's headcount from the melee, or `None` when no melee resolved it
+    /// (the UI then falls back to the foe ship type's pirate capacity). Derived
+    /// from [`Self::their_team`].
+    pub fn their_manpower(&self) -> Option<u32> {
+        self.their_team.as_ref().map(TeamSide::headcount)
+    }
+
     /// Naval-phase duration (interception -> grapple), in seconds.
     pub fn sea_secs(&self) -> Option<i64> {
         secs_between(self.started_at, self.grappled_at)
@@ -252,6 +284,22 @@ impl Voyage {
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_swabbies(&self) -> Option<f64> {
         self.avg_crew(|s| s.swabbies)
+    }
+}
+
+/// The outcome to *show* for a battle, given whether our identity is confirmed.
+///
+/// A [`Battle::outcome`] of `Won`/`Lost` is only *provisional* — computed against
+/// the configured pirate name. Until that name is confirmed present in the log
+/// (`self_confirmed`), a win/loss can't be trusted (a "loss" might be an
+/// undetected win under a wrong name), so it's masked to [`BattleOutcome::Unknown`].
+/// `Ongoing`/`Disengaged`/`Unknown` don't depend on our identity and pass through.
+/// Because the mask keys off the *current* confirmation flag, a signal that
+/// confirms us late retroactively reveals every earlier fight.
+pub fn effective_outcome(raw: BattleOutcome, self_confirmed: bool) -> BattleOutcome {
+    match raw {
+        BattleOutcome::Won | BattleOutcome::Lost if !self_confirmed => BattleOutcome::Unknown,
+        other => other,
     }
 }
 
