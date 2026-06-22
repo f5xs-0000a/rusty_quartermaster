@@ -51,6 +51,12 @@ pub enum BattleCategory {
     Skelly,
     Werewolf,
     Zombie,
+    /// The Black Ship (El Pollo Diablo) — a rare special encounter that takes the
+    /// place of our target. Always a Grand Frigate.
+    BlackShip,
+    /// A monkey boat — a special encounter whose vessel name identifies its hull
+    /// (see [`crate::chatlog`]'s monkey-boat table). The hull is on [`Battle::foe_ship`].
+    MonkeyBoat,
 }
 
 /// A snapshot of the Damage Calculator's state, captured the instant the boarding
@@ -134,6 +140,12 @@ pub struct Battle {
     /// the size of the winners' (enemy) roster. `None` when no melee resolved it
     /// (e.g. a disengage) — the UI then falls back to the ship-type estimate.
     pub their_manpower: Option<u32>,
+    /// The foe's *known* hull type, as a [`crate::ships::SHIPS`] index, when we can
+    /// determine it from the encounter itself (special encounters like the Black
+    /// Ship and Monkey Boats announce their hull). Seeds the Damage calculator's
+    /// foe ship; `None` when the hull is unknown and left to the user. Distinct
+    /// from a [`BattleSnapshot::foe_ship`], which is whatever the user last set.
+    pub foe_ship: Option<usize>,
 }
 
 impl Battle {

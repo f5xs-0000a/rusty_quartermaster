@@ -329,6 +329,11 @@ pub struct GameState {
     /// over` / disengage). Lets the app freeze the live Damage calculator onto
     /// that fight. Reset at the top of each [`Self::process_line`].
     battle_just_resolved: bool,
+    /// Set for the duration of one line when a special encounter announced the
+    /// foe's hull type (e.g. the Black Ship herald). Lets the app seed the live
+    /// Damage calculator's foe ship. Reset at the top of each
+    /// [`Self::process_line`]; consumed by [`Self::take_detected_foe_ship`].
+    detected_foe_ship: Option<usize>,
 }
 
 impl GameState {
@@ -344,6 +349,7 @@ impl GameState {
             now: None,
             order_counter: 0,
             battle_just_resolved: false,
+            detected_foe_ship: None,
         }
     }
 
@@ -369,6 +375,7 @@ impl GameState {
     /// Parse a single log line and delegate to the appropriate handler.
     pub fn process_line(&mut self, line: &str) {
         self.battle_just_resolved = false;
+        self.detected_foe_ship = None;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
@@ -495,6 +502,18 @@ impl GameState {
         // Werewolves catch our scent (same timing as the Vampirate herald).
         if body.starts_with("Unearthly howling echos o'er the waves") {
             self.categorize_current(BattleCategory::Werewolf);
+            return;
+        }
+        // The Black Ship (El Pollo Diablo) takes the place of our target — a rare
+        // special encounter heralded right after interception, like the monster
+        // heralds above. Always a Grand Frigate. Matched in full (not a substring)
+        // so a player can't trigger it by parroting the line in chat: a chat body
+        // is prefixed with `<Name> says, "…`, never exactly the system message.
+        if body == "Dark clouds gather as ye bear down upon yer hapless victims, \
+                    and from the miasma emerges the Black Ship to take the place \
+                    of yer target in battle! Arrrrgh! Ye be doomed fer sure!"
+        {
+            self.on_black_ship();
             return;
         }
 
@@ -767,18 +786,28 @@ impl GameState {
             v.greedy_current.clear();
         }
         let enemy = (!enemy.is_empty()).then(|| enemy.to_string());
+        // A monkey boat is identified by its (fixed) vessel name — which also tells
+        // us its hull. The name is from the system interception line, so this can't
+        // be spoofed via chat. Also seed the live Damage calculator's foe ship.
+        let monkey_ship = enemy.as_deref().and_then(monkey_boat_ship);
+        self.detected_foe_ship = monkey_ship;
         if let Some(voy) = self.ensure_voyage() {
             // A still-open previous battle means we never saw its resolution; keep
             // it as a dangling record rather than dropping it.
             if let Some(prev) = voy.current_battle.take() {
                 voy.battles.push(prev);
             }
-            voy.current_battle = Some(Battle {
+            let mut battle = Battle {
                 enemy,
                 we_intercepted,
                 started_at: now,
                 ..Battle::default()
-            });
+            };
+            if let Some(idx) = monkey_ship {
+                battle.category = BattleCategory::MonkeyBoat;
+                battle.foe_ship = Some(idx);
+            }
+            voy.current_battle = Some(battle);
         }
     }
 
@@ -977,6 +1006,21 @@ impl GameState {
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.battles.last_mut() {
                 b.my_cut = Some(poe);
+            }
+        }
+    }
+
+    /// The Black Ship (El Pollo Diablo) replaced our target. Tag the open fight and
+    /// pin its hull to a Grand Frigate; its crew count is left to the usual melee
+    /// elimination tally (so it tracks however the devs staff it). Also flags the
+    /// foe hull for the live Damage calculator via [`Self::take_detected_foe_ship`].
+    fn on_black_ship(&mut self) {
+        let grand = crate::ships::ship_index("Grand Frigate");
+        self.detected_foe_ship = grand;
+        if let Some(voy) = self.current_voyage_mut() {
+            if let Some(b) = voy.current_battle.as_mut() {
+                b.category = BattleCategory::BlackShip;
+                b.foe_ship = grand;
             }
         }
     }
@@ -1253,6 +1297,13 @@ impl GameState {
         std::mem::take(&mut self.battle_just_resolved)
     }
 
+    /// Take the foe-hull index detected from a special encounter this line (once
+    /// per detection). The app uses it to seed the live Damage calculator's foe
+    /// ship so live tracking — and the captured snapshot — use the right hull.
+    pub fn take_detected_foe_ship(&mut self) -> Option<usize> {
+        self.detected_foe_ship.take()
+    }
+
     /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved
     /// (last) battle of the current voyage. Called at Game over / disengage when the
     /// calculator had input, so fights we tracked live land in the history recorded.
@@ -1401,6 +1452,34 @@ const BRIGAND_KINGS: &[&str] = &[
 /// The first Brigand King whose full name appears in `text`, if any.
 fn find_brigand_king(text: &str) -> Option<&'static str> {
     BRIGAND_KINGS.iter().copied().find(|k| text.contains(k))
+}
+
+/// Monkey-boat vessels and the hull each one sails, per yppedia. A monkey boat is
+/// identified by its (fixed) vessel name in the interception line, which maps to a
+/// known ship type — there are exactly twelve, one per non-niche hull.
+const MONKEY_BOATS: &[(&str, &str)] = &[
+    ("Petulant Kumquat", "Sloop"),
+    ("Itinerant Pomegranate", "Cutter"),
+    ("Resplendent Peach", "Dhow"),
+    ("Succulent Pear", "Baghlah"),
+    ("Appealing Orange", "Longship"),
+    ("Adventurous Huckleberry", "Merchant Brig"),
+    ("Scrumptious Strawberry", "Junk"),
+    ("Dogged Rhubarb", "War Brig"),
+    ("Overbearing Pineapple", "Xebec"),
+    ("Vainglorious Plum", "Merchant Galleon"),
+    ("Determined Pumpkin", "War Frigate"),
+    ("Juicy Watermelon", "Grand Frigate"),
+];
+
+/// The [`crate::ships::SHIPS`] index of the monkey boat with this exact vessel
+/// name, if `name` is one. The name comes from the (system) interception line, so
+/// it can't be spoofed via chat.
+fn monkey_boat_ship(name: &str) -> Option<usize> {
+    MONKEY_BOATS
+        .iter()
+        .find(|(vessel, _)| *vessel == name)
+        .and_then(|(_, ship)| crate::ships::ship_index(ship))
 }
 
 /// Whether a line is player chatter (so king names mentioned in chat don't

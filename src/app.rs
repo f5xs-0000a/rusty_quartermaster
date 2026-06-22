@@ -787,6 +787,7 @@ impl AppShell {
                 recorded: b.recorded,
                 is_pvp: b.is_pvp,
                 their_manpower: b.their_manpower,
+                foe_ship: b.foe_ship,
             })
             .collect();
 
@@ -866,6 +867,12 @@ impl AppShell {
     /// (The popup still lets the user amend a fight or hand-add one we missed.)
     pub fn feed_chat_line(&mut self, line: &str) {
         self.chatlog.process_line(line);
+        // A special encounter (e.g. the Black Ship) just told us the foe's hull —
+        // point the live Damage calculator at it so live tracking and the captured
+        // snapshot use the right ship. The user can still override it by hand.
+        if let Some(idx) = self.chatlog.take_detected_foe_ship() {
+            self.damage.right_ship = idx;
+        }
         if self.chatlog.take_resolved() && self.damage.has_input() {
             // Our manpower = full crew aboard: real pirates + swabbies/mercenaries.
             let crew_n = self.chatlog.current_pirates() + self.chatlog.current_swabbies();
@@ -974,7 +981,16 @@ impl AppShell {
         self.voyage_ui.editor_their = row.their_manpower;
         self.voyage_ui.battle_editor = match row.snapshot {
             Some(s) => crate::damage::DamageApp::from_snapshot(&s),
-            None => crate::damage::DamageApp::new(),
+            None => {
+                // No captured snapshot yet — start blank, but if the encounter told
+                // us the foe's hull (Black Ship, Monkey Boat) seed that as the foe
+                // ship so the calculator and the displayed type are right.
+                let mut app = crate::damage::DamageApp::new();
+                if let Some(idx) = row.foe_ship {
+                    app.right_ship = idx;
+                }
+                app
+            }
         };
     }
 

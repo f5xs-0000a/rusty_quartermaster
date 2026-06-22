@@ -116,6 +116,8 @@ fn category_str(c: &BattleCategory) -> String {
         BattleCategory::Skelly => "Skellies".to_string(),
         BattleCategory::Werewolf => "Werewolves".to_string(),
         BattleCategory::Zombie => "Zombies".to_string(),
+        BattleCategory::BlackShip => "Black Ship".to_string(),
+        BattleCategory::MonkeyBoat => "Monkey Boat".to_string(),
     }
 }
 

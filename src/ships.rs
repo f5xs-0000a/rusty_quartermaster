@@ -342,3 +342,9 @@ pub const SHIPS: &[Ship] = &[
     WAR_FRIGATE,
     GRAND_FRIGATE,
 ];
+
+/// Index into [`SHIPS`] of the ship with this exact display name, if any. Used to
+/// resolve a known foe hull (special encounters) to a calculator ship index.
+pub fn ship_index(name: &str) -> Option<usize> {
+    SHIPS.iter().position(|s| s.name == name)
+}

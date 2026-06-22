@@ -145,6 +145,10 @@ pub struct BattleRow {
     pub is_pvp: bool,
     /// Foe headcount computed from the melee (`None` → use the ship-type estimate).
     pub their_manpower: Option<u32>,
+    /// The foe's known hull type ([`crate::ships::SHIPS`] index) when the encounter
+    /// announced it (Black Ship, Monkey Boats). Seeds the editor's foe ship when no
+    /// snapshot has overridden it. `None` when the hull is unknown.
+    pub foe_ship: Option<usize>,
 }
 
 /// Everything the page needs to draw one voyage, computed by the caller so this
