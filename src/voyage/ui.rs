@@ -16,7 +16,7 @@
 
 use ratatui::buffer::Buffer;
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Paragraph, Widget, Wrap};
+use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph, Widget, Wrap};
 
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
@@ -752,7 +752,8 @@ fn render_chart_popup(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
         .title(title)
-        .title_bottom(Line::from(" Esc to close ").right_aligned());
+        .title_bottom(Line::from(" Esc to close ").right_aligned())
+        .padding(Padding::uniform(1));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
     frame.render_widget(
@@ -865,7 +866,8 @@ fn poe_bar_lines(data: &ChartData, width: usize, height: usize, enlarged: bool) 
         let val_w = vals_s.iter().map(|s| s.chars().count()).max().unwrap_or(1);
         let bar_cols = width.saturating_sub(idx_w + 2 + 1 + val_w).max(1);
 
-        // Shared zero-baseline scale across the shown rows.
+        // Shared scale across the shown rows. `lo`/`hi` always bracket zero, so the
+        // zero boundary `signed_bar` derives from them lines up vertically.
         let lo = shown.iter().map(|(_, v)| *v).fold(0.0_f64, f64::min);
         let hi = shown.iter().map(|(_, v)| *v).fold(0.0_f64, f64::max);
 
@@ -899,17 +901,53 @@ fn poe_bar_lines(data: &ChartData, width: usize, height: usize, enlarged: bool) 
     lines
 }
 
-/// A horizontal bar of `cols` cells sharing a zero baseline over `[lo, hi]`: the
-/// run between the zero column and `v`'s column is filled, so negatives extend
-/// left of zero and positives right.
+/// A horizontal bar of `cols` cells with zero on the *boundary* between the
+/// negative and positive halves — not on a shared cell. The field is split into
+/// `neg_w` cells left of zero and `w - neg_w` right of it, proportional to how
+/// far `lo`/`hi` reach so both sides share one unit-per-cell. A positive `v`
+/// fills rightward from the boundary; a negative `v` fills leftward up to it.
+/// Because the two halves are disjoint, a win bar and a loss bar can never
+/// collide on the zero column (the bug a single shared zero cell caused).
 fn signed_bar(v: f64, lo: f64, hi: f64, cols: usize) -> String {
     let w = cols.max(1);
     let mut cells = vec![' '; w];
-    let zc = val_col(0.0, lo, hi, w);
-    let vc = val_col(v, lo, hi, w);
-    let (a, b) = if vc <= zc { (vc, zc) } else { (zc, vc) };
-    for cell in cells.iter_mut().take(b + 1).skip(a) {
-        *cell = '█';
+    let span = hi - lo; // lo ≤ 0 ≤ hi by construction, so span ≥ 0
+    if span <= 0.0 {
+        return cells.into_iter().collect();
+    }
+    // Too narrow to place a boundary — show a single cell for any nonzero fight.
+    if w < 2 {
+        if v != 0.0 {
+            cells[0] = '█';
+        }
+        return cells.into_iter().collect();
+    }
+    // Cells left of the zero boundary (index `neg_w` is the first positive cell).
+    // When both signs are present, force at least one cell on each side so a small
+    // minority value isn't rounded into invisibility.
+    let neg_w = if lo < 0.0 && hi > 0.0 {
+        (((-lo / span) * w as f64).round() as usize).clamp(1, w - 1)
+    } else if lo < 0.0 {
+        w
+    } else {
+        0
+    };
+    if v > 0.0 {
+        let pos_w = w - neg_w;
+        let len = (((v / hi) * pos_w as f64).round() as usize)
+            .max(1)
+            .min(pos_w);
+        for cell in cells.iter_mut().skip(neg_w).take(len) {
+            *cell = '█';
+        }
+    } else if v < 0.0 {
+        // v/lo is positive (both negative); fills the cells just left of `neg_w`.
+        let len = (((v / lo) * neg_w as f64).round() as usize)
+            .max(1)
+            .min(neg_w);
+        for cell in cells.iter_mut().take(neg_w).skip(neg_w - len) {
+            *cell = '█';
+        }
     }
     cells.into_iter().collect()
 }
