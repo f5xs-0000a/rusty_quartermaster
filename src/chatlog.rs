@@ -14,7 +14,7 @@
 //! synchronously via [`GameState::process_existing`] before the tailer starts,
 //! so history is in place before the first frame.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
@@ -275,8 +275,9 @@ pub struct Vessel {
     /// new battle is joined (intercept), so between battles it holds the last
     /// battle's tally. Displayed as `(total - current) + current`.
     pub greedy_current: HashMap<String, u32>,
-    /// Jobbers we (the player) planked, in order.
-    pub planked_by_us: Vec<String>,
+    /// Jobbers we (the player) planked. A set: each victim shows once even if
+    /// planked across multiple battles. BTreeSet so iteration is alphabetical.
+    pub planked_by_us: BTreeSet<String>,
     /// We left this vessel mid-run, so its data has gaps.
     pub poisoned: bool,
     /// Monotonic board sequence; higher = boarded more recently. Updated on
@@ -802,7 +803,7 @@ impl GameState {
         if let Some(v) = self.current_vessel_mut() {
             v.crewmates.remove(victim);
             if is_us {
-                v.planked_by_us.push(victim.to_string());
+                v.planked_by_us.insert(victim.to_string());
             }
         }
     }
@@ -1869,7 +1870,7 @@ mod tests {
         gs.process_line("[01:01:00] Matefour has come aboard.");
         gs.process_line("[01:02:00] Playerone forced Matefour to walk the plank.");
         let v = gs.current_vessel().unwrap();
-        assert_eq!(v.planked_by_us, vec!["Matefour".to_string()]);
+        assert_eq!(v.planked_by_us, BTreeSet::from(["Matefour".to_string()]));
         assert!(!v.crewmates.contains("Matefour"));
     }
 

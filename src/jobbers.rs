@@ -1943,7 +1943,8 @@ fn pane_focus_target(pane: JobberPane) -> ClickTarget {
 }
 
 /// Selectable pirate names in a pane, in the same display order `render_panes`
-/// uses — Aboard & Planked alphabetical, Greedy by total strikes desc then name.
+/// uses — Aboard & Planked alphabetical, Greedy by current-fight strikes desc,
+/// then run-total desc, then name.
 /// The single source of truth for mapping a pane selection index to a pirate.
 pub fn pane_pirates(state: &GameState, key: &Arc<str>, pane: JobberPane) -> Vec<String> {
     match pane {
@@ -1953,22 +1954,29 @@ pub fn pane_pirates(state: &GameState, key: &Arc<str>, pane: JobberPane) -> Vec<
             v
         }
         JobberPane::Greedy => {
-            let mut g: Vec<(String, u32)> = state
+            let mut g: Vec<(String, u32, u32)> = state
                 .vessels
                 .get(key)
-                .map(|v| v.greedy_by_pirate.iter().map(|(n, t)| (n.clone(), *t)).collect())
+                .map(|v| {
+                    v.greedy_by_pirate
+                        .iter()
+                        .map(|(n, t)| {
+                            let current = v.greedy_current.get(n).copied().unwrap_or(0);
+                            (n.clone(), *t, current)
+                        })
+                        .collect()
+                })
                 .unwrap_or_default();
-            g.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
-            g.into_iter().map(|(n, _)| n).collect()
+            g.sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(&b.0)));
+            g.into_iter().map(|(n, _, _)| n).collect()
         }
         JobberPane::Planked => {
-            let mut v: Vec<String> = state
+            // BTreeSet already iterates alphabetically.
+            state
                 .vessels
                 .get(key)
-                .map(|v| v.planked_by_us.clone())
-                .unwrap_or_default();
-            v.sort_unstable();
-            v
+                .map(|v| v.planked_by_us.iter().cloned().collect())
+                .unwrap_or_default()
         }
     }
 }
@@ -2114,10 +2122,11 @@ fn render_panes(
                     focused, ui.focus == JobberFocus::Aboard, regions,
                 );
             }
-            // -- Greedy (total desc, then alphabetical) --
+            // -- Greedy (current-fight desc, then run-total desc, then alphabetical) --
             JobberPane::Greedy => {
                 let mut greedy_sorted: Vec<(&String, u32, u32)> = greedy.to_vec();
-                greedy_sorted.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(b.0)));
+                greedy_sorted
+                    .sort_by(|a, b| b.2.cmp(&a.2).then(b.1.cmp(&a.1)).then(a.0.cmp(b.0)));
                 let inner_w =
                     (col.width.saturating_sub(4) as usize).max(name_col_plus_value(&greedy_sorted));
                 let rows: Vec<(Line, Option<usize>)> = greedy_sorted
@@ -2132,11 +2141,11 @@ fn render_panes(
                     ui.focus == JobberFocus::Greedy, JobberPane::Greedy, regions,
                 );
             }
-            // -- Planked (alphabetical) --
+            // -- Planked (alphabetical; BTreeSet already iterates in order) --
             JobberPane::Planked => {
-                let mut planked: Vec<String> =
-                    vessel.map(|v| v.planked_by_us.clone()).unwrap_or_default();
-                planked.sort_unstable();
+                let planked: Vec<String> = vessel
+                    .map(|v| v.planked_by_us.iter().cloned().collect())
+                    .unwrap_or_default();
                 let rows: Vec<(Line, Option<usize>)> = planked
                     .iter()
                     .enumerate()
