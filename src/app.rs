@@ -942,6 +942,12 @@ impl AppShell {
         if self.chatlog.take_lair_entered() {
             self.jump_to_vampirate_jobbers();
         }
+        // Boarding a vessel snaps the Jobbers/Voyage vessel selector to it, so the
+        // pages follow us onto the ship we just stepped onto rather than sticking
+        // to whatever was previously picked.
+        if let Some(key) = self.chatlog.take_boarded_vessel() {
+            self.jobbers_ui.selected = Some(key);
+        }
     }
 
     /// Switch the shown app and drop focus into its content (used by the

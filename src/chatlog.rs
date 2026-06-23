@@ -360,6 +360,11 @@ pub struct GameState {
     /// layout. Reset at the top of each [`Self::process_line`]; consumed by
     /// [`Self::take_lair_entered`].
     lair_just_entered: bool,
+    /// Set to the vessel key for the duration of one line when we just boarded a
+    /// vessel. Lets the app snap the Jobbers/Voyage vessel selector to the ship
+    /// we just stepped onto. Reset at the top of each [`Self::process_line`];
+    /// consumed by [`Self::take_boarded_vessel`].
+    boarded_vessel: Option<Arc<str>>,
 }
 
 impl GameState {
@@ -379,6 +384,7 @@ impl GameState {
             battle_just_started: false,
             detected_foe_ship: None,
             lair_just_entered: false,
+            boarded_vessel: None,
         }
     }
 
@@ -407,6 +413,7 @@ impl GameState {
         self.battle_just_started = false;
         self.detected_foe_ship = None;
         self.lair_just_entered = false;
+        self.boarded_vessel = None;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
@@ -795,7 +802,10 @@ impl GameState {
         let v = self.vessels.entry(key.clone()).or_default();
         v.order = order;
         v.boarded_at = now;
-        self.current = Some(key);
+        self.current = Some(key.clone());
+        // Surface this vessel in the selector (consumed once by the app's
+        // auto-navigation).
+        self.boarded_vessel = Some(key);
     }
 
     /// Player left the current vessel (left the crew, or was planked). If the
@@ -1511,6 +1521,12 @@ impl GameState {
     /// the Vampirates voyage layout.
     pub fn take_lair_entered(&mut self) -> bool {
         std::mem::take(&mut self.lair_just_entered)
+    }
+
+    /// Take the vessel we just boarded this line (once per boarding). The app
+    /// uses it to snap the Jobbers/Voyage vessel selector to that ship.
+    pub fn take_boarded_vessel(&mut self) -> Option<Arc<str>> {
+        self.boarded_vessel.take()
     }
 
     /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved
