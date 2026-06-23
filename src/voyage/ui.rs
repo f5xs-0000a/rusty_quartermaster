@@ -175,9 +175,6 @@ pub struct VoyageView {
     pub battles: Vec<BattleRow>,
 }
 
-/// Fixed widget width (the stat rows are narrow; a full-width box wastes space).
-const BODY_WIDTH: u16 = 56;
-
 pub fn render(
     frame: &mut Frame,
     full: Rect,
@@ -190,8 +187,35 @@ pub fn render(
     let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).split(full);
     let (widget_area, tip_area) = (outer[0], outer[1]);
 
-    // Shrink horizontally and center the widget within the available area.
-    let width = BODY_WIDTH.min(widget_area.width);
+    // Build the body rows up front (width-agnostic) so the widget can size itself
+    // to its content instead of a fixed guess.
+    let mut built = build_lines(view);
+
+    // Natural content width: the widest thing we must show without clipping —
+    // the longest `label  value` stat / tally row, the pinned header, and the
+    // footer hint. The save hint is the widest chrome; reserve room for it always
+    // so the width doesn't jump when the save prompt becomes available.
+    const FOOTER_W: usize = 40; // "S  save voyage to history  ·  D  discard"
+    const NO_VOYAGE_TITLE: &str = "No voyage tracked yet.";
+    const NO_VOYAGE_HINT: &str = "Set sail on a vessel to begin recording stats.";
+    let content_w = if view.has_voyage {
+        let header_w = [
+            view.vessel.as_deref(),
+            view.ship_type.as_deref(),
+            view.period.as_deref(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|s| s.chars().count())
+        .max()
+        .unwrap_or(0);
+        built.natural_width().max(header_w).max(FOOTER_W)
+    } else {
+        NO_VOYAGE_HINT.chars().count()
+    };
+
+    // Size to content (+2 for the borders) and center, never exceeding the area.
+    let width = ((content_w + 2) as u16).min(widget_area.width);
     let area = Rect {
         x: widget_area.x + widget_area.width.saturating_sub(width) / 2,
         y: widget_area.y,
@@ -215,9 +239,9 @@ pub fn render(
     if !view.has_voyage {
         let para = Paragraph::new(vec![
             Line::from(""),
-            Line::from(Span::styled("No voyage tracked yet.", Style::default().bold())),
+            Line::from(Span::styled(NO_VOYAGE_TITLE, Style::default().bold())),
             Line::from(Span::styled(
-                "Set sail on a vessel to begin recording stats.",
+                NO_VOYAGE_HINT,
                 Style::default().fg(Color::DarkGray),
             )),
         ])
@@ -254,9 +278,10 @@ pub fn render(
     let (header_area, body, footer) = (parts[0], parts[1], parts[2]);
     frame.render_widget(Paragraph::new(header), header_area);
 
-    // Build the body lines and the parallel focusable list (Sea Battles, then
-    // the stat numbers). The three charts follow them in the focus order.
-    let mut built = build_lines(view, body.width as usize);
+    // Render the body rows into lines now that the width is fixed. The parallel
+    // focusable list (Sea Battles, then the stat numbers) is already populated;
+    // the three charts follow them in the focus order.
+    built.finalize(body.width as usize);
     let n_stats = built.focusable.len();
     let n_charts = CHART_TITLES.len();
     let n_focus = n_stats + n_charts;
@@ -1081,53 +1106,111 @@ struct Focusable {
     tooltip: String,
 }
 
-/// The page body (everything below the pinned header): the rendered lines plus
-/// the parallel list of focusables in focus order — the Sea Battles section
-/// first, then every Timing-onward stat number.
+/// One body row kept in raw form until the widget's width is known. The width is
+/// derived from these rows ([`Built::natural_width`]); each then renders to a
+/// `Line` at that width ([`Built::finalize`]).
+enum Row {
+    /// An empty spacer line.
+    Blank,
+    /// A centered yellow section header.
+    Section(String),
+    /// A `label … value` row: label flush-left, value flush-right.
+    Stat { label: String, value: String },
+    /// Three centered, individually-styled columns spanning the width.
+    ThreeCol([(String, Style); 3]),
+    /// A pre-rendered, width-independent line (its own width is fixed).
+    Raw(Line<'static>),
+}
+
+/// The page body (everything below the pinned header): the rows in focus order —
+/// the Sea Battles section first, then every Timing-onward stat number — plus the
+/// parallel list of focusables. Rows are width-agnostic until [`Self::finalize`]
+/// renders them into `lines` once the dynamic widget width is known.
 #[derive(Default)]
 struct Built {
+    rows: Vec<Row>,
+    /// Filled by [`Self::finalize`]; empty until then.
     lines: Vec<Line<'static>>,
     focusable: Vec<Focusable>,
-    /// Content width, so section headers can center themselves.
-    width: usize,
 }
 
 impl Built {
+    fn push(&mut self, row: Row) {
+        self.rows.push(row);
+    }
     fn line(&mut self, l: Line<'static>) {
-        self.lines.push(l);
+        self.push(Row::Raw(l));
     }
     fn blank(&mut self) {
-        self.lines.push(Line::from(""));
+        self.push(Row::Blank);
     }
     fn section(&mut self, title: &str) {
-        self.lines.push(section(title, self.width));
+        self.push(Row::Section(title.to_string()));
+    }
+    fn three_col(&mut self, cells: [(String, Style); 3]) {
+        self.push(Row::ThreeCol(cells));
     }
     /// Push a section header that is itself focusable (its header line carries
     /// the `tooltip`). Used for sections you can "enter", like Sea Battles.
     fn focus_section(&mut self, title: &str, tooltip: &str) {
         self.focusable.push(Focusable {
-            line: self.lines.len(),
+            line: self.rows.len(),
             tooltip: tooltip.to_string(),
         });
-        self.lines.push(section(title, self.width));
+        self.push(Row::Section(title.to_string()));
     }
     /// Push a focusable `label .... value` stat row tied to `tooltip`.
     fn stat(&mut self, label: &str, value: String, tooltip: &str) {
         self.focusable.push(Focusable {
-            line: self.lines.len(),
+            line: self.rows.len(),
             tooltip: tooltip.to_string(),
         });
-        self.lines.push(stat(label, value, self.width));
+        self.push(Row::Stat {
+            label: label.to_string(),
+            value,
+        });
+    }
+
+    /// The narrowest content width that shows every row without clipping: the
+    /// widest `label + 2 spaces + value` stat and the three-column tally (each of
+    /// whose cells must fit a third of the width), plus any pre-rendered line.
+    /// Section headers just center, so they only need their own text width.
+    fn natural_width(&self) -> usize {
+        self.rows
+            .iter()
+            .map(|r| match r {
+                Row::Blank => 0,
+                Row::Section(t) => t.chars().count(),
+                Row::Stat { label, value } => label.chars().count() + 2 + value.chars().count(),
+                Row::ThreeCol(cells) => {
+                    cells.iter().map(|(s, _)| s.chars().count()).max().unwrap_or(0) * 3
+                }
+                Row::Raw(l) => l.width(),
+            })
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Render every row into `self.lines` at the resolved `width`.
+    fn finalize(&mut self, width: usize) {
+        self.lines = self
+            .rows
+            .iter()
+            .map(|r| match r {
+                Row::Blank => Line::from(""),
+                Row::Section(t) => section(t, width),
+                Row::Stat { label, value } => stat(label, value.clone(), width),
+                Row::ThreeCol(cells) => three_col(width, cells.clone()),
+                Row::Raw(l) => l.clone(),
+            })
+            .collect();
     }
 }
 
-fn build_lines(view: &VoyageView, width: usize) -> Built {
+fn build_lines(view: &VoyageView) -> Built {
     let b = &view.battle;
     let c = &view.consumption;
-    let mut out = Built {
-        width,
-        ..Default::default()
-    };
+    let mut out = Built::default();
 
     // Sea Battles — a focusable section over a full-width three-column table
     // (labels over counts). The header (ship name/type/period) is pinned above
@@ -1137,25 +1220,19 @@ fn build_lines(view: &VoyageView, width: usize) -> Built {
         "Win / loss / disengage tally. Enter to open the per-fight log.",
     );
     let head = Style::default().fg(Color::DarkGray);
-    out.line(three_col(
-        width,
-        [
-            ("Wins".to_string(), head),
-            ("Losses".to_string(), head),
-            ("Disengages".to_string(), head),
-        ],
-    ));
-    out.line(three_col(
-        width,
-        [
-            (b.wins.to_string(), Style::default().fg(Color::Green).bold()),
-            (b.losses.to_string(), Style::default().fg(Color::Red).bold()),
-            (
-                b.disengages.to_string(),
-                Style::default().fg(Color::Yellow).bold(),
-            ),
-        ],
-    ));
+    out.three_col([
+        ("Wins".to_string(), head),
+        ("Losses".to_string(), head),
+        ("Disengages".to_string(), head),
+    ]);
+    out.three_col([
+        (b.wins.to_string(), Style::default().fg(Color::Green).bold()),
+        (b.losses.to_string(), Style::default().fg(Color::Red).bold()),
+        (
+            b.disengages.to_string(),
+            Style::default().fg(Color::Yellow).bold(),
+        ),
+    ]);
     out.blank();
 
     // Timing — every number from here on is focusable with a tooltip.
