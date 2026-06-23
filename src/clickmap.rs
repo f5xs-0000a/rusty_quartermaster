@@ -13,6 +13,9 @@ pub enum ClickTarget {
     ProfitsPopupNo,
     ProfitsPopupYes,
     ProfitsPopupOk,
+    /// A row in the Profit Breakdown popup: hovering/clicking parks the tooltip
+    /// cursor there (the index into [`crate::profits::ProfitResult::breakdown`]).
+    ProfitsBreakdownRow(usize),
     DamageCell { row: usize, side: Side },
     DamageIncrement { row: usize, side: Side },
     DamageDecrement { row: usize, side: Side },

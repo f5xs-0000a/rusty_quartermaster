@@ -20,14 +20,180 @@ pub const LAST_COL: usize = 3;
 /// Rightmost editable column when prices are entered manually (Buy Price).
 pub const LAST_COL_OFFLINE: usize = 5;
 
+/// Booty-chest figures deduced from the battle ledger and the restocking rate,
+/// kept as floats so halving and theft subtraction don't round prematurely.
+struct ChestBreakdown {
+    /// Skimmed off the top for restocking (`gross * restocking_rate`).
+    reserve: f64,
+    /// The retained half of the post-reserve plunder, before theft.
+    chest_gross: f64,
+    /// The other half, paid out as cuts during the run.
+    immediate_cuts: f64,
+    /// `chest_gross` minus what enemies stole, floored at zero.
+    chest_net: f64,
+}
+
 pub struct ProfitResult {
+    /// Gross PoE we plundered this pillage (ledger sum of won battles).
+    pub gross_plundered: u64,
+    /// Skimmed off the top for restocking (`gross * restocking_rate`).
+    pub restock_reserve: u64,
+    /// The crew's immediate cuts, paid out during the run (the post-reserve half).
+    pub immediate_cuts: u64,
+    /// The other half, retained in the booty chest (gross, before theft).
+    pub chest_gross: u64,
+    /// PoE enemies stole from us on lost boardings (ledger sum of losses).
+    pub stolen: u64,
+    /// Net booty chest actually used: deduced (`chest_gross - stolen`) unless the
+    /// user overrode the Booty Chest field.
+    pub chest_net: u64,
+    /// PoE from selling excess goods at market.
     pub goods_value: u64,
+    /// PoE needed to buy the restock shortfall at market.
     pub restock_value: u64,
-    pub co_cut: u64,
-    pub crew_donation: u64,
-    pub subtotal: u64,
+    /// Restock cost beyond the reserve — funded from goods first, then the
+    /// officer's pocket on a loss (`max(restock_value − reserve, 0)`).
+    pub add_to_restocking: u64,
     pub stocking: u64,
+    /// The whole pillage's net profit and the authoritative base for the cuts.
+    /// Can be negative on a loss.
+    pub total_gained: i64,
+    /// Realized C.O. cut — `total_gained × rate`, capped by the goods cash on hand
+    /// (proportionally with the crew donation).
+    pub co_cut: u64,
+    /// Realized crew donation — same basis and cap as the C.O. cut.
+    pub crew_donation: u64,
+    /// Leftover goods cash dropped into the booty chest for the share-divvy (≥0).
     pub add_to_booty: u64,
+}
+
+/// One line of the Profit Breakdown popup: a label, its signed value, and a
+/// one-line explanation shown as the row's tooltip.
+pub struct BreakdownRow {
+    pub label: &'static str,
+    pub desc: &'static str,
+    /// The displayed amount. Only "Total gained in pillage" can go negative (a
+    /// loss); every other row is a non-negative magnitude.
+    pub value: i64,
+    /// Insert a blank separator line after this row (section break).
+    pub gap_after: bool,
+    /// The bottom-line result row (rendered emphasized).
+    pub headline: bool,
+}
+
+impl ProfitResult {
+    /// The breakdown rows, top to bottom — the single source of truth shared by
+    /// the popup renderer and the tooltip cursor. The C.O. cut and crew donation
+    /// rows are shown only when their CLI flags are enabled.
+    pub fn breakdown(&self, show_co: bool, show_donation: bool) -> Vec<BreakdownRow> {
+        let row = |label: &'static str, desc: &'static str, value: i64| BreakdownRow {
+            label,
+            desc,
+            value,
+            gap_after: false,
+            headline: false,
+        };
+        let mut rows = vec![
+            row(
+                "Gross PoE Plundered",
+                "Total PoE we won across the pillage (battle ledger).",
+                self.gross_plundered as i64,
+            ),
+            row(
+                "Reserved for Restock",
+                "Skimmed from the crew's cut for restocking.",
+                self.restock_reserve as i64,
+            ),
+            row(
+                "Paid to Jobbers",
+                "The crew's immediate cuts, paid out during the run.",
+                self.immediate_cuts as i64,
+            ),
+            row(
+                "Booty Chest (gross)",
+                "Half of each won fight, kept in the chest before theft.",
+                self.chest_gross as i64,
+            ),
+            row(
+                "Plundered Back",
+                "PoE enemies plundered from us, capped by the chest.",
+                self.stolen as i64,
+            ),
+            BreakdownRow {
+                gap_after: true,
+                ..row(
+                    "Booty chest (net)",
+                    "Retained chest minus theft — divvied to the crew by shares.",
+                    self.chest_net as i64,
+                )
+            },
+            row(
+                "Goods Value in PoE",
+                "PoE from selling excess goods at market.",
+                self.goods_value as i64,
+            ),
+            row(
+                "Restock Value",
+                "PoE to rebuy the materials used this voyage.",
+                self.restock_value as i64,
+            ),
+            row(
+                "Pre-voyage Stocking",
+                "What you spent stocking up before the voyage; recouped from goods.",
+                self.stocking as i64,
+            ),
+            BreakdownRow {
+                headline: true,
+                gap_after: true,
+                ..row(
+                    "Total gained in pillage",
+                    "The whole pillage's net profit; the base for the cuts.",
+                    self.total_gained,
+                )
+            },
+        ];
+
+        // Cuts — each shown only when its CLI flag enabled it. The last shown one
+        // carries the separator before the Add-to-X pair.
+        let mut cuts = Vec::new();
+        if show_co {
+            cuts.push(row(
+                "C. Officer Cut",
+                "Your share of total gained, realized from (capped by) the goods cash.",
+                self.co_cut as i64,
+            ));
+        }
+        if show_donation {
+            cuts.push(row(
+                "Crew Donation",
+                "The crew's share of total gained, realized from the goods cash.",
+                self.crew_donation as i64,
+            ));
+        }
+        if let Some(last) = cuts.last_mut() {
+            last.gap_after = true;
+        }
+        rows.extend(cuts);
+
+        // The two "how much to put where" outputs, grouped together — both bold.
+        rows.push(BreakdownRow {
+            headline: true,
+            ..row(
+                "Add to Restocking (Hold)",
+                "Restock beyond the reserve; from goods, then your pocket on a loss.",
+                self.add_to_restocking as i64,
+            )
+        });
+        rows.push(BreakdownRow {
+            headline: true,
+            ..row(
+                "Add to Booty",
+                "Leftover goods cash to drop in the chest for the divvy.",
+                self.add_to_booty as i64,
+            )
+        });
+        rows
+    }
 }
 
 pub enum PopupKind {
@@ -104,6 +270,9 @@ pub struct ProfitsApp {
     /// hidden, the corresponding deduction is treated as zero in the breakdown.
     pub show_co_rate: bool,
     pub show_donation: bool,
+    /// Selected row in the Profit Breakdown popup, into [`ProfitResult::breakdown`]
+    /// — drives the per-row tooltip. Moved by arrows or mouse hover.
+    pub breakdown_cursor: usize,
 }
 
 impl ProfitsApp {
@@ -116,11 +285,11 @@ impl ProfitsApp {
             table_state: TableState::default(),
             panel: [
                 PromptField::new("Restocking Island", FieldKind::Text),
-                PromptField::new("PoE in Booty Chest", FieldKind::PositiveInt),
+                PromptField::new("Booty Chest", FieldKind::PositiveInt),
                 PromptField::new("C.O. Rate", FieldKind::Rate),
                 PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
                 PromptField::new("Restocking Rate", FieldKind::Rate),
-                PromptField::new("Stocking", FieldKind::PositiveInt),
+                PromptField::new("Pre-voyage Stocking", FieldKind::PositiveInt),
             ],
             submit_failed: None,
             popup: None,
@@ -128,6 +297,7 @@ impl ProfitsApp {
             fetch_purpose: FetchPurpose::Profits,
             show_co_rate: false,
             show_donation: false,
+            breakdown_cursor: 0,
         }
     }
 
@@ -473,8 +643,25 @@ impl ProfitsApp {
             }
         }
         let profit = self.calculate_profits(shared);
+        self.open_profit_result(profit);
+    }
+
+    /// Show the Profit Breakdown popup, parking the tooltip cursor at the top.
+    fn open_profit_result(&mut self, profit: ProfitResult) {
+        self.breakdown_cursor = 0;
         self.popup = Some(PopupKind::ProfitResult(profit));
         self.focus = Focus::Popup;
+    }
+
+    /// Number of rows in the open Profit Breakdown popup (0 if it isn't showing).
+    /// Used to clamp the tooltip cursor.
+    fn breakdown_row_count(&self) -> usize {
+        match &self.popup {
+            Some(PopupKind::ProfitResult(r)) => {
+                r.breakdown(self.show_co_rate, self.show_donation).len()
+            }
+            _ => 0,
+        }
     }
 
     pub fn calculate_profits(&self, shared: &SharedState) -> ProfitResult {
@@ -555,44 +742,107 @@ impl ProfitsApp {
             }
         }
 
-        let booty_money = self.panel[1].value.parse::<f64>().unwrap_or(0.0);
+        // -- Money flow (see PROFITS_MONEY_FLOW.md) --
+        // Everything below is computed in floating point and rounded only when
+        // the ProfitResult is built, so intermediate halving/percentages don't
+        // accumulate truncation error.
+        //
         // A hidden parameter row means that deduction doesn't apply.
         let co_rate = if self.show_co_rate { parse_rate(&self.panel[2]) } else { 0.0 };
         let donation_rate = if self.show_donation { parse_rate(&self.panel[3]) } else { 0.0 };
-        let restocking_rate = parse_rate(&self.panel[4]);
 
-        // Back-compute total money reward: booty_money = M * (1-R) / 2
-        let total_money = if restocking_rate < 1.0 {
-            2.0 * booty_money / (1.0 - restocking_rate)
-        } else {
-            0.0
+        // Chest figures deduced from the battle ledger and the restocking rate.
+        let cb = self.chest_components(shared);
+
+        // The Booty Chest field overrides the deduced net; blank uses the deduced.
+        let chest_net = {
+            let s = self.panel[1].value.trim();
+            if s.is_empty() {
+                cb.chest_net
+            } else {
+                s.parse::<f64>().unwrap_or(cb.chest_net).max(0.0)
+            }
         };
-        let ship_hold = total_money * restocking_rate;
-
-        let restock_overflow = (restock_value as f64 - ship_hold).max(0.0);
-        let goods_to_booty = (goods_value as f64 - restock_overflow).max(0.0);
-
-        let total_earnings = (total_money + goods_value as f64 - restock_value as f64).max(0.0);
-
-        let co_cut = (total_earnings * co_rate).ceil() as u64;
-        let crew_donation = (total_earnings * donation_rate).floor() as u64;
-
-        let subtotal = (goods_to_booty - co_cut as f64 - crew_donation as f64)
-            .max(0.0)
-            .floor() as u64;
 
         let stocking = self.panel[5].value.parse::<u64>().unwrap_or(0);
-        let add_to_booty = subtotal.saturating_sub(stocking);
 
+        // Restocking is paid from the reserve first; the overflow is funded by the
+        // goods cash (and the officer's pocket if it falls short).
+        let add_to_restocking = (restock_value as f64 - cb.reserve).max(0.0);
+
+        // The whole pillage's net profit (the authoritative base for the cuts).
+        // = net booty + goods + reserve + pocketed − stocking − restocking, which
+        // reduces to gross − stolen + goods − stocking − restocking.
+        let total_gained = chest_net + goods_value as f64 + cb.reserve + cb.immediate_cuts
+            - stocking as f64
+            - restock_value as f64;
+
+        // Authoritative cuts (none on a loss).
+        let base = total_gained.max(0.0);
+        let co_auth = base * co_rate;
+        let crew_auth = base * donation_rate;
+        let cuts_auth = co_auth + crew_auth;
+
+        // The cuts (and anything added to booty) are realized from the goods cash
+        // left after restocking and recouping stocking — never from the chest.
+        let available = (goods_value as f64 - add_to_restocking - stocking as f64).max(0.0);
+        let (co_cut, crew_donation, add_to_booty) = if cuts_auth <= 0.0 {
+            (0.0, 0.0, available)
+        } else if cuts_auth <= available {
+            (co_auth, crew_auth, available - cuts_auth)
+        } else {
+            // Not enough goods cash to fund both cuts — scale them down
+            // proportionally; nothing is left to add to the booty.
+            let scale = available / cuts_auth;
+            (co_auth * scale, crew_auth * scale, 0.0)
+        };
+
+        // Round here, always in the commanding officer's favor: their own cut
+        // rounds up; non-negative magnitudes round down (the leftover fraction
+        // stays in their pocket); the signed total rounds toward zero.
         ProfitResult {
+            gross_plundered: shared.pillage_gross,
+            restock_reserve: cb.reserve.floor() as u64,
+            immediate_cuts: cb.immediate_cuts.floor() as u64,
+            chest_gross: cb.chest_gross.floor() as u64,
+            stolen: shared.pillage_stolen,
+            chest_net: chest_net.floor() as u64,
             goods_value,
             restock_value,
-            co_cut,
-            crew_donation,
-            subtotal,
+            add_to_restocking: add_to_restocking.floor() as u64,
             stocking,
-            add_to_booty,
+            total_gained: total_gained.trunc() as i64,
+            co_cut: co_cut.ceil() as u64,
+            crew_donation: crew_donation.floor() as u64,
+            add_to_booty: add_to_booty.floor() as u64,
         }
+    }
+
+    /// The booty-chest breakdown deduced from the battle ledger and the
+    /// restocking rate. Carried as floats; rounded only when displayed.
+    fn chest_components(&self, shared: &SharedState) -> ChestBreakdown {
+        let restocking_rate = parse_rate(&self.panel[4]);
+        // The chest keeps the full retained half of every fight (the ledger
+        // already sums each fight's half, rounding the odd PoE up into the chest).
+        // The restocking skim comes off the *other* half — the crew's cut — not
+        // the chest, so the chest is independent of the restocking rate.
+        let chest_gross = shared.pillage_chest as f64;
+        let immediate_half = (shared.pillage_gross as f64 - chest_gross).max(0.0);
+        let reserve = immediate_half * restocking_rate;
+        let immediate_cuts = immediate_half - reserve;
+        let chest_net = (chest_gross - shared.pillage_stolen as f64).max(0.0);
+        ChestBreakdown {
+            reserve,
+            chest_gross,
+            immediate_cuts,
+            chest_net,
+        }
+    }
+
+    /// The auto-deduced net booty chest, used as the Booty Chest field's default
+    /// when the user leaves it blank. Floored to favor the C.O.
+    pub fn deduced_chest(&self, shared: &SharedState) -> u64 {
+        self.chest_components(shared).chest_net.floor() as u64
     }
 
     // -- key handling --
@@ -823,8 +1073,7 @@ impl ProfitsApp {
             }
             // Everything priced — compute directly (no fetch / re-query).
             let profit = self.calculate_profits(shared);
-            self.popup = Some(PopupKind::ProfitResult(profit));
-            self.focus = Focus::Popup;
+            self.open_profit_result(profit);
             return InputResult::Consumed;
         }
 
@@ -882,7 +1131,7 @@ impl ProfitsApp {
                     self.panel[0].value.clear();
                     self.panel[0].cursor = 0;
                     let profit = self.calculate_profits(shared);
-                    self.popup = Some(PopupKind::ProfitResult(profit));
+                    self.open_profit_result(profit);
                 } else {
                     self.popup = None;
                     self.focus = Focus::Panel(0);
@@ -971,7 +1220,7 @@ impl ProfitsApp {
                         self.panel[0].value.clear();
                         self.panel[0].cursor = 0;
                         let profit = self.calculate_profits(shared);
-                        self.popup = Some(PopupKind::ProfitResult(profit));
+                        self.open_profit_result(profit);
                     } else {
                         self.popup = None;
                         self.focus = Focus::Panel(0);
@@ -979,7 +1228,18 @@ impl ProfitsApp {
                 }
                 _ => {}
             },
-            Some(PopupKind::ProfitResult(_)) | Some(PopupKind::PriceBlock { .. }) => {
+            Some(PopupKind::ProfitResult(_)) => match key.code {
+                KeyCode::Up => {
+                    self.breakdown_cursor = self.breakdown_cursor.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    let last = self.breakdown_row_count().saturating_sub(1);
+                    self.breakdown_cursor = (self.breakdown_cursor + 1).min(last);
+                }
+                KeyCode::Enter => self.dismiss_ok_popup(),
+                _ => {}
+            },
+            Some(PopupKind::PriceBlock { .. }) => {
                 if key.code == KeyCode::Enter {
                     self.dismiss_ok_popup();
                 }

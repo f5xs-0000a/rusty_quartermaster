@@ -106,6 +106,13 @@ pub struct SharedState<'a> {
     pub loading: bool,
     /// Whether the selected ocean has Market market data (profit calc works).
     pub market_supported: bool,
+    /// Gross PoE plundered, PoE stolen from us, and the retained booty chest
+    /// (per-fight halves) over the current pillage, from the battle ledger. Drive
+    /// the auto-deduced booty-chest figure on the Profits page. See
+    /// [`crate::chatlog::GameState::current_pillage_poe`].
+    pub pillage_gross: u64,
+    pub pillage_stolen: u64,
+    pub pillage_chest: u64,
 }
 
 // ---------------------------------------------------------------------------
@@ -346,12 +353,17 @@ impl AppShell {
         let content_focused = self.global_focus == GlobalFocus::Content;
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
+                let (pillage_gross, pillage_stolen, pillage_chest) =
+                    self.chatlog.current_pillage_poe();
                 let shared = SharedState {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
                     market_supported: self.market_ok(),
+                    pillage_gross,
+                    pillage_stolen,
+                    pillage_chest,
                 };
                 crate::profits::ui::render(
                     frame,
@@ -476,12 +488,17 @@ impl AppShell {
 
         let result = match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
+                let (pillage_gross, pillage_stolen, pillage_chest) =
+                    self.chatlog.current_pillage_poe();
                 let shared = SharedState {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
                     market_supported: self.market_ok(),
+                    pillage_gross,
+                    pillage_stolen,
+                    pillage_chest,
                 };
                 self.profits.handle_key(key, &shared)
             }
@@ -1751,6 +1768,17 @@ impl AppShell {
                         }
                     }
                 }
+                // Live hover over a Profit Breakdown row parks the tooltip cursor.
+                if matches!(
+                    self.profits.popup,
+                    Some(crate::profits::PopupKind::ProfitResult(_))
+                ) {
+                    if let Some(ClickTarget::ProfitsBreakdownRow(i)) =
+                        clickmap::hit_test(&self.click_regions, mouse.column, mouse.row)
+                    {
+                        self.profits.breakdown_cursor = i;
+                    }
+                }
             }
             _ => {}
         }
@@ -1819,34 +1847,52 @@ impl AppShell {
             ClickTarget::ProfitsButton => {
                 self.global_focus = GlobalFocus::Content;
                 self.profits.focus = crate::profits::Focus::Button;
+                let (pillage_gross, pillage_stolen, pillage_chest) =
+                    self.chatlog.current_pillage_poe();
                 let shared = SharedState {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
                     market_supported: self.market_ok(),
+                    pillage_gross,
+                    pillage_stolen,
+                    pillage_chest,
                 };
                 let result = self.profits.handle_button_activate(&shared);
                 self.process_input_result(result, tx);
             }
+            ClickTarget::ProfitsBreakdownRow(i) => {
+                self.profits.breakdown_cursor = i;
+            }
             ClickTarget::ProfitsPopupNo => {
+                let (pillage_gross, pillage_stolen, pillage_chest) =
+                    self.chatlog.current_pillage_poe();
                 let shared = SharedState {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
                     market_supported: self.market_ok(),
+                    pillage_gross,
+                    pillage_stolen,
+                    pillage_chest,
                 };
                 let result = self.profits.handle_popup_click(false, &shared);
                 self.process_input_result(result, tx);
             }
             ClickTarget::ProfitsPopupYes => {
+                let (pillage_gross, pillage_stolen, pillage_chest) =
+                    self.chatlog.current_pillage_poe();
                 let shared = SharedState {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
                     loading: self.loading,
                     market_supported: self.market_ok(),
+                    pillage_gross,
+                    pillage_stolen,
+                    pillage_chest,
                 };
                 let result = self.profits.handle_popup_click(true, &shared);
                 self.process_input_result(result, tx);
@@ -2217,12 +2263,17 @@ impl AppShell {
                 FetchPurpose::Profits => {
                     self.cached_offers = offers_map;
                     self.rebuild_island_list();
+                    let (pillage_gross, pillage_stolen, pillage_chest) =
+                        self.chatlog.current_pillage_poe();
                     let shared = SharedState {
                         commodities: &self.commodities,
                         cached_offers: &self.cached_offers,
                         available_islands: &self.available_islands,
                         loading: self.loading,
                         market_supported: self.market_ok(),
+                        pillage_gross,
+                        pillage_stolen,
+                        pillage_chest,
                     };
                     self.profits.calculate_or_warn(&shared);
                 }

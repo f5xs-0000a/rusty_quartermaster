@@ -1,10 +1,10 @@
 use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, Wrap};
 
 use crate::app::{self, SharedState};
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::{offset_title, offset_title_width};
-use super::{Focus, InventoryRow, PopupKind, ProfitsApp, FIRST_COL};
+use super::{BreakdownRow, Focus, InventoryRow, PopupKind, ProfitsApp, FIRST_COL};
 
 // Inventory numeric column widths (the Item column flexes).
 const RESTOCK_W: u16 = 7; // "Restock"
@@ -97,8 +97,11 @@ pub fn render(
     }
 
     // -- Popup overlay -----------------------------------------------------
+    let breakdown_cursor = app.breakdown_cursor;
+    let show_co = app.show_co_rate;
+    let show_donation = app.show_donation;
     if let Some(ref popup) = app.popup {
-        render_popup(frame, popup, regions);
+        render_popup(frame, popup, breakdown_cursor, show_co, show_donation, regions);
     }
 }
 
@@ -148,6 +151,22 @@ fn render_parameters(
 
         if i == 0 {
             render_island_field(frame, field, cols[2], is_focused, value_style, shared);
+        } else if i == 1 && field.value.is_empty() {
+            // Booty Chest: when blank, show the auto-deduced value as a dim
+            // placeholder. The calc uses it unless the user types an override.
+            let deduced = app.deduced_chest(shared).to_string();
+            let ph_style = if is_focused {
+                Style::default().fg(Color::DarkGray).bg(Color::White).italic()
+            } else {
+                Style::default().fg(Color::DarkGray).italic()
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(deduced, ph_style)).right_aligned()),
+                cols[2],
+            );
+            if is_focused {
+                frame.set_cursor_position((cols[2].x + cols[2].width, cols[2].y));
+            }
         } else {
             let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
                 .style(value_style);
@@ -522,17 +541,20 @@ fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Tex
                 )))),
             }
         }
-        Focus::Panel(4) => hint("Restocking rate imposed by your crew"),
-        Focus::Panel(5) => hint("Amount spent before voyage to stock up"),
+        Focus::Panel(1) => hint("Auto: each fight's retained half, less stolen. Type to override."),
+        Focus::Panel(2) => hint("Share of total gained the commanding officer keeps."),
+        Focus::Panel(3) => hint("Share of total gained donated to the crew."),
+        Focus::Panel(4) => hint("Skimmed from the crew's cut for restocking (not the chest)."),
+        Focus::Panel(5) => hint("PoE spent stocking up before the voyage; recouped at the divvy."),
         Focus::Input => hint("Type a commodity and press Enter to add it."),
         Focus::Table => {
             // Per-column action for the selected inventory cell.
             let action = match app.table_state.selected_column().unwrap_or(FIRST_COL) {
-                1 => "set how many to restock",
-                2 => "set how many is in the hold",
-                3 => "set how many is in the booty",
-                4 => "set the sell price of shoppes",
-                5 => "set the buy price of shoppes",
+                1 => "set how many units to restock to",
+                2 => "set how many units are in the hold",
+                3 => "set how many units are in the booty",
+                4 => "set the shoppe sell price",
+                5 => "set the shoppe buy price",
                 _ => "set the value",
             };
             Some(Text::from(vec![
@@ -561,7 +583,36 @@ fn compute_alcohol(
         .sum()
 }
 
-fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickRegion>) {
+/// Greedy word-wrap line count for `text` at `width` columns — used to reserve
+/// enough rows for the wrapped tooltip so the popup height is stable.
+fn wrapped_line_count(text: &str, width: usize) -> u16 {
+    if width == 0 {
+        return 1;
+    }
+    let mut lines: u16 = 1;
+    let mut col = 0usize;
+    for word in text.split_whitespace() {
+        let wlen = word.chars().count();
+        if col == 0 {
+            col = wlen;
+        } else if col + 1 + wlen <= width {
+            col += 1 + wlen;
+        } else {
+            lines += 1;
+            col = wlen;
+        }
+    }
+    lines.max(1)
+}
+
+fn render_popup(
+    frame: &mut Frame,
+    popup: &PopupKind,
+    breakdown_cursor: usize,
+    show_co: bool,
+    show_donation: bool,
+    regions: &mut Vec<ClickRegion>,
+) {
     let area = frame.area();
 
     match popup {
@@ -840,35 +891,42 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
             });
         }
         PopupKind::ProfitResult(result) => {
-            let labels = [
-                "Goods Value",
-                "Restock Value",
-                "C. Officer Cut",
-                "Crew Donation",
-                "Subtotal",
-                "Stocking",
-                "Add to Booty",
-            ];
-            let val_strs: [String; 7] = [
-                format!("{}", result.goods_value),
-                format!("{}", result.restock_value),
-                format!("{}", result.co_cut),
-                format!("{}", result.crew_donation),
-                format!("{}", result.subtotal),
-                format!("{}", result.stocking),
-                format!("{}", result.add_to_booty),
-            ];
-            let max_content = labels
+            let bd = result.breakdown(show_co, show_donation);
+            // Most rows are non-negative magnitudes; only "Total gained in
+            // pillage" ever shows a "-" (a loss).
+            let valstr = |r: &BreakdownRow| -> String { r.value.to_string() };
+
+            // Lay out one line per breakdown row, plus a blank separator after any
+            // row flagged `gap_after`. `placed` maps each layout slot to its
+            // breakdown index (or None for a separator).
+            let mut placed: Vec<Option<usize>> = Vec::new();
+            for (i, r) in bd.iter().enumerate() {
+                placed.push(Some(i));
+                if r.gap_after {
+                    placed.push(None);
+                }
+            }
+
+            // Sized to the widest row (label + value) only — the tooltip wraps
+            // rather than stretching the popup.
+            let max_content = bd
                 .iter()
-                .zip(val_strs.iter())
-                .map(|(l, v)| l.len() + 4 + v.len())
+                .map(|r| r.label.len() + 4 + valstr(r).len())
                 .max()
                 .unwrap_or(0);
-            // Floor at 24 for readability, but also never below the title's width.
             let w: u16 = (max_content as u16 + 4)
                 .max(24)
                 .max(offset_title_width("Profit Breakdown"));
-            let h: u16 = 11;
+            // Reserve enough lines for the tallest tooltip once wrapped to width.
+            let inner_w = w.saturating_sub(4) as usize; // − borders − padding
+            let desc_lines = bd
+                .iter()
+                .map(|r| wrapped_line_count(r.desc, inner_w))
+                .max()
+                .unwrap_or(1)
+                .max(1);
+            // rows/separators + blank + wrapped description + Ok button + 2 borders
+            let h: u16 = placed.len() as u16 + 1 + desc_lines + 1 + 2;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
             let popup_area = Rect::new(x, y, w, h);
@@ -881,33 +939,67 @@ fn render_popup(frame: &mut Frame, popup: &PopupKind, regions: &mut Vec<ClickReg
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
-            let rows = Layout::vertical([
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-                Constraint::Length(1),
-            ])
-            .split(inner);
+            let mut constraints: Vec<Constraint> =
+                placed.iter().map(|_| Constraint::Length(1)).collect();
+            constraints.push(Constraint::Length(1)); // blank
+            constraints.push(Constraint::Length(desc_lines)); // description (wraps)
+            constraints.push(Constraint::Length(1)); // button
+            let layout = Layout::vertical(constraints).split(inner);
 
             let avail = inner.width as usize;
 
-            for (i, (lbl, val_str)) in labels.iter().zip(val_strs.iter()).enumerate() {
-                let pad = avail.saturating_sub(lbl.len()).saturating_sub(val_str.len());
-                let line = format!("{}{:>w$}", lbl, val_str, w = pad + val_str.len());
-                frame.render_widget(Paragraph::new(line), rows[i]);
+            for (slot, place) in placed.iter().enumerate() {
+                let Some(i) = *place else { continue }; // blank separator
+                let r = &bd[i];
+                let v = valstr(r);
+                let pad = avail.saturating_sub(r.label.len()).saturating_sub(v.len());
+                let line = format!("{}{:>w$}", r.label, v, w = pad + v.len());
+
+                // Headlines (Total gained, Add to Booty) are bold; any negative
+                // value (only Total gained can be) is red — a loss.
+                let negative = r.value < 0;
+                let mut style = Style::default();
+                if r.headline {
+                    style = style.bold();
+                }
+                if negative {
+                    style = style.fg(Color::Red);
+                }
+                // Highlight the row the tooltip is describing.
+                if i == breakdown_cursor {
+                    style = style.bg(Color::White);
+                    if !negative {
+                        style = style.fg(Color::Black);
+                    }
+                }
+                frame.render_widget(Paragraph::new(Span::styled(line, style)), layout[slot]);
+
+                // Hover region: moving the mouse over a row parks the cursor there.
+                regions.push(ClickRegion {
+                    rect: layout[slot],
+                    target: ClickTarget::ProfitsBreakdownRow(i),
+                });
             }
+
+            // The selected row's explanation, on the dedicated tooltip line(s);
+            // wraps within the (narrow) popup rather than widening it.
+            let desc = bd.get(breakdown_cursor).map(|r| r.desc).unwrap_or("");
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    desc,
+                    Style::default().fg(Color::DarkGray).italic(),
+                ))
+                .wrap(Wrap { trim: true }),
+                layout[layout.len() - 2],
+            );
 
             let ok_style = Style::default().bg(Color::White).fg(Color::Black).bold();
             let ok_btn = Line::from(Span::styled(" Ok ", ok_style));
-            frame.render_widget(Paragraph::new(ok_btn).centered(), rows[8]);
+            let ok_row = layout[layout.len() - 1];
+            frame.render_widget(Paragraph::new(ok_btn).centered(), ok_row);
 
             regions.push(ClickRegion {
-                rect: rows[8],
+                rect: ok_row,
                 target: ClickTarget::ProfitsPopupOk,
             });
         }

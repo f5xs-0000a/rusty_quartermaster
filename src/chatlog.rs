@@ -488,11 +488,15 @@ impl GameState {
             self.on_grapple();
             return;
         }
-        // Disengagements end a battle with no boarding conclusion.
+        // A disengage ends a battle with no boarding conclusion. Only an explicit
+        // disengage line counts: "<X> issued an order to disengage." (we broke
+        // off) or "<vessel> disengaged from the battle." (the foe did). We do NOT
+        // treat pursuit-ended lines ("Arr, ye can no longer pursue ...: That
+        // vessel has put into port.") as disengages — they fire for stale or
+        // cancelled targets (e.g. a brigand-king expedition) and can't be told
+        // apart from our active foe, so they'd wrongly disengage the open fight.
         if body.ends_with(" issued an order to disengage.")
             || body.ends_with(" disengaged from the battle.")
-            || body.starts_with("You are no longer being pursued by ")
-            || body.starts_with("Arr, ye can no longer pursue")
         {
             self.on_disengage();
             return;
@@ -1415,6 +1419,47 @@ impl GameState {
         self.current_vessel()?.current_voyage.as_ref()
     }
 
+    /// Pillage PoE over the current pillage — the voyage underway on the current
+    /// vessel, or its most recent completed one. Walked in order over the signed
+    /// per-battle [`Battle::poe`] ledger, so it's immune to the booty chest being
+    /// raided on lost boardings. Returns `(gross_won, stolen, chest)`, where
+    /// `chest` is the retained half kept per win (each contributes `ceil(M/2)` —
+    /// the odd PoE rounds up into the chest, matching the in-game booty) and
+    /// `stolen` is the PoE enemies actually took, **capped by the chest balance at
+    /// the time** (they can't steal from an empty chest). `chest − stolen` is thus
+    /// always ≥ 0.
+    pub fn current_pillage_poe(&self) -> (u64, u64, u64) {
+        let Some(v) = self.current_vessel() else {
+            return (0, 0, 0);
+        };
+        let Some(voy) = v.current_voyage.as_ref().or_else(|| v.voyages.last()) else {
+            return (0, 0, 0);
+        };
+        let mut gross: u64 = 0;
+        let mut chest: u64 = 0; // retained-half total (before theft)
+        let mut stolen: u64 = 0;
+        let mut balance: i64 = 0; // running chest balance, to cap each theft
+        for b in &voy.battles {
+            match b.poe {
+                Some(p) if p > 0 => {
+                    let m = p as u64;
+                    let half = m.div_ceil(2);
+                    gross += m;
+                    chest += half;
+                    balance += half as i64;
+                }
+                Some(p) if p < 0 => {
+                    // Enemies can only plunder what the chest currently holds.
+                    let take = (-p).min(balance);
+                    balance -= take;
+                    stolen += take as u64;
+                }
+                _ => {}
+            }
+        }
+        (gross, stolen, chest)
+    }
+
     /// Timestamp of the most recently processed line (the chat-log "now"). Used
     /// to show live elapsed time for an in-progress voyage.
     #[allow(dead_code)] // used by the Voyage Statistics UI
@@ -2308,6 +2353,79 @@ mod tests {
         assert_eq!(voy.battles[0].outcome, BattleOutcome::Disengaged);
         assert!(voy.battles[0].grappled_at.is_none()); // never boarded
         assert!(voy.current_battle.is_none());
+    }
+
+    #[test]
+    fn stale_pursuit_ended_line_does_not_disengage_active_fight() {
+        // A cancelled/expired pursuit ("Arr, ye can no longer pursue ...") names a
+        // different vessel than the one we're fighting. It must NOT end the open
+        // battle, which then goes on to a clean boarding win.
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[02:33:00] Going aboard the Test Vessel...");
+        gs.process_line("[02:33:01] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[02:33:02] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[02:33:23] You intercepted the Hot Barbel!");
+        // Stale pursuit of an unrelated target ends — must be ignored.
+        gs.process_line(
+            "[02:33:33] Arr, ye can no longer pursue the Thieving Stickleback: That vessel has put into port.",
+        );
+        gs.process_line(
+            "[02:39:29] Test Vessel has grappled Hot Barbel. A melee breaks out between the crews!",
+        );
+        gs.process_line("[02:42:43] Game over.  Winners: Playerone, Mashtag.");
+        gs.process_line(
+            "[02:42:58] The victors plundered 3,207 pieces of eight and 15 units of goods from the defeated vessel.",
+        );
+        let voy = gs.current_voyage().unwrap();
+        assert_eq!(voy.battles.len(), 1);
+        assert_eq!(voy.battles[0].outcome, BattleOutcome::Won);
+        assert_eq!(voy.battles[0].poe, Some(3_207));
+        assert!(voy.battles[0].grappled_at.is_some());
+        // The chest keeps the rounded-up half of the win.
+        assert_eq!(gs.current_pillage_poe(), (3_207, 0, 1_604));
+    }
+
+    #[test]
+    fn theft_is_capped_by_the_chest_balance() {
+        // Enemies can't plunder more PoE than the chest holds at the time. Here a
+        // loss comes first (empty chest → nothing to steal), then a win, then a
+        // loss that "plunders" far more than the chest's worth — capped to it.
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[00:00:00] Going aboard the Brave Marlin...");
+        gs.process_line("[00:00:01] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[00:00:02] Playerone issued an order to set the vessel to sail.");
+        // Lose with an empty chest — they can't take 9,000 from nothing.
+        gs.process_line("[00:01:00] You have been intercepted by the Brigand One!");
+        gs.process_line(
+            "[00:01:30] Brigand One has grappled Brave Marlin. A melee breaks out between the crews!",
+        );
+        gs.process_line("[00:01:40] Game over.  Winners: Raider Onecrew.");
+        gs.process_line(
+            "[00:01:41] The victors plundered 9,000 pieces of eight and no goods from the defeated vessel.",
+        );
+        // Win: chest gets ceil(2000/2) = 1,000.
+        gs.process_line("[00:02:00] You intercepted the Brigand Two!");
+        gs.process_line(
+            "[00:02:30] Brave Marlin has grappled Brigand Two. A melee breaks out between the crews!",
+        );
+        gs.process_line("[00:02:40] Game over.  Winners: Playerone.");
+        gs.process_line(
+            "[00:02:41] The victors plundered 2,000 pieces of eight and no goods from the defeated vessel.",
+        );
+        // Lose again: they "plunder" 5,000, but the chest only holds 1,000.
+        gs.process_line("[00:03:00] You have been intercepted by the Brigand Three!");
+        gs.process_line(
+            "[00:03:30] Brigand Three has grappled Brave Marlin. A melee breaks out between the crews!",
+        );
+        gs.process_line("[00:03:40] Game over.  Winners: Raider Twocrew.");
+        gs.process_line(
+            "[00:03:41] The victors plundered 5,000 pieces of eight and no goods from the defeated vessel.",
+        );
+        // gross 2000, chest 1000, stolen capped at 1000 (the empty-chest loss took
+        // 0, the over-cap loss took only the 1000 on hand). Net chest = 0.
+        assert_eq!(gs.current_pillage_poe(), (2_000, 1_000, 1_000));
     }
 
     #[test]
