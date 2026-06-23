@@ -355,6 +355,11 @@ pub struct GameState {
     /// Damage calculator's foe ship. Reset at the top of each
     /// [`Self::process_line`]; consumed by [`Self::take_detected_foe_ship`].
     detected_foe_ship: Option<usize>,
+    /// Set for the duration of one line when we just entered a vampire lair. Lets
+    /// the app jump to the Jobbers page and switch it to the Vampirates voyage
+    /// layout. Reset at the top of each [`Self::process_line`]; consumed by
+    /// [`Self::take_lair_entered`].
+    lair_just_entered: bool,
 }
 
 impl GameState {
@@ -373,6 +378,7 @@ impl GameState {
             battle_just_resolved: false,
             battle_just_started: false,
             detected_foe_ship: None,
+            lair_just_entered: false,
         }
     }
 
@@ -400,6 +406,7 @@ impl GameState {
         self.battle_just_resolved = false;
         self.battle_just_started = false;
         self.detected_foe_ship = None;
+        self.lair_just_entered = false;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
@@ -1243,6 +1250,9 @@ impl GameState {
             v.wave_hi = pirates;
             v.lair_warn = false;
         }
+        // Surface the Jobbers page in its Vampirates layout for the lair (consumed
+        // once by the app's auto-navigation).
+        self.lair_just_entered = true;
     }
 
     /// A `slaps mother` line: start the lair only if we aren't already in one (so
@@ -1494,6 +1504,13 @@ impl GameState {
     /// ship so live tracking — and the captured snapshot — use the right hull.
     pub fn take_detected_foe_ship(&mut self) -> Option<usize> {
         self.detected_foe_ship.take()
+    }
+
+    /// Take the "we just entered a vampire lair this line" flag (true once per
+    /// lair entry). The app uses it to jump to the Jobbers page and switch it to
+    /// the Vampirates voyage layout.
+    pub fn take_lair_entered(&mut self) -> bool {
+        std::mem::take(&mut self.lair_just_entered)
     }
 
     /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved

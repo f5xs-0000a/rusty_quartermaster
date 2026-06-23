@@ -12,7 +12,7 @@ use crate::clickmap::{self, ClickRegion, ClickTarget};
 use crate::damage::DamageApp;
 use crate::jobbers::{
     self, JobberFocus, JobberPane, JobbersUi, PirateCache, PiratePopup, SkillDistPopup, TrophyPopup,
-    VOYAGE_TYPES,
+    VoyageType, VOYAGE_TYPES,
 };
 use crate::profits::ProfitsApp;
 use crate::utils::text_similarity;
@@ -937,6 +937,11 @@ impl AppShell {
         } else if battle_resolved {
             self.jump_to_concluded_fight();
         }
+        // Entering a vampire lair: surface the Jobbers page in its Vampirates
+        // layout so the wave model and skill-distribution tooling are at hand.
+        if self.chatlog.take_lair_entered() {
+            self.jump_to_vampirate_jobbers();
+        }
     }
 
     /// Switch the shown app and drop focus into its content (used by the
@@ -967,6 +972,13 @@ impl AppShell {
         self.voyage_ui.battles_popup = Some(last);
         self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Pager;
         self.load_battle_editor(last);
+    }
+
+    /// We just entered a vampire lair: surface the Jobbers page and switch it to
+    /// the Vampirates voyage layout (wave model + skill-distribution tooling).
+    fn jump_to_vampirate_jobbers(&mut self) {
+        self.jobbers_ui.voyage_type = VoyageType::Vampirates;
+        self.switch_to(AppId::Chatlog);
     }
 
     /// The vessel key whose voyage the page is currently showing (mirrors the
