@@ -51,15 +51,23 @@ struct Args {
     ///
     /// One file holds the inventory and commodity list (global) plus, per
     /// ocean, market prices and fetched pirate stats. Loaded on startup and
-    /// saved on exit.
+    /// saved on exit. Defaults to `ypp_cache.json` next to the executable.
     #[arg(long, value_name = "PATH")]
     cache: Option<PathBuf>,
 
-    /// Path to the Puzzle Pirates client chat log to monitor.
+    /// Path to save/load the voyage-history JSON.
     ///
-    /// When set, the existing log is read in full, then tailed live for new
-    /// lines. When omitted, no chat-log monitoring happens.
+    /// Holds completed voyages (per-human-behind-keyboard, across all their
+    /// pirates). Loaded on startup, appended on save. Defaults to
+    /// `ypp_voyages.json` next to the executable.
     #[arg(long, value_name = "PATH")]
+    voyages: Option<PathBuf>,
+
+    /// Path to the Puzzle Pirates client chat log to monitor (optional).
+    ///
+    /// When given, the existing log is read in full, then tailed live for new
+    /// lines. When omitted, no chat-log monitoring happens.
+    #[arg(value_name = "CHAT_LOG")]
     chat_log: Option<PathBuf>,
 
     /// Your pirate name, used to attribute planks to you in the chat log.
@@ -116,6 +124,16 @@ fn parse_ocean(s: &str) -> Result<Ocean, String> {
     s.parse()
 }
 
+/// A path sitting next to the running executable (e.g. `cache.json` beside the
+/// binary). The default location for the cache and voyage-history files when no
+/// explicit `--cache` / `--voyages` path is given. `None` only if the
+/// executable's location can't be determined.
+fn exe_adjacent(name: &str) -> Option<PathBuf> {
+    std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+}
+
 // ---------------------------------------------------------------------------
 // Main
 // ---------------------------------------------------------------------------
@@ -123,6 +141,11 @@ fn parse_ocean(s: &str) -> Result<Ocean, String> {
 #[tokio::main]
 async fn main() -> io::Result<()> {
     let args = Args::parse();
+
+    // Resolve persistence paths: an explicit flag wins, otherwise default to a
+    // file sitting next to the executable.
+    let cache_path = args.cache.clone().or_else(|| exe_adjacent("ypp_cache.json"));
+    let voyages_path = args.voyages.clone().or_else(|| exe_adjacent("ypp_voyages.json"));
 
     // Set per-service request spacing before any network call goes out.
     ratelimit::configure(args.market_query_rate, args.ypp_query_rate);
@@ -134,7 +157,7 @@ async fn main() -> io::Result<()> {
         inventory: saved_inventory,
         commodities: saved_commodities,
         mut oceans,
-    } = args.cache.as_deref().map(cache::load).unwrap_or_default();
+    } = cache_path.as_deref().map(cache::load).unwrap_or_default();
 
     // -- Resolve ocean + pirate name (interactive popup if either is missing) --
     let http = reqwest::Client::new();
@@ -203,10 +226,10 @@ async fn main() -> io::Result<()> {
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
-    // Voyage history: a `voyages.json` sibling of the cache file (per-user-
-    // behind-keyboard). Load it now so it's available across sessions; new runs
-    // are appended when the user confirms the save prompt.
-    shell.voyages_path = args.cache.as_deref().map(|p| p.with_file_name("voyages.json"));
+    // Voyage history (per-human-behind-keyboard). Load it now so it's available
+    // across sessions; new runs are appended when the user confirms the save
+    // prompt.
+    shell.voyages_path = voyages_path;
     if let Some(path) = &shell.voyages_path {
         shell.voyage_history = voyage::persistence::load(path);
     }
@@ -423,7 +446,7 @@ async fn main() -> io::Result<()> {
     shell.damage.cleanup_temp_images();
 
     // -- Save the unified cache --
-    if let Some(ref path) = args.cache {
+    if let Some(ref path) = cache_path {
         // Fold the current ocean's market + players back into the per-ocean map,
         // leaving other oceans' buckets intact.
         if let Some(o) = shell.ocean {

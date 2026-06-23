@@ -3,7 +3,8 @@
 //! This is the **only** path from the in-RAM [`crate::voyage::Voyage`] data to
 //! disk — written when the user confirms via the save/discard prompt, never
 //! automatically. The file is **per-user-behind-keyboard** (one human's history
-//! across all their pirates), a `voyages.json` sibling of the `--cache` file.
+//! across all their pirates), set by `--voyages` (default: `ypp_voyages.json`
+//! next to the executable).
 //!
 //! The on-disk shape is decoupled from the runtime structs (like `cache.rs` and
 //! `profits::persistence`): we store precomputed numeric fields so the format

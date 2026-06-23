@@ -282,7 +282,7 @@ pub struct AppShell {
     pub voyage_ui: crate::voyage::ui::VoyageStatsUi,
     /// Persisted voyage history (loaded from / written to `voyages_path`).
     pub voyage_history: crate::voyage::persistence::SavedVoyages,
-    /// Where voyage history lives on disk (a `voyages.json` sibling of `--cache`).
+    /// Where voyage history lives on disk (set by `--voyages`).
     pub voyages_path: Option<std::path::PathBuf>,
     // click regions rebuilt each render
     click_regions: Vec<ClickRegion>,
