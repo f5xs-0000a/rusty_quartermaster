@@ -907,7 +907,11 @@ impl AppShell {
         if let Some(idx) = self.chatlog.take_detected_foe_ship() {
             self.damage.right_ship = idx;
         }
-        if self.chatlog.take_resolved() && self.damage.has_input() {
+        // Capture both transition flags before the freeze step consumes them, so
+        // the auto-navigation below can fire regardless of the calculator state.
+        let battle_started = self.chatlog.take_battle_started();
+        let battle_resolved = self.chatlog.take_resolved();
+        if battle_resolved && self.damage.has_input() {
             // Our manpower = the crew that actually fought, as recorded on the
             // just-resolved battle (grapple roster minus the disconnected). Falls
             // back to the live count if that battle didn't record one.
@@ -925,6 +929,44 @@ impl AppShell {
             self.chatlog.record_resolved_battle(snap, dmg, crew);
             self.damage.clear_counts();
         }
+        // Auto-navigation. A fight beginning surfaces the live Damage calculator
+        // (so it's tracked from the first hit); a fight concluding surfaces its
+        // entry in the Sea Battles log. A start wins if both somehow fire.
+        if battle_started {
+            self.jump_to_live_damage();
+        } else if battle_resolved {
+            self.jump_to_concluded_fight();
+        }
+    }
+
+    /// Switch the shown app and drop focus into its content (used by the
+    /// fight-driven auto-navigation).
+    fn switch_to(&mut self, app: AppId) {
+        if let Some(idx) = APP_LIST.iter().position(|a| *a == app) {
+            self.sidebar_index = idx;
+            self.global_focus = GlobalFocus::Content;
+        }
+    }
+
+    /// A new fight just began: close any open Sea Battles popup and surface the
+    /// live Damage calculator so the fight is tracked from the first hit.
+    fn jump_to_live_damage(&mut self) {
+        self.voyage_ui.battles_popup = None;
+        self.switch_to(AppId::Damage);
+    }
+
+    /// A fight just concluded: surface the Voyage Statistics page with the Sea
+    /// Battles popup open on the fight that just ended (the last one). No-op if
+    /// the displayed voyage somehow has no fights.
+    fn jump_to_concluded_fight(&mut self) {
+        let n = self.build_voyage_view().battles.len();
+        let Some(last) = n.checked_sub(1) else {
+            return;
+        };
+        self.switch_to(AppId::Voyage);
+        self.voyage_ui.battles_popup = Some(last);
+        self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Pager;
+        self.load_battle_editor(last);
     }
 
     /// The vessel key whose voyage the page is currently showing (mirrors the

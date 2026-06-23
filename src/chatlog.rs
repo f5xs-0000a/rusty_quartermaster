@@ -345,6 +345,11 @@ pub struct GameState {
     /// over` / disengage). Lets the app freeze the live Damage calculator onto
     /// that fight. Reset at the top of each [`Self::process_line`].
     battle_just_resolved: bool,
+    /// Set for the duration of one line when a new sea battle just began (an
+    /// interception). Lets the app jump to the live Damage calculator for the
+    /// fight. Reset at the top of each [`Self::process_line`]; consumed by
+    /// [`Self::take_battle_started`].
+    battle_just_started: bool,
     /// Set for the duration of one line when a special encounter announced the
     /// foe's hull type (e.g. the Black Ship herald). Lets the app seed the live
     /// Damage calculator's foe ship. Reset at the top of each
@@ -366,6 +371,7 @@ impl GameState {
             now: None,
             order_counter: 0,
             battle_just_resolved: false,
+            battle_just_started: false,
             detected_foe_ship: None,
         }
     }
@@ -392,6 +398,7 @@ impl GameState {
     /// Parse a single log line and delegate to the appropriate handler.
     pub fn process_line(&mut self, line: &str) {
         self.battle_just_resolved = false;
+        self.battle_just_started = false;
         self.detected_foe_ship = None;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
@@ -826,6 +833,7 @@ impl GameState {
     /// somehow starts before we saw a sail order). `enemy` empty => unknown vessel.
     fn on_battle_start(&mut self, enemy: &str) {
         let now = self.now;
+        self.battle_just_started = true;
         if let Some(v) = self.current_vessel_mut() {
             v.greedy_current.clear();
         }
@@ -1472,6 +1480,13 @@ impl GameState {
     /// the fight that just ended.
     pub fn take_resolved(&mut self) -> bool {
         std::mem::take(&mut self.battle_just_resolved)
+    }
+
+    /// Take the "a sea battle just began this line" flag (true once per
+    /// interception). The app uses it to jump to the live Damage calculator so
+    /// the fight is tracked from the first hit.
+    pub fn take_battle_started(&mut self) -> bool {
+        std::mem::take(&mut self.battle_just_started)
     }
 
     /// Take the foe-hull index detected from a special encounter this line (once
