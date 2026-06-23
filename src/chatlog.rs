@@ -1680,9 +1680,27 @@ fn monkey_boat_ship(name: &str) -> Option<usize> {
 }
 
 /// Whether a line is player chatter (so king names mentioned in chat don't
-/// mislabel a fight).
+/// mislabel a fight). Player speech reaches us over several channels, each tagged
+/// by a verb token on its first line: `says,` / `tells ye,` / `shouts,` /
+/// `broadcasts,` and the `<scope> chats,` family — `chats,` (crew), plus
+/// `officer chats,`, `flag officer chats,`, `global chats,`, `trade chats,` and
+/// `battle chats,`. The bare ` chats,` substring matches every member of that
+/// family regardless of scope prefix, so we don't enumerate them.
+///
+/// A quoted message can span several log lines (e.g. a multi-line trade-chat
+/// listing): only the first line carries the verb token and only the last ends
+/// in the closing `"`. The verb tokens above catch every first line, and the
+/// `ends_with('"')` arm catches the last; the king chants this guards against are
+/// single system lines ending in `!`/`.`, so neither arm false-positives on them.
+/// Residual gap: a *middle* continuation line carries neither marker — accepted,
+/// as it would only matter if such a line contained an exact Brigand King name.
 fn is_chat_line(body: &str) -> bool {
-    body.contains(" says,") || body.contains(" chats,") || body.contains(" tells ye,")
+    body.ends_with('"')
+        || body.contains(" says,")
+        || body.contains(" chats,")
+        || body.contains(" shouts,")
+        || body.contains(" broadcasts,")
+        || body.contains(" tells ye,")
 }
 
 /// Parse a leading integer that may contain thousands separators, ignoring any
