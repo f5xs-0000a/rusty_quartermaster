@@ -925,6 +925,11 @@ impl AppShell {
         if self.chatlog.take_lair_entered() {
             self.jump_to_vampirate_jobbers();
         }
+        // The Cursed Isles tell (the noxious fog) does the same for the Cursed Isles
+        // layout (Enthralled leaderboard + Fight Statistics).
+        if self.chatlog.take_cursed_isles_detected() {
+            self.jump_to_cursed_isles_jobbers();
+        }
         // Boarding a vessel snaps the Jobbers/Voyage vessel selector to it, so the
         // pages follow us onto the ship we just stepped onto rather than sticking
         // to whatever was previously picked.
@@ -967,6 +972,13 @@ impl AppShell {
     /// the Vampirates voyage layout (wave model + skill-distribution tooling).
     fn jump_to_vampirate_jobbers(&mut self) {
         self.jobbers_ui.voyage_type = VoyageType::Vampirates;
+        self.switch_to(AppId::Chatlog);
+    }
+
+    /// The Cursed Isles tell fired: surface the Jobbers page and switch it to the
+    /// Cursed Isles voyage layout (Enthralled leaderboard + Fight Statistics).
+    fn jump_to_cursed_isles_jobbers(&mut self) {
+        self.jobbers_ui.voyage_type = VoyageType::CursedIsles;
         self.switch_to(AppId::Chatlog);
     }
 
@@ -1300,7 +1312,7 @@ impl AppShell {
                 }
                 // The button sits below the leaderboard; ↑ returns to it.
                 SkillDist => self.jobbers_ui.focus = Leaderboard,
-                Aboard | Greedy | Planked => {
+                Aboard | Greedy | Planked | Enthralled => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     // At the top of a pane (or an empty one), ↑ leaves for whatever's
                     // above the panes: the button if shown, else (side-by-side) the
@@ -1351,7 +1363,7 @@ impl AppShell {
                         self.jobbers_ui.focus = pane;
                     }
                 }
-                Aboard | Greedy | Planked => {
+                Aboard | Greedy | Planked | Enthralled => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     self.jobbers_pane_select_delta(pane, 1);
                 }
@@ -1364,7 +1376,7 @@ impl AppShell {
                         self.leaderboard_clamp();
                     }
                 }
-                Aboard | Greedy | Planked => {
+                Aboard | Greedy | Planked | Enthralled => {
                     let cur = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     if let Some(i) = panes.iter().position(|p| *p == cur) {
                         if i > 0 {
@@ -1389,7 +1401,7 @@ impl AppShell {
                         self.leaderboard_clamp();
                     }
                 }
-                Aboard | Greedy | Planked => {
+                Aboard | Greedy | Planked | Enthralled => {
                     let cur = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     if let Some(i) = panes.iter().position(|p| *p == cur) {
                         if i + 1 < panes.len() {
@@ -1409,7 +1421,7 @@ impl AppShell {
                 }
                 Leaderboard => self.open_leaderboard_popup(),
                 SkillDist => self.open_skill_dist_popup(),
-                Aboard | Greedy | Planked => {
+                Aboard | Greedy | Planked | Enthralled => {
                     let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
                     self.open_pirate_popup(pane);
                 }
@@ -1727,6 +1739,7 @@ impl AppShell {
             JobberFocus::Aboard => Some(JobberPane::Aboard),
             JobberFocus::Greedy => Some(JobberPane::Greedy),
             JobberFocus::Planked => Some(JobberPane::Planked),
+            JobberFocus::Enthralled => Some(JobberPane::Enthralled),
             _ => None,
         }
     }
@@ -1737,6 +1750,7 @@ impl AppShell {
             JobberPane::Aboard => JobberFocus::Aboard,
             JobberPane::Greedy => JobberFocus::Greedy,
             JobberPane::Planked => JobberFocus::Planked,
+            JobberPane::Enthralled => JobberFocus::Enthralled,
         }
     }
 
@@ -1757,6 +1771,11 @@ impl AppShell {
                 .vessels
                 .get(key)
                 .map_or(0, |v| v.planked_by_us.len()),
+            JobberPane::Enthralled => self
+                .chatlog
+                .vessels
+                .get(key)
+                .map_or(0, |v| v.thralls_total.len()),
         }
     }
 
@@ -1765,6 +1784,7 @@ impl AppShell {
             JobberPane::Aboard => &mut self.jobbers_ui.aboard_sel,
             JobberPane::Greedy => &mut self.jobbers_ui.greedy_sel,
             JobberPane::Planked => &mut self.jobbers_ui.planked_sel,
+            JobberPane::Enthralled => &mut self.jobbers_ui.enthralled_sel,
         }
     }
 
@@ -1775,6 +1795,7 @@ impl AppShell {
             JobberPane::Aboard => self.jobbers_ui.aboard_sel,
             JobberPane::Greedy => self.jobbers_ui.greedy_sel,
             JobberPane::Planked => self.jobbers_ui.planked_sel,
+            JobberPane::Enthralled => self.jobbers_ui.enthralled_sel,
         };
         if n == 0 {
             0
@@ -2107,13 +2128,13 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Planked;
             }
+            ClickTarget::JobberEnthralledList => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Enthralled;
+            }
             ClickTarget::JobberPirate { pane, idx } => {
                 self.global_focus = GlobalFocus::Content;
-                self.jobbers_ui.focus = match pane {
-                    JobberPane::Aboard => JobberFocus::Aboard,
-                    JobberPane::Greedy => JobberFocus::Greedy,
-                    JobberPane::Planked => JobberFocus::Planked,
-                };
+                self.jobbers_ui.focus = Self::pane_focus(pane);
                 *self.jobbers_pane_sel_mut(pane) = idx;
             }
             ClickTarget::JobberPirateSeeTrophies => {
@@ -2286,6 +2307,11 @@ impl AppShell {
                         pane: JobberPane::Planked,
                         ..
                     }) => JobberPane::Planked,
+                    Some(ClickTarget::JobberEnthralledList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Enthralled,
+                        ..
+                    }) => JobberPane::Enthralled,
                     _ => return,
                 };
                 self.jobbers_pane_select_delta(pane, delta.signum());

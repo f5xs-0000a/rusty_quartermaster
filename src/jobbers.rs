@@ -17,7 +17,10 @@ use chrono::{DateTime, Duration, Utc};
 use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
-use crate::chatlog::{GameState, LAIR_WAVE_GROWTH, LAIR_WAVE_HI, LAIR_WAVE_LO};
+use crate::chatlog::{
+    island_wave_band, vargas_in_wave, wave_kind_for, GameState, WaveKind, LAIR_WAVE_GROWTH,
+    LAIR_WAVE_HI, LAIR_WAVE_LO,
+};
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::pirate::{
     self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, SkillRecord,
@@ -37,6 +40,10 @@ const ABOARD_INDENT: usize = 2;
 
 /// Label on the Vampirates "View Skill Distribution" button.
 const SKILL_DIST_BUTTON_LABEL: &str = "View Skill Distribution";
+
+/// Label on the Cursed Isles "Show Per-Fight Statistics" button (currently inert —
+/// a placeholder for a future per-fight breakdown popup).
+const PER_FIGHT_BUTTON_LABEL: &str = "[ Show Per-Fight Statistics ]";
 
 /// Warning shown at the bottom of the app while the Unpoison button is focused.
 pub const UNPOISON_TOOLTIP: [&str; 2] = [
@@ -250,6 +257,13 @@ impl VoyageType {
         matches!(self, VoyageType::Vampirates)
     }
 
+    /// Whether this voyage type runs the Cursed Isles tracking (the Enthralled
+    /// leaderboard in place of Aboard, plus the Fight Statistics box). Only Cursed
+    /// Isles does.
+    pub fn tracks_cursed_isles(self) -> bool {
+        matches!(self, VoyageType::CursedIsles)
+    }
+
     /// Whether to show the "View Skill Distribution" button (the Treasure Haul ×
     /// Carpentry scatterplot). Only Vampirates, whose axes those skills are.
     pub fn has_skill_distribution(self) -> bool {
@@ -264,8 +278,9 @@ const PILLAGE_PANES: &[JobberPane] =
 /// Bottom panes for an Atlantis run: aboard and planked, no greedy tally.
 const ATLANTIS_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
 
-/// Bottom panes for a Cursed Isles run: aboard and planked, same as Atlantis.
-const CURSED_ISLES_PANES: &[JobberPane] = &[JobberPane::Aboard, JobberPane::Planked];
+/// Bottom panes for a Cursed Isles run: the Enthralled leaderboard (replacing the
+/// usual Aboard list) beside Planked.
+const CURSED_ISLES_PANES: &[JobberPane] = &[JobberPane::Enthralled, JobberPane::Planked];
 
 /// Bottom panes for a Vampirates run: aboard and planked, pinned short below the
 /// headline Top Jobbers list (see [`VoyageType::top_jobbers_fills`]).
@@ -282,6 +297,9 @@ pub enum JobberPane {
     Aboard,
     Greedy,
     Planked,
+    /// Cursed Isles only: a leaderboard of who enthralled the most zombies, shown in
+    /// place of the Aboard list. Rows are `name  alive/total`, ranked by total.
+    Enthralled,
 }
 
 // ---------------------------------------------------------------------------
@@ -547,6 +565,8 @@ pub enum JobberFocus {
     Aboard,
     Greedy,
     Planked,
+    /// The Enthralled leaderboard pane (Cursed Isles only).
+    Enthralled,
 }
 
 #[derive(Default)]
@@ -559,10 +579,12 @@ pub struct JobbersUi {
     pub aboard_offset: usize,
     pub greedy_offset: usize,
     pub planked_offset: usize,
+    pub enthralled_offset: usize,
     /// Selected pirate index within each pane (into that pane's pirate list).
     pub aboard_sel: usize,
     pub greedy_sel: usize,
     pub planked_sel: usize,
+    pub enthralled_sel: usize,
     /// Skill Leaderboard cursor: which column (`top_col`) and which rank within it
     /// (`top_sel`), plus the shared vertical scroll offset (`top_offset`) — all
     /// columns share one window so their ranks stay aligned row-for-row.
@@ -747,7 +769,10 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
         JobberFocus::Leaderboard => {
             vec!["Enter: pirate stats \u{00b7} \u{2190}/\u{2192} columns \u{00b7} \u{2191}/\u{2193} scroll"]
         }
-        JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
+        JobberFocus::Aboard
+        | JobberFocus::Greedy
+        | JobberFocus::Planked
+        | JobberFocus::Enthralled => {
             vec!["Enter: pirate stats \u{00b7} \u{2190}/\u{2192} panes \u{00b7} \u{2191}/\u{2193} select"]
         }
         JobberFocus::SkillDist => vec!["Press Enter to view the skill distribution plot."],
@@ -990,6 +1015,7 @@ pub fn render(
         JobberFocus::Aboard => Some(JobberPane::Aboard),
         JobberFocus::Greedy => Some(JobberPane::Greedy),
         JobberFocus::Planked => Some(JobberPane::Planked),
+        JobberFocus::Enthralled => Some(JobberPane::Enthralled),
         _ => None,
     };
     if focused_pane.is_some_and(|p| !panes.contains(&p)) {
@@ -1109,10 +1135,16 @@ pub fn render(
                 .unwrap_or(0)
         })
         .unwrap_or(0);
+    // The Enthralled leaderboard (Cursed Isles) replaces the Aboard pane: `name
+    // alive/total`, ranked by lifetime enthralled.
+    let enthralled: Vec<(String, u32, u32)> =
+        selected.as_ref().map(|k| enthralled_ranked(state, k)).unwrap_or_default();
+    let enthralled_cw = enthralled_col_width(&enthralled);
     let pane_w = |cw: usize, title: &'static str| (cw as u16 + 4).max(offset_title_width(title));
     let aboard_w = pane_w(aboard_cw, "Aboard");
     let greedy_w = pane_w(greedy_cw, "Greedy");
     let planked_w = pane_w(planked_cw, "Planked");
+    let enthralled_w = pane_w(enthralled_cw, "Enthralled");
     // Only the panes this voyage type shows contribute to the block width.
     let pane_widths: Vec<u16> = panes
         .iter()
@@ -1120,6 +1152,7 @@ pub fn render(
             JobberPane::Aboard => aboard_w,
             JobberPane::Greedy => greedy_w,
             JobberPane::Planked => planked_w,
+            JobberPane::Enthralled => enthralled_w,
         })
         .collect();
     let panes_w: u16 = pane_widths.iter().sum();
@@ -1230,6 +1263,79 @@ pub fn render(
         0
     };
 
+    // ---- Fight Statistics box sizing (Cursed Isles only) ----
+    // A non-selectable box sat between the Skill Leaderboard and the panes: the live
+    // island-wave model (current/next wave, our manpower, projected advantage), plus
+    // boss / left-the-fight warnings and an inert "Show Per-Fight Statistics" button.
+    let fight_stats: Option<StatsBox> = if ui.voyage_type.tracks_cursed_isles() {
+        let island_active = vessel.is_some_and(|v| v.island_active);
+        let wave = vessel.map_or(0, |v| v.island_wave);
+        let observed = vessel.map_or(0, |v| v.wave_enemies_observed);
+        let kind = vessel.map_or(WaveKind::Unknown, |v| v.wave_kind);
+        let zombies = vessel.map_or(0, |v| v.zombies_aboard);
+        let thralls_alive: u32 = vessel.map_or(0, |v| v.thralls_alive.values().sum());
+        // Our island melee strength: real pirates aboard (incl. us) + live thralls.
+        let manpower = aboard_set.len() as u32 + thralls_alive;
+        // Forecast anchor: pirates aboard at landing once known, else the live count.
+        let anchor = vessel
+            .map(|v| if v.island_pirates > 0 { v.island_pirates } else { aboard_set.len() as u32 })
+            .unwrap_or(aboard_set.len() as u32);
+        let next_wave = if island_active { wave.saturating_add(1) } else { wave.max(1) };
+        let (lo, hi) = island_wave_band(anchor, next_wave);
+        let mid = (lo + hi) / 2;
+
+        let mut rows: Vec<StatRow> = Vec::new();
+        // One "Phase" row: "Sailing" until we land, then "Wave N (Rumble/Swordfight)".
+        if wave == 0 {
+            rows.push(StatRow::new("Phase", "Sailing".to_string()));
+            rows.push(StatRow::new("Zombies Aboard", zombies.to_string()));
+        } else {
+            rows.push(StatRow::new("Phase", format!("Wave {wave} ({})", wave_kind_label(kind))));
+            rows.push(StatRow::new("Enemies This Wave", observed.to_string()));
+        }
+        // The next wave's kind is deterministic (waves alternate from a Rumble start).
+        let next_label = if wave == 0 { "First Wave (est.)" } else { "Next Wave (est.)" };
+        let next_count = if lo == hi { lo.to_string() } else { format!("{lo} to {hi}") };
+        let next_val = format!("{next_count} ({})", wave_kind_label(wave_kind_for(next_wave)));
+        rows.push(StatRow::new(next_label, next_val));
+        rows.push(StatRow::new("Manpower", manpower.to_string()));
+        let advantage = if mid > 0 {
+            format!("{:.1}x", manpower as f64 / mid as f64)
+        } else {
+            "\u{2014}".to_string()
+        };
+        rows.push(StatRow::new("Projected Advantage", advantage));
+
+        let mut notes: Vec<Line<'static>> = Vec::new();
+        // Vargas is guaranteed on Rumble waves from wave 5 on — derived, not detected.
+        if island_active && vargas_in_wave(wave) {
+            notes.push(Line::from(Span::styled(
+                "Ye be tremored by the presence of Vargas the Mad! Man at arms!",
+                Style::default().fg(Color::Red).bold(),
+            )));
+        }
+        if vessel.is_some_and(|v| v.island_left_warn) {
+            notes.push(Line::from(Span::styled(
+                "Counts may be off \u{2014} ye left a fight early.",
+                Style::default().fg(Color::Red).italic(),
+            )));
+        }
+        // TODO: wire this button up to a per-fight breakdown popup. Inert for now (it
+        // isn't focusable / clickable yet), rendered as a dim placeholder line.
+        notes.push(Line::from(Span::styled(
+            PER_FIGHT_BUTTON_LABEL,
+            Style::default().fg(Color::DarkGray),
+        )));
+        Some(StatsBox { title: "Fight Statistics", rows, notes })
+    } else {
+        None
+    };
+    let fight_h = fight_stats.as_ref().map_or(0, |s| {
+        let notes = if s.notes.is_empty() { 0 } else { s.notes.len() as u16 + 1 };
+        s.rows.len() as u16 + notes + 2
+    });
+    let fight_w = fight_stats.as_ref().map_or(0, stats_box_width);
+
     // Vikings lays Top Jobbers and its pane(s) side by side in one row instead of
     // stacking them; the block must be wide enough for both together.
     let side_by_side = implemented && ui.voyage_type.panes_beside_top_jobbers();
@@ -1244,6 +1350,7 @@ pub fn render(
             .max(panes_w)
             .max(stats_w)
             .max(button_w)
+            .max(fight_w)
     } else {
         voyage_w.max(offset_title_width("Coming Soon"))
     };
@@ -1292,6 +1399,9 @@ pub fn render(
                 }
                 JobberPane::Greedy => body(greedy.len(), 0),
                 JobberPane::Planked => body(planked_n, 0),
+                // Cursed Isles isn't a top-jobbers-fills type, so this is unreachable
+                // here, but the match must stay exhaustive.
+                JobberPane::Enthralled => body(enthralled.len(), 0),
             })
             .max()
             .unwrap_or(0);
@@ -1325,6 +1435,7 @@ pub fn render(
             Constraint::Length(voyage_h),
             Constraint::Length(stats_h),
             top_constraint,
+            Constraint::Length(fight_h),
             Constraint::Length(button_h),
             panes_constraint,
             Constraint::Length(tip_h),
@@ -1362,20 +1473,25 @@ pub fn render(
             render_stats_box(frame, rows[1], s, focused);
         }
         render_top_panel(frame, rows[2], &top_columns, ui, focused, regions);
+        // Fight Statistics (Cursed Isles) sits between the leaderboard and the panes;
+        // collapses to zero height (rendering nothing) on other voyage types.
+        if let Some(s) = &fight_stats {
+            render_stats_box(frame, rows[3], s, focused);
+        }
         if show_skill_dist {
             render_skill_dist_button(
                 frame,
-                rows[3],
+                rows[4],
                 focused,
                 ui.focus == JobberFocus::SkillDist,
                 regions,
             );
         }
         render_panes(
-            frame, rows[4], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
+            frame, rows[5], state, cache, selected.as_ref(), &aboard_set, &greedy, ui, focused,
             panes, &pane_widths, regions,
         );
-        rows[5]
+        rows[6]
     } else {
         render_placeholder(frame, rows[1], ui.voyage_type, focused);
         rows[2]
@@ -1554,6 +1670,15 @@ fn dragoons_boarded_value(low: u32, high: u32) -> String {
         low.to_string()
     } else {
         format!("{low} to {high}")
+    }
+}
+
+/// Short label for a Cursed Isles island wave's kind, shown beside the wave number.
+fn wave_kind_label(kind: WaveKind) -> &'static str {
+    match kind {
+        WaveKind::Unknown => "?",
+        WaveKind::Swordfight => "Swordfight",
+        WaveKind::Rumble => "Rumble",
     }
 }
 
@@ -1939,6 +2064,7 @@ fn pane_focus_target(pane: JobberPane) -> ClickTarget {
         JobberPane::Aboard => ClickTarget::JobberAboardList,
         JobberPane::Greedy => ClickTarget::JobberGreedyList,
         JobberPane::Planked => ClickTarget::JobberPlankedList,
+        JobberPane::Enthralled => ClickTarget::JobberEnthralledList,
     }
 }
 
@@ -1978,7 +2104,28 @@ pub fn pane_pirates(state: &GameState, key: &Arc<str>, pane: JobberPane) -> Vec<
                 .map(|v| v.planked_by_us.iter().cloned().collect())
                 .unwrap_or_default()
         }
+        JobberPane::Enthralled => enthralled_ranked(state, key)
+            .into_iter()
+            .map(|(n, _, _)| n)
+            .collect(),
     }
+}
+
+/// The Enthralled leaderboard rows for a vessel: `(pirate, live thralls, lifetime
+/// enthralled)`, ranked by lifetime total descending, then name. Every pirate who
+/// has ever enthralled appears (even with zero alive now). The single source of
+/// truth for both the rendered order and the pane's index→pirate mapping.
+fn enthralled_ranked(state: &GameState, key: &Arc<str>) -> Vec<(String, u32, u32)> {
+    let Some(v) = state.vessels.get(key) else {
+        return Vec::new();
+    };
+    let mut rows: Vec<(String, u32, u32)> = v
+        .thralls_total
+        .iter()
+        .map(|(n, total)| (n.clone(), v.thralls_alive.get(n).copied().unwrap_or(0), *total))
+        .collect();
+    rows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
+    rows
 }
 
 /// The pirate names in each Skill Leaderboard column, ranked exactly as
@@ -2067,11 +2214,17 @@ fn render_panes(
 
     let vessel = selected.and_then(|k| state.vessels.get(k));
 
+    // The Enthralled leaderboard rows: (pirate, live thralls, lifetime enthralled),
+    // ranked by total. Built once here for both clamping and rendering.
+    let enthralled: Vec<(String, u32, u32)> =
+        selected.map(|k| enthralled_ranked(state, k)).unwrap_or_default();
+
     // Clamp every pane's selection up front, whether or not it's shown.
     ui.aboard_sel = clamp_sel(ui.aboard_sel, aboard_set.len());
     ui.greedy_sel = clamp_sel(ui.greedy_sel, greedy.len());
     let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
     ui.planked_sel = clamp_sel(ui.planked_sel, planked_n);
+    ui.enthralled_sel = clamp_sel(ui.enthralled_sel, enthralled.len());
 
     // On dragoon voyages (Atlantis) the Aboard pane gains hostile tally footers.
     let show_dragoons = ui.voyage_type.tracks_dragoons();
@@ -2156,8 +2309,48 @@ fn render_panes(
                     ui.focus == JobberFocus::Planked, JobberPane::Planked, regions,
                 );
             }
+            // -- Enthralled (Cursed Isles): "name  alive/total", ranked by total. --
+            JobberPane::Enthralled => {
+                let inner_w = (col.width.saturating_sub(4) as usize).max(enthralled_col_width(&enthralled));
+                let rows: Vec<(Line, Option<usize>)> = enthralled
+                    .iter()
+                    .enumerate()
+                    .map(|(i, (name, alive, total))| {
+                        (enthralled_line(name, *alive, *total, inner_w, style_for(name)), Some(i))
+                    })
+                    .collect();
+                render_pane(
+                    frame, col, "Enthralled", rows, ui.enthralled_sel, &mut ui.enthralled_offset,
+                    focused, ui.focus == JobberFocus::Enthralled, JobberPane::Enthralled, regions,
+                );
+            }
         }
     }
+}
+
+/// Minimum width for the Enthralled pane: widest name + 2-space gap + widest
+/// `alive/total` value.
+fn enthralled_col_width(rows: &[(String, u32, u32)]) -> usize {
+    let name_col = rows.iter().map(|(n, _, _)| n.chars().count()).max().unwrap_or(0);
+    let val_col = rows
+        .iter()
+        .map(|(_, a, t)| format!("{a}/{t}").len())
+        .max()
+        .unwrap_or(0);
+    name_col + 2 + val_col
+}
+
+/// Build an Enthralled row: name left, `alive/total` thralls right-aligned.
+fn enthralled_line(name: &str, alive: u32, total: u32, width: usize, style: Style) -> Line<'static> {
+    let value = format!("{alive}/{total}");
+    let name_max = width.saturating_sub(value.len() + 1);
+    let nm = truncate(name, name_max);
+    let pad = width.saturating_sub(nm.chars().count() + value.len());
+    Line::from(vec![
+        Span::styled(nm, style),
+        Span::raw(" ".repeat(pad)),
+        Span::raw(value),
+    ])
 }
 
 /// Render a single pane: a bordered, auto-scrolling list of pirate rows. `rows`

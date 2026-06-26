@@ -214,6 +214,83 @@ pub const LAIR_WAVE_LO: f64 = 1.175;
 pub const LAIR_WAVE_HI: f64 = 1.225;
 
 // ---------------------------------------------------------------------------
+// Cursed Isles model
+// ---------------------------------------------------------------------------
+
+/// Crew-anchored forecast for a Cursed Isles island wave's enemy count. Unlike a
+/// vampire lair (exactly one vampire per pirate on wave 1), island waves only
+/// *loosely* scale with crew, and the multiplier here is a rough estimate from a
+/// single run — one where we often left fights early, so the observed counts that
+/// would calibrate it under-report. TODO: recalibrate from more recorded runs.
+pub const ISLAND_ANCHOR_MULT: f64 = 1.5;
+pub const ISLAND_WAVE_GROWTH: f64 = 1.1;
+pub const ISLAND_WAVE_LO: f64 = 0.8;
+pub const ISLAND_WAVE_HI: f64 = 1.2;
+
+/// Crew-anchored projected `[low, high]` enemy count for a 1-based island `wave`.
+/// See the `ISLAND_*` constants — a deliberately wide, rough band.
+pub fn island_wave_band(pirates: u32, wave: u32) -> (u32, u32) {
+    let base =
+        pirates as f64 * ISLAND_ANCHOR_MULT * ISLAND_WAVE_GROWTH.powi(wave.saturating_sub(1) as i32);
+    (
+        (base * ISLAND_WAVE_LO).round() as u32,
+        (base * ISLAND_WAVE_HI).round() as u32,
+    )
+}
+
+/// The kind of a 1-based island wave. Island waves always start at Rumble (wave 1)
+/// and alternate Rumble / Swordfight thereafter — so the kind is known the moment a
+/// wave begins, even before the first kill (and matches the observed enemy families:
+/// rumble waves field zombies / Enlightened Ones / Vargas, swordfight waves cultists
+/// / homunculi). `Unknown` only before landing (wave 0).
+pub fn wave_kind_for(wave: u32) -> WaveKind {
+    match wave {
+        0 => WaveKind::Unknown,
+        w if w % 2 == 1 => WaveKind::Rumble,
+        _ => WaveKind::Swordfight,
+    }
+}
+
+/// Whether the boss Vargas the Mad is present in a 1-based island wave. He's
+/// *guaranteed* from wave 5 on, but only on Rumble waves — so it's derived from the
+/// wave number, never detected. His arrival herald is "Ye be tremored by the presence
+/// of Vargas the Mad! Man at arms!".
+///
+/// TODO: track when Vargas is *eliminated* (his `Vargas the Mad is eliminated!` line)
+/// — useful for per-fight stats / "did we beat the boss this run" — separate from
+/// this presence check.
+pub fn vargas_in_wave(wave: u32) -> bool {
+    wave >= 5 && matches!(wave_kind_for(wave), WaveKind::Rumble)
+}
+
+/// Which special-encounter mechanic is active on a vessel, inferred from the
+/// voyage's tell. Gates which "invaders aboard" lines are counted so a stray
+/// keyword on an ordinary pillage can't move the wrong counter. Each mechanic is
+/// exclusive to its voyage type — dragoons are Atlantis-only (still counted via the
+/// legacy `dragoons_aboard` path, not gated here yet), zombies Cursed-Isles-only.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EncounterKind {
+    #[default]
+    None,
+    Atlantis,
+    CursedIsles,
+    // TODO(Haunted Seas): add a `HauntedSeas` variant and count phantasm boarders
+    // here, parallel to dragoons (Atlantis) / zombies (Cursed Isles).
+}
+
+/// A Cursed Isles island wave is either a swordfight or a rumble, and the two
+/// alternate. Classified from the enemy family seen — cultists/homunculi are
+/// swordfight foes; zombies, Enlightened Ones and Vargas are rumble foes — so it
+/// stays `Unknown` until the wave's first kill.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum WaveKind {
+    #[default]
+    Unknown,
+    Swordfight,
+    Rumble,
+}
+
+// ---------------------------------------------------------------------------
 // Vessel
 // ---------------------------------------------------------------------------
 
@@ -269,6 +346,44 @@ pub struct Vessel {
     /// Latched once any wave's observed count falls outside its projected range —
     /// i.e. we left the swordfight and miscounted. Drives the on-screen reminder.
     pub lair_warn: bool,
+    /// --- Cursed Isles tracking (Cursed Isles voyages) ---
+    /// Which special encounter this vessel's current run is, inferred from its tell
+    /// (the noxious fog, or any zombie/island line as a fallback). Gates the zombie
+    /// and island lines below, and the Game-over routing. Reset at each run's start.
+    pub encounter: EncounterKind,
+    /// Zombies currently aboard during the raft-boarding (sea) phase: +1 per
+    /// "Boarders from the raft..." line; -1 when one is thralled or driven off.
+    /// Reset to zero on landing. Best-effort — a raft's exact head count isn't
+    /// logged, so this counts boarding events, not necessarily heads.
+    pub zombies_aboard: u32,
+    /// Live thralls per pirate (zombies turned to our side and still alive): +1 on
+    /// "<p> has taken control of a zombie.", -1 on "<p>'s Thrall is eliminated!".
+    /// The sum is our bonus melee manpower on the island.
+    pub thralls_alive: HashMap<String, u32>,
+    /// Lifetime thralls per pirate over the run (never decremented) — the
+    /// "enthralled" total the Enthralled leaderboard ranks by.
+    pub thralls_total: HashMap<String, u32>,
+    /// Whether we're in the island-foraging phase (between "Ye land on the island"
+    /// and a retreat / a lost wave / the run ending).
+    pub island_active: bool,
+    /// Island wave number: 1 on landing, +1 per cleared wave (a `Game over` we won).
+    pub island_wave: u32,
+    /// Real pirates aboard at landing — the crew anchor the wave forecast grows from.
+    pub island_pirates: u32,
+    /// Enemy NPCs eliminated in the current wave only (reset each wave). Undercounts
+    /// when we leave the fight — see [`Self::island_left_warn`].
+    pub wave_enemies_observed: u32,
+    /// Crew-anchored projected `[low, high]` enemy count for the current wave.
+    pub wave_enemies_lo: u32,
+    pub wave_enemies_hi: u32,
+    /// Latched once a wave's observed kills fell short of its projection — i.e. we
+    /// left the fight early, so the counts are unreliable. Drives an on-screen note.
+    pub island_left_warn: bool,
+    /// The current wave's kind (rumble / swordfight). Waves start at Rumble (wave 1)
+    /// and alternate, so this is set deterministically from the wave number — see
+    /// [`wave_kind_for`]. Whether the Vargas boss is present is likewise derived from
+    /// the wave number (see [`vargas_in_wave`]), not stored.
+    pub wave_kind: WaveKind,
     /// Greedy strikes tallied per attacking pirate, over the whole run.
     pub greedy_by_pirate: HashMap<String, u32>,
     /// Greedy strikes during the current/most-recent battle only. Reset when a
@@ -365,6 +480,12 @@ pub struct GameState {
     /// we just stepped onto. Reset at the top of each [`Self::process_line`];
     /// consumed by [`Self::take_boarded_vessel`].
     boarded_vessel: Option<Arc<str>>,
+    /// Set for the duration of one line when the Cursed Isles tell (the noxious fog)
+    /// first fires on a run. Lets the app jump to the Jobbers page and switch it to
+    /// the Cursed Isles voyage layout — mirrors [`Self::lair_just_entered`]. Reset at
+    /// the top of each [`Self::process_line`]; consumed by
+    /// [`Self::take_cursed_isles_detected`].
+    cursed_isles_just_detected: bool,
 }
 
 impl GameState {
@@ -385,6 +506,7 @@ impl GameState {
             detected_foe_ship: None,
             lair_just_entered: false,
             boarded_vessel: None,
+            cursed_isles_just_detected: false,
         }
     }
 
@@ -414,6 +536,7 @@ impl GameState {
         self.detected_foe_ship = None;
         self.lair_just_entered = false;
         self.boarded_vessel = None;
+        self.cursed_isles_just_detected = false;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
@@ -602,6 +725,52 @@ impl GameState {
         // `dragoons_aboard`/`dragoon_boardings` are non-zero is a noteworthy case
         // worth recording. No state change today — wire it here when that log lands.
 
+        // Cursed Isles: the noxious fog is our (late) tell that this run is a Cursed
+        // Isles voyage. Mark the encounter and fire the one-shot auto-jump the first
+        // time it shows. The cure line ("Another draft from the rum kegs...") and the
+        // CI loot lines are intentionally not parsed.
+        if body == "The crew inhales the noxious fog, and starts to lose fine motor control." {
+            self.on_cursed_isles_tell();
+            return;
+        }
+        // Cursed Isles: a raft sinks and dumps zombie boarders onto us (sea phase).
+        if body == "Boarders from the raft clamber onto yer vessel as theirs sinks to the depths." {
+            self.on_zombie_aboard();
+            return;
+        }
+        // Cursed Isles: a crewmate turns a boarding zombie to our side (a thrall).
+        if let Some(who) = body.strip_suffix(" has taken control of a zombie.") {
+            self.confirm_self(who);
+            self.on_thrall_taken(who);
+            return;
+        }
+        // Cursed Isles: a boarding zombie is driven back off the ship (defeated, not
+        // thralled): "<p> has driven <Adjective> Zombie from the ship!". The trailing
+        // "Zombie" keeps this from matching an ordinary foe driven off in a pillage.
+        if let Some(rest) = body.strip_suffix(" from the ship!") {
+            if let Some((who, foe)) = rest.split_once(" has driven ") {
+                if foe.ends_with("Zombie") {
+                    self.confirm_self(who);
+                    self.note_pirate_aboard(who); // driving a zombie off proves they're aboard
+                    self.on_zombie_driven_off();
+                    return;
+                }
+            }
+        }
+        // Cursed Isles: we land on the island — the boarding phase ends and the
+        // foraging waves begin (wave 1).
+        if body == "Ye land on the island, but an angry mob of its inhabitants stands \
+                    between ye and yer rightful plunderin'!"
+        {
+            self.on_island_land();
+            return;
+        }
+        // Cursed Isles: an officer recalls the crew aboard — the island phase ends.
+        if body.strip_suffix(" ordered everyone back aboard the ship!").is_some() {
+            self.on_island_retreat();
+            return;
+        }
+
         // Vampirates: we entered a lair (wave 1 begins). Waves run from here (and
         // the first slap of Mother) through each swordfight conclusion below — the
         // "rustling in coffins" line is only a "swordfight imminent" herald and does
@@ -628,10 +797,18 @@ impl GameState {
         // are vampires, we lost the board, which ends a lair.
         if let Some(summary) = body.strip_prefix("Game over.") {
             let summary = summary.trim_start();
-            self.on_battle_end(summary); // resync crew roster when we won
-            self.on_sea_battle_resolve(summary); // record the sea-battle outcome (pillage)
-            self.on_lair_gameover(summary); // vampirate wave engine
-            self.sample_crew(); // roster may have been resynced
+            // Cursed Isles winner lists include our "<p>'s Thrall" allies, whose
+            // spaces the sea-battle crew-resync would miscount as swabbies (and
+            // corrupt the crew roster). So on a CI run the island wave engine owns
+            // Game over outright; the pillage/lair handlers are bypassed.
+            if self.current_vessel().is_some_and(|v| v.encounter == EncounterKind::CursedIsles) {
+                self.on_island_gameover(summary);
+            } else {
+                self.on_battle_end(summary); // resync crew roster when we won
+                self.on_sea_battle_resolve(summary); // record the sea-battle outcome (pillage)
+                self.on_lair_gameover(summary); // vampirate wave engine
+                self.sample_crew(); // roster may have been resynced
+            }
             return;
         }
 
@@ -884,6 +1061,11 @@ impl GameState {
     /// lazily created by an early battle).
     fn on_set_sail(&mut self) {
         let now = self.now;
+        // A fresh run (no voyage underway yet) wipes any prior run's Cursed Isles
+        // state so the encounter and the fog auto-jump re-arm per run.
+        if self.current_vessel().is_some_and(|v| v.current_voyage.is_none()) {
+            self.reset_cursed_isles();
+        }
         let Some(v) = self.current_vessel_mut() else {
             return;
         };
@@ -1241,6 +1423,176 @@ impl GameState {
         }
     }
 
+    /// The Cursed Isles tell (the noxious fog) fired. Mark the encounter and, the
+    /// first time per run, request the one-shot auto-jump to the Cursed Isles layout.
+    fn on_cursed_isles_tell(&mut self) {
+        let already = self
+            .current_vessel()
+            .is_some_and(|v| v.encounter == EncounterKind::CursedIsles);
+        if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::CursedIsles;
+        }
+        if !already {
+            self.cursed_isles_just_detected = true;
+        }
+    }
+
+    /// A zombie raft boarded us (Cursed Isles sea phase). Also marks the encounter as
+    /// a fallback if we missed the fog tell.
+    fn on_zombie_aboard(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::CursedIsles;
+            v.zombies_aboard = v.zombies_aboard.saturating_add(1);
+        }
+    }
+
+    /// Record a real-player pirate as aboard from an action that proves their presence
+    /// (enthralling or driving off a boarding zombie) — the same roster signal as a
+    /// "has come aboard" line, useful on a Cursed Isles run where the boarding melees
+    /// may be the first time we see a jobber act. A no-op for NPC names and for us
+    /// (we're never in the crewmate set).
+    fn note_pirate_aboard(&mut self, who: &str) {
+        let me = self.player_name.clone();
+        let is_other = pirate::is_player_name(who)
+            && me.as_deref().is_none_or(|me| !who.eq_ignore_ascii_case(me));
+        if !is_other {
+            return;
+        }
+        if let Some(v) = self.current_vessel_mut() {
+            v.crewmates.insert(who.to_string());
+        }
+        self.sample_crew();
+    }
+
+    /// A crewmate enthralled a boarding zombie: it leaves the hostile count and joins
+    /// `who`'s thralls (both the live count and the lifetime total). Enthralling proves
+    /// `who` is aboard, so they're folded into the crew roster too.
+    fn on_thrall_taken(&mut self, who: &str) {
+        self.note_pirate_aboard(who);
+        if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::CursedIsles;
+            *v.thralls_alive.entry(who.to_string()).or_insert(0) += 1;
+            *v.thralls_total.entry(who.to_string()).or_insert(0) += 1;
+            v.zombies_aboard = v.zombies_aboard.saturating_sub(1);
+        }
+    }
+
+    /// A boarding zombie was driven back off the ship (Cursed Isles sea phase).
+    fn on_zombie_driven_off(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::CursedIsles;
+            v.zombies_aboard = v.zombies_aboard.saturating_sub(1);
+        }
+    }
+
+    /// We landed on the island — the raft-boarding phase ends and the foraging waves
+    /// begin at wave 1. Anchors the crew-based wave forecast on the pirates aboard.
+    fn on_island_land(&mut self) {
+        let pirates = self.current_pirates();
+        let (lo, hi) = island_wave_band(pirates, 1);
+        if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::CursedIsles;
+            v.zombies_aboard = 0;
+            v.island_active = true;
+            v.island_wave = 1;
+            v.island_pirates = pirates;
+            v.wave_enemies_observed = 0;
+            v.wave_enemies_lo = lo;
+            v.wave_enemies_hi = hi;
+            v.island_left_warn = false;
+            v.wave_kind = wave_kind_for(1); // wave 1 is always a Rumble
+        }
+    }
+
+    /// An island enemy NPC was knocked out: tally it for the wave. (The wave's kind and
+    /// the Vargas boss's presence are both derived from the wave number, not the enemy
+    /// seen — so Vargas just counts as another kill here.)
+    fn on_island_enemy_defeated(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            if !v.island_active {
+                return;
+            }
+            v.wave_enemies_observed = v.wave_enemies_observed.saturating_add(1);
+        }
+    }
+
+    /// A `Game over` while on the island (Cursed Isles). Mirrors the lair engine: if
+    /// the wave's kills fell short of its projection we left early (flag it); on a win
+    /// advance to the next wave and re-project; on a loss the island phase ends.
+    fn on_island_gameover(&mut self, summary: &str) {
+        let Some((_, list)) = summary.split_once(':') else {
+            return;
+        };
+        let me = self.player_name.clone();
+        let names: Vec<&str> = list
+            .trim()
+            .trim_end_matches('.')
+            .split(", ")
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect();
+        let players_won = names.iter().any(|n| pirate::is_player_name(n));
+        // The winning side's real players are an authoritative crew roster (a CI win
+        // lists our crew). Add them as proof of presence — additively, so a KO'd or
+        // late-seen jobber is captured without dropping anyone. Thralls ("<p>'s
+        // Thrall") and named swabbies carry spaces, so `is_player_name` rejects them;
+        // ourselves are excluded (we're never in the crewmate set).
+        let crew_winners: Vec<String> = names
+            .iter()
+            .filter(|n| pirate::is_player_name(n))
+            .filter(|n| me.as_deref().is_none_or(|me| !n.eq_ignore_ascii_case(me)))
+            .map(|n| n.to_string())
+            .collect();
+        if let Some(v) = self.current_vessel_mut() {
+            if !v.island_active {
+                return;
+            }
+            for n in &crew_winners {
+                v.crewmates.insert(n.clone());
+            }
+            if v.wave_enemies_observed < v.wave_enemies_lo {
+                v.island_left_warn = true;
+            }
+            if !players_won {
+                v.island_active = false;
+                return;
+            }
+            v.island_wave = v.island_wave.saturating_add(1);
+            v.wave_enemies_observed = 0;
+            v.wave_kind = wave_kind_for(v.island_wave); // alternates from the Rumble start
+            let (lo, hi) = island_wave_band(v.island_pirates, v.island_wave);
+            v.wave_enemies_lo = lo;
+            v.wave_enemies_hi = hi;
+        }
+    }
+
+    /// The crew was recalled aboard — the island foraging phase ends.
+    fn on_island_retreat(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.island_active = false;
+        }
+    }
+
+    /// Reset all Cursed Isles state at the start of a fresh run, so a later run on the
+    /// same vessel doesn't inherit the previous encounter (and the fog tell re-arms
+    /// the auto-jump once per run).
+    fn reset_cursed_isles(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::None;
+            v.zombies_aboard = 0;
+            v.thralls_alive.clear();
+            v.thralls_total.clear();
+            v.island_active = false;
+            v.island_wave = 0;
+            v.island_pirates = 0;
+            v.wave_enemies_observed = 0;
+            v.wave_enemies_lo = 0;
+            v.wave_enemies_hi = 0;
+            v.island_left_warn = false;
+            v.wave_kind = WaveKind::Unknown;
+        }
+    }
+
     /// Entered a vampire lair — wave 1 begins with one vampire per pirate aboard.
     /// Resets the lair counters (a re-entry / new lair starts fresh).
     fn on_lair_enter(&mut self) {
@@ -1279,6 +1631,30 @@ impl GameState {
     /// fight (the basis for the foe's headcount) and flag PvP when an eliminated
     /// real player isn't our own crew.
     fn on_eliminated(&mut self, name: &str) {
+        // Cursed Isles: one of our controlled zombies (a thrall) died — drop its
+        // controller's live count. A thrall is never an enemy, so bail before any
+        // lair / island / sea-battle counting (in any phase).
+        if let Some(who) = name.strip_suffix("'s Thrall") {
+            let who = who.to_string();
+            if let Some(v) = self.current_vessel_mut() {
+                if let Some(n) = v.thralls_alive.get_mut(&who) {
+                    *n = n.saturating_sub(1);
+                }
+            }
+            return;
+        }
+        // Cursed Isles island wave: count enemy NPC kills (classify the wave and flag
+        // Vargas). A real-player KO is one of our crew (islanders are all NPCs) — it
+        // isn't an enemy, but it does prove that pirate is aboard.
+        if self.current_vessel().is_some_and(|v| v.island_active) {
+            self.confirm_self(name);
+            if pirate::is_player_name(name) {
+                self.note_pirate_aboard(name);
+            } else {
+                self.on_island_enemy_defeated();
+            }
+            return;
+        }
         // Vampirate lairs: just tally defeated vampires (NPC names).
         if self.current_vessel().is_some_and(|v| v.lair_active) {
             if !pirate::is_player_name(name) {
@@ -1521,6 +1897,13 @@ impl GameState {
     /// the Vampirates voyage layout.
     pub fn take_lair_entered(&mut self) -> bool {
         std::mem::take(&mut self.lair_just_entered)
+    }
+
+    /// Take the "the Cursed Isles tell just fired this line" flag (true once per
+    /// run). The app uses it to jump to the Jobbers page and switch it to the
+    /// Cursed Isles voyage layout.
+    pub fn take_cursed_isles_detected(&mut self) -> bool {
+        std::mem::take(&mut self.cursed_isles_just_detected)
     }
 
     /// Take the vessel we just boarded this line (once per boarding). The app
@@ -2211,6 +2594,177 @@ mod tests {
         assert_eq!(v.lair_wave, 2);
         assert_eq!(v.vampires_defeated, 4);
         assert!(v.lair_warn); // wave 2 fell short of its projection -> we left
+    }
+
+    #[test]
+    fn cursed_isles_tell_marks_encounter_and_fires_jump_once() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
+        // The noxious fog is the tell: it marks the encounter and requests the jump.
+        gs.process_line(
+            "[01:00:10] The crew inhales the noxious fog, and starts to lose fine motor control.",
+        );
+        assert!(gs.take_cursed_isles_detected());
+        assert_eq!(gs.current_vessel().unwrap().encounter, EncounterKind::CursedIsles);
+        // A second fog line must not re-fire the jump (already a known CI run).
+        gs.process_line(
+            "[01:00:20] The crew inhales the noxious fog, and starts to lose fine motor control.",
+        );
+        assert!(!gs.take_cursed_isles_detected());
+    }
+
+    #[test]
+    fn cursed_isles_counts_zombies_and_thralls() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
+        // Four rafts board us with zombies.
+        for _ in 0..4 {
+            gs.process_line(
+                "[01:00:01] Boarders from the raft clamber onto yer vessel as theirs sinks to the depths.",
+            );
+        }
+        assert_eq!(gs.current_vessel().unwrap().zombies_aboard, 4);
+        // Two are enthralled (leave the hostile count, join their controllers).
+        gs.process_line("[01:00:02] Playerone has taken control of a zombie.");
+        gs.process_line("[01:00:03] Matetwo has taken control of a zombie.");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.zombies_aboard, 2);
+            assert_eq!(v.thralls_alive.get("Playerone"), Some(&1));
+            assert_eq!(v.thralls_total.get("Playerone"), Some(&1));
+            assert_eq!(v.thralls_alive.get("Matetwo"), Some(&1));
+            // Enthralling proves a pirate is aboard: Matetwo joins the crew, but we
+            // (Playerone) are never in the crewmate set.
+            assert!(v.crewmates.contains("Matetwo"));
+            assert!(!v.crewmates.contains("Playerone"));
+        }
+        // One zombie is driven back off the ship.
+        gs.process_line("[01:00:04] Playerone has driven Controlled Zombie from the ship!");
+        assert_eq!(gs.current_vessel().unwrap().zombies_aboard, 1);
+        // Playerone's thrall dies: the live count drops, the lifetime total holds.
+        gs.process_line("[01:00:05] Playerone's Thrall is eliminated!");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.thralls_alive.get("Playerone"), Some(&0));
+            assert_eq!(v.thralls_total.get("Playerone"), Some(&1));
+        }
+    }
+
+    #[test]
+    fn cursed_isles_island_waves_count_enemies_and_classify() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
+        gs.process_line("[01:00:01] Matetwo has come aboard.");
+        gs.process_line("[01:00:02] Matethree has come aboard.");
+        gs.process_line(
+            "[01:00:03] The crew inhales the noxious fog, and starts to lose fine motor control.",
+        );
+        let _ = gs.take_cursed_isles_detected();
+        // Land on the island: wave 1 opens, anchored on the pirates aboard (3).
+        gs.process_line(
+            "[01:05:00] Ye land on the island, but an angry mob of its inhabitants stands \
+             between ye and yer rightful plunderin'!",
+        );
+        {
+            let v = gs.current_vessel().unwrap();
+            assert!(v.island_active);
+            assert_eq!(v.island_wave, 1);
+            assert_eq!(v.island_pirates, 3);
+            assert_eq!(v.wave_kind, WaveKind::Rumble); // wave 1 is always a Rumble
+        }
+        // Wave 1 is a rumble (zombies). A crew KO and a thrall KO are NOT enemies; the
+        // four zombies meet the projected band, so no "left early" flag is raised.
+        // `Matefive` is seen only via this KO — it proves they're aboard.
+        gs.process_line("[01:05:10] Servile Zombie is eliminated!");
+        gs.process_line("[01:05:11] Matefive is eliminated!"); // crew KO -> proof of presence
+        gs.process_line("[01:05:12] Playerone's Thrall is eliminated!"); // thrall
+        gs.process_line("[01:05:13] Enlightened One is eliminated!");
+        gs.process_line("[01:05:14] Cursed Zombie is eliminated!");
+        gs.process_line("[01:05:15] Mindless Zombie is eliminated!");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.wave_enemies_observed, 4);
+            assert_eq!(v.wave_kind, WaveKind::Rumble);
+            assert!(v.crewmates.contains("Matefive")); // KO proved them aboard
+        }
+        // Clearing wave 1 advances to wave 2. The winners list is an authoritative
+        // roster: `Matefour` (seen only here) joins the crew, while our thralls
+        // ("<p>'s Thrall", which contain spaces) must NOT be miscounted as swabbies —
+        // the sea-battle crew-resync is bypassed on a CI run.
+        gs.process_line(
+            "[01:06:00] Game over.  Winners: Playerone, Matetwo, Matefour, Playerone's Thrall.",
+        );
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.island_wave, 2);
+            assert_eq!(v.wave_enemies_observed, 0);
+            assert_eq!(v.wave_kind, WaveKind::Swordfight); // wave 2 alternates to Swordfight
+            assert!(!v.island_left_warn); // wave 1 met its band
+            assert_eq!(v.swabbies, 0); // thralls not miscounted as swabbies
+            assert!(v.crewmates.contains("Matefour")); // winners list proved them aboard
+            assert!(!v.crewmates.contains("Playerone's Thrall"));
+        }
+        // Wave 2 is a swordfight (cultists / homunculi), and we under-count it (we
+        // leave early): only 2 kills against a projected band that floors higher.
+        gs.process_line("[01:06:10] Berserk Cultist is eliminated!");
+        gs.process_line("[01:06:11] Foaming Homunculus is eliminated!");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.wave_kind, WaveKind::Swordfight);
+            assert!(v.wave_enemies_observed < v.wave_enemies_lo); // short of the band
+        }
+        gs.process_line("[01:07:00] Game over.  Winners: Playerone, Matetwo.");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert!(v.island_left_warn); // we left wave 2 early
+            assert_eq!(v.island_wave, 3);
+            assert_eq!(v.wave_kind, WaveKind::Rumble); // back to a rumble
+        }
+    }
+
+    #[test]
+    fn vargas_only_on_rumble_waves_five_plus() {
+        assert!(!vargas_in_wave(0));
+        assert!(!vargas_in_wave(1)); // rumble, but before wave 5
+        assert!(!vargas_in_wave(3));
+        assert!(!vargas_in_wave(4)); // before wave 5 (and a swordfight)
+        assert!(vargas_in_wave(5)); // rumble, wave 5
+        assert!(!vargas_in_wave(6)); // swordfight
+        assert!(vargas_in_wave(7)); // rumble, wave 7
+        assert!(!vargas_in_wave(8)); // swordfight
+    }
+
+    #[test]
+    fn island_wave_band_grows_with_wave() {
+        let (lo1, hi1) = island_wave_band(6, 1);
+        let (lo2, hi2) = island_wave_band(6, 2);
+        assert!(lo1 <= hi1 && lo2 <= hi2);
+        assert!(lo2 >= lo1 && hi2 >= hi1); // later waves project at least as large
+    }
+
+    #[test]
+    fn new_run_resets_cursed_isles_state() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
+        gs.process_line("[01:00:01] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[01:00:02] The crew inhales the noxious fog, and starts to lose fine motor control.",
+        );
+        let _ = gs.take_cursed_isles_detected();
+        gs.process_line(
+            "[01:00:03] Boarders from the raft clamber onto yer vessel as theirs sinks to the depths.",
+        );
+        assert_eq!(gs.current_vessel().unwrap().zombies_aboard, 1);
+        // End the run and start a fresh one: the CI state clears so a later pillage on
+        // this vessel isn't treated as Cursed Isles (and the fog re-arms the jump).
+        gs.process_line("[01:10:00] Playerone issued an order to put into port.");
+        gs.process_line("[02:00:00] Playerone issued an order to set the vessel to sail.");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.encounter, EncounterKind::None);
+        assert_eq!(v.zombies_aboard, 0);
     }
 
     #[test]

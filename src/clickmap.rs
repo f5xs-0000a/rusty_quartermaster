@@ -41,6 +41,7 @@ pub enum ClickTarget {
     JobberAboardList,
     JobberGreedyList,
     JobberPlankedList,
+    JobberEnthralledList,
     JobberPirate { pane: JobberPane, idx: usize },
     JobberPirateSeeTrophies,
     JobberPirateClose,
