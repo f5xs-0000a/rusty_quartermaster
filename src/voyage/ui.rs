@@ -163,8 +163,6 @@ pub struct VoyageView {
     pub period: Option<String>,
     /// Elapsed run time — final duration if ported, else live elapsed.
     pub elapsed_secs: Option<i64>,
-    /// Cannon-size label for the cannonball row ("Small"/"Medium"/"Large").
-    pub cannon_label: Option<String>,
     /// The displayed run is finished and not yet saved/dismissed — offer to save.
     pub saveable: bool,
     pub battle: BattleStats,
@@ -1377,14 +1375,11 @@ fn build_lines(view: &VoyageView) -> Built {
 
     // Consumption.
     out.section("Consumption");
-    let balls_label = format!(
-        "Cannon Balls ({})",
-        view.cannon_label.clone().unwrap_or_else(dash)
-    );
     out.stat(
-        &balls_label,
-        opt_u64(c.balls),
-        "Cannon balls fired this voyage (Restock minus Stock for the ship's size).",
+        "Cannon Balls",
+        commas(c.balls as i64),
+        "Cannon balls fired this voyage (Restock minus Stock, summed across all \
+         sizes — a ship burns only its own).",
     );
     out.stat(
         "  per battle",
@@ -1393,8 +1388,23 @@ fn build_lines(view: &VoyageView) -> Built {
     );
     out.stat(
         "Alcohol",
-        commas(c.alcohol as i64),
+        commas(c.alcohol.weighted() as i64),
         "Alcohol consumed, weighted by potency (swill 2 / grog 3 / fine rum 6).",
+    );
+    out.stat(
+        "  swill",
+        commas(c.alcohol.swill as i64),
+        "Swill drained this voyage (Restock minus Stock).",
+    );
+    out.stat(
+        "  grog",
+        commas(c.alcohol.grog as i64),
+        "Grog drained this voyage (Restock minus Stock).",
+    );
+    out.stat(
+        "  fine rum",
+        commas(c.alcohol.fine_rum as i64),
+        "Fine rum drained this voyage (Restock minus Stock).",
     );
     out.stat(
         "  per crew",
@@ -1558,10 +1568,6 @@ fn opt_dur(x: Option<f64>) -> String {
 
 fn opt_commas(x: Option<f64>) -> String {
     x.map(|v| commas(v.round() as i64)).unwrap_or_else(|| "—".to_string())
-}
-
-fn opt_u64(x: Option<u64>) -> String {
-    x.map(|v| commas(v as i64)).unwrap_or_else(|| "—".to_string())
 }
 
 fn opt1(x: Option<f64>) -> String {

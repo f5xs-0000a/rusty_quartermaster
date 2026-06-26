@@ -17,6 +17,7 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::ships::SHIPS;
+use crate::voyage::stats::ConsumptionStats;
 use crate::voyage::{effective_outcome, BattleCategory, BattleOutcome, TeamSide, Voyage};
 
 /// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
@@ -90,6 +91,27 @@ pub struct SavedBattle {
     pub snapshot: Option<SavedSnapshot>,
 }
 
+/// Consumables used over a voyage, snapshotted at save time from the Profits
+/// stock delta (`Restock - Stock`). The live delta can't be reconstructed once
+/// the hold is restocked, so it's frozen here. Alcohol is stored as the raw
+/// per-tier counts (the potency-weighted total is derived). Cannonballs are
+/// size-agnostic. `None` on a [`SavedVoyage`] means consumption wasn't recorded
+/// for that run (e.g. older history, or the user declined to store it).
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct SavedConsumption {
+    /// Cannonballs fired, summed across all sizes (a ship burns only its own).
+    #[serde(default)]
+    pub cannonballs: u64,
+    #[serde(default)]
+    pub swill: u64,
+    #[serde(default)]
+    pub grog: u64,
+    #[serde(default)]
+    pub fine_rum: u64,
+    #[serde(default)]
+    pub rum_spice: u64,
+}
+
 /// One persisted voyage.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedVoyage {
@@ -112,6 +134,10 @@ pub struct SavedVoyage {
     pub avg_pirates: Option<f64>,
     #[serde(default)]
     pub avg_swabbies: Option<f64>,
+    /// Consumables used over the run, or `None` when not recorded. See
+    /// [`SavedConsumption`].
+    #[serde(default)]
+    pub consumption: Option<SavedConsumption>,
     #[serde(default)]
     pub battles: Vec<SavedBattle>,
 }
@@ -163,6 +189,7 @@ pub fn from_voyage(
     v: &Voyage,
     vessel: Option<&str>,
     ship_type: Option<&str>,
+    consumption: Option<&ConsumptionStats>,
     self_confirmed: bool,
 ) -> SavedVoyage {
     // Resolve a `SHIPS` index to its name, decoupling the file from index churn.
@@ -175,6 +202,13 @@ pub fn from_voyage(
         duration_secs: v.duration_secs(),
         avg_pirates: v.avg_pirates(),
         avg_swabbies: v.avg_swabbies(),
+        consumption: consumption.map(|c| SavedConsumption {
+            cannonballs: c.balls,
+            swill: c.alcohol.swill,
+            grog: c.alcohol.grog,
+            fine_rum: c.alcohol.fine_rum,
+            rum_spice: c.rum_spice,
+        }),
         battles: v
             .battles
             .iter()

@@ -9,7 +9,6 @@
 
 use crate::api::Commodity;
 use crate::profits::InventoryRow;
-use crate::ships::CannonSize;
 use crate::voyage::{effective_outcome, BattleCategory, BattleOutcome, Voyage};
 
 /// Caveat to show beside the rum-spice figures: spice consumption can't be read
@@ -19,22 +18,44 @@ pub const RUM_SPICE_CAVEAT: &str =
     "Not an accurate representation of rum spice, especially if you run with \
      swabbies or ran out of rum spice mid-voyage.";
 
+/// Raw item counts of each alcohol tier used over a voyage (`Restock - Stock`
+/// per tier), kept un-weighted so the breakdown can be shown and persisted. The
+/// potency-weighted total (the Hold Stats "alcohol" figure) is [`Self::weighted`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct AlcoholUse {
+    pub swill: u64,
+    pub grog: u64,
+    pub fine_rum: u64,
+}
+
+impl AlcoholUse {
+    /// Potency-weighted total alcohol (Swill×2 + Grog×3 + Fine rum×6), the figure
+    /// that matches the in-game Hold Stats "alcohol". Weights come from
+    /// [`crate::commodities::alcohol_multiplier`] so there's one source of truth.
+    pub fn weighted(&self) -> u64 {
+        use crate::commodities::alcohol_multiplier;
+        self.swill * alcohol_multiplier("Swill")
+            + self.grog * alcohol_multiplier("Grog")
+            + self.fine_rum * alcohol_multiplier("Fine rum")
+    }
+}
+
 /// Consumption over a voyage plus the per-crew / per-minute rates derived from
-/// it. Rate fields are `None` when their denominator is unavailable: no ship
-/// picked (balls), no battles yet (per-battle), or the run hasn't ported so
-/// there's no duration / time-weighted average crew (the per-minute / per-crew
-/// figures).
+/// it. Rate fields are `None` when their denominator is unavailable: no battles
+/// yet (per-battle) or the run hasn't ported so there's no duration /
+/// time-weighted average crew (the per-minute / per-crew figures).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
 pub struct ConsumptionStats {
-    /// Cannonballs of the ship's cannon size used (`Restock - Stock`). `None`
-    /// when the ship — hence cannon size — isn't known.
-    pub balls: Option<u64>,
+    /// Cannonballs used (`Restock - Stock`), summed across all three sizes — a
+    /// ship only burns its own size, so the size-agnostic total is the count
+    /// fired without needing to know which cannon the ship carries.
+    pub balls: u64,
     /// Average balls per battle this voyage.
     pub balls_per_battle: Option<f64>,
-    /// Alcohol used, in potency-weighted units (Swill×2 + Grog×3 + Fine rum×6),
-    /// matching the Hold Stats "alcohol" figure.
-    pub alcohol: u64,
+    /// Alcohol used, broken down by tier (raw item counts). The weighted total is
+    /// [`AlcoholUse::weighted`].
+    pub alcohol: AlcoholUse,
     /// Alcohol per (pirate + swabbie), over the time-weighted average crew.
     pub alcohol_per_crew: Option<f64>,
     /// Alcohol per (pirate + swabbie) per minute.
@@ -47,17 +68,14 @@ pub struct ConsumptionStats {
     pub rum_spice_per_swabbie_per_min: Option<f64>,
 }
 
-/// The cannonball commodity name matching a cannon size.
-fn cannonball_name(size: CannonSize) -> &'static str {
-    match size {
-        CannonSize::Small => "Small cannon balls",
-        CannonSize::Medium => "Medium cannon balls",
-        CannonSize::Large => "Large cannon balls",
-    }
-}
-
 /// Quantity consumed of one commodity by canonical name: `Restock - Stock`
 /// summed over matching rows, saturating at zero (a stock *gain* isn't usage).
+///
+/// TODO: invalid inventory cells are currently swallowed silently — a non-numeric
+/// or blank value parses to 0, and `stock > restock` floors to 0 used, both
+/// indistinguishable from "consumed nothing". Add a validation pass that warns
+/// the user about invalid/inverted rows (and consider recording such commodities
+/// as unknown rather than 0) before this delta is trusted.
 fn used_by_name(rows: &[InventoryRow], commodities: &[Commodity], name: &str) -> u64 {
     rows.iter()
         .filter(|r| crate::app::commod_name(commodities, r.commod_id).eq_ignore_ascii_case(name))
@@ -69,34 +87,29 @@ fn used_by_name(rows: &[InventoryRow], commodities: &[Commodity], name: &str) ->
         .sum()
 }
 
-/// Alcohol used = potency-weighted `Restock - Stock` summed over all rows. The
-/// delta is taken per row *after* weighting so the three rum tiers are comparable
-/// (this equals Hold Stats' restock-alcohol minus its ship-hold-alcohol).
-fn alcohol_used(rows: &[InventoryRow], commodities: &[Commodity]) -> u64 {
-    rows.iter()
-        .map(|r| {
-            let name = crate::app::commod_name(commodities, r.commod_id);
-            let mult = crate::commodities::alcohol_multiplier(name);
-            if mult == 0 {
-                return 0;
-            }
-            let restock = r.restock.parse::<u64>().unwrap_or(0);
-            let stock = r.stock.parse::<u64>().unwrap_or(0);
-            restock.saturating_sub(stock) * mult
-        })
-        .sum()
+/// Per-tier alcohol used (raw item counts) via `Restock - Stock` for each rum
+/// tier. Kept un-weighted; [`AlcoholUse::weighted`] applies the potencies.
+fn alcohol_used(rows: &[InventoryRow], commodities: &[Commodity]) -> AlcoholUse {
+    AlcoholUse {
+        swill: used_by_name(rows, commodities, "Swill"),
+        grog: used_by_name(rows, commodities, "Grog"),
+        fine_rum: used_by_name(rows, commodities, "Fine rum"),
+    }
 }
 
-/// Compute consumption stats for `voyage` from the current inventory `rows` and
-/// the chosen ship's `cannon_size` (`None` if no ship is picked).
+/// Compute consumption stats for `voyage` from the current inventory `rows`.
+/// Cannonballs are size-agnostic — every ball size is summed, since a ship only
+/// burns its own size, so the caller needn't know which cannon it carries.
 #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
 pub fn consumption_stats(
     voyage: &Voyage,
     rows: &[InventoryRow],
     commodities: &[Commodity],
-    cannon_size: Option<CannonSize>,
 ) -> ConsumptionStats {
-    let balls = cannon_size.map(|sz| used_by_name(rows, commodities, cannonball_name(sz)));
+    let balls = ["Small cannon balls", "Medium cannon balls", "Large cannon balls"]
+        .iter()
+        .map(|name| used_by_name(rows, commodities, name))
+        .sum::<u64>();
     let alcohol = alcohol_used(rows, commodities);
     let rum_spice = used_by_name(rows, commodities, "Rum spice");
 
@@ -116,10 +129,8 @@ pub fn consumption_stats(
         denom.filter(|d| *d > 0.0).map(|d| amount as f64 / d)
     };
 
-    let balls_per_battle = balls
-        .filter(|_| battles > 0)
-        .map(|b| b as f64 / battles as f64);
-    let alcohol_per_crew = per(alcohol, avg_crew);
+    let balls_per_battle = (battles > 0).then(|| balls as f64 / battles as f64);
+    let alcohol_per_crew = per(alcohol.weighted(), avg_crew);
     let alcohol_per_crew_per_min = alcohol_per_crew.and_then(|a| minutes.map(|m| a / m));
     let rum_spice_per_swabbie = per(rum_spice, avg_swabbies);
     let rum_spice_per_swabbie_per_min = rum_spice_per_swabbie.and_then(|a| minutes.map(|m| a / m));
@@ -486,10 +497,13 @@ mod tests {
             ..Voyage::default()
         };
 
-        let stats = consumption_stats(&voy, &rows, &commodities, Some(CannonSize::Small));
-        assert_eq!(stats.balls, Some(150));
+        let stats = consumption_stats(&voy, &rows, &commodities);
+        assert_eq!(stats.balls, 150);
         approx(stats.balls_per_battle.unwrap(), 37.5);
-        assert_eq!(stats.alcohol, 270); // 180 + 90
+        assert_eq!(stats.alcohol.grog, 60);
+        assert_eq!(stats.alcohol.fine_rum, 15);
+        assert_eq!(stats.alcohol.swill, 0);
+        assert_eq!(stats.alcohol.weighted(), 270); // 60×3 + 15×6
         assert_eq!(stats.rum_spice, 18);
         approx(stats.alcohol_per_crew.unwrap(), 270.0 / 8.0); // crew = 5 + 3
         approx(stats.alcohol_per_crew_per_min.unwrap(), 270.0 / 8.0 / 60.0);
@@ -498,12 +512,22 @@ mod tests {
     }
 
     #[test]
-    fn no_ship_means_no_ball_count() {
-        let commodities = vec![commodity(1, "Small cannon balls")];
-        let rows = vec![row(1, "200", "50")];
-        let stats = consumption_stats(&Voyage::default(), &rows, &commodities, None);
-        assert_eq!(stats.balls, None);
-        assert_eq!(stats.balls_per_battle, None);
+    fn cannonballs_are_size_agnostic() {
+        // A ship only burns its own size; summing all three still yields the
+        // count fired without knowing which cannon the ship carries.
+        let commodities = vec![
+            commodity(1, "Small cannon balls"),
+            commodity(2, "Medium cannon balls"),
+            commodity(3, "Large cannon balls"),
+        ];
+        let rows = vec![
+            row(1, "200", "50"), // 150 small used
+            row(2, "0", "0"),    // none of the other sizes
+            row(3, "0", "0"),
+        ];
+        let stats = consumption_stats(&Voyage::default(), &rows, &commodities);
+        assert_eq!(stats.balls, 150);
+        assert_eq!(stats.balls_per_battle, None); // no battles -> no per-battle
     }
 
     #[test]

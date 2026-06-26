@@ -709,20 +709,6 @@ impl AppShell {
         let vessel = key.as_ref().and_then(|k| self.chatlog.vessels.get(k));
         let voyage = vessel.and_then(|v| v.current_voyage.as_ref().or_else(|| v.voyages.last()));
 
-        // Chosen ship -> cannon size + display label.
-        let cannon_size = key
-            .as_ref()
-            .and_then(|k| self.jobbers_ui.ship_types.get(k).copied())
-            .and_then(|i| crate::ships::SHIPS.get(i))
-            .map(|s| s.cannon_size);
-        let cannon_label = cannon_size.map(|sz| {
-            match sz {
-                crate::ships::CannonSize::Small => "Small",
-                crate::ships::CannonSize::Medium => "Medium",
-                crate::ships::CannonSize::Large => "Large",
-            }
-            .to_string()
-        });
         let vessel_name = key.as_ref().map(|k| k.to_string());
         // Ship type label from the vessel's chosen ship (the jobbers picker).
         let ship_type = key
@@ -738,7 +724,6 @@ impl AppShell {
                 ship_type,
                 period: None,
                 elapsed_secs: None,
-                cannon_label,
                 saveable: false,
                 battle: Default::default(),
                 consumption: Default::default(),
@@ -774,7 +759,6 @@ impl AppShell {
             voyage,
             &self.profits.rows,
             &self.commodities,
-            cannon_size,
         );
         let battle = crate::voyage::stats::battle_stats(voyage, confirmed);
 
@@ -885,7 +869,6 @@ impl AppShell {
             ship_type,
             period,
             elapsed_secs,
-            cannon_label,
             saveable: ported && !voyage.saved,
             battle,
             consumption,
@@ -1014,6 +997,11 @@ impl AppShell {
         // The vessel's chosen ship type (hull) from the jobbers picker, persisted
         // so history can be grouped by ship type. Resolved before the mutable
         // borrow of `chatlog` below.
+        // TODO: handle the case where no ship type was specified — this is `None`
+        // when the user never picked a hull in the jobbers picker. We persist
+        // `None` silently, but such a voyage can't be grouped into the per-ship
+        // box plots and its size-agnostic cannonball count has no hull context.
+        // Decide whether to prompt for the hull at save time, warn, or exclude it.
         let ship_type = self
             .jobbers_ui
             .ship_types
@@ -1033,10 +1021,22 @@ impl AppShell {
             if voyage.saved {
                 return;
             }
+            // Snapshot consumption now — the Profits stock delta can't be
+            // reconstructed once the hold is restocked.
+            // TODO: prompt the user whether to record the inventory/consumption
+            // for this voyage before storing it. `SavedVoyage.consumption` is
+            // already nullable for exactly this — pass `None` when they decline.
+            // For now we always record it.
+            let consumption = crate::voyage::stats::consumption_stats(
+                voyage,
+                &self.profits.rows,
+                &self.commodities,
+            );
             let saved = crate::voyage::persistence::from_voyage(
                 voyage,
                 Some(&vessel_name),
                 ship_type.as_deref(),
+                Some(&consumption),
                 confirmed,
             );
             voyage.saved = true;
