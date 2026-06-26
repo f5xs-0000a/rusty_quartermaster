@@ -18,7 +18,10 @@ use serde::{Deserialize, Serialize};
 
 use crate::ships::SHIPS;
 use crate::voyage::stats::ConsumptionStats;
-use crate::voyage::{effective_outcome, BattleCategory, BattleOutcome, TeamSide, Voyage};
+use crate::voyage::{
+    effective_outcome, BattleCategory, BattleOutcome, FightTimeline, KoEvent, KoSide, TeamSide,
+    Voyage,
+};
 
 /// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
 /// by name (robust to `SHIPS` reordering).
@@ -45,6 +48,19 @@ pub struct SavedTeam {
     pub players: Vec<String>,
     #[serde(default)]
     pub swabbies: u32,
+}
+
+/// One persisted elimination on the per-fight advantage timeline. The KO'd name
+/// is intentionally dropped (the graph never lists eliminations); only its timing
+/// and side are kept.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct SavedKo {
+    /// Seconds from the fight start (`None` if the clock was unknown).
+    #[serde(default)]
+    pub secs: Option<i64>,
+    /// "us" or "them".
+    #[serde(default)]
+    pub side: String,
 }
 
 /// One persisted sea battle (enough to rebuild the loot/timing histograms).
@@ -89,6 +105,42 @@ pub struct SavedBattle {
     pub recorded: bool,
     #[serde(default)]
     pub snapshot: Option<SavedSnapshot>,
+    /// The side-tagged elimination timeline for the per-fight advantage graph.
+    /// Always persisted (independent of `recorded`); empty when the fight logged
+    /// no melee KOs, or for older history. See [`SavedBattle::to_timeline`].
+    #[serde(default)]
+    pub timeline: Vec<SavedKo>,
+    /// Our / their starting headcounts for the advantage graph's absolute baseline.
+    #[serde(default)]
+    pub our_start: u32,
+    #[serde(default)]
+    pub their_start: Option<u32>,
+}
+
+impl SavedBattle {
+    /// Rebuild the in-RAM [`FightTimeline`] from the persisted form. Timestamps are
+    /// synthesized from the stored second-offsets (origin at the Unix epoch) so the
+    /// graph's wall-clock axis works; the absolute clock is irrelevant — only the
+    /// gaps between KOs matter.
+    pub fn to_timeline(&self) -> FightTimeline {
+        let from_secs =
+            |s: i64| chrono::DateTime::from_timestamp(s, 0).map(|d| d.naive_utc());
+        let events = self
+            .timeline
+            .iter()
+            .map(|k| KoEvent {
+                at: k.secs.and_then(from_secs),
+                side: if k.side == "us" { KoSide::Ours } else { KoSide::Theirs },
+            })
+            .collect();
+        FightTimeline {
+            events,
+            our_start: self.our_start,
+            their_start: self.their_start,
+            started_at: from_secs(0),
+            ended_at: None,
+        }
+    }
 }
 
 /// Consumables used over a voyage, snapshotted at save time from the Profits
@@ -239,6 +291,28 @@ pub fn from_voyage(
                     } else {
                         None
                     },
+                    // The advantage timeline persists regardless of `recorded` (it's
+                    // log-derived, not calculator state). Event seconds are offsets
+                    // from the fight start.
+                    timeline: b
+                        .timeline
+                        .events
+                        .iter()
+                        .map(|e| SavedKo {
+                            secs: b
+                                .timeline
+                                .started_at
+                                .zip(e.at)
+                                .map(|(s, a)| (a - s).num_seconds()),
+                            side: match e.side {
+                                KoSide::Ours => "us",
+                                KoSide::Theirs => "them",
+                            }
+                            .to_string(),
+                        })
+                        .collect(),
+                    our_start: b.timeline.our_start,
+                    their_start: b.timeline.their_start,
                 }
             })
             .collect(),
@@ -256,6 +330,39 @@ fn saved_snapshot(s: crate::voyage::BattleSnapshot) -> SavedSnapshot {
         foe_hits: s.foe_hits,
         headon: s.headon,
         our_pirates: s.our_pirates,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::voyage::AxisMode;
+
+    #[test]
+    fn timeline_round_trips_through_saved_battle() {
+        let sb = SavedBattle {
+            timeline: vec![
+                SavedKo { secs: Some(0), side: "them".into() },
+                SavedKo { secs: Some(12), side: "us".into() },
+                SavedKo { secs: Some(20), side: "them".into() },
+            ],
+            our_start: 6,
+            their_start: Some(5),
+            ..SavedBattle::default()
+        };
+        let tl = sb.to_timeline();
+        assert_eq!(tl.our_start, 6);
+        assert_eq!(tl.their_start, Some(5));
+        let sides: Vec<KoSide> = tl.events.iter().map(|e| e.side).collect();
+        assert_eq!(sides, vec![KoSide::Theirs, KoSide::Ours, KoSide::Theirs]);
+        // The wall-clock axis reconstructs from the stored second-offsets (the
+        // leading point is the fight start at 0).
+        let xs: Vec<f64> = tl
+            .advantage_series(AxisMode::Time)
+            .iter()
+            .map(|&(x, _)| x)
+            .collect();
+        assert_eq!(xs, vec![0.0, 0.0, 12.0, 20.0]);
     }
 }
 

@@ -53,6 +53,16 @@ pub enum ClickTarget {
     JobberSkillDistCell { th: u8, carp: u8 },
     /// The backdrop behind the skill-distribution popup; clicking it closes.
     JobberSkillDistClose,
+    /// The Cursed Isles "Show Per-Fight Statistics" button — opens the per-fight
+    /// advantage-over-time graph popup.
+    JobberPerFightButton,
+    /// The backdrop behind the per-fight popup; clicking it closes.
+    JobberPerFightClose,
+    /// Toggle the per-fight graph's X-axis between wall-clock time and KO sequence.
+    JobberPerFightAxisToggle,
+    /// Previous / next fight (wave) in the per-fight popup.
+    JobberPerFightPrev,
+    JobberPerFightNext,
     /// The "save voyage to history" prompt opener on the Voyage Statistics page.
     VoyageSaveOpen,
     /// Buttons inside the save/discard prompt.

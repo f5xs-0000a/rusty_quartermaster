@@ -538,6 +538,7 @@ impl AppShell {
                     || self.jobbers_ui.pirate_popup.is_some()
                     || self.jobbers_ui.trophy_popup.is_some()
                     || self.jobbers_ui.skill_dist_popup.is_some()
+                    || self.jobbers_ui.per_fight_popup.is_some()
             }
             AppId::Voyage => {
                 self.voyage_ui.prompt.is_some()
@@ -795,6 +796,7 @@ impl AppShell {
                     recorded: b.recorded,
                     their_manpower: b.their_manpower(),
                     foe_ship: b.foe_ship,
+                    timeline: b.timeline.clone(),
                 }
             })
             .collect();
@@ -1266,6 +1268,9 @@ impl AppShell {
         if self.jobbers_ui.skill_dist_popup.is_some() {
             return self.handle_skill_dist_popup_key(key);
         }
+        if self.jobbers_ui.per_fight_popup.is_some() {
+            return self.handle_per_fight_popup_key(key);
+        }
         if let Some(sel) = self.jobbers_ui.ship_popup {
             return self.handle_ship_popup_key(key, sel);
         }
@@ -1674,6 +1679,33 @@ impl AppShell {
             // ↑ raises Carpentry standing, ↓ lowers it (the grid runs high → low).
             KeyCode::Up => sd.cursor.1 = (carp + 1).min(8),
             KeyCode::Down => sd.cursor.1 = carp.saturating_sub(1),
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Modal key handling for the per-fight graph popup: ←/→ change fight, `t` or
+    /// Tab toggles the X-axis, Esc closes.
+    fn handle_per_fight_popup_key(&mut self, key: KeyEvent) -> InputResult {
+        let count = self
+            .jobbers_ui
+            .selected
+            .as_ref()
+            .map(|k| crate::jobbers::fight_count(&self.chatlog, k))
+            .unwrap_or(0);
+        let Some(pf) = self.jobbers_ui.per_fight_popup.as_mut() else {
+            return InputResult::Consumed;
+        };
+        match key.code {
+            KeyCode::Esc => self.jobbers_ui.per_fight_popup = None,
+            KeyCode::Left => pf.idx = pf.idx.saturating_sub(1),
+            KeyCode::Right => pf.idx = (pf.idx + 1).min(count.saturating_sub(1)),
+            KeyCode::Tab | KeyCode::Char('t') => {
+                pf.axis = match pf.axis {
+                    crate::voyage::AxisMode::Time => crate::voyage::AxisMode::Event,
+                    crate::voyage::AxisMode::Event => crate::voyage::AxisMode::Time,
+                };
+            }
             _ => {}
         }
         InputResult::Consumed
@@ -2159,6 +2191,46 @@ impl AppShell {
             // A click on the backdrop (outside the cells) dismisses the popup.
             ClickTarget::JobberSkillDistClose => {
                 self.jobbers_ui.skill_dist_popup = None;
+            }
+            // Open the per-fight advantage graph at the latest fight (wave).
+            ClickTarget::JobberPerFightButton => {
+                let last = self
+                    .jobbers_ui
+                    .selected
+                    .as_ref()
+                    .map(|k| crate::jobbers::fight_count(&self.chatlog, k))
+                    .unwrap_or(0);
+                self.jobbers_ui.per_fight_popup = Some(crate::jobbers::PerFightPopup {
+                    idx: last.saturating_sub(1),
+                    axis: crate::voyage::AxisMode::default(),
+                });
+            }
+            ClickTarget::JobberPerFightClose => {
+                self.jobbers_ui.per_fight_popup = None;
+            }
+            ClickTarget::JobberPerFightAxisToggle => {
+                if let Some(pf) = self.jobbers_ui.per_fight_popup.as_mut() {
+                    pf.axis = match pf.axis {
+                        crate::voyage::AxisMode::Time => crate::voyage::AxisMode::Event,
+                        crate::voyage::AxisMode::Event => crate::voyage::AxisMode::Time,
+                    };
+                }
+            }
+            ClickTarget::JobberPerFightPrev => {
+                if let Some(pf) = self.jobbers_ui.per_fight_popup.as_mut() {
+                    pf.idx = pf.idx.saturating_sub(1);
+                }
+            }
+            ClickTarget::JobberPerFightNext => {
+                let count = self
+                    .jobbers_ui
+                    .selected
+                    .as_ref()
+                    .map(|k| crate::jobbers::fight_count(&self.chatlog, k))
+                    .unwrap_or(0);
+                if let Some(pf) = self.jobbers_ui.per_fight_popup.as_mut() {
+                    pf.idx = (pf.idx + 1).min(count.saturating_sub(1));
+                }
             }
             ClickTarget::VoyageSaveOpen => self.open_voyage_save_prompt(),
             ClickTarget::VoyageSaveConfirm => {

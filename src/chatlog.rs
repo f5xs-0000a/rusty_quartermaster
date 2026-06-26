@@ -23,7 +23,8 @@ use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::pirate;
 use crate::voyage::{
-    Battle, BattleCategory, BattleOutcome, BattleSnapshot, CrewSample, TeamSide, Voyage,
+    Battle, BattleCategory, BattleOutcome, BattleSnapshot, CrewSample, FightTimeline, KoEvent,
+    KoSide, TeamSide, Voyage,
 };
 
 // ---------------------------------------------------------------------------
@@ -290,6 +291,20 @@ pub enum WaveKind {
     Rumble,
 }
 
+/// One completed wave of a Cursed Isles island assault or a Vampirate lair — its
+/// number, kind, and the side-tagged elimination timeline that drives the
+/// per-fight advantage graph. Live-only (not persisted), unlike sea
+/// [`Battle`] timelines.
+#[derive(Clone, Debug)]
+pub struct WaveRecord {
+    /// 1-based wave number.
+    pub wave: u32,
+    /// Rumble / swordfight (Cursed Isles); `Unknown` for lair waves.
+    pub kind: WaveKind,
+    /// The wave's eliminations, in order.
+    pub timeline: FightTimeline,
+}
+
 // ---------------------------------------------------------------------------
 // Vessel
 // ---------------------------------------------------------------------------
@@ -346,6 +361,10 @@ pub struct Vessel {
     /// Latched once any wave's observed count falls outside its projected range —
     /// i.e. we left the swordfight and miscounted. Drives the on-screen reminder.
     pub lair_warn: bool,
+    /// Completed lair waves this run (one per cleared swordfight), each with its
+    /// side-tagged elimination timeline for the per-fight advantage graph.
+    /// Live-only; reset on a fresh run.
+    pub lair_waves: Vec<WaveRecord>,
     /// --- Cursed Isles tracking (Cursed Isles voyages) ---
     /// Which special encounter this vessel's current run is, inferred from its tell
     /// (the noxious fog, or any zombie/island line as a fallback). Gates the zombie
@@ -384,6 +403,15 @@ pub struct Vessel {
     /// [`wave_kind_for`]. Whether the Vargas boss is present is likewise derived from
     /// the wave number (see [`vargas_in_wave`]), not stored.
     pub wave_kind: WaveKind,
+    /// Completed island waves this run (one per cleared wave), each with its
+    /// side-tagged elimination timeline for the per-fight advantage graph.
+    /// Live-only; reset on a fresh run.
+    pub island_waves: Vec<WaveRecord>,
+    /// The in-progress wave's elimination timeline (Cursed Isles island *or*
+    /// Vampirate lair — only one is active at a time). Enemy KOs step it up, our
+    /// own KOs step it down; finalized into [`Self::island_waves`] /
+    /// [`Self::lair_waves`] when the wave closes.
+    pub wave_timeline: FightTimeline,
     /// Greedy strikes tallied per attacking pirate, over the whole run.
     pub greedy_by_pirate: HashMap<String, u32>,
     /// Greedy strikes during the current/most-recent battle only. Reset when a
@@ -1272,6 +1300,38 @@ impl GameState {
                     BattleOutcome::Lost => Some(split_side(&winners)),
                     _ => None,
                 };
+                // Backfill the per-fight advantage timeline. Each event lines up
+                // with `melee_kos` (pushed in lockstep in `on_eliminated`): tag it
+                // `Ours` when the KO'd name is on our finalized roster, else
+                // `Theirs` — outcome-independent, so it's robust on wins, losses,
+                // and unknown fights alike. (Our own swabbie KOs can't be told
+                // from enemy NPCs, so they fall to `Theirs`; best-effort.)
+                let our_lc: HashSet<String> = b
+                    .our_team
+                    .as_ref()
+                    .map(|t| t.players.iter().map(|n| n.to_ascii_lowercase()).collect())
+                    .unwrap_or_default();
+                let mut theirs = 0u32;
+                for (ev, ko) in b.timeline.events.iter_mut().zip(b.melee_kos.iter()) {
+                    ev.side = if our_lc.contains(&ko.to_ascii_lowercase()) {
+                        KoSide::Ours
+                    } else {
+                        theirs += 1;
+                        KoSide::Theirs
+                    };
+                }
+                b.timeline.our_start = b.pirates + b.swabbies;
+                // Their starting headcount: on a win all enemies were eliminated,
+                // so it's the enemy-KO count; on a loss it's those plus the enemy
+                // survivors (the winners). Unknown/disengage leaves it `None` (the
+                // graph then plots the net-KO differential).
+                b.timeline.their_start = match outcome {
+                    BattleOutcome::Won => Some(theirs),
+                    BattleOutcome::Lost => Some(theirs + split_side(&winners).headcount()),
+                    _ => None,
+                };
+                b.timeline.started_at = b.grappled_at;
+                b.timeline.ended_at = b.ended_at;
                 b.melee_kos.clear();
                 voy.battles.push(b);
                 resolved = true;
@@ -1490,6 +1550,7 @@ impl GameState {
     fn on_island_land(&mut self) {
         let pirates = self.current_pirates();
         let (lo, hi) = island_wave_band(pirates, 1);
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             v.encounter = EncounterKind::CursedIsles;
             v.zombies_aboard = 0;
@@ -1501,6 +1562,14 @@ impl GameState {
             v.wave_enemies_hi = hi;
             v.island_left_warn = false;
             v.wave_kind = wave_kind_for(1); // wave 1 is always a Rumble
+            // Open a fresh assault: archive nothing yet, start wave 1's timeline
+            // anchored on our landing manpower (pirates + any thralls we kept).
+            v.island_waves.clear();
+            v.wave_timeline = FightTimeline {
+                our_start: pirates + v.thralls_alive.values().sum::<u32>(),
+                started_at: now,
+                ..FightTimeline::default()
+            };
         }
     }
 
@@ -1508,11 +1577,14 @@ impl GameState {
     /// the Vargas boss's presence are both derived from the wave number, not the enemy
     /// seen — so Vargas just counts as another kill here.)
     fn on_island_enemy_defeated(&mut self) {
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             if !v.island_active {
                 return;
             }
             v.wave_enemies_observed = v.wave_enemies_observed.saturating_add(1);
+            // Their headcount drops → advantage steps up.
+            v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Theirs });
         }
     }
 
@@ -1543,6 +1615,7 @@ impl GameState {
             .filter(|n| me.as_deref().is_none_or(|me| !n.eq_ignore_ascii_case(me)))
             .map(|n| n.to_string())
             .collect();
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             if !v.island_active {
                 return;
@@ -1553,6 +1626,16 @@ impl GameState {
             if v.wave_enemies_observed < v.wave_enemies_lo {
                 v.island_left_warn = true;
             }
+            // The wave concluded (win or loss): close its timeline (every enemy
+            // we saw is gone) and archive it for the per-fight graph.
+            v.wave_timeline.their_start = Some(v.wave_enemies_observed);
+            v.wave_timeline.ended_at = now;
+            let finished = std::mem::take(&mut v.wave_timeline);
+            v.island_waves.push(WaveRecord {
+                wave: v.island_wave,
+                kind: v.wave_kind,
+                timeline: finished,
+            });
             if !players_won {
                 v.island_active = false;
                 return;
@@ -1563,6 +1646,12 @@ impl GameState {
             let (lo, hi) = island_wave_band(v.island_pirates, v.island_wave);
             v.wave_enemies_lo = lo;
             v.wave_enemies_hi = hi;
+            // Open the next wave's timeline.
+            v.wave_timeline = FightTimeline {
+                our_start: v.island_pirates + v.thralls_alive.values().sum::<u32>(),
+                started_at: now,
+                ..FightTimeline::default()
+            };
         }
     }
 
@@ -1590,6 +1679,8 @@ impl GameState {
             v.wave_enemies_hi = 0;
             v.island_left_warn = false;
             v.wave_kind = WaveKind::Unknown;
+            v.island_waves.clear();
+            v.wave_timeline = FightTimeline::default();
         }
     }
 
@@ -1602,6 +1693,7 @@ impl GameState {
             .current_vessel()
             .map(|v| v.crewmates.len() as u32 + 1)
             .unwrap_or(0);
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             v.lair_active = true;
             v.lair_wave = 1;
@@ -1611,6 +1703,13 @@ impl GameState {
             v.wave_lo = pirates; // wave 1 is exactly the pirate count
             v.wave_hi = pirates;
             v.lair_warn = false;
+            // Fresh lair: start wave 1's timeline anchored on the crew aboard.
+            v.lair_waves.clear();
+            v.wave_timeline = FightTimeline {
+                our_start: pirates,
+                started_at: now,
+                ..FightTimeline::default()
+            };
         }
         // Surface the Jobbers page in its Vampirates layout for the lair (consumed
         // once by the app's auto-navigation).
@@ -1650,14 +1749,26 @@ impl GameState {
             self.confirm_self(name);
             if pirate::is_player_name(name) {
                 self.note_pirate_aboard(name);
+                // Our headcount drops → advantage steps down on the wave graph.
+                let now = self.now;
+                if let Some(v) = self.current_vessel_mut() {
+                    v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Ours });
+                }
             } else {
                 self.on_island_enemy_defeated();
             }
             return;
         }
-        // Vampirate lairs: just tally defeated vampires (NPC names).
+        // Vampirate lairs: tally defeated vampires (NPC names); a real-player KO is
+        // one of our crew falling — record it as a loss on the wave graph.
         if self.current_vessel().is_some_and(|v| v.lair_active) {
-            if !pirate::is_player_name(name) {
+            if pirate::is_player_name(name) {
+                self.confirm_self(name);
+                let now = self.now;
+                if let Some(v) = self.current_vessel_mut() {
+                    v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Ours });
+                }
+            } else {
                 self.on_vampire_defeated();
             }
             return;
@@ -1666,9 +1777,14 @@ impl GameState {
         self.confirm_self(name);
         // Sea battle: record the KO and detect an enemy player.
         let enemy_player = pirate::is_player_name(name) && !self.is_own_crew(name);
+        let now = self.now;
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.current_battle.as_mut() {
                 b.melee_kos.push(name.to_string());
+                // Mirror the KO onto the per-fight timeline (same order as
+                // `melee_kos`); the side is provisional and backfilled at
+                // resolution from the rosters.
+                b.timeline.events.push(KoEvent { at: now, side: KoSide::Theirs });
                 if enemy_player {
                     // PvP is its own, mutually exclusive category — once set it
                     // overrides any king/monster telltale.
@@ -1701,10 +1817,13 @@ impl GameState {
     }
 
     fn on_vampire_defeated(&mut self) {
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             if v.lair_active {
                 v.vampires_defeated = v.vampires_defeated.saturating_add(1);
                 v.wave_observed = v.wave_observed.saturating_add(1);
+                // Their headcount drops → advantage steps up.
+                v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Theirs });
             }
         }
     }
@@ -1726,6 +1845,7 @@ impl GameState {
             .map(str::trim)
             .filter(|s| !s.is_empty())
             .any(pirate::is_player_name);
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             if !v.lair_active {
                 return;
@@ -1734,6 +1854,15 @@ impl GameState {
             if v.wave_observed < v.wave_lo || v.wave_observed > v.wave_hi {
                 v.lair_warn = true;
             }
+            // Archive the concluded wave's timeline for the per-fight graph.
+            v.wave_timeline.their_start = Some(v.wave_observed);
+            v.wave_timeline.ended_at = now;
+            let finished = std::mem::take(&mut v.wave_timeline);
+            v.lair_waves.push(WaveRecord {
+                wave: v.lair_wave,
+                kind: WaveKind::Swordfight,
+                timeline: finished,
+            });
             if !players_won {
                 // First loss ends the lair.
                 v.lair_active = false;
@@ -1745,6 +1874,12 @@ impl GameState {
             v.wave_observed = 0;
             v.wave_lo = (base * LAIR_WAVE_LO).round() as u32;
             v.wave_hi = (base * LAIR_WAVE_HI).round() as u32;
+            // Open the next wave's timeline.
+            v.wave_timeline = FightTimeline {
+                our_start: v.lair_pirates,
+                started_at: now,
+                ..FightTimeline::default()
+            };
         }
     }
 
@@ -2765,6 +2900,74 @@ mod tests {
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.encounter, EncounterKind::None);
         assert_eq!(v.zombies_aboard, 0);
+    }
+
+    #[test]
+    fn cursed_isles_wave_records_capture_advantage_timeline() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
+        gs.process_line("[01:00:01] Matetwo has come aboard.");
+        gs.process_line("[01:00:02] Matethree has come aboard.");
+        gs.process_line(
+            "[01:05:00] Ye land on the island, but an angry mob of its inhabitants stands \
+             between ye and yer rightful plunderin'!",
+        );
+        // Wave 1: three enemy KOs (advantage steps up) interleaved with one crew KO
+        // (steps down). A thrall death is excluded from the curve entirely.
+        gs.process_line("[01:05:10] Servile Zombie is eliminated!");
+        gs.process_line("[01:05:20] Cursed Zombie is eliminated!");
+        gs.process_line("[01:05:30] Matethree is eliminated!"); // our crew falls
+        gs.process_line("[01:05:35] Playerone's Thrall is eliminated!"); // excluded
+        gs.process_line("[01:05:40] Mindless Zombie is eliminated!");
+        gs.process_line("[01:06:00] Game over.  Winners: Playerone, Matetwo.");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.island_waves.len(), 1);
+        let w = &v.island_waves[0];
+        assert_eq!(w.wave, 1);
+        assert_eq!(w.kind, WaveKind::Rumble);
+        // our_start = pirates at landing (3); their_start = enemies seen this wave (3).
+        assert_eq!(w.timeline.our_start, 3);
+        assert_eq!(w.timeline.their_start, Some(3));
+        let sides: Vec<KoSide> = w.timeline.events.iter().map(|e| e.side).collect();
+        assert_eq!(
+            sides,
+            vec![KoSide::Theirs, KoSide::Theirs, KoSide::Ours, KoSide::Theirs]
+        );
+        // base = our_start − their_start = 0; curve steps +1,+1,−1,+1.
+        let series = w.timeline.advantage_series(crate::voyage::AxisMode::Event);
+        let vals: Vec<i32> = series.iter().map(|&(_, v)| v).collect();
+        assert_eq!(vals, vec![0, 1, 2, 1, 2]);
+    }
+
+    #[test]
+    fn sea_battle_timeline_backfills_sides_at_resolution() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line("[02:00:00] Going aboard the War Carp...");
+        gs.process_line("[02:00:01] Matetwo has come aboard.");
+        gs.process_line("[02:00:05] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[02:01:00] You have been intercepted by the Modest Sild!");
+        gs.process_line(
+            "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out between the crews!",
+        );
+        // Eliminations in order: enemy, our crewmate, enemy.
+        gs.process_line("[02:02:10] Brawny Brigand is eliminated!");
+        gs.process_line("[02:02:20] Matetwo is eliminated!");
+        gs.process_line("[02:02:30] Grizzled Brigand is eliminated!");
+        gs.process_line("[02:03:00] Game over.  Winners: Playerone, Matetwo.");
+        let v = gs.current_vessel().unwrap();
+        let b = v.current_voyage.as_ref().unwrap().battles.last().unwrap();
+        // Sides backfilled from our roster: enemy NPCs Theirs, our Matetwo Ours.
+        let sides: Vec<KoSide> = b.timeline.events.iter().map(|e| e.side).collect();
+        assert_eq!(sides, vec![KoSide::Theirs, KoSide::Ours, KoSide::Theirs]);
+        // We won, so every enemy was eliminated → their_start is the enemy-KO count.
+        assert_eq!(b.timeline.their_start, Some(2));
+        // Time axis: events at +10/+20/+30s from the grapple.
+        let series = b.timeline.advantage_series(crate::voyage::AxisMode::Time);
+        let xs: Vec<f64> = series.iter().map(|&(x, _)| x).collect();
+        assert_eq!(xs, vec![0.0, 10.0, 20.0, 30.0]);
     }
 
     #[test]

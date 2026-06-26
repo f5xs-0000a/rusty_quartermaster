@@ -160,6 +160,11 @@ pub struct Battle {
     /// sides), accumulated while the fight is open and cleared once resolved. The
     /// basis for [`Self::their_team`].
     pub melee_kos: Vec<String>,
+    /// Ordered, side-tagged elimination timeline driving the per-fight
+    /// advantage-over-time graph. Built in lockstep with [`Self::melee_kos`]
+    /// (sides backfilled at resolution from the winners roster). See
+    /// [`FightTimeline`].
+    pub timeline: FightTimeline,
     /// Our side of the boarding melee — players (by name) + swabbie count.
     /// Captured at the grapple (so a crewmate who leaves mid-melee still counts)
     /// and finalized at resolution (unioned with the winners-resynced roster, the
@@ -199,6 +204,96 @@ impl Battle {
     /// Whole-engagement duration (interception -> resolution), in seconds.
     pub fn total_secs(&self) -> Option<i64> {
         secs_between(self.started_at, self.ended_at)
+    }
+}
+
+/// Which side of a fight an eliminated combatant belonged to, from our point of
+/// view. Drives the sign of each step in the advantage curve.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KoSide {
+    /// One of ours fell (our headcount drops → advantage steps down).
+    Ours,
+    /// One of theirs fell (their headcount drops → advantage steps up).
+    Theirs,
+}
+
+/// A single elimination during a fight: when it happened and whose it was. The
+/// KO'd combatant's *name* is intentionally omitted — the UI shows only the
+/// derived advantage curve, never an eliminations list.
+#[derive(Clone, Copy, Debug)]
+pub struct KoEvent {
+    /// Log timestamp of the `... is eliminated!` line (`None` if the clock was
+    /// unknown at the time — the curve then falls back to event-index spacing).
+    pub at: Option<NaiveDateTime>,
+    /// Which side the casualty was on (backfilled at resolution for sea battles).
+    pub side: KoSide,
+}
+
+/// The X-axis of the per-fight advantage graph.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum AxisMode {
+    /// Wall-clock seconds from the fight start (realistic pacing). Default.
+    #[default]
+    Time,
+    /// Evenly-spaced one tick per elimination (cleaner curve, no clustering).
+    Event,
+}
+
+/// The ordered, side-tagged eliminations of one fight — the data behind the
+/// per-fight advantage-over-time graph. Replaying [`Self::events`] from the
+/// starting headcounts yields the signed advantage curve (see
+/// [`Self::advantage_series`]). Attached to a sea [`Battle`] and to each
+/// Cursed Isles / Vampirate wave record.
+#[derive(Clone, Debug, Default)]
+pub struct FightTimeline {
+    /// Eliminations in the order they occurred.
+    pub events: Vec<KoEvent>,
+    /// Our headcount at the start of the fight.
+    pub our_start: u32,
+    /// Their headcount at the start, once known (`None` while a fight is still
+    /// live and the foe roster is undetermined — the curve then plots the
+    /// net-KO differential, which has the same shape, anchored at zero).
+    pub their_start: Option<u32>,
+    /// Fight start (the time axis origin).
+    pub started_at: Option<NaiveDateTime>,
+    /// Fight end.
+    pub ended_at: Option<NaiveDateTime>,
+}
+
+impl FightTimeline {
+    /// The signed advantage (`our_alive − their_alive`) sampled at the fight
+    /// start and after each elimination, as `(x, advantage)` points. With
+    /// [`Self::their_start`] known the curve is the absolute headcount gap; while
+    /// it is `None` the baseline is zero and the curve is the net-KO differential
+    /// (`theirsKO − oursKO`) — identical shape, only vertically offset.
+    ///
+    /// `x` is seconds-from-start under [`AxisMode::Time`] (falling back to the
+    /// event index when a timestamp is missing) or the 1-based event index under
+    /// [`AxisMode::Event`].
+    pub fn advantage_series(&self, axis: AxisMode) -> Vec<(f64, i32)> {
+        let base = match self.their_start {
+            Some(theirs) => self.our_start as i32 - theirs as i32,
+            None => 0,
+        };
+        let mut adv = base;
+        let mut out = Vec::with_capacity(self.events.len() + 1);
+        out.push((0.0, adv));
+        for (i, ev) in self.events.iter().enumerate() {
+            adv += match ev.side {
+                KoSide::Ours => -1,
+                KoSide::Theirs => 1,
+            };
+            let x = match axis {
+                AxisMode::Time => self
+                    .started_at
+                    .zip(ev.at)
+                    .map(|(s, a)| (a - s).num_seconds() as f64)
+                    .unwrap_or((i + 1) as f64),
+                AxisMode::Event => (i + 1) as f64,
+            };
+            out.push((x, adv));
+        }
+        out
     }
 }
 
@@ -306,4 +401,64 @@ pub fn effective_outcome(raw: BattleOutcome, self_confirmed: bool) -> BattleOutc
 /// Seconds between two optional timestamps, or `None` if either is missing.
 fn secs_between(a: Option<NaiveDateTime>, b: Option<NaiveDateTime>) -> Option<i64> {
     Some((b? - a?).num_seconds())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::NaiveDate;
+
+    fn dt(h: u32, m: u32, s: u32) -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 6, 1)
+            .unwrap()
+            .and_hms_opt(h, m, s)
+            .unwrap()
+    }
+
+    #[test]
+    fn advantage_series_steps_and_axes() {
+        let tl = FightTimeline {
+            events: vec![
+                KoEvent { at: Some(dt(1, 0, 10)), side: KoSide::Theirs },
+                KoEvent { at: Some(dt(1, 0, 20)), side: KoSide::Theirs },
+                KoEvent { at: Some(dt(1, 0, 35)), side: KoSide::Ours },
+            ],
+            our_start: 5,
+            their_start: Some(4),
+            started_at: Some(dt(1, 0, 0)),
+            ended_at: None,
+        };
+        // Event axis: evenly spaced; baseline = our_start − their_start = 1.
+        assert_eq!(
+            tl.advantage_series(AxisMode::Event),
+            vec![(0.0, 1), (1.0, 2), (2.0, 3), (3.0, 2)]
+        );
+        // Time axis: x = seconds from start; identical advantage values (same shape).
+        let ti = tl.advantage_series(AxisMode::Time);
+        let xs: Vec<f64> = ti.iter().map(|&(x, _)| x).collect();
+        let vs: Vec<i32> = ti.iter().map(|&(_, v)| v).collect();
+        assert_eq!(xs, vec![0.0, 10.0, 20.0, 35.0]);
+        assert_eq!(vs, vec![1, 2, 3, 2]);
+    }
+
+    #[test]
+    fn advantage_series_unknown_their_start_uses_net_differential() {
+        let tl = FightTimeline {
+            events: vec![
+                KoEvent { at: None, side: KoSide::Ours },
+                KoEvent { at: None, side: KoSide::Theirs },
+                KoEvent { at: None, side: KoSide::Theirs },
+            ],
+            our_start: 5,
+            their_start: None, // unknown → baseline 0, net-KO differential
+            started_at: None,
+            ended_at: None,
+        };
+        let vs: Vec<i32> = tl
+            .advantage_series(AxisMode::Event)
+            .iter()
+            .map(|&(_, v)| v)
+            .collect();
+        assert_eq!(vs, vec![0, -1, 0, 1]);
+    }
 }

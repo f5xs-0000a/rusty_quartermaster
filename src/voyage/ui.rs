@@ -23,7 +23,7 @@ use crate::damage::DamageApp;
 use crate::ships::SHIPS;
 use crate::utils::offset_title;
 use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, CategoryTally, ConsumptionStats};
-use crate::voyage::{BattleOutcome, BattleSnapshot};
+use crate::voyage::{AxisMode, BattleOutcome, BattleSnapshot};
 
 /// The three charts, in display order.
 pub const CHART_TITLES: [&str; 3] = ["PoE won", "PoE per fight", "Total value"];
@@ -148,6 +148,10 @@ pub struct BattleRow {
     /// announced it (Black Ship, Monkey Boats). Seeds the editor's foe ship when no
     /// snapshot has overridden it. `None` when the hull is unknown.
     pub foe_ship: Option<usize>,
+    /// Side-tagged elimination timeline driving the advantage-over-time graph in
+    /// the Sea Battles popup. Empty when the fight recorded no melee KOs (or a
+    /// loaded historical fight that didn't persist one).
+    pub timeline: crate::voyage::FightTimeline,
 }
 
 /// Everything the page needs to draw one voyage, computed by the caller so this
@@ -533,10 +537,18 @@ fn render_battles_popup(
     });
 
     // Height = 6 fixed single rows (pager, toggle, blank, ship, category, outcome)
-    // + the calculator box + the 7-row stats table + 2 borders.
+    // + an optional advantage chart + the calculator box + the 7-row stats table +
+    // 2 borders.
     let (_, calc_h) = crate::damage::ui::calc_box_size();
+    let n = view.battles.len();
+    let page = ui.battles_popup.unwrap_or(0).min(n.saturating_sub(1));
+    // A compact advantage-over-time chart is shown only when the fight logged melee
+    // KOs (live fights always; loaded history only if its timeline was persisted).
+    const SB_CHART_PLOT_H: usize = 5;
+    let want_chart = n > 0 && !view.battles[page].timeline.events.is_empty();
+    let chart_h: u16 = if want_chart { SB_CHART_PLOT_H as u16 + 2 } else { 0 };
     let w = 60.min(area.width);
-    let h = (calc_h + 15).min(area.height);
+    let h = (calc_h + 15 + chart_h).min(area.height);
     let rect = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -551,7 +563,6 @@ fn render_battles_popup(
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let n = view.battles.len();
     if n == 0 {
         frame.render_widget(
             Paragraph::new(vec![
@@ -567,7 +578,6 @@ fn render_battles_popup(
         return;
     }
 
-    let page = ui.battles_popup.unwrap_or(0).min(n - 1);
     let row = &view.battles[page];
     let recorded = ui.editor_recorded;
     let focus = ui.battles_focus;
@@ -575,11 +585,14 @@ fn render_battles_popup(
     let (box_w, box_h) = crate::damage::ui::calc_box_size();
 
     // Allocate rows explicitly so a short popup never shrinks the calculator box:
-    // the 6 single header rows and the calculator get their height first, and the
-    // stats table takes only the leftover (the table clips before the calc does).
+    // the 6 single header rows, the optional chart, and the calculator get their
+    // height first; the stats table takes only the leftover (it clips before the
+    // calc does).
     let body = inner.height.saturating_sub(6);
-    let calc_rows = box_h.min(body);
-    let table_h = body.saturating_sub(calc_rows);
+    let chart_rows = chart_h.min(body);
+    let rest = body.saturating_sub(chart_rows);
+    let calc_rows = box_h.min(rest);
+    let table_h = rest.saturating_sub(calc_rows);
     let parts = Layout::vertical([
         Constraint::Length(1),          // Battle n of m (pager)
         Constraint::Length(1),          // (Not) Recorded toggle
@@ -587,6 +600,7 @@ fn render_battles_popup(
         Constraint::Length(1),          // enemy ship (type)
         Constraint::Length(1),          // type of enemy (category)
         Constraint::Length(1),          // won / lost
+        Constraint::Length(chart_rows), // optional advantage-over-time chart
         Constraint::Length(calc_rows),  // embedded damage calculator
         Constraint::Length(table_h),    // per-fight stats table
     ])
@@ -659,13 +673,26 @@ fn render_battles_popup(
         parts[5],
     );
 
+    // -- Optional advantage-over-time chart (parts[6]); only when the fight logged
+    //    melee KOs. Wall-clock X-axis (the Sea Battles popup keeps no axis toggle). --
+    if chart_rows > 0 {
+        let series = row.timeline.advantage_series(AxisMode::Time);
+        let chart = fight_chart_lines(
+            &series,
+            parts[6].width as usize,
+            SB_CHART_PLOT_H,
+            AxisMode::Time,
+        );
+        frame.render_widget(Paragraph::new(chart), parts[6]);
+    }
+
     // -- Embedded Damage calculator (the shared widget; highlighted only while the
     //    calculator zone holds focus). Always editable. --
     let calc_box = Rect {
-        x: parts[6].x + parts[6].width.saturating_sub(box_w) / 2,
-        y: parts[6].y,
-        width: box_w.min(parts[6].width),
-        height: box_h.min(parts[6].height),
+        x: parts[7].x + parts[7].width.saturating_sub(box_w) / 2,
+        y: parts[7].y,
+        width: box_w.min(parts[7].width),
+        height: box_h.min(parts[7].height),
     };
     crate::damage::ui::render_calculator(
         frame,
@@ -698,14 +725,14 @@ fn render_battles_popup(
         ),
     ];
     let label_w = table_rows.iter().map(|(l, _)| l.len()).max().unwrap_or(0);
-    let val_w = (parts[7].width as usize).saturating_sub(label_w + 2);
+    let val_w = (parts[8].width as usize).saturating_sub(label_w + 2);
     let stat_lines: Vec<Line> = table_rows
         .iter()
         .map(|(label, value)| Line::from(format!("{label:<label_w$}  {value:>val_w$}")))
         .collect();
     frame.render_widget(
         Paragraph::new(stat_lines).style(Style::default().fg(Color::Gray)),
-        parts[7],
+        parts[8],
     );
 }
 
@@ -1082,6 +1109,161 @@ fn box_line(width: usize, lo: f64, hi: f64, bp: &BoxPlot, marker: Option<(f64, c
         cells[val_col(m, lo, hi, w)] = ch;
     }
     cells.into_iter().collect()
+}
+
+/// Format a signed advantage value for the Y-axis gutter (`+6`, `0`, `-3`).
+fn fmt_adv(v: i32) -> String {
+    if v > 0 {
+        format!("+{v}")
+    } else {
+        v.to_string()
+    }
+}
+
+/// Format a duration in seconds as `M:SS` for the time axis.
+fn fmt_mmss(secs: f64) -> String {
+    let s = secs.max(0.0).round() as i64;
+    format!("{}:{:02}", s / 60, s % 60)
+}
+
+/// Render a per-fight **advantage-over-time** line graph: a single signed line
+/// (`our_alive − their_alive`) over a zero baseline, `height` plot rows tall plus
+/// two axis rows. `series` is `(x, advantage)` from
+/// [`crate::voyage::FightTimeline::advantage_series`] (`x` is seconds under
+/// [`AxisMode::Time`], else the event index). Drawn in the same text/braille style
+/// as the other charts (reuses the per-cell sign colouring: cyan when we're ahead,
+/// red when behind). Shared by the jobbers per-fight popup and the Sea Battles
+/// popup.
+pub fn fight_chart_lines(
+    series: &[(f64, i32)],
+    width: usize,
+    height: usize,
+    axis: AxisMode,
+) -> Vec<Line<'static>> {
+    const GUTTER: usize = 4; // 3-wide signed label + a space
+    let rows = height.max(3);
+    let plot_w = width.saturating_sub(GUTTER + 1).max(2); // +1 for the axis column
+    if series.is_empty() {
+        return vec![Line::from(Span::styled(
+            "(no fight data)",
+            Style::default().fg(Color::DarkGray),
+        ))];
+    }
+    // Y-range, always spanning zero (the baseline), with a 1-unit minimum span.
+    let (mut ymin, mut ymax) = series
+        .iter()
+        .fold((0i32, 0i32), |(lo, hi), &(_, v)| (lo.min(v), hi.max(v)));
+    if ymin == ymax {
+        ymin -= 1;
+        ymax += 1;
+    }
+    let span = (ymax - ymin) as f64;
+    let row_of = |v: f64| -> usize {
+        (((ymax as f64 - v) / span) * (rows - 1) as f64)
+            .round()
+            .clamp(0.0, (rows - 1) as f64) as usize
+    };
+    let zero_row = row_of(0.0);
+    let xmax = series.last().map(|&(x, _)| x).unwrap_or(0.0).max(1.0);
+
+    // Rasterize the step function into a (char, colour) grid.
+    let mut cells = vec![vec![(' ', Color::Reset); plot_w]; rows];
+    for cell in cells[zero_row].iter_mut() {
+        *cell = ('┄', Color::DarkGray);
+    }
+    let mut idx = 0usize;
+    let mut prev_row: Option<usize> = None;
+    let denom = (plot_w - 1).max(1) as f64;
+    for c in 0..plot_w {
+        let x = (c as f64 / denom) * xmax;
+        while idx + 1 < series.len() && series[idx + 1].0 <= x {
+            idx += 1;
+        }
+        let v = series[idx].1;
+        let r = row_of(v as f64);
+        let color = match v.cmp(&0) {
+            std::cmp::Ordering::Greater => Color::Cyan,
+            std::cmp::Ordering::Less => Color::Red,
+            std::cmp::Ordering::Equal => Color::Gray,
+        };
+        match prev_row {
+            // A level change: draw the riser in this column with rounded corners.
+            // The top of the screen is the *higher* advantage, so a rising value
+            // (r < pr) turns up out of the old level and into the new; a falling
+            // value (r > pr) turns down. The old level keeps its incoming `─` (from
+            // column c-1) and gets the elbow here; the new level's `─` continues at
+            // c+1.
+            Some(pr) if pr != r => {
+                for rr in (pr.min(r) + 1)..pr.max(r) {
+                    cells[rr][c] = ('│', color);
+                }
+                let (old_corner, new_corner) = if r < pr {
+                    ('╯', '╭') // rising: ─╯ leaves the old level upward, ╭─ joins the new
+                } else {
+                    ('╮', '╰') // falling: ─╮ leaves downward, ╰─ joins below
+                };
+                cells[pr][c] = (old_corner, color);
+                cells[r][c] = (new_corner, color);
+            }
+            // Same level (or the first column): a flat horizontal run.
+            _ => {
+                cells[r][c] = ('─', color);
+            }
+        }
+        prev_row = Some(r);
+    }
+
+    // Plot rows, each prefixed by the gutter label + axis tick.
+    let mut lines = Vec::with_capacity(rows + 2);
+    for (r, row_cells) in cells.iter().enumerate() {
+        let label = if r == 0 {
+            fmt_adv(ymax)
+        } else if r == zero_row {
+            "0".to_string()
+        } else if r == rows - 1 {
+            fmt_adv(ymin)
+        } else {
+            String::new()
+        };
+        let axis_char = if r == zero_row { '┼' } else { '┤' };
+        let mut spans = vec![
+            Span::styled(format!("{label:>3} "), Style::default().fg(Color::DarkGray)),
+            Span::styled(axis_char.to_string(), Style::default().fg(Color::DarkGray)),
+        ];
+        let mut i = 0;
+        while i < row_cells.len() {
+            let col = row_cells[i].1;
+            let mut s = String::new();
+            while i < row_cells.len() && row_cells[i].1 == col {
+                s.push(row_cells[i].0);
+                i += 1;
+            }
+            spans.push(Span::styled(s, Style::default().fg(col)));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // X-axis: a baseline tick row, then start/end labels.
+    lines.push(Line::from(Span::styled(
+        format!("{}└{}", " ".repeat(GUTTER), "─".repeat(plot_w)),
+        Style::default().fg(Color::DarkGray),
+    )));
+    let (start_lbl, end_lbl) = match axis {
+        AxisMode::Time => ("0:00".to_string(), fmt_mmss(xmax)),
+        AxisMode::Event => ("#0".to_string(), format!("#{}", series.len() - 1)),
+    };
+    let gap = plot_w
+        .saturating_sub(start_lbl.len() + end_lbl.len())
+        .max(1);
+    lines.push(Line::from(Span::styled(
+        format!(
+            "{}{start_lbl}{}{end_lbl}",
+            " ".repeat(GUTTER + 1),
+            " ".repeat(gap)
+        ),
+        Style::default().fg(Color::DarkGray),
+    )));
+    lines
 }
 
 /// Min/max across several value slices, or `None` if all empty.

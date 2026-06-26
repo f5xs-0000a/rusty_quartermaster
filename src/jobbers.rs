@@ -18,10 +18,12 @@ use ratatui::prelude::*;
 use ratatui::widgets::{Block, Borders, Clear, List, ListItem, ListState, Padding, Paragraph};
 
 use crate::chatlog::{
-    island_wave_band, vargas_in_wave, wave_kind_for, GameState, WaveKind, LAIR_WAVE_GROWTH,
-    LAIR_WAVE_HI, LAIR_WAVE_LO,
+    island_wave_band, vargas_in_wave, wave_kind_for, GameState, WaveKind, WaveRecord,
+    LAIR_WAVE_GROWTH, LAIR_WAVE_HI, LAIR_WAVE_LO,
 };
 use crate::clickmap::{ClickRegion, ClickTarget};
+use crate::voyage::ui::fight_chart_lines;
+use crate::voyage::AxisMode;
 use crate::pirate::{
     self, BasicInfo, CachedPirate, Experience, FetchPlan, PirateUpdate, Skill, SkillRecord,
     Standing, TrophySection,
@@ -615,6 +617,20 @@ pub struct JobbersUi {
     /// When `Some`, the Vampirates skill-distribution scatterplot is open, with the
     /// cursor parked on a grid cell.
     pub skill_dist_popup: Option<SkillDistPopup>,
+    /// When `Some`, the per-fight advantage-over-time graph is open (Cursed Isles /
+    /// Vampirate waves), on the selected fight with the chosen X-axis.
+    pub per_fight_popup: Option<PerFightPopup>,
+}
+
+/// State of the open per-fight statistics popup: which fight (wave) is shown and
+/// the graph's X-axis mode.
+#[derive(Clone, Copy, Default)]
+pub struct PerFightPopup {
+    /// Index into the current vessel's fight list (oldest first; the in-progress
+    /// wave, if any, is last).
+    pub idx: usize,
+    /// Wall-clock time vs KO-event sequence on the X-axis.
+    pub axis: AxisMode,
 }
 
 /// State of the open pirate-stats popup: the pirate being viewed and which of its
@@ -1320,12 +1336,16 @@ pub fn render(
                 Style::default().fg(Color::Red).italic(),
             )));
         }
-        // TODO: wire this button up to a per-fight breakdown popup. Inert for now (it
-        // isn't focusable / clickable yet), rendered as a dim placeholder line.
-        notes.push(Line::from(Span::styled(
-            PER_FIGHT_BUTTON_LABEL,
-            Style::default().fg(Color::DarkGray),
-        )));
+        // The "Show Per-Fight Statistics" button — opens the advantage-over-time
+        // graph popup. A click region is registered over its row after render (see
+        // the `fight_stats` render branch). Greyed out when there's no fight to show.
+        let has_fights = vessel.is_some_and(|v| !v.island_waves.is_empty() || v.island_active);
+        let btn_style = if has_fights {
+            Style::default().bold()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        notes.push(Line::from(Span::styled(PER_FIGHT_BUTTON_LABEL, btn_style)));
         Some(StatsBox { title: "Fight Statistics", rows, notes })
     } else {
         None
@@ -1375,6 +1395,7 @@ pub fn render(
     let tooltip_lines = if ui.pirate_popup.is_some()
         || ui.trophy_popup.is_some()
         || ui.skill_dist_popup.is_some()
+        || ui.per_fight_popup.is_some()
     {
         Vec::new()
     } else {
@@ -1477,6 +1498,15 @@ pub fn render(
         // collapses to zero height (rendering nothing) on other voyage types.
         if let Some(s) = &fight_stats {
             render_stats_box(frame, rows[3], s, focused);
+            // The "Show Per-Fight Statistics" button is the last note line; register
+            // a click region over its row so it opens the per-fight graph popup.
+            let btn_y = rows[3].y + s.rows.len() as u16 + s.notes.len() as u16 + 1;
+            if btn_y < rows[3].y + rows[3].height {
+                regions.push(ClickRegion {
+                    rect: Rect::new(rows[3].x + 2, btn_y, rows[3].width.saturating_sub(4), 1),
+                    target: ClickTarget::JobberPerFightButton,
+                });
+            }
         }
         if show_skill_dist {
             render_skill_dist_button(
@@ -1529,6 +1559,170 @@ pub fn render(
     if let Some(sd) = ui.skill_dist_popup {
         render_skill_dist_popup(frame, sd, &aboard_set, cache, regions);
     }
+
+    // The per-fight advantage-over-time graph (its own modal).
+    if let Some(pf) = ui.per_fight_popup {
+        let fights = selected.as_ref().map(|k| fight_timelines(state, k)).unwrap_or_default();
+        render_per_fight_popup(frame, pf, &fights, regions);
+    }
+}
+
+/// The current vessel's per-fight timelines for the graph popup, oldest first:
+/// the completed Cursed Isles / Vampirate waves, then the in-progress wave (if a
+/// fight is underway). Each is `(label, timeline)`.
+fn fight_timelines(state: &GameState, key: &Arc<str>) -> Vec<(String, crate::voyage::FightTimeline)> {
+    let Some(v) = state.vessels.get(key) else {
+        return Vec::new();
+    };
+    // Cursed Isles uses island waves; Vampirates uses lair waves. Only one is ever
+    // populated for a given run, so chain whichever has data.
+    let (completed, active, cur_wave, cur_kind): (&[WaveRecord], bool, u32, WaveKind) =
+        if !v.island_waves.is_empty() || v.island_active {
+            (&v.island_waves, v.island_active, v.island_wave, v.wave_kind)
+        } else {
+            (&v.lair_waves, v.lair_active, v.lair_wave, WaveKind::Swordfight)
+        };
+    let mut out: Vec<(String, crate::voyage::FightTimeline)> = completed
+        .iter()
+        .map(|w| (wave_label(w.wave, w.kind), w.timeline.clone()))
+        .collect();
+    if active {
+        out.push((format!("{} (current)", wave_label(cur_wave, cur_kind)), v.wave_timeline.clone()));
+    }
+    out
+}
+
+/// Number of per-fight timelines available for a vessel (completed waves + the
+/// in-progress one). Used by the app to bound the popup's fight index.
+pub fn fight_count(state: &GameState, key: &Arc<str>) -> usize {
+    fight_timelines(state, key).len()
+}
+
+/// "Wave N" or "Wave N (Rumble)" depending on whether the kind is known.
+fn wave_label(wave: u32, kind: WaveKind) -> String {
+    match kind {
+        WaveKind::Unknown => format!("Wave {wave}"),
+        k => format!("Wave {wave} ({})", wave_kind_label(k)),
+    }
+}
+
+/// The per-fight statistics popup: a signed advantage-over-time line graph for one
+/// fight (wave), with prev/next paging, an X-axis toggle (time ↔ KO sequence), and
+/// a close button. Backdrop click closes. Modeled on [`render_skill_dist_popup`].
+fn render_per_fight_popup(
+    frame: &mut Frame,
+    popup: PerFightPopup,
+    fights: &[(String, crate::voyage::FightTimeline)],
+    regions: &mut Vec<ClickRegion>,
+) {
+    let area = frame.area();
+    // Backdrop closes; pushed first so inner controls win the reverse hit test.
+    regions.push(ClickRegion { rect: area, target: ClickTarget::JobberPerFightClose });
+
+    const PLOT_H: usize = 9;
+    let popup_w = 72u16.min(area.width.max(1));
+    let popup_h = (PLOT_H as u16 + 2 /*axis*/ + 2 /*header+controls*/ + 2 /*borders*/)
+        .min(area.height.max(1));
+    let popup_area = Rect::new(
+        area.x + area.width.saturating_sub(popup_w) / 2,
+        area.y + area.height.saturating_sub(popup_h) / 2,
+        popup_w,
+        popup_h,
+    );
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(border_style(true))
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Per-Fight Statistics").0);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+    if inner.width == 0 || inner.height == 0 {
+        return;
+    }
+
+    if fights.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "No fights recorded yet this run.",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .centered(),
+            inner,
+        );
+        return;
+    }
+    let idx = popup.idx.min(fights.len() - 1);
+    let (label, timeline) = &fights[idx];
+
+    // Header: which fight, and the final advantage / start headcounts.
+    let series = timeline.advantage_series(popup.axis);
+    let final_adv = series.last().map(|&(_, v)| v).unwrap_or(0);
+    let result = match timeline.their_start {
+        Some(theirs) => format!(
+            "{label}   {} v {}   (final {}{})",
+            timeline.our_start,
+            theirs,
+            if final_adv >= 0 { "+" } else { "" },
+            final_adv,
+        ),
+        None => format!("{label}   (in progress)"),
+    };
+    let rows = Layout::vertical([
+        Constraint::Length(1),                    // header
+        Constraint::Length(PLOT_H as u16 + 2),    // chart + axis
+        Constraint::Length(1),                    // controls
+        Constraint::Min(0),
+    ])
+    .split(inner);
+    frame.render_widget(
+        Paragraph::new(Span::styled(result, Style::default().bold())),
+        rows[0],
+    );
+
+    let chart = fight_chart_lines(&series, rows[1].width as usize, PLOT_H, popup.axis);
+    frame.render_widget(Paragraph::new(chart), rows[1]);
+
+    // Controls row: ◀ prev | Axis: Time/KOs | next ▶ | Close.
+    let prev = "◀ Prev";
+    let next = "Next ▶";
+    let axis_lbl = match popup.axis {
+        AxisMode::Time => "Axis: Time",
+        AxisMode::Event => "Axis: # KOs",
+    };
+    let close = "[ Close ]";
+    let cells = Layout::horizontal([
+        Constraint::Length(prev.len() as u16 + 2),
+        Constraint::Min(0),
+        Constraint::Length(axis_lbl.len() as u16 + 2),
+        Constraint::Min(0),
+        Constraint::Length(next.len() as u16 + 2),
+        Constraint::Length(close.len() as u16 + 2),
+    ])
+    .split(rows[2]);
+    let nav_style = Style::default().bold();
+    let dim = Style::default().fg(Color::DarkGray);
+    frame.render_widget(
+        Paragraph::new(Span::styled(prev, if idx > 0 { nav_style } else { dim })),
+        cells[0],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(format!("[ {axis_lbl} ]"), nav_style)).centered(),
+        cells[2],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(next, if idx + 1 < fights.len() { nav_style } else { dim }))
+            .right_aligned(),
+        cells[4],
+    );
+    frame.render_widget(
+        Paragraph::new(Span::styled(close, nav_style)).right_aligned(),
+        cells[5],
+    );
+    regions.push(ClickRegion { rect: cells[0], target: ClickTarget::JobberPerFightPrev });
+    regions.push(ClickRegion { rect: cells[2], target: ClickTarget::JobberPerFightAxisToggle });
+    regions.push(ClickRegion { rect: cells[4], target: ClickTarget::JobberPerFightNext });
+    regions.push(ClickRegion { rect: cells[5], target: ClickTarget::JobberPerFightClose });
 }
 
 // ---------------------------------------------------------------------------
