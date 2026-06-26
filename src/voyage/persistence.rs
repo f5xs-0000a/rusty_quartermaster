@@ -56,6 +56,10 @@ pub struct SavedBattle {
     /// Enemy category: "Brigands", "King: <name>", "Vampirates", "Players" (PvP).
     #[serde(default)]
     pub category: String,
+    /// The foe's known hull type (special encounters announce it; otherwise
+    /// `None`). Stored by name, robust to `SHIPS` reordering.
+    #[serde(default)]
+    pub foe_ship: Option<String>,
     #[serde(default)]
     pub poe: Option<i64>,
     #[serde(default)]
@@ -94,6 +98,11 @@ pub struct SavedVoyage {
     pub ended_at: String,
     #[serde(default)]
     pub vessel: Option<String>,
+    /// The vessel's ship type (hull) name, taken from the jobbers ship picker at
+    /// save time. `None` if no ship was assigned. Stored by name, robust to
+    /// `SHIPS` reordering.
+    #[serde(default)]
+    pub ship_type: Option<String>,
     #[serde(default)]
     pub job: Option<String>,
     #[serde(default)]
@@ -150,10 +159,18 @@ fn saved_team(t: &TeamSide) -> SavedTeam {
 /// average crew) are computed now, while the run is finalized. `self_confirmed`
 /// masks unconfirmed win/loss verdicts (and their PoE sign) to "unknown" — see
 /// [`effective_outcome`].
-pub fn from_voyage(v: &Voyage, vessel: Option<&str>, self_confirmed: bool) -> SavedVoyage {
+pub fn from_voyage(
+    v: &Voyage,
+    vessel: Option<&str>,
+    ship_type: Option<&str>,
+    self_confirmed: bool,
+) -> SavedVoyage {
+    // Resolve a `SHIPS` index to its name, decoupling the file from index churn.
+    let ship_name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string());
     SavedVoyage {
         ended_at: v.ported_at.map(|t| t.to_string()).unwrap_or_default(),
         vessel: vessel.map(str::to_string),
+        ship_type: ship_type.map(str::to_string),
         job: v.job_kind.as_ref().map(|j| j.to_string()),
         duration_secs: v.duration_secs(),
         avg_pirates: v.avg_pirates(),
@@ -170,6 +187,7 @@ pub fn from_voyage(v: &Voyage, vessel: Option<&str>, self_confirmed: bool) -> Sa
                 SavedBattle {
                     outcome: outcome_str(outcome).to_string(),
                     category: category_str(&b.category),
+                    foe_ship: b.foe_ship.and_then(ship_name),
                     poe,
                     goods: b.goods,
                     pirates: b.pirates,

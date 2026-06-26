@@ -1011,6 +1011,16 @@ impl AppShell {
             return;
         };
         let vessel_name = key.to_string();
+        // The vessel's chosen ship type (hull) from the jobbers picker, persisted
+        // so history can be grouped by ship type. Resolved before the mutable
+        // borrow of `chatlog` below.
+        let ship_type = self
+            .jobbers_ui
+            .ship_types
+            .get(&key)
+            .copied()
+            .and_then(|i| crate::ships::SHIPS.get(i))
+            .map(|s| s.name.to_string());
         let confirmed = self.chatlog.self_confirmed;
         let saved = {
             let Some(v) = self.chatlog.vessels.get_mut(&key) else {
@@ -1023,8 +1033,12 @@ impl AppShell {
             if voyage.saved {
                 return;
             }
-            let saved =
-                crate::voyage::persistence::from_voyage(voyage, Some(&vessel_name), confirmed);
+            let saved = crate::voyage::persistence::from_voyage(
+                voyage,
+                Some(&vessel_name),
+                ship_type.as_deref(),
+                confirmed,
+            );
             voyage.saved = true;
             saved
         };
