@@ -514,6 +514,12 @@ pub struct GameState {
     /// the top of each [`Self::process_line`]; consumed by
     /// [`Self::take_cursed_isles_detected`].
     cursed_isles_just_detected: bool,
+    /// Set for the duration of one line when a grappled sea battle's *first* melee
+    /// elimination landed. Lets the app surface the Sea Battles graph mid-fight
+    /// (lair / island runs already surfaced their layout on the entry tell, so they
+    /// don't use this). Reset at the top of each [`Self::process_line`]; consumed by
+    /// [`Self::take_battle_first_blood`].
+    battle_first_blood: bool,
 }
 
 impl GameState {
@@ -535,6 +541,7 @@ impl GameState {
             lair_just_entered: false,
             boarded_vessel: None,
             cursed_isles_just_detected: false,
+            battle_first_blood: false,
         }
     }
 
@@ -565,6 +572,7 @@ impl GameState {
         self.lair_just_entered = false;
         self.boarded_vessel = None;
         self.cursed_isles_just_detected = false;
+        self.battle_first_blood = false;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
             return;
@@ -1759,6 +1767,17 @@ impl GameState {
             }
             return;
         }
+        // Cursed Isles raft phase (pre-landing): a zombie can *challenge* a pirate to
+        // a duel, whose KO we must NOT count as a wave/sea elimination — only the
+        // on-island assault counts. (The island branch above already handled the
+        // landed phase, so reaching here on a CI run means the raft phase.)
+        if self
+            .current_vessel()
+            .is_some_and(|v| v.encounter == EncounterKind::CursedIsles)
+        {
+            self.confirm_self(name);
+            return;
+        }
         // Vampirate lairs: tally defeated vampires (NPC names); a real-player KO is
         // one of our crew falling — record it as a loss on the wave graph.
         if self.current_vessel().is_some_and(|v| v.lair_active) {
@@ -1778,6 +1797,7 @@ impl GameState {
         // Sea battle: record the KO and detect an enemy player.
         let enemy_player = pirate::is_player_name(name) && !self.is_own_crew(name);
         let now = self.now;
+        let mut first_blood = false;
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.current_battle.as_mut() {
                 b.melee_kos.push(name.to_string());
@@ -1790,7 +1810,12 @@ impl GameState {
                     // overrides any king/monster telltale.
                     b.category = BattleCategory::Pvp;
                 }
+                // First melee KO of a grappled fight surfaces the live advantage graph.
+                first_blood = b.grappled_at.is_some() && b.timeline.events.len() == 1;
             }
+        }
+        if first_blood {
+            self.battle_first_blood = true;
         }
     }
 
@@ -2025,6 +2050,12 @@ impl GameState {
     /// ship so live tracking — and the captured snapshot — use the right hull.
     pub fn take_detected_foe_ship(&mut self) -> Option<usize> {
         self.detected_foe_ship.take()
+    }
+
+    /// Take the "a grappled sea battle's first melee KO landed this line" flag
+    /// (once per fight). The app uses it to surface the Sea Battles graph mid-fight.
+    pub fn take_battle_first_blood(&mut self) -> bool {
+        std::mem::take(&mut self.battle_first_blood)
     }
 
     /// Take the "we just entered a vampire lair this line" flag (true once per
@@ -2968,6 +2999,51 @@ mod tests {
         let series = b.timeline.advantage_series(crate::voyage::AxisMode::Time);
         let xs: Vec<f64> = series.iter().map(|&(x, _)| x).collect();
         assert_eq!(xs, vec![0.0, 10.0, 20.0, 30.0]);
+    }
+
+    #[test]
+    fn sea_first_elimination_triggers_fight_jump_once() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line("[02:00:00] Going aboard the War Carp...");
+        gs.process_line("[02:00:05] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[02:01:00] You have been intercepted by the Modest Sild!");
+        gs.process_line(
+            "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out between the crews!",
+        );
+        // The first melee KO of the grappled fight surfaces the sea-battle graph.
+        gs.process_line("[02:02:10] Brawny Brigand is eliminated!");
+        assert!(gs.take_battle_first_blood());
+        // A later KO must not re-fire (one jump per fight).
+        gs.process_line("[02:02:20] Grizzled Brigand is eliminated!");
+        assert!(!gs.take_battle_first_blood());
+    }
+
+    #[test]
+    fn cursed_isles_raft_phase_eliminations_not_counted() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
+        gs.process_line(
+            "[01:00:03] The crew inhales the noxious fog, and starts to lose fine motor control.",
+        );
+        let _ = gs.take_cursed_isles_detected();
+        // A challenging-zombie duel KO during the raft phase is NOT an island enemy:
+        // it isn't recorded onto any timeline and doesn't fire the sea-battle jump
+        // (which is reserved for grappled pillage fights).
+        gs.process_line("[01:01:00] Challenging Zombie is eliminated!");
+        assert!(!gs.take_battle_first_blood());
+        assert_eq!(gs.current_vessel().unwrap().wave_timeline.events.len(), 0);
+        // After landing, island eliminations ARE counted onto the wave timeline.
+        gs.process_line(
+            "[01:05:00] Ye land on the island, but an angry mob of its inhabitants stands \
+             between ye and yer rightful plunderin'!",
+        );
+        gs.process_line("[01:05:10] Servile Zombie is eliminated!");
+        assert_eq!(gs.current_vessel().unwrap().wave_timeline.events.len(), 1);
+        // The island assault never fires the sea-battle jump.
+        assert!(!gs.take_battle_first_blood());
     }
 
     #[test]

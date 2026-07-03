@@ -932,6 +932,12 @@ impl AppShell {
         if self.chatlog.take_cursed_isles_detected() {
             self.jump_to_cursed_isles_jobbers();
         }
+        // The first melee KO of a grappled sea battle surfaces the live advantage
+        // graph mid-fight (lair / island runs already surfaced their layout on the
+        // entry tell, so they don't auto-jump here).
+        if self.chatlog.take_battle_first_blood() {
+            self.jump_to_concluded_fight();
+        }
         // Boarding a vessel snaps the Jobbers/Voyage vessel selector to it, so the
         // pages follow us onto the ship we just stepped onto rather than sticking
         // to whatever was previously picked.
