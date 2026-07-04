@@ -189,6 +189,12 @@ impl DamageApp {
         self.headon = 0;
     }
 
+    /// True when the tally board is untouched (all counts zero). A ship change
+    /// then has nothing to invalidate, so we skip the "Reset values?" confirm.
+    pub fn counts_are_default(&self) -> bool {
+        self.left == [0; 3] && self.right == [0; 3] && self.headon == 0
+    }
+
     /// Returns (shots-to-max-morale, shots-to-sink) for `side`: how many more
     /// shots from the opposing ship's cannons it would take, given the damage
     /// already entered. Each saturates at 0 once that threshold is reached.
@@ -393,8 +399,11 @@ impl DamageApp {
                     Side::Right => self.right_ship = idx,
                 }
                 self.popup = None;
-                // Changing ship invalidates the tallies — offer to reset (Yes default).
-                self.reset_prompt = Some(true);
+                // Changing ship invalidates the tallies — offer to reset (Yes
+                // default). Skip the confirm entirely when nothing's been tallied.
+                if !self.counts_are_default() {
+                    self.reset_prompt = Some(true);
+                }
             }
             KeyCode::Char('v') => {
                 let idx = popup.selected;
@@ -457,7 +466,9 @@ pub fn apply_click(app: &mut DamageApp, target: &ClickTarget) -> bool {
                     Side::Right => app.right_ship = i,
                 }
                 app.popup = None;
-                app.reset_prompt = Some(true);
+                if !app.counts_are_default() {
+                    app.reset_prompt = Some(true);
+                }
             }
         }
         ClickTarget::DamageResetYes => {

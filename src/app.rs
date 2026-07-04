@@ -2090,7 +2090,9 @@ impl AppShell {
                         crate::damage::Side::Right => self.damage.right_ship = i,
                     }
                     self.damage.popup = None;
-                    self.damage.reset_prompt = Some(true);
+                    if !self.damage.counts_are_default() {
+                        self.damage.reset_prompt = Some(true);
+                    }
                 }
             }
             ClickTarget::DamageResetYes => {
