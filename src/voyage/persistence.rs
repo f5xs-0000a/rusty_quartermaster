@@ -383,22 +383,3 @@ pub fn load(path: &Path) -> SavedVoyages {
         }
     }
 }
-
-/// Write the voyage history to `path` as pretty JSON.
-pub fn save(path: &Path, voyages: &SavedVoyages) {
-    let json = match serde_json::to_string_pretty(voyages) {
-        Ok(json) => json,
-        Err(e) => {
-            eprintln!("error: failed to serialize voyage history: {e}");
-            return;
-        }
-    };
-    if let Err(e) = std::fs::write(path, json) {
-        eprintln!(
-            "error: failed to write voyage history to {}: {e}",
-            path.display()
-        );
-    } else {
-        eprintln!("Saved voyage history to {}", path.display());
-    }
-}

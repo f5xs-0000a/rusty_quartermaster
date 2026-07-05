@@ -97,6 +97,64 @@ pub fn text_similarity(a: &str, b: &str) -> f64 {
     strsim::jaro_winkler(a, b)
 }
 
+/// Atomically write `value` to `path` as compact JSON.
+///
+/// The single write path for every JSON file we persist. Serialization is
+/// streamed (no intermediate `String`) into a sibling temp file, which is then
+/// `rename`d over `path`. A crash or serialization error mid-write leaves the
+/// original file untouched rather than truncated, and `rename` on the same
+/// filesystem is atomic, so a reader never sees a half-written file.
+///
+/// `label` names the payload for the log lines (e.g. `"cache"`,
+/// `"voyage history"`): a `Saved {label} to {path}` on success, or a
+/// `failed to … {label}` on error. Errors are reported to stderr and swallowed
+/// (save is best-effort, called from the save/discard prompt).
+pub fn write_json_atomic<T: serde::Serialize>(
+    path: &std::path::Path,
+    value: &T,
+    label: &str,
+) {
+    use std::io::Write;
+
+    // Temp file alongside the target so the final rename stays on one filesystem
+    // (a cross-device rename would fail). Tie the name to the target's so
+    // concurrent saves of *different* files don't collide.
+    let file_name = path.file_name().map(|n| n.to_os_string()).unwrap_or_default();
+    let mut tmp_name = file_name;
+    tmp_name.push(".tmp");
+    let tmp = path.with_file_name(tmp_name);
+
+    let file = match std::fs::File::create(&tmp) {
+        Ok(file) => file,
+        Err(e) => {
+            eprintln!("error: failed to open {} for writing: {e}", tmp.display());
+            return;
+        }
+    };
+    let mut writer = std::io::BufWriter::new(file);
+    if let Err(e) = serde_json::to_writer(&mut writer, value) {
+        eprintln!("error: failed to serialize {label}: {e}");
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    // Flush the BufWriter before the rename, or buffered bytes could be lost.
+    if let Err(e) = writer.flush() {
+        eprintln!("error: failed to flush {}: {e}", tmp.display());
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    drop(writer);
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        eprintln!(
+            "error: failed to write {label} to {} (rename from temp failed: {e})",
+            path.display()
+        );
+        let _ = std::fs::remove_file(&tmp);
+        return;
+    }
+    eprintln!("Saved {label} to {}", path.display());
+}
+
 pub fn parse_rate(field: &PromptField) -> f64 {
     let s = field.value.trim();
     if s.is_empty() {

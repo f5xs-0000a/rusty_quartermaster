@@ -472,7 +472,7 @@ async fn main() -> io::Result<()> {
                 .collect(),
             oceans,
         };
-        cache::save(path, &saved);
+        crate::utils::write_json_atomic(path, &saved, "cache");
     }
 
     Ok(())

@@ -62,19 +62,3 @@ pub fn load(path: &Path) -> SavedCache {
         }
     }
 }
-
-/// Write `cache` to `path` as pretty JSON.
-pub fn save(path: &Path, cache: &SavedCache) {
-    let json = match serde_json::to_string_pretty(cache) {
-        Ok(json) => json,
-        Err(e) => {
-            eprintln!("error: failed to serialize cache: {}", e);
-            return;
-        }
-    };
-    if let Err(e) = std::fs::write(path, json) {
-        eprintln!("error: failed to write cache to {}: {}", path.display(), e);
-    } else {
-        eprintln!("Saved cache to {}", path.display());
-    }
-}

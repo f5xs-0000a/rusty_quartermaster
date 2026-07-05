@@ -1064,7 +1064,7 @@ impl AppShell {
         };
         self.voyage_history.voyages.push(saved);
         if let Some(path) = &self.voyages_path {
-            crate::voyage::persistence::save(path, &self.voyage_history);
+            crate::utils::write_json_atomic(path, &self.voyage_history, "voyage history");
         }
     }
 
