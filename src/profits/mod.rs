@@ -845,6 +845,32 @@ impl ProfitsApp {
         self.chest_components(shared).chest_net.floor() as u64
     }
 
+    /// The PoE in the booty chest to record with a saved voyage: the user-entered
+    /// "Booty Chest" figure if given, else the auto-deduced net chest. Mirrors the
+    /// `chest_net` resolution in [`Self::calculate_profits`].
+    pub fn recorded_chest(&self, shared: &SharedState) -> u64 {
+        let s = self.panel[1].value.trim();
+        if s.is_empty() {
+            self.deduced_chest(shared)
+        } else {
+            s.parse::<u64>().unwrap_or_else(|_| self.deduced_chest(shared))
+        }
+    }
+
+    /// The goods won this voyage: each commodity with a non-zero **Booty**-column
+    /// quantity, as `(commodity id, quantity)`. Stock/Hold and Restock are
+    /// excluded — only the Booty column. The caller resolves ids to names for
+    /// persistence.
+    pub fn booty_goods(&self) -> Vec<(u64, u64)> {
+        self.rows
+            .iter()
+            .filter_map(|r| {
+                let qty = r.booty.trim().parse::<u64>().ok().filter(|&q| q > 0)?;
+                Some((r.commod_id, qty))
+            })
+            .collect()
+    }
+
     // -- key handling --
 
     pub fn handle_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
@@ -1247,5 +1273,48 @@ impl ProfitsApp {
             None => {}
         }
         InputResult::Consumed
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn recorded_chest_prefers_field_then_deduces() {
+        let offers = HashMap::new();
+        let islands: Vec<String> = Vec::new();
+        let commodities: Vec<Commodity> = Vec::new();
+        let shared = SharedState {
+            commodities: &commodities,
+            cached_offers: &offers,
+            available_islands: &islands,
+            loading: false,
+            market_supported: false,
+            pillage_gross: 10_000,
+            pillage_stolen: 800,
+            pillage_chest: 5_000,
+        };
+        let mut app = ProfitsApp::new();
+        // Blank Booty Chest field -> auto-deduced net chest = retained − stolen.
+        assert_eq!(app.recorded_chest(&shared), 4_200);
+        // A user-entered figure wins over the deduction.
+        app.panel[1].value = "1234".into();
+        assert_eq!(app.recorded_chest(&shared), 1_234);
+    }
+
+    #[test]
+    fn booty_goods_reads_booty_column_only() {
+        let mut app = ProfitsApp::new();
+        let mut r0 = InventoryRow::new(7);
+        r0.booty = "30".into();
+        r0.stock = "5".into(); // Stock/Hold is ignored — Booty column only.
+        let mut r1 = InventoryRow::new(9);
+        r1.restock = "100".into(); // A restock-only row contributes no goods.
+        let mut r2 = InventoryRow::new(4);
+        r2.booty = "0".into(); // Zero booty is skipped.
+        app.rows = vec![r0, r1, r2];
+        assert_eq!(app.booty_goods(), vec![(7, 30)]);
     }
 }

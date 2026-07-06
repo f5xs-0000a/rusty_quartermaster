@@ -173,6 +173,29 @@ pub struct SavedConsumption {
     pub rum_spice: u64,
 }
 
+/// One good won over a voyage, taken from the Profits "Booty" column (Stock/Hold
+/// and Restock excluded). A plain quantity by commodity name — no market value is
+/// stored (prices are volatile and gone on reload).
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct SavedBootyGood {
+    #[serde(default)]
+    pub commodity: String,
+    #[serde(default)]
+    pub quantity: u64,
+}
+
+/// The per-voyage booty figures snapshotted from the Profits page at save time —
+/// the input side of the two `SavedVoyage` booty fields. Assembled by the app,
+/// which owns the live Profits state.
+#[derive(Default)]
+pub struct BootySnapshot {
+    /// PoE in the booty chest: the user-entered "Booty Chest" figure if given,
+    /// else the auto-deduced net chest. `None` when not recorded.
+    pub chest: Option<u64>,
+    /// `(commodity name, quantity)` for each good in the Booty column.
+    pub goods: Vec<(String, u64)>,
+}
+
 /// One persisted voyage.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedVoyage {
@@ -193,6 +216,10 @@ pub struct SavedVoyage {
     /// `false`.
     #[serde(default)]
     pub poisoned: bool,
+    /// The run reached a booty division. Gates the Divvy section (goods + booty
+    /// PoE) in Voyage Statistics. Older files default to `false`.
+    #[serde(default)]
+    pub divvied: bool,
     /// Time-weighted average crew over the run.
     #[serde(default)]
     pub avg_pirates: Option<f64>,
@@ -207,6 +234,17 @@ pub struct SavedVoyage {
     /// [`SavedConsumption`].
     #[serde(default)]
     pub consumption: Option<SavedConsumption>,
+    /// PoE remaining in the booty chest — the user-entered "Booty Chest" figure if
+    /// given, else the auto-deduced net chest. `None` for older history or when it
+    /// wasn't recorded.
+    #[serde(default)]
+    pub booty_chest: Option<u64>,
+    /// Goods won this voyage, from the Profits "Booty" column only. One entry per
+    /// commodity with a non-zero booty quantity; empty for older history or a
+    /// blank Booty column. Per-voyage — the log can't attribute goods to
+    /// individual battles (that split is shown only in-game).
+    #[serde(default)]
+    pub booty_goods: Vec<SavedBootyGood>,
     #[serde(default)]
     pub battles: Vec<SavedBattle>,
 }
@@ -252,9 +290,11 @@ fn saved_team(t: &TeamSide) -> SavedTeam {
 }
 
 /// Snapshot a completed voyage into its persisted form. Aggregates (duration,
-/// average crew) are computed now, while the run is finalized. `self_confirmed`
-/// masks unconfirmed win/loss verdicts (and their PoE sign) to "unknown" — see
-/// [`effective_outcome`].
+/// average crew) are computed now, while the run is finalized. `consumption` is
+/// snapshotted from the live Profits state by the caller (the delta is gone once
+/// the hold is restocked); the booty (chest + goods) was already frozen onto the
+/// voyage at its divvy. `self_confirmed` masks unconfirmed win/loss verdicts (and
+/// their PoE sign) to "unknown" — see [`effective_outcome`].
 pub fn from_voyage(
     v: &Voyage,
     vessel: Option<&str>,
@@ -270,6 +310,7 @@ pub fn from_voyage(
         ship_type: ship_type.map(str::to_string),
         duration_secs: v.duration_secs(),
         poisoned: v.poisoned,
+        divvied: v.divvied,
         avg_pirates: v.avg_pirates(),
         avg_swabbies: v.avg_swabbies(),
         avg_mercenaries: v.avg_mercenaries(),
@@ -280,6 +321,15 @@ pub fn from_voyage(
             fine_rum: c.alcohol.fine_rum,
             rum_spice: c.rum_spice,
         }),
+        booty_chest: v.booty_chest,
+        booty_goods: v
+            .booty_goods
+            .iter()
+            .map(|(commodity, quantity)| SavedBootyGood {
+                commodity: commodity.clone(),
+                quantity: *quantity,
+            })
+            .collect(),
         battles: v
             .battles
             .iter()
@@ -541,6 +591,13 @@ impl SavedVoyage {
             crew_samples: Vec::new(),
             merc_checkpoint: 0,
             poisoned: self.poisoned,
+            divvied: self.divvied,
+            booty_chest: self.booty_chest,
+            booty_goods: self
+                .booty_goods
+                .iter()
+                .map(|g| (g.commodity.clone(), g.quantity))
+                .collect(),
             saved: true,
             avg_override: Some((self.avg_pirates, self.avg_swabbies, self.avg_mercenaries)),
         }
@@ -630,6 +687,46 @@ mod tests {
             cs.rum_spice_unreliable,
             "a poisoned run's rum-spice stat is untrustworthy despite no loss",
         );
+    }
+
+    #[test]
+    fn booty_snapshot_round_trips() {
+        // The booty chest PoE and the per-commodity goods (Booty column only) are
+        // written by `from_voyage` and survive a JSON round-trip. An older file with
+        // neither field defaults to `None` chest and no goods.
+        let mut v = Voyage::default();
+        v.sailed_at = epoch();
+        v.ported_at = epoch().map(|b| b + chrono::Duration::seconds(600));
+        v.divvied = true;
+        // Booty is frozen onto the voyage (at its divvy) before it's persisted.
+        v.booty_chest = Some(4200);
+        v.booty_goods = vec![("Iron".into(), 30), ("Hemp".into(), 12)];
+        let saved = from_voyage(&v, Some("Test Vessel"), None, None, true);
+        assert!(saved.divvied);
+        assert_eq!(saved.booty_chest, Some(4200));
+        assert_eq!(saved.booty_goods.len(), 2);
+        assert_eq!(saved.booty_goods[0].commodity, "Iron");
+        assert_eq!(saved.booty_goods[0].quantity, 30);
+
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: SavedVoyage = serde_json::from_str(&json).unwrap();
+        assert!(back.divvied);
+        assert_eq!(back.booty_chest, Some(4200));
+        assert_eq!(back.booty_goods.len(), 2);
+        assert_eq!(back.booty_goods[1].commodity, "Hemp");
+        assert_eq!(back.booty_goods[1].quantity, 12);
+        // Reconstruction restores the divvy flag and booty onto the in-RAM voyage
+        // (the Divvy section reads them straight off the voyage).
+        let rv = back.to_voyage();
+        assert!(rv.divvied);
+        assert_eq!(rv.booty_chest, Some(4200));
+        assert_eq!(rv.booty_goods, vec![("Iron".into(), 30), ("Hemp".into(), 12)]);
+
+        // Legacy file: fields absent -> not divvied, chest None, goods empty.
+        let legacy: SavedVoyage = serde_json::from_str("{}").unwrap();
+        assert!(!legacy.divvied);
+        assert_eq!(legacy.booty_chest, None);
+        assert!(legacy.booty_goods.is_empty());
     }
 
     #[test]

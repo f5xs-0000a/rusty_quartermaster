@@ -525,6 +525,12 @@ pub struct GameState {
     /// the top of each [`Self::process_line`]; consumed by
     /// [`Self::take_cursed_isles_detected`].
     cursed_isles_just_detected: bool,
+    /// Set for the duration of one line when the booty was divided. Lets the app
+    /// freeze the just-divvied run's booty (chest PoE + goods) from the live Profits
+    /// state onto the voyage, so a later pillage overwriting that state doesn't
+    /// blank the Divvy section. Reset at the top of each [`Self::process_line`];
+    /// consumed by [`Self::take_booty_divided`].
+    booty_divided: bool,
     /// Set for the duration of one line when a grappled sea battle's *first* melee
     /// elimination landed. Lets the app surface the Sea Battles graph mid-fight
     /// (lair / island runs already surfaced their layout on the entry tell, so they
@@ -566,6 +572,7 @@ impl GameState {
             lair_just_entered: false,
             boarded_vessel: None,
             cursed_isles_just_detected: false,
+            booty_divided: false,
             battle_first_blood: false,
             spice_swap_armed: false,
             name_segments: crate::cache::NameSegments::default(),
@@ -599,6 +606,7 @@ impl GameState {
         self.lair_just_entered = false;
         self.boarded_vessel = None;
         self.cursed_isles_just_detected = false;
+        self.booty_divided = false;
         self.battle_first_blood = false;
         let line = line.trim_end_matches(['\r', '\n']);
         if line.is_empty() {
@@ -909,6 +917,8 @@ impl GameState {
         }
         if body == "The booty has been divided!" {
             let now = self.now;
+            // Signal the app to freeze this run's booty from the live Profits state.
+            self.booty_divided = true;
             if let Some(v) = self.current_vessel_mut() {
                 v.job_kind = None;
                 // Finalize the run if it wasn't already closed at port (defensive:
@@ -920,7 +930,13 @@ impl GameState {
                     if let Some(b) = voy.current_battle.take() {
                         voy.battles.push(b);
                     }
+                    voy.divvied = true;
                     v.voyages.push(voy);
+                } else if let Some(voy) = v.voyages.last_mut() {
+                    // The port order already promoted this run (port precedes the
+                    // divvy in the log); the divvy just confirms it reached a
+                    // booty division.
+                    voy.divvied = true;
                 }
             }
             return;
@@ -2265,6 +2281,25 @@ impl GameState {
         self.boarded_vessel.take()
     }
 
+    /// Whether the booty was divided this line (once per divvy). The app uses it to
+    /// freeze the just-divvied run's booty onto the voyage.
+    pub fn take_booty_divided(&mut self) -> bool {
+        std::mem::take(&mut self.booty_divided)
+    }
+
+    /// The current-pillage run on the current vessel — the current voyage, else the
+    /// most recent one — for writing the divvy booty snapshot. Mirrors
+    /// [`Self::current_pillage_poe`]'s selection. `None` if we're not aboard a
+    /// vessel with any run.
+    pub fn current_pillage_voyage_mut(&mut self) -> Option<&mut Voyage> {
+        let v = self.current_vessel_mut()?;
+        if v.current_voyage.is_some() {
+            v.current_voyage.as_mut()
+        } else {
+            v.voyages.last_mut()
+        }
+    }
+
     /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved
     /// (last) battle of the current voyage. Called at Game over / disengage when the
     /// calculator had input, so fights we tracked live land in the history recorded.
@@ -2675,6 +2710,39 @@ mod tests {
         assert_eq!(gs.current, None);
         let v = &gs.vessels["Sugared Bass"];
         assert!(v.poisoned);
+    }
+
+    #[test]
+    fn booty_divided_marks_run_divvied() {
+        // Port precedes the divvy in the log, so the run is already promoted to
+        // `voyages` when the division lands — the flag must reach it there.
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
+        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[01:00:06] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[01:29:00] Playerone issued an order to put into port.");
+        gs.process_line("[01:30:00] The booty has been divided!");
+        {
+            let v = &gs.vessels["Abyssal Grunion"];
+            assert!(v.current_voyage.is_none());
+            assert!(v.voyages.last().unwrap().divvied);
+        }
+        // The divvy also signals the app (once) to freeze the run's booty.
+        assert!(gs.take_booty_divided());
+        assert!(!gs.take_booty_divided(), "the signal is one-shot");
+    }
+
+    #[test]
+    fn divvy_without_port_marks_current_voyage() {
+        // Defensive path: a divvy with no port order we saw still finalizes and
+        // flags the current voyage.
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Sugared Bass...");
+        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[01:00:06] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[01:30:00] The booty has been divided!");
+        let v = &gs.vessels["Sugared Bass"];
+        assert!(v.voyages.last().unwrap().divvied);
     }
 
     #[test]

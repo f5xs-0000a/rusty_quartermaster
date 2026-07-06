@@ -1,7 +1,7 @@
 //! Rendering for the **Voyage Statistics** page (the entire app body).
 //!
 //! Layout: a centered, scrolling body — header, the Sea Battles table, the stat
-//! sections (Timing / Loot / Enemies / Advantage / Consumption), then the three
+//! sections (Timing / Loot / Divvy / Enemies / Advantage / Consumption), then the three
 //! charts as full-width bordered boxes — over a pinned footer, with a focus-bound
 //! tooltip strip below the whole widget. The stat numbers and the charts form one
 //! focus chain (↑/↓): pressing Down off the last number focuses the first chart.
@@ -282,6 +282,14 @@ pub struct VoyageView {
     /// Per-fight rows for the Sea Battles popup, in chronological order (resolved
     /// fights first, then the in-progress one if any).
     pub battles: Vec<BattleRow>,
+    /// The run reached a booty division — gates the Divvy section below.
+    pub divvied: bool,
+    /// PoE in the booty chest, frozen onto the voyage at its divvy (user-entered or
+    /// auto-deduced). Shown in the Divvy section; `None` if it was never recorded.
+    pub booty_chest: Option<u64>,
+    /// Goods pillaged this run — `(commodity, quantity)`, from the Profits Booty
+    /// column, frozen at the divvy. Shown itemized in the Divvy section.
+    pub booty_goods: Vec<(String, u64)>,
 }
 
 pub fn render(
@@ -2102,6 +2110,42 @@ fn build_lines(view: &VoyageView) -> Built {
         "Average net goods per decisive fight — goods lost in defeats subtract.",
     );
     out.blank();
+
+    // Divvy — only for a run that reached a booty division. The PoE earned (gross
+    // and net across fights, plus what stayed in the booty chest) and the goods
+    // pillaged, itemized from the Profits Booty column.
+    if view.divvied {
+        out.section("Divvy");
+        out.stat(
+            "Gross PoE won",
+            commas(b.poe_won_total),
+            "Total pieces of eight plundered across won fights (before losses).",
+        );
+        out.stat(
+            "Net PoE earned",
+            commas(b.poe_net_total),
+            "Net pieces of eight across every fight (losses subtracted).",
+        );
+        out.stat(
+            "In Booty Chest",
+            view.booty_chest.map(|c| commas(c as i64)).unwrap_or_else(dash),
+            "PoE left in the booty chest for the divvy — your entered figure, else auto-deduced.",
+        );
+        if !view.booty_goods.is_empty() {
+            out.line(Line::from(Span::styled(
+                "Goods pillaged".to_string(),
+                Style::default().fg(Color::Gray),
+            )));
+            for (name, qty) in &view.booty_goods {
+                out.stat(
+                    &format!("  {name}"),
+                    commas(*qty as i64),
+                    "Units of this good won this voyage (from the Profits Booty column).",
+                );
+            }
+        }
+        out.blank();
+    }
 
     // Enemies by category — only categories that occurred (no zero rows). The
     // value is `total (wins+losses+disengages)`. Named brigand kings are pulled

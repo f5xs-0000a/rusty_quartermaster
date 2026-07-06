@@ -372,6 +372,17 @@ pub struct Voyage {
     /// too low on rum spice (the mercenary-hiring-limit tell). Gates
     /// `rum_spice_unreliable`; persisted with the voyage.
     pub poisoned: bool,
+    /// The run reached a booty division (`The booty has been divided!`). Only then
+    /// are the goods-pillaged / booty-chest figures meaningful, so the Divvy
+    /// section shows only for a divvied run. Persisted with the voyage.
+    pub divvied: bool,
+    /// PoE left in the booty chest, frozen from the live Profits state at the divvy
+    /// (the app fills it on the `booty_divided` signal). `None` until divvied — or
+    /// for a run whose booty was never recorded. Persisted with the voyage.
+    pub booty_chest: Option<u64>,
+    /// Goods won this run — `(commodity, quantity)`, from the Profits Booty column —
+    /// frozen at the divvy alongside [`Self::booty_chest`]. Persisted with the voyage.
+    pub booty_goods: Vec<(String, u64)>,
     /// Runtime-only: the user has saved or dismissed this run via the
     /// save/discard prompt, so it shouldn't be offered again. Not persisted.
     pub saved: bool,

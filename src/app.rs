@@ -860,6 +860,9 @@ impl AppShell {
             consumption: Default::default(),
             charts: Default::default(),
             battles: Vec::new(),
+            divvied: false,
+            booty_chest: None,
+            booty_goods: Vec::new(),
         }
     }
 
@@ -990,6 +993,11 @@ impl AppShell {
             page_count,
             exclude_saved_idx,
         } = a;
+        // Booty was frozen onto the voyage at its divvy (live) or restored from disk
+        // (saved), so both paths read it straight off the voyage.
+        let divvied = voyage.divvied;
+        let booty_chest = voyage.booty_chest;
+        let booty_goods = voyage.booty_goods.clone();
 
         // Identity confirmation gates win/loss: until our configured name is seen
         // in the log, every win/loss shows as Unknown (and flips retroactively).
@@ -1263,6 +1271,9 @@ impl AppShell {
             consumption,
             charts,
             battles,
+            divvied,
+            booty_chest,
+            booty_goods,
         }
     }
 
@@ -1331,6 +1342,16 @@ impl AppShell {
         if let Some(key) = self.chatlog.take_boarded_vessel() {
             self.jobbers_ui.selected = Some(key);
         }
+        // A booty division freezes the just-divvied run's booty (chest PoE + goods)
+        // from the live Profits state onto the voyage, so a later pillage can't blank
+        // the Divvy section.
+        if self.chatlog.take_booty_divided() {
+            let booty = self.current_booty_snapshot();
+            if let Some(voy) = self.chatlog.current_pillage_voyage_mut() {
+                voy.booty_chest = booty.chest;
+                voy.booty_goods = booty.goods;
+            }
+        }
     }
 
     /// Switch the shown app and drop focus into its content (used by the
@@ -1394,6 +1415,34 @@ impl AppShell {
     fn open_voyage_save_prompt(&mut self) {
         if self.build_voyage_view().saveable {
             self.voyage_ui.prompt = Some(crate::voyage::ui::SaveChoice::Save);
+        }
+    }
+
+    /// Snapshot the current pillage's booty from the live Profits page: the chest
+    /// PoE (user-entered "Booty Chest" field, else auto-deduced net chest) and the
+    /// Booty-column goods (resolved to commodity names). Called on the divvy signal
+    /// to freeze the just-divvied run's booty onto its voyage, since the Profits
+    /// state is global and a later pillage would otherwise overwrite it.
+    fn current_booty_snapshot(&self) -> crate::voyage::persistence::BootySnapshot {
+        let (pillage_gross, pillage_stolen, pillage_chest) = self.chatlog.current_pillage_poe();
+        let shared = SharedState {
+            commodities: &self.commodities,
+            cached_offers: &self.cached_offers,
+            available_islands: &self.available_islands,
+            loading: self.loading,
+            market_supported: self.market_ok(),
+            pillage_gross,
+            pillage_stolen,
+            pillage_chest,
+        };
+        crate::voyage::persistence::BootySnapshot {
+            chest: Some(self.profits.recorded_chest(&shared)),
+            goods: self
+                .profits
+                .booty_goods()
+                .into_iter()
+                .map(|(id, qty)| (commod_name(&self.commodities, id).to_string(), qty))
+                .collect(),
         }
     }
 
