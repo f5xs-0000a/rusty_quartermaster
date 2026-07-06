@@ -194,8 +194,13 @@ pub struct SavedVoyage {
     /// Time-weighted average crew over the run.
     #[serde(default)]
     pub avg_pirates: Option<f64>,
+    /// Time-weighted average total NPC crew (swabbies + mercenaries).
     #[serde(default)]
     pub avg_swabbies: Option<f64>,
+    /// Time-weighted average mercenaries — the rum-spice-per-mercenary denominator.
+    /// Legacy files default to `None` (no per-merc figure for old history).
+    #[serde(default)]
+    pub avg_mercenaries: Option<f64>,
     /// Consumables used over the run, or `None` when not recorded. See
     /// [`SavedConsumption`].
     #[serde(default)]
@@ -265,6 +270,7 @@ pub fn from_voyage(
         duration_secs: v.duration_secs(),
         avg_pirates: v.avg_pirates(),
         avg_swabbies: v.avg_swabbies(),
+        avg_mercenaries: v.avg_mercenaries(),
         consumption: consumption.map(|c| SavedConsumption {
             cannonballs: c.balls,
             swill: c.alcohol.swill,
@@ -482,6 +488,7 @@ impl SavedConsumption {
             .map(|s| s as f64 / 60.0)
             .filter(|m| *m > 0.0);
         let avg_swabbies = voyage.avg_swabbies();
+        let avg_mercenaries = voyage.avg_mercenaries();
         let avg_crew = match (voyage.avg_pirates(), avg_swabbies) {
             (Some(p), Some(s)) => Some(p + s),
             _ => None,
@@ -490,7 +497,7 @@ impl SavedConsumption {
             denom.filter(|d| *d > 0.0).map(|d| amount as f64 / d)
         };
         let alcohol_per_crew = per(alcohol.weighted(), avg_crew);
-        let rum_spice_per_swabbie = per(self.rum_spice, avg_swabbies);
+        let rum_spice_per_mercenary = per(self.rum_spice, avg_mercenaries);
         ConsumptionStats {
             balls: self.cannonballs,
             balls_per_battle: (battles > 0).then(|| self.cannonballs as f64 / battles as f64),
@@ -498,9 +505,13 @@ impl SavedConsumption {
             alcohol_per_crew,
             alcohol_per_crew_per_min: alcohol_per_crew.and_then(|a| minutes.map(|m| a / m)),
             rum_spice: self.rum_spice,
-            rum_spice_per_swabbie,
-            rum_spice_per_swabbie_per_min: rum_spice_per_swabbie
+            rum_spice_per_mercenary,
+            rum_spice_per_mercenary_per_min: rum_spice_per_mercenary
                 .and_then(|a| minutes.map(|m| a / m)),
+            rum_spice_unreliable: voyage
+                .battles
+                .iter()
+                .any(|b| matches!(b.outcome, BattleOutcome::Lost)),
         }
     }
 }
@@ -524,9 +535,10 @@ impl SavedVoyage {
             current_battle: None,
             battles: self.battles.iter().map(SavedBattle::to_battle).collect(),
             crew_samples: Vec::new(),
+            merc_checkpoint: 0,
             poisoned: false,
             saved: true,
-            avg_override: Some((self.avg_pirates, self.avg_swabbies)),
+            avg_override: Some((self.avg_pirates, self.avg_swabbies, self.avg_mercenaries)),
         }
     }
 }

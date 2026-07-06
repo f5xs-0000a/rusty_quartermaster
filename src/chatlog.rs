@@ -98,9 +98,7 @@ pub enum JobKind {
     },
     Evading,
     SwabbieTransport,
-    Trading {
-        avg_poe_per_league: u32,
-    },
+    Trading,
     Exploring {
         monster: String,
     },
@@ -120,14 +118,8 @@ impl JobKind {
             return JobKind::Evading;
         } else if s == "Swabbie Ship Transporting" {
             return JobKind::SwabbieTransport;
-        } else if let Some(n) = s
-            .strip_prefix("Trading, offering an average of ")
-            .and_then(|s| s.strip_suffix(" pieces of eight per league"))
-            .and_then(|n| n.parse::<u32>().ok())
-        {
-            return JobKind::Trading {
-                avg_poe_per_league: n,
-            };
+        } else if s.starts_with("Trading") {
+            return JobKind::Trading;
         } else if let Some(monster) = s.strip_prefix("Exploring the ") {
             return JobKind::Exploring {
                 monster: monster.to_string(),
@@ -155,9 +147,7 @@ impl fmt::Display for JobKind {
             }
             JobKind::Evading => f.write_str("Evading"),
             JobKind::SwabbieTransport => f.write_str("Swabbie Ship Transporting"),
-            JobKind::Trading { avg_poe_per_league } => {
-                write!(f, "Trading ({avg_poe_per_league} poe/league)")
-            }
+            JobKind::Trading => f.write_str("Trading"),
             JobKind::Exploring { monster } => write!(f, "Exploring the {monster}"),
             JobKind::AttackingFlotilla => f.write_str("Attacking a Flotilla"),
             JobKind::Other(s) => f.write_str(s),
@@ -1579,11 +1569,16 @@ impl GameState {
         };
         let pirates = v.crewmates.len() as u32 + 1; // incl. us
         let swabbies = v.swabbies;
+        // Provisional merc count (mercs board invisibly, so this is an estimate until
+        // the next winners-roster ground truth backfills the stretch — see
+        // `on_battle_end`).
+        let mercenaries = v.mercenaries.len() as u32;
         if let Some(voy) = v.current_voyage.as_mut() {
             voy.crew_samples.push(CrewSample {
                 at: now,
                 pirates,
                 swabbies,
+                mercenaries,
             });
         }
     }
@@ -2119,6 +2114,19 @@ impl GameState {
             v.crewmates = new_crew;
             v.swabbies = swabbies;
             v.mercenaries = mercenaries;
+            // Ground truth: backfill every crew sample since the last checkpoint (or
+            // the voyage start) to this confirmed mercenary count, then advance the
+            // checkpoint. So each inter-win stretch is attributed the count confirmed
+            // at its close — correcting the invisible initial hire and any mid-voyage
+            // hires we couldn't see live.
+            let confirmed = v.mercenaries.len() as u32;
+            if let Some(voy) = v.current_voyage.as_mut() {
+                let from = voy.merc_checkpoint.min(voy.crew_samples.len());
+                for s in &mut voy.crew_samples[from..] {
+                    s.mercenaries = confirmed;
+                }
+                voy.merc_checkpoint = voy.crew_samples.len();
+            }
         }
     }
 
@@ -2615,11 +2623,10 @@ mod tests {
         assert_eq!(pillage("Evading"), JobKind::Evading);
         assert_eq!(pillage("Swabbie Ship Transporting"), JobKind::SwabbieTransport);
         assert_eq!(pillage("Attacking a Flotilla"), JobKind::AttackingFlotilla);
+        // The per-league figure is discarded — we don't track leagues.
         assert_eq!(
             pillage("Trading, offering an average of 10 pieces of eight per league"),
-            JobKind::Trading {
-                avg_poe_per_league: 10
-            }
+            JobKind::Trading
         );
         assert_eq!(
             pillage("Exploring the Sucker-bearing Destroyer of the Briny Deep"),
@@ -3786,5 +3793,34 @@ mod tests {
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.swabbies, 9);
         assert_eq!(v.mercenaries.len(), 2);
+    }
+
+    #[test]
+    fn winners_roster_backfills_merc_samples_to_ground_truth() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.name_segments.learn_brigand("Gentle Gayle");
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
+        // Sail samples the crew (mercs unknown -> 0); a swabbie delta samples again.
+        gs.process_line("[01:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[01:00:20] 3 swabbies have come aboard.");
+        {
+            let voy = gs.current_vessel().unwrap().current_voyage.as_ref().unwrap();
+            assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 0));
+            assert_eq!(voy.merc_checkpoint, 0); // no ground truth yet
+        }
+        gs.process_line("[01:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[01:02:00] Test Vessel has grappled Modest Sild. A melee breaks out between the crews!",
+        );
+        // The win reveals one mercenary — every sample so far is backfilled to it.
+        gs.process_line(
+            "[01:04:00] Game over.  Winners: Playerone, Luka Merciless, Gentle Gayle, A swabbie.",
+        );
+        let voy = gs.current_vessel().unwrap().current_voyage.as_ref().unwrap();
+        assert!(!voy.crew_samples.is_empty());
+        assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 1));
+        assert_eq!(voy.merc_checkpoint, voy.crew_samples.len());
     }
 }

@@ -22,6 +22,7 @@ use crate::chatlog::{
     LAIR_WAVE_GROWTH, LAIR_WAVE_HI, LAIR_WAVE_LO,
 };
 use crate::clickmap::{ClickRegion, ClickTarget};
+use crate::utils::wrap_words;
 use crate::voyage::ui::fight_chart_lines;
 use crate::voyage::AxisMode;
 use crate::pirate::{
@@ -935,46 +936,6 @@ fn staffing(ship: &Ship, players: usize, swabbies: u32) -> Option<Staffing> {
     } else {
         None
     }
-}
-
-/// Word-wrap `text` to `width` columns, hard-breaking any single word longer
-/// than the line so a narrow column never overflows.
-fn wrap_words(text: &str, width: usize) -> Vec<String> {
-    if width == 0 {
-        return Vec::new();
-    }
-    let mut lines: Vec<String> = Vec::new();
-    let mut cur = String::new();
-    for mut word in text.split_whitespace() {
-        // A word that can't fit on its own line is chopped to width.
-        while word.chars().count() > width {
-            if !cur.is_empty() {
-                lines.push(std::mem::take(&mut cur));
-            }
-            let head: String = word.chars().take(width).collect();
-            let consumed = head.len();
-            lines.push(head);
-            word = &word[consumed..];
-        }
-        if word.is_empty() {
-            continue;
-        }
-        let need = if cur.is_empty() {
-            word.chars().count()
-        } else {
-            cur.chars().count() + 1 + word.chars().count()
-        };
-        if need > width {
-            lines.push(std::mem::take(&mut cur));
-        } else if !cur.is_empty() {
-            cur.push(' ');
-        }
-        cur.push_str(word);
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
-    }
-    lines
 }
 
 // ---------------------------------------------------------------------------
@@ -3649,16 +3610,4 @@ mod tests {
         assert_eq!(staffing(sloop(), 5, 4), Some(Staffing::Invalid));
     }
 
-    #[test]
-    fn wrap_words_breaks_on_spaces() {
-        assert_eq!(
-            wrap_words("Understaffed. Hire jobbers.", 20),
-            vec!["Understaffed. Hire", "jobbers."],
-        );
-    }
-
-    #[test]
-    fn wrap_words_hard_breaks_overlong_words() {
-        assert_eq!(wrap_words("Understaffed.", 5), vec!["Under", "staff", "ed."]);
-    }
 }

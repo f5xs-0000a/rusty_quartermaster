@@ -1883,6 +1883,10 @@ enum Row {
     ThreeCol([(String, Style); 3]),
     /// A pre-rendered, width-independent line (its own width is fixed).
     Raw(Line<'static>),
+    /// Free text word-wrapped to the resolved width — expands to as many lines as
+    /// needed instead of forcing the widget wider. Must be the *last* row (it breaks
+    /// the row↔line 1:1 mapping the focusables rely on).
+    Wrap { text: String, style: Style },
 }
 
 /// The page body (everything below the pinned header): the rows in focus order —
@@ -1903,6 +1907,13 @@ impl Built {
     }
     fn line(&mut self, l: Line<'static>) {
         self.push(Row::Raw(l));
+    }
+    /// Push free text that word-wraps to the resolved width. Must be the last row.
+    fn wrap(&mut self, text: &str, style: Style) {
+        self.push(Row::Wrap {
+            text: text.to_string(),
+            style,
+        });
     }
     fn blank(&mut self) {
         self.push(Row::Blank);
@@ -1949,24 +1960,36 @@ impl Built {
                     cells.iter().map(|(s, _)| s.chars().count()).max().unwrap_or(0) * 3
                 }
                 Row::Raw(l) => l.width(),
+                // Wrapped text never forces the widget wider than the sentence — it
+                // just needs room for its longest single word (which can't wrap).
+                Row::Wrap { text, .. } => {
+                    text.split_whitespace().map(|w| w.chars().count()).max().unwrap_or(0)
+                }
             })
             .max()
             .unwrap_or(0)
     }
 
-    /// Render every row into `self.lines` at the resolved `width`.
+    /// Render every row into `self.lines` at the resolved `width`. A [`Row::Wrap`]
+    /// expands to several lines, so this isn't a 1:1 row→line map — safe only because
+    /// wraps are always last (see [`Row::Wrap`]).
     fn finalize(&mut self, width: usize) {
-        self.lines = self
-            .rows
-            .iter()
-            .map(|r| match r {
-                Row::Blank => Line::from(""),
-                Row::Section(t) => section(t, width),
-                Row::Stat { label, value } => stat(label, value.clone(), width),
-                Row::ThreeCol(cells) => three_col(width, cells.clone()),
-                Row::Raw(l) => l.clone(),
-            })
-            .collect();
+        let mut lines = Vec::with_capacity(self.rows.len());
+        for r in &self.rows {
+            match r {
+                Row::Blank => lines.push(Line::from("")),
+                Row::Section(t) => lines.push(section(t, width)),
+                Row::Stat { label, value } => lines.push(stat(label, value.clone(), width)),
+                Row::ThreeCol(cells) => lines.push(three_col(width, cells.clone())),
+                Row::Raw(l) => lines.push(l.clone()),
+                Row::Wrap { text, style } => {
+                    for piece in crate::utils::wrap_words(text, width) {
+                        lines.push(Line::from(Span::styled(piece, *style)));
+                    }
+                }
+            }
+        }
+        self.lines = lines;
     }
 }
 
@@ -2187,19 +2210,21 @@ fn build_lines(view: &VoyageView) -> Built {
         "Rum spice consumed this voyage.",
     );
     out.stat(
-        "  per swabbie",
-        opt1(c.rum_spice_per_swabbie),
-        "Rum spice per swabbie — spice mainly fuels swabbies.",
+        "  per merc",
+        opt1(c.rum_spice_per_mercenary),
+        "Rum spice per mercenary — spice fuels mercenaries, not swabbies.",
     );
     out.stat(
-        "  per swabbie / min",
-        opt2(c.rum_spice_per_swabbie_per_min),
-        "Rum spice per swabbie per minute (approximate — see the note below).",
+        "  per merc / min",
+        opt2(c.rum_spice_per_mercenary_per_min),
+        "Rum spice per mercenary per minute (approximate — see the note below).",
     );
-    out.line(Line::from(Span::styled(
-        "⚠ spice approx. (swabbies / ran out skew it)".to_string(),
-        Style::default().fg(Color::DarkGray).italic(),
-    )));
+    let warn = if c.rum_spice_unreliable {
+        "Due to losing battles, these statistics are inaccurate measures of consumption."
+    } else {
+        "These statistics are not accurate measures of consumption."
+    };
+    out.wrap(warn, Style::default().fg(Color::DarkGray).italic());
 
     out
 }

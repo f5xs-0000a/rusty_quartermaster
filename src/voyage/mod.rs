@@ -324,8 +324,13 @@ pub struct CrewSample {
     pub at: NaiveDateTime,
     /// Real pirates aboard, including us.
     pub pirates: u32,
-    /// Swabbies (NPC crew) aboard.
+    /// Total NPC crew aboard (swabbies + mercenaries) — the manpower count.
     pub swabbies: u32,
+    /// Mercenaries aboard. Best-effort while sampled live (mercs board invisibly);
+    /// retroactively corrected to each winners-roster ground truth (see
+    /// [`Voyage::merc_checkpoint`]). Drives the time-weighted average mercenaries the
+    /// rum-spice-per-mercenary stat divides by.
+    pub mercenaries: u32,
 }
 
 /// One complete sail->port run aboard a vessel — the unit of voyage statistics.
@@ -356,6 +361,12 @@ pub struct Voyage {
     /// Headcount samples at each crew change while underway (sail-time first).
     /// Drives the time-weighted average used for per-crew consumption stats.
     pub crew_samples: Vec<CrewSample>,
+    /// Index into [`Self::crew_samples`] marking the start of the current
+    /// not-yet-ground-truthed stretch. On each winners-roster ground truth (a won
+    /// fight) every sample from here to the end is backfilled to the confirmed
+    /// mercenary count and this advances to the end — so each inter-win stretch gets
+    /// the count confirmed at its close. Runtime-only.
+    pub merc_checkpoint: usize,
     /// We left the vessel mid-run, so this voyage's data has gaps.
     pub poisoned: bool,
     /// Runtime-only: the user has saved or dismissed this run via the
@@ -363,10 +374,10 @@ pub struct Voyage {
     pub saved: bool,
     /// Precomputed time-weighted average crew for a voyage **reconstructed from
     /// disk**, where the raw [`Self::crew_samples`] no longer exist (only the
-    /// averages were persisted). `(pirates, swabbies)`, each optional. `None` for
-    /// a live voyage, which derives its averages from `crew_samples`. See
+    /// averages were persisted). `(pirates, swabbies, mercenaries)`, each optional.
+    /// `None` for a live voyage, which derives its averages from `crew_samples`. See
     /// [`crate::voyage::persistence::SavedVoyage::to_voyage`].
-    pub avg_override: Option<(Option<f64>, Option<f64>)>,
+    pub avg_override: Option<(Option<f64>, Option<f64>, Option<f64>)>,
 }
 
 impl Voyage {
@@ -410,19 +421,30 @@ impl Voyage {
     /// [`Self::avg_override`]); a live voyage computes it from `crew_samples`.
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_pirates(&self) -> Option<f64> {
-        if let Some((p, _)) = self.avg_override {
+        if let Some((p, _, _)) = self.avg_override {
             return p;
         }
         self.avg_crew(|s| s.pirates)
     }
 
-    /// Time-weighted average swabbies aboard over the run. See [`Self::avg_pirates`].
+    /// Time-weighted average total NPC crew aboard over the run. See
+    /// [`Self::avg_pirates`].
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_swabbies(&self) -> Option<f64> {
-        if let Some((_, s)) = self.avg_override {
+        if let Some((_, s, _)) = self.avg_override {
             return s;
         }
         self.avg_crew(|s| s.swabbies)
+    }
+
+    /// Time-weighted average mercenaries aboard over the run — the denominator for
+    /// the rum-spice-per-mercenary stat. See [`Self::avg_pirates`].
+    #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
+    pub fn avg_mercenaries(&self) -> Option<f64> {
+        if let Some((_, _, m)) = self.avg_override {
+            return m;
+        }
+        self.avg_crew(|s| s.mercenaries)
     }
 }
 
