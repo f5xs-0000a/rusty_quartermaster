@@ -1104,8 +1104,10 @@ pub fn render(
     let dragoon_w = if ui.voyage_type.tracks_dragoons() {
         let d = vessel.map_or(0, |v| v.dragoons_aboard);
         let b = vessel.map_or(0, |v| v.dragoon_boardings);
-        let low = d.saturating_add(b.saturating_mul(3));
-        let high = d.saturating_add(b.saturating_mul(6));
+        // `d` (lone heads) is signed and may be negative when party members were
+        // driven off; that correctly lowers the estimate. Clamp the displayed value.
+        let low = (d + b as i32 * 3).max(0) as u32;
+        let high = (d + b as i32 * 6).max(0) as u32;
         // No dragoons aboard → no footer, so no width reserved for it.
         if high > 0 {
             dragoons_footer(low, high).len()
@@ -1181,8 +1183,10 @@ pub fn render(
     let stats: Option<StatsBox> = if ui.voyage_type.tracks_dragoons() {
         let d = vessel.map_or(0, |v| v.dragoons_aboard);
         let b = vessel.map_or(0, |v| v.dragoon_boardings);
-        let low = d.saturating_add(b.saturating_mul(3));
-        let high = d.saturating_add(b.saturating_mul(6));
+        // `d` (lone heads) is signed and may be negative when party members were
+        // driven off; that correctly lowers the estimate. Clamp the displayed value.
+        let low = (d + b as i32 * 3).max(0) as u32;
+        let high = (d + b as i32 * 6).max(0) as u32;
         Some(StatsBox {
             title: "Atlantis Stats",
             rows: vec![StatRow::new("Dragoons Boarded", dragoons_boarded_value(low, high))],
@@ -2455,8 +2459,10 @@ fn render_panes(
                 if show_dragoons {
                     let d = vessel.map_or(0, |v| v.dragoons_aboard);
                     let b = vessel.map_or(0, |v| v.dragoon_boardings);
-                    let low = d.saturating_add(b.saturating_mul(3));
-                    let high = d.saturating_add(b.saturating_mul(6));
+                    // Signed `d` may be negative (party members driven off), lowering
+                    // the estimate; clamp the displayed value.
+                    let low = (d + b as i32 * 3).max(0) as u32;
+                    let high = (d + b as i32 * 6).max(0) as u32;
                     if high > 0 {
                         footers.push(Line::from(Span::styled(
                             dragoons_footer(low, high),

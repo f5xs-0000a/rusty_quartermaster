@@ -267,8 +267,8 @@ pub fn vargas_in_wave(wave: u32) -> bool {
 /// Which special-encounter mechanic is active on a vessel, inferred from the
 /// voyage's tell. Gates which "invaders aboard" lines are counted so a stray
 /// keyword on an ordinary pillage can't move the wrong counter. Each mechanic is
-/// exclusive to its voyage type — dragoons are Atlantis-only (still counted via the
-/// legacy `dragoons_aboard` path, not gated here yet), zombies Cursed-Isles-only.
+/// exclusive to its voyage type — `Atlantis` is set by the dragoon boarding tells
+/// and gates the dragoon driven-off decrement; zombies are Cursed-Isles-only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EncounterKind {
     #[default]
@@ -329,9 +329,16 @@ pub struct Vessel {
     /// vessel (we missed lines while away) can't underflow.
     pub swabbies: u32,
     /// Lone dragoons currently aboard on an Atlantis run: +1 per "Ye hear a
-    /// splash, and the sound of foreign footsteps." line. Reset to zero once the
-    /// crew repels all invaders. Always zero on voyage types without dragoons.
-    pub dragoons_aboard: u32,
+    /// splash, and the sound of foreign footsteps." line, −1 per dragoon driven off
+    /// the ship. Reset to zero once the crew repels all invaders. Always zero on
+    /// voyage types without dragoons.
+    ///
+    /// **Signed on purpose:** a "driven from the ship" line doesn't say whether the
+    /// dragoon was a lone splasher or a *party* member (whose head lives in
+    /// [`Self::dragoon_boardings`], not here), so driven-offs can exceed lone
+    /// boardings and take this below zero. That negative is meaningful — party heads
+    /// were cleared beyond the lone ones — so we keep it rather than saturating at 0.
+    pub dragoons_aboard: i32,
     /// Monster boarding parties currently aboard: +1 per "Dragoons from the
     /// monster took advantage..." line. Each party is 3/4/6 dragoons depending on
     /// the monster — we can't tell which — so we count the parties, not the heads.
@@ -802,6 +809,19 @@ impl GameState {
                     self.confirm_self(who);
                     self.note_pirate_aboard(who); // driving a zombie off proves they're aboard
                     self.on_zombie_driven_off();
+                    return;
+                }
+                // Atlantis: a dragoon driven off the ship — one fewer aboard. Gated on
+                // the Atlantis encounter (set by the boarding tells) so an ordinary foe
+                // driven off in a pillage doesn't match. Dragoon names are bare Greek
+                // words, so we can't key off the foe name — context is the tell.
+                if self
+                    .current_vessel()
+                    .is_some_and(|v| v.encounter == EncounterKind::Atlantis)
+                {
+                    self.confirm_self(who);
+                    self.note_pirate_aboard(who); // driving a dragoon off proves they're aboard
+                    self.on_dragoon_driven_off();
                     return;
                 }
             }
@@ -1519,6 +1539,7 @@ impl GameState {
     /// A lone dragoon splashed aboard (Atlantis).
     fn on_dragoon_aboard(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::Atlantis;
             v.dragoons_aboard = v.dragoons_aboard.saturating_add(1);
         }
     }
@@ -1526,7 +1547,25 @@ impl GameState {
     /// The monster landed a boarding party of dragoons (Atlantis).
     fn on_dragoon_boarding(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
+            v.encounter = EncounterKind::Atlantis;
             v.dragoon_boardings = v.dragoon_boardings.saturating_add(1);
+        }
+    }
+
+    /// A dragoon was driven off the ship (Atlantis) — one fewer aboard. May take
+    /// [`Vessel::dragoons_aboard`] negative when the dragoon came from a party (see
+    /// that field's doc); that's intended, so this does not saturate at zero.
+    fn on_dragoon_driven_off(&mut self) {
+        if let Some(v) = self.current_vessel_mut() {
+            v.dragoons_aboard = v.dragoons_aboard.saturating_sub(1);
+            // Once driven-offs exhaust even the *upper* estimate (6 heads per party),
+            // every dragoon is certainly gone. Zero both counters: this self-clears the
+            // fight when there's no explicit "repel all invaders" line, and stops a
+            // stale negative balance from corrupting the next boarding cycle.
+            if v.dragoons_aboard + 6 * v.dragoon_boardings as i32 <= 0 {
+                v.dragoons_aboard = 0;
+                v.dragoon_boardings = 0;
+            }
         }
     }
 
@@ -2567,6 +2606,60 @@ mod tests {
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.dragoons_aboard, 0);
         assert_eq!(v.dragoon_boardings, 0);
+    }
+
+    #[test]
+    fn dragoon_driven_off_decrements_and_can_go_negative() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
+        // A boarding party lands — heads unknown, so only the boardings counter moves.
+        gs.process_line(
+            "[01:01:00] Dragoons from the monster took advantage of their proximity to board yer vessel!",
+        );
+        // Two of that party are driven off. No lone splashes fed `dragoons_aboard`, so it
+        // goes negative — party heads cleared beyond the lone ones (that's the signal).
+        gs.process_line("[01:01:10] Playerone has driven Bellator from the ship!");
+        gs.process_line("[01:01:20] Playertwo has driven Athanatoi from the ship!");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.dragoon_boardings, 1);
+        assert_eq!(v.dragoons_aboard, -2);
+
+        // A repel clears everything back to zero.
+        gs.process_line("[01:02:00] Arr! Yer crew has managed to repel all invaders!");
+        assert_eq!(gs.current_vessel().unwrap().dragoons_aboard, 0);
+    }
+
+    #[test]
+    fn driven_off_outside_atlantis_leaves_dragoons_untouched() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
+        // No dragoon tells → not an Atlantis encounter. An ordinary foe driven off in a
+        // pillage must not decrement the dragoon counter.
+        gs.process_line("[01:01:00] Playerone has driven Jack Irascible from the ship!");
+        assert_eq!(gs.current_vessel().unwrap().dragoons_aboard, 0);
+    }
+
+    #[test]
+    fn dragoons_self_clear_when_upper_estimate_exhausted() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
+        gs.process_line(
+            "[01:01:00] Dragoons from the monster took advantage of their proximity to board yer vessel!",
+        );
+        // Drive off six — the most a single party could hold. Only on the sixth does the
+        // upper estimate (−6 + 6·1) reach zero, self-clearing both counters without a
+        // "repel all invaders" line.
+        for i in 0..6 {
+            gs.process_line(&format!("[01:01:1{i}] Playerone has driven Bellator from the ship!"));
+            let v = gs.current_vessel().unwrap();
+            if i < 5 {
+                assert_eq!(v.dragoons_aboard, -(i as i32 + 1));
+                assert_eq!(v.dragoon_boardings, 1);
+            } else {
+                assert_eq!(v.dragoons_aboard, 0);
+                assert_eq!(v.dragoon_boardings, 0);
+            }
+        }
     }
 
     #[test]
