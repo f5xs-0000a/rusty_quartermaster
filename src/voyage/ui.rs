@@ -300,13 +300,28 @@ pub fn render(
         iw,
         Style::default().bold(),
     )];
-    if let Some(t) = &view.ship_type {
-        header.push(centered_line(t.clone(), iw, Style::default().fg(Color::Gray)));
+    match &view.ship_type {
+        Some(t) => header.push(centered_line(t.clone(), iw, Style::default().fg(Color::Gray))),
+        // No hull assigned — say so, dimmed and italic so it reads as a placeholder.
+        None => header.push(centered_line(
+            "Unknown Ship Hull".to_string(),
+            iw,
+            Style::default().fg(Color::DarkGray).italic(),
+        )),
     }
     if let Some(p) = &view.period {
         header.push(centered_line(p.clone(), iw, Style::default().fg(Color::DarkGray)));
     }
     header.push(Line::from("")); // separator from the scrolling body
+    // With the pager shown, the status badge sits under the `Voyage k of n` row on
+    // its own line, then a blank, then the ship name / type / clock headline. A
+    // saved current-login run shows no badge (and no reserved line).
+    if view.page_count > 1 {
+        if let Some((label, style)) = voyage_badge_span(view.badge) {
+            header.insert(0, Line::from("")); // blank between badge and ship name
+            header.insert(0, centered_line(label.to_string(), iw, style));
+        }
+    }
     let header_h = header.len() as u16;
 
     // Split: an optional voyage pager, the pinned header, the scrollable body
@@ -517,20 +532,27 @@ fn render_voyage_pager(
     if !at_last {
         regions.push(ClickRegion { rect: nav[2], target: ClickTarget::VoyageNext });
     }
-    let (badge, badge_style) = match view.badge {
-        VoyageBadge::Live => ("● live", Style::default().fg(Color::Cyan).bold()),
-        VoyageBadge::Unsaved => ("● unsaved", Style::default().fg(Color::Yellow)),
-        VoyageBadge::Saved => ("✓ saved", Style::default().fg(Color::Green)),
-        VoyageBadge::ReadOnly => ("saved run", Style::default().fg(Color::DarkGray)),
-    };
-    let center = Line::from(vec![
-        Span::styled(
-            format!("Voyage {} of {}  ", view.page + 1, view.page_count),
+    // Just the `Voyage k of n` count here — the status badge is rendered below, on
+    // its own line in the header stack.
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("Voyage {} of {}", view.page + 1, view.page_count),
             Style::default().bold(),
-        ),
-        Span::styled(badge, badge_style),
-    ]);
-    frame.render_widget(Paragraph::new(center).centered(), nav[1]);
+        ))
+        .centered(),
+        nav[1],
+    );
+}
+
+/// The label + colour for a voyage's pager status badge, or `None` when no badge
+/// should show — an already-saved current-login run needs no marker.
+fn voyage_badge_span(badge: VoyageBadge) -> Option<(&'static str, Style)> {
+    match badge {
+        VoyageBadge::Live => Some(("Live", Style::default().fg(Color::DarkGray))),
+        VoyageBadge::Unsaved => Some(("Unsaved", Style::default().fg(Color::Red))),
+        VoyageBadge::Saved => None,
+        VoyageBadge::ReadOnly => Some(("Read-only", Style::default().fg(Color::DarkGray))),
+    }
 }
 
 /// Modal: "Save this voyage to history, or discard it?" with two buttons.
