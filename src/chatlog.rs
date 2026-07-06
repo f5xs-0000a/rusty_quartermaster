@@ -484,6 +484,10 @@ pub struct GameState {
     now: Option<NaiveDateTime>,
     /// Monotonic counter handing out [`Vessel::order`] values.
     order_counter: u64,
+    /// Monotonic counter handing out [`Voyage::id`] values. Not reset on relog —
+    /// ids only need to stay unique within the process so the pager's selection
+    /// pin never collides after a `vessels.clear()`.
+    next_voyage_id: u64,
     /// Set for the duration of one line when a sea battle just resolved (`Game
     /// over` / disengage). Lets the app freeze the live Damage calculator onto
     /// that fight. Reset at the top of each [`Self::process_line`].
@@ -535,6 +539,7 @@ impl GameState {
             last_time: None,
             now: None,
             order_counter: 0,
+            next_voyage_id: 0,
             battle_just_resolved: false,
             battle_just_started: false,
             detected_foe_ship: None,
@@ -1099,9 +1104,16 @@ impl GameState {
         let now = self.now;
         // A fresh run (no voyage underway yet) wipes any prior run's Cursed Isles
         // state so the encounter and the fog auto-jump re-arm per run.
-        if self.current_vessel().is_some_and(|v| v.current_voyage.is_none()) {
+        let fresh = self.current_vessel().is_some_and(|v| v.current_voyage.is_none());
+        if fresh {
             self.reset_cursed_isles();
         }
+        // Reserve a voyage id before borrowing the vessel, but only when we're
+        // actually about to create a new run (a re-sail just backfills sail time).
+        let new_id = fresh.then(|| {
+            self.next_voyage_id += 1;
+            self.next_voyage_id
+        });
         let Some(v) = self.current_vessel_mut() else {
             return;
         };
@@ -1114,6 +1126,7 @@ impl GameState {
             None => {
                 let job_kind = v.job_kind.clone();
                 v.current_voyage = Some(Voyage {
+                    id: new_id.unwrap_or_default(),
                     job_kind,
                     sailed_at: now,
                     ..Voyage::default()
@@ -1433,6 +1446,18 @@ impl GameState {
         self.current_vessel_mut()?.current_voyage.as_mut()
     }
 
+    /// Find a current-login voyage across all vessels by its stable
+    /// [`Voyage::id`] — completed runs and the in-progress one alike. Used by the
+    /// Voyage Statistics pager's save/discard, which act on the selected run.
+    pub fn voyage_by_id_mut(&mut self, id: u64) -> Option<&mut Voyage> {
+        self.vessels.values_mut().find_map(|v| {
+            v.voyages
+                .iter_mut()
+                .chain(v.current_voyage.iter_mut())
+                .find(|vy| vy.id == id)
+        })
+    }
+
     /// Record the current headcount onto the active voyage's crew timeline. A
     /// no-op when not aboard, not on a voyage, or before the clock is set. Call
     /// after any change to the crewmate/swabbie counts.
@@ -1458,15 +1483,19 @@ impl GameState {
     /// needed. `sailed_at` stays `None` for lazily-created voyages (a battle began
     /// before we saw a sail order); [`Self::on_set_sail`] backfills it.
     fn ensure_voyage(&mut self) -> Option<&mut Voyage> {
-        let v = self.current_vessel_mut()?;
-        if v.current_voyage.is_none() {
+        if self.current_vessel()?.current_voyage.is_none() {
+            // Reserve the id before the mutable vessel borrow.
+            self.next_voyage_id += 1;
+            let id = self.next_voyage_id;
+            let v = self.current_vessel_mut()?;
             let job_kind = v.job_kind.clone();
             v.current_voyage = Some(Voyage {
+                id,
                 job_kind,
                 ..Voyage::default()
             });
         }
-        v.current_voyage.as_mut()
+        self.current_vessel_mut()?.current_voyage.as_mut()
     }
 
     /// A lone dragoon splashed aboard (Atlantis).
@@ -3097,6 +3126,33 @@ mod tests {
         assert_eq!(b.my_cut, Some(576));
         assert_eq!(b.pirates, 2); // Matetwo + us
         assert_eq!(b.swabbies, 1); // A swabbie
+    }
+
+    #[test]
+    fn voyages_get_stable_distinct_ids() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line("[02:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[02:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        let live_id = gs.vessels["Test Vessel"].current_voyage.as_ref().unwrap().id;
+        assert_ne!(live_id, 0, "a real voyage gets a nonzero id");
+
+        // The id survives promotion from `current_voyage` into `voyages` at port.
+        gs.process_line("[02:20:00] Playerone issued an order to put into port.");
+        let v = &gs.vessels["Test Vessel"];
+        assert!(v.current_voyage.is_none());
+        assert_eq!(v.voyages[0].id, live_id);
+
+        // A second run on the same vessel gets a fresh, distinct id.
+        gs.process_line("[02:30:00] Playerone issued an order to set the vessel to sail.");
+        let second_id = gs.vessels["Test Vessel"]
+            .current_voyage
+            .as_ref()
+            .unwrap()
+            .id;
+        assert_ne!(second_id, live_id);
     }
 
     #[test]

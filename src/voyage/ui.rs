@@ -65,9 +65,26 @@ pub enum BattlesFocus {
     Calc,
 }
 
+/// Which voyage the Voyage Statistics page is showing. The page can page across
+/// the current login's live runs (read-write) and past runs from the voyages file
+/// (read-only); `Live` keeps following the newest run as new ones begin.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum VoyageSel {
+    /// Follow the newest live run of the current login (default). Auto-advances as
+    /// new runs begin — the page never gets "stuck" on an old run unless pinned.
+    #[default]
+    Live,
+    /// A pinned current-login run, by its stable [`crate::voyage::Voyage::id`].
+    Session(u64),
+    /// A pinned past run, by index into the loaded voyage history — read-only.
+    Saved(usize),
+}
+
 /// Persistent UI state for the page (mouse/keyboard-driven).
 #[derive(Default)]
 pub struct VoyageStatsUi {
+    /// Which voyage is shown (see [`VoyageSel`]). `Live` by default.
+    pub selected: VoyageSel,
     /// Vertical scroll offset, in rows. Driven by [`Self::focus`] — the body
     /// auto-scrolls to keep the focused item visible.
     pub scroll: u16,
@@ -154,10 +171,33 @@ pub struct BattleRow {
     pub timeline: crate::voyage::FightTimeline,
 }
 
+/// The pager badge for the shown voyage — its status among all selectable runs.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum VoyageBadge {
+    /// The in-progress run of the current login.
+    Live,
+    /// A completed current-login run not yet saved to history.
+    #[default]
+    Unsaved,
+    /// A current-login run already persisted to history this session.
+    Saved,
+    /// A past run loaded from the voyages file — read-only.
+    ReadOnly,
+}
+
 /// Everything the page needs to draw one voyage, computed by the caller so this
 /// module stays free of app-state plumbing.
 pub struct VoyageView {
     pub has_voyage: bool,
+    /// This is a read-only history page (loaded from disk): no save/discard, and
+    /// the Sea Battles calculator can't be edited.
+    pub read_only: bool,
+    /// 0-based index of the shown voyage among all selectable runs, and the total
+    /// count — drives the `Voyage k of n` pager. `page_count <= 1` hides it.
+    pub page: usize,
+    pub page_count: usize,
+    /// The shown voyage's status badge in the pager.
+    pub badge: VoyageBadge,
     /// Vessel name — the centered headline.
     pub vessel: Option<String>,
     /// Ship type (e.g. "War Frigate"), from the vessel's chosen ship.
@@ -269,15 +309,21 @@ pub fn render(
     header.push(Line::from("")); // separator from the scrolling body
     let header_h = header.len() as u16;
 
-    // Split: pinned header, the scrollable body (Sea Battles + stats + charts),
-    // then a pinned footer.
+    // Split: an optional voyage pager, the pinned header, the scrollable body
+    // (Sea Battles + stats + charts), then a pinned footer.
+    let show_pager = view.page_count > 1;
+    let pager_h = if show_pager { 1 } else { 0 };
     let parts = Layout::vertical([
+        Constraint::Length(pager_h),
         Constraint::Length(header_h),
         Constraint::Min(0),
         Constraint::Length(1),
     ])
     .split(inner);
-    let (header_area, body, footer) = (parts[0], parts[1], parts[2]);
+    let (pager_area, header_area, body, footer) = (parts[0], parts[1], parts[2], parts[3]);
+    if show_pager {
+        render_voyage_pager(frame, pager_area, view, regions);
+    }
     frame.render_widget(Paragraph::new(header), header_area);
 
     // Render the body rows into lines now that the width is fixed. The parallel
@@ -402,10 +448,24 @@ pub fn render(
             rect: footer,
             target: ClickTarget::VoyageSaveOpen,
         });
-    } else {
+    } else if view.read_only {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "↑/↓ move · Enter open/enlarge",
+                "read-only history · ←/→ change voyage",
+                Style::default().fg(Color::DarkGray),
+            )))
+            .centered(),
+            footer,
+        );
+    } else {
+        let hint = if view.page_count > 1 {
+            "↑/↓ move · ←/→ voyage · Enter open/enlarge"
+        } else {
+            "↑/↓ move · Enter open/enlarge"
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                hint,
                 Style::default().fg(Color::DarkGray),
             )))
             .centered(),
@@ -422,6 +482,55 @@ pub fn render(
     } else if let Some(choice) = ui.prompt {
         render_save_prompt(frame, area, choice, regions);
     }
+}
+
+/// The voyage pager row: `‹ Prev   Voyage k of n · <badge>   Next ›`. Shown only
+/// when more than one run is selectable (`page_count > 1`). Prev/Next are click
+/// targets (dimmed and inert at the ends); the keyboard uses ←/→ on the page.
+fn render_voyage_pager(
+    frame: &mut Frame,
+    area: Rect,
+    view: &VoyageView,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let nav = Layout::horizontal([
+        Constraint::Length(8),
+        Constraint::Min(0),
+        Constraint::Length(8),
+    ])
+    .split(area);
+    let at_first = view.page == 0;
+    let at_last = view.page + 1 >= view.page_count;
+    let arrow = |label: &str, dim: bool| {
+        let style = if dim {
+            Style::default().fg(Color::DarkGray)
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        Paragraph::new(Span::styled(label.to_string(), style)).centered()
+    };
+    frame.render_widget(arrow("‹ Prev", at_first), nav[0]);
+    frame.render_widget(arrow("Next ›", at_last), nav[2]);
+    if !at_first {
+        regions.push(ClickRegion { rect: nav[0], target: ClickTarget::VoyagePrev });
+    }
+    if !at_last {
+        regions.push(ClickRegion { rect: nav[2], target: ClickTarget::VoyageNext });
+    }
+    let (badge, badge_style) = match view.badge {
+        VoyageBadge::Live => ("● live", Style::default().fg(Color::Cyan).bold()),
+        VoyageBadge::Unsaved => ("● unsaved", Style::default().fg(Color::Yellow)),
+        VoyageBadge::Saved => ("✓ saved", Style::default().fg(Color::Green)),
+        VoyageBadge::ReadOnly => ("saved run", Style::default().fg(Color::DarkGray)),
+    };
+    let center = Line::from(vec![
+        Span::styled(
+            format!("Voyage {} of {}  ", view.page + 1, view.page_count),
+            Style::default().bold(),
+        ),
+        Span::styled(badge, badge_style),
+    ]);
+    frame.render_widget(Paragraph::new(center).centered(), nav[1]);
 }
 
 /// Modal: "Save this voyage to history, or discard it?" with two buttons.
@@ -633,23 +742,36 @@ fn render_battles_popup(
     regions.push(ClickRegion { rect: nav[0], target: ClickTarget::VoyageBattlesPrev });
     regions.push(ClickRegion { rect: nav[2], target: ClickTarget::VoyageBattlesNext });
 
-    // -- Record toggle (focusable), directly under the page number --
-    let rec_label = if recorded { "Recorded" } else { "Not Recorded" };
-    let rec_style = if focus == BattlesFocus::Record {
-        Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-    } else if recorded {
-        Style::default().fg(Color::Green).bold()
+    // -- Record toggle (focusable), directly under the page number. On a read-only
+    //    history page there's nothing to persist, so it's a static marker with no
+    //    click target. --
+    if view.read_only {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "read-only",
+                Style::default().fg(Color::DarkGray),
+            ))
+            .centered(),
+            parts[1],
+        );
     } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    frame.render_widget(
-        Paragraph::new(Span::styled(rec_label, rec_style)).centered(),
-        parts[1],
-    );
-    regions.push(ClickRegion {
-        rect: parts[1],
-        target: ClickTarget::VoyageBattlesRecord,
-    });
+        let rec_label = if recorded { "Recorded" } else { "Not Recorded" };
+        let rec_style = if focus == BattlesFocus::Record {
+            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+        } else if recorded {
+            Style::default().fg(Color::Green).bold()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(rec_label, rec_style)).centered(),
+            parts[1],
+        );
+        regions.push(ClickRegion {
+            rect: parts[1],
+            target: ClickTarget::VoyageBattlesRecord,
+        });
+    }
 
     // -- (blank parts[2]) then enemy ship "(type)", type of enemy, outcome. The
     //    foe ship type always mirrors the calculator's Right column. --

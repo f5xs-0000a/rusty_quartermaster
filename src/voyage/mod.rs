@@ -313,6 +313,16 @@ pub struct CrewSample {
 /// stats; we keep the declaration in force when we set sail as the headline.
 #[derive(Clone, Debug, Default)]
 pub struct Voyage {
+    /// Session-stable identifier, assigned from a [`crate::chatlog::GameState`]
+    /// counter when the voyage is first created. Lets the Voyage Statistics pager
+    /// pin a selection across promotion (`current_voyage` -> `voyages`) and new
+    /// runs starting. Runtime-only; not persisted (`0` for a default/test voyage).
+    pub id: u64,
+    /// If this voyage was persisted to history this run, the index it occupies in
+    /// [`crate::voyage::persistence::SavedVoyages::voyages`]. The pager keeps
+    /// showing this live (read-write) page and hides its on-disk read-only twin,
+    /// so a just-saved run isn't listed twice. `None` until saved. Runtime-only.
+    pub saved_to: Option<usize>,
     /// Job kind in force when we set sail.
     pub job_kind: Option<JobKind>,
     /// When we set sail (first `set the vessel to sail` order of the run).
@@ -331,6 +341,12 @@ pub struct Voyage {
     /// Runtime-only: the user has saved or dismissed this run via the
     /// save/discard prompt, so it shouldn't be offered again. Not persisted.
     pub saved: bool,
+    /// Precomputed time-weighted average crew for a voyage **reconstructed from
+    /// disk**, where the raw [`Self::crew_samples`] no longer exist (only the
+    /// averages were persisted). `(pirates, swabbies)`, each optional. `None` for
+    /// a live voyage, which derives its averages from `crew_samples`. See
+    /// [`crate::voyage::persistence::SavedVoyage::to_voyage`].
+    pub avg_override: Option<(Option<f64>, Option<f64>)>,
 }
 
 impl Voyage {
@@ -369,15 +385,23 @@ impl Voyage {
         Some(area / total as f64)
     }
 
-    /// Time-weighted average pirates aboard (incl. us) over the run.
+    /// Time-weighted average pirates aboard (incl. us) over the run. A voyage
+    /// reconstructed from disk returns its persisted average (see
+    /// [`Self::avg_override`]); a live voyage computes it from `crew_samples`.
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_pirates(&self) -> Option<f64> {
+        if let Some((p, _)) = self.avg_override {
+            return p;
+        }
         self.avg_crew(|s| s.pirates)
     }
 
-    /// Time-weighted average swabbies aboard over the run.
+    /// Time-weighted average swabbies aboard over the run. See [`Self::avg_pirates`].
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_swabbies(&self) -> Option<f64> {
+        if let Some((_, s)) = self.avg_override {
+            return s;
+        }
         self.avg_crew(|s| s.swabbies)
     }
 }

@@ -115,6 +115,24 @@ pub struct SharedState<'a> {
     pub pillage_chest: u64,
 }
 
+/// Bundle of inputs for [`AppShell::assemble_voyage_view`] — the resolved voyage
+/// plus its pager framing and sourcing flags. Grouped into one struct so the live
+/// and historical builders share one assembly path without a 12-argument call.
+struct AssembleView<'a> {
+    vessel_name: Option<String>,
+    ship_type: Option<String>,
+    period: Option<String>,
+    elapsed_secs: Option<i64>,
+    voyage: &'a crate::voyage::Voyage,
+    confirmed: bool,
+    consumption: crate::voyage::stats::ConsumptionStats,
+    read_only: bool,
+    saveable: bool,
+    badge: crate::voyage::ui::VoyageBadge,
+    page: usize,
+    page_count: usize,
+}
+
 // ---------------------------------------------------------------------------
 // Free functions operating on shared data
 // ---------------------------------------------------------------------------
@@ -654,6 +672,16 @@ impl AppShell {
                 }
                 InputResult::Consumed
             }
+            // ←/→ page across selectable voyages (current login's runs + past runs
+            // from the voyages file).
+            KeyCode::Left => {
+                self.nav_voyage(-1);
+                InputResult::Consumed
+            }
+            KeyCode::Right => {
+                self.nav_voyage(1);
+                InputResult::Consumed
+            }
             // ↑/↓ move the focused stat (the body auto-scrolls to follow it);
             // ↑ off the first stat returns focus to the top bar.
             KeyCode::Up => {
@@ -697,51 +725,171 @@ impl AppShell {
     /// vessel/voyage to show, the chosen ship's cannon size, and the aggregated
     /// battle + consumption stats. Shows the current vessel's live run, or its
     /// most recent completed run.
+    /// The ordered strip of selectable voyages for the pager: past runs from the
+    /// voyages file (read-only) first, then the current login's in-RAM runs
+    /// (read-write), oldest→newest. A run saved this session keeps its live page
+    /// and its on-disk twin is hidden, so nothing is listed twice.
+    fn voyage_pages(&self) -> Vec<crate::voyage::ui::VoyageSel> {
+        use crate::voyage::ui::VoyageSel;
+        // History indices already represented by a live (in-RAM) saved run.
+        let claimed: std::collections::HashSet<usize> = self
+            .chatlog
+            .vessels
+            .values()
+            .flat_map(|v| v.voyages.iter().chain(v.current_voyage.iter()))
+            .filter_map(|vy| vy.saved_to)
+            .collect();
+        let mut pages: Vec<VoyageSel> = (0..self.voyage_history.voyages.len())
+            .filter(|i| !claimed.contains(i))
+            .map(VoyageSel::Saved)
+            .collect();
+        // Current-login runs across all vessels, chronological (sail time, then id).
+        let mut live: Vec<(Option<chrono::NaiveDateTime>, u64)> = self
+            .chatlog
+            .vessels
+            .values()
+            .flat_map(|v| v.voyages.iter().chain(v.current_voyage.iter()))
+            .map(|vy| (vy.sailed_at, vy.id))
+            .collect();
+        live.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)));
+        pages.extend(live.into_iter().map(|(_, id)| VoyageSel::Session(id)));
+        pages
+    }
+
+    /// Resolve the current selection to a page index. `Live` maps to the newest
+    /// (last) page; a stale pin falls back there too.
+    fn current_voyage_page(&self, pages: &[crate::voyage::ui::VoyageSel]) -> usize {
+        use crate::voyage::ui::VoyageSel;
+        let last = pages.len().saturating_sub(1);
+        match self.voyage_ui.selected {
+            VoyageSel::Live => last,
+            sel => pages.iter().position(|p| *p == sel).unwrap_or(last),
+        }
+    }
+
+    /// Find a current-login voyage (and its vessel key) by stable id.
+    fn voyage_by_id(&self, id: u64) -> Option<(std::sync::Arc<str>, &crate::voyage::Voyage)> {
+        self.chatlog.vessels.iter().find_map(|(k, v)| {
+            v.voyages
+                .iter()
+                .chain(v.current_voyage.iter())
+                .find(|vy| vy.id == id)
+                .map(|vy| (k.clone(), vy))
+        })
+    }
+
+    /// The selected voyage's id **iff** it's a current-login run that's finished
+    /// and not yet saved — i.e. the one the save/discard prompt would act on.
+    fn selected_saveable_id(&self) -> Option<u64> {
+        use crate::voyage::ui::VoyageSel;
+        let pages = self.voyage_pages();
+        let page = self.current_voyage_page(&pages);
+        match pages.get(page).copied()? {
+            VoyageSel::Session(id) => {
+                let (_, vy) = self.voyage_by_id(id)?;
+                (vy.ported_at.is_some() && !vy.saved).then_some(id)
+            }
+            _ => None,
+        }
+    }
+
+    /// Step the pager by `delta` pages (clamped). Landing on the newest page
+    /// returns to `Live` so the page keeps auto-following new runs; any page
+    /// change closes the Sea Battles popup and resets scroll/focus.
+    fn nav_voyage(&mut self, delta: isize) {
+        use crate::voyage::ui::VoyageSel;
+        let pages = self.voyage_pages();
+        if pages.is_empty() {
+            return;
+        }
+        let cur = self.current_voyage_page(&pages) as isize;
+        let next = (cur + delta).clamp(0, pages.len() as isize - 1) as usize;
+        self.voyage_ui.selected = if next + 1 == pages.len() {
+            VoyageSel::Live
+        } else {
+            pages[next]
+        };
+        self.voyage_ui.battles_popup = None;
+        self.voyage_ui.scroll = 0;
+        self.voyage_ui.focus = 0;
+    }
+
+    /// The computed view for the Voyage Statistics page, resolving the pager
+    /// selection to a live (read-write) or historical (read-only) run.
     fn build_voyage_view(&self) -> crate::voyage::ui::VoyageView {
-        use crate::voyage::ui::VoyageView;
+        use crate::voyage::ui::VoyageSel;
+        let pages = self.voyage_pages();
+        let page_count = pages.len();
+        let page = self.current_voyage_page(&pages);
+        match pages.get(page).copied() {
+            Some(VoyageSel::Saved(idx)) => self.build_saved_view(idx, page, page_count),
+            Some(VoyageSel::Session(id)) => self
+                .build_session_view(id, page, page_count)
+                .unwrap_or_else(|| self.empty_voyage_view()),
+            _ => self.empty_voyage_view(),
+        }
+    }
 
-        // Vessel: the jobbers selection if still live, else the latest boarded.
-        let key = self
-            .jobbers_ui
-            .selected
-            .clone()
-            .filter(|k| self.chatlog.vessels.contains_key(k))
-            .or_else(|| self.chatlog.vessels_by_recency().into_iter().next());
-        let vessel = key.as_ref().and_then(|k| self.chatlog.vessels.get(k));
-        let voyage = vessel.and_then(|v| v.current_voyage.as_ref().or_else(|| v.voyages.last()));
-
+    /// The "no voyage tracked yet" view — still shows the current vessel headline
+    /// if we're aboard one.
+    fn empty_voyage_view(&self) -> crate::voyage::ui::VoyageView {
+        use crate::voyage::ui::{VoyageBadge, VoyageView};
+        let key = self.displayed_vessel_key();
         let vessel_name = key.as_ref().map(|k| k.to_string());
-        // Ship type label from the vessel's chosen ship (the jobbers picker).
         let ship_type = key
             .as_ref()
             .and_then(|k| self.jobbers_ui.ship_types.get(k).copied())
             .and_then(|i| crate::ships::SHIPS.get(i))
             .map(|s| s.name.to_string());
+        VoyageView {
+            has_voyage: false,
+            read_only: false,
+            page: 0,
+            page_count: 0,
+            badge: VoyageBadge::Unsaved,
+            vessel: vessel_name,
+            ship_type,
+            period: None,
+            elapsed_secs: None,
+            saveable: false,
+            battle: Default::default(),
+            consumption: Default::default(),
+            charts: Default::default(),
+            battles: Vec::new(),
+        }
+    }
 
-        let Some(voyage) = voyage else {
-            return VoyageView {
-                has_voyage: false,
-                vessel: vessel_name,
-                ship_type,
-                period: None,
-                elapsed_secs: None,
-                saveable: false,
-                battle: Default::default(),
-                consumption: Default::default(),
-                charts: Default::default(),
-                battles: Vec::new(),
-            };
-        };
-
+    /// Build a read-write view for a current-login run selected by id.
+    fn build_session_view(
+        &self,
+        id: u64,
+        page: usize,
+        page_count: usize,
+    ) -> Option<crate::voyage::ui::VoyageView> {
+        use crate::voyage::ui::VoyageBadge;
+        let (key, voyage) = self.voyage_by_id(id)?;
+        let vessel_name = Some(key.to_string());
+        let ship_type = self
+            .jobbers_ui
+            .ship_types
+            .get(&key)
+            .copied()
+            .and_then(|i| crate::ships::SHIPS.get(i))
+            .map(|s| s.name.to_string());
+        let is_live = self
+            .chatlog
+            .vessels
+            .get(&key)
+            .and_then(|v| v.current_voyage.as_ref())
+            .map(|vy| vy.id)
+            == Some(id);
         let ported = voyage.ported_at.is_some();
         // End of the run: the port time once ported, else the live log clock.
         let end_at = voyage.ported_at.or_else(|| self.chatlog.now());
-        // Final duration if ported, else live elapsed against the log clock.
         let elapsed_secs = match (voyage.sailed_at, end_at) {
             (Some(start), Some(end)) => Some((end - start).num_seconds()),
             _ => None,
         };
-        // Clock span "HH:MM to HH:MM" (end is the current time while still out).
         let period = match (voyage.sailed_at, end_at) {
             (Some(start), Some(end)) => Some(format!(
                 "{} to {}",
@@ -750,17 +898,95 @@ impl AppShell {
             )),
             _ => None,
         };
-
-        // Identity confirmation gates win/loss: until our configured name is seen
-        // in the log, every win/loss shows as Unknown (and flips retroactively).
         let confirmed = self.chatlog.self_confirmed;
-        let eff = |raw| crate::voyage::effective_outcome(raw, confirmed);
-
         let consumption = crate::voyage::stats::consumption_stats(
             voyage,
             &self.profits.rows,
             &self.commodities,
         );
+        let saveable = ported && !voyage.saved;
+        let badge = if is_live {
+            VoyageBadge::Live
+        } else if voyage.saved {
+            VoyageBadge::Saved
+        } else {
+            VoyageBadge::Unsaved
+        };
+        Some(self.assemble_voyage_view(AssembleView {
+            vessel_name,
+            ship_type,
+            period,
+            elapsed_secs,
+            voyage,
+            confirmed,
+            consumption,
+            read_only: false,
+            saveable,
+            badge,
+            page,
+            page_count,
+        }))
+    }
+
+    /// Build a read-only view for a past run loaded from the voyages file.
+    fn build_saved_view(
+        &self,
+        idx: usize,
+        page: usize,
+        page_count: usize,
+    ) -> crate::voyage::ui::VoyageView {
+        use crate::voyage::ui::VoyageBadge;
+        let Some(saved) = self.voyage_history.voyages.get(idx) else {
+            return self.empty_voyage_view();
+        };
+        let voyage = saved.to_voyage();
+        let consumption = saved
+            .consumption
+            .as_ref()
+            .map(|c| c.to_stats(&voyage))
+            .unwrap_or_default();
+        self.assemble_voyage_view(AssembleView {
+            vessel_name: saved.vessel.clone(),
+            ship_type: saved.ship_type.clone(),
+            period: None,
+            elapsed_secs: voyage.duration_secs(),
+            voyage: &voyage,
+            // Persisted outcomes are already final — don't re-mask them by the
+            // *current* identity-confirmation state (pass confirmed=true).
+            confirmed: true,
+            consumption,
+            read_only: true,
+            saveable: false,
+            badge: VoyageBadge::ReadOnly,
+            page,
+            page_count,
+        })
+    }
+
+    /// Assemble a [`crate::voyage::ui::VoyageView`] from a resolved voyage plus its
+    /// pager framing. Shared by the live and historical paths — the stat/chart/
+    /// battle-row derivation is identical; only sourcing and flags differ.
+    fn assemble_voyage_view(&self, a: AssembleView<'_>) -> crate::voyage::ui::VoyageView {
+        use crate::voyage::ui::VoyageView;
+        let AssembleView {
+            vessel_name,
+            ship_type,
+            period,
+            elapsed_secs,
+            voyage,
+            confirmed,
+            consumption,
+            read_only,
+            saveable,
+            badge,
+            page,
+            page_count,
+        } = a;
+
+        // Identity confirmation gates win/loss: until our configured name is seen
+        // in the log, every win/loss shows as Unknown (and flips retroactively).
+        // Historical pages pass `confirmed = true` (their verdicts are final).
+        let eff = |raw| crate::voyage::effective_outcome(raw, confirmed);
         let battle = crate::voyage::stats::battle_stats(voyage, confirmed);
 
         // Per-fight rows for the Sea Battles popup: resolved fights first, then the
@@ -867,11 +1093,15 @@ impl AppShell {
 
         VoyageView {
             has_voyage: true,
+            read_only,
+            page,
+            page_count,
+            badge,
             vessel: vessel_name,
             ship_type,
             period,
             elapsed_secs,
-            saveable: ported && !voyage.saved,
+            saveable,
             battle,
             consumption,
             charts,
@@ -966,6 +1196,9 @@ impl AppShell {
     /// Battles popup open on the fight that just ended (the last one). No-op if
     /// the displayed voyage somehow has no fights.
     fn jump_to_concluded_fight(&mut self) {
+        // The fight belongs to the live run — follow it, regardless of any page the
+        // user had paged back to.
+        self.voyage_ui.selected = crate::voyage::ui::VoyageSel::Live;
         let n = self.build_voyage_view().battles.len();
         let Some(last) = n.checked_sub(1) else {
             return;
@@ -1010,13 +1243,16 @@ impl AppShell {
     /// Persist the displayed (finished) voyage to history + disk, and mark it
     /// saved so it isn't offered again.
     fn save_displayed_voyage(&mut self) {
-        let Some(key) = self.displayed_vessel_key() else {
+        // Only the *selected* current-login run, and only if it's finished and
+        // unsaved, can be persisted.
+        let Some(id) = self.selected_saveable_id() else {
+            return;
+        };
+        // Resolve the vessel key + ship type before the mutable borrow below.
+        let Some((key, _)) = self.voyage_by_id(id) else {
             return;
         };
         let vessel_name = key.to_string();
-        // The vessel's chosen ship type (hull) from the jobbers picker, persisted
-        // so history can be grouped by ship type. Resolved before the mutable
-        // borrow of `chatlog` below.
         // TODO: handle the case where no ship type was specified — this is `None`
         // when the user never picked a hull in the jobbers picker. We persist
         // `None` silently, but such a voyage can't be grouped into the per-ship
@@ -1030,15 +1266,14 @@ impl AppShell {
             .and_then(|i| crate::ships::SHIPS.get(i))
             .map(|s| s.name.to_string());
         let confirmed = self.chatlog.self_confirmed;
+        // The disk index this run will occupy — pinned on the live voyage so the
+        // pager hides the on-disk twin and keeps showing the live (read-write) page.
+        let new_index = self.voyage_history.voyages.len();
         let saved = {
-            let Some(v) = self.chatlog.vessels.get_mut(&key) else {
+            let Some(voyage) = self.chatlog.voyage_by_id_mut(id) else {
                 return;
             };
-            // The saveable run is always the latest completed (ported) one.
-            let Some(voyage) = v.voyages.last_mut().filter(|vy| vy.ported_at.is_some()) else {
-                return;
-            };
-            if voyage.saved {
+            if voyage.saved || voyage.ported_at.is_none() {
                 return;
             }
             // Snapshot consumption now — the Profits stock delta can't be
@@ -1060,6 +1295,7 @@ impl AppShell {
                 confirmed,
             );
             voyage.saved = true;
+            voyage.saved_to = Some(new_index);
             saved
         };
         self.voyage_history.voyages.push(saved);
@@ -1068,15 +1304,13 @@ impl AppShell {
         }
     }
 
-    /// Dismiss the displayed (finished) voyage without persisting it.
+    /// Dismiss the selected (finished) voyage without persisting it.
     fn discard_displayed_voyage(&mut self) {
-        let Some(key) = self.displayed_vessel_key() else {
+        let Some(id) = self.selected_saveable_id() else {
             return;
         };
-        if let Some(v) = self.chatlog.vessels.get_mut(&key) {
-            if let Some(voyage) = v.voyages.last_mut().filter(|vy| vy.ported_at.is_some()) {
-                voyage.saved = true;
-            }
+        if let Some(voyage) = self.chatlog.voyage_by_id_mut(id) {
+            voyage.saved = true;
         }
     }
 
@@ -1166,6 +1400,11 @@ impl AppShell {
     /// advantage. Always runs on an edit — the calculator is always live; recording
     /// only governs persistence, not the in-RAM snapshot.
     fn sync_battle_editor(&mut self) {
+        // A read-only history page has no live battle to write back to — bail
+        // before `displayed_vessel_key` would target the current live vessel.
+        if self.build_voyage_view().read_only {
+            return;
+        }
         let Some(page) = self.voyage_ui.battles_popup else {
             return;
         };
@@ -1185,6 +1424,9 @@ impl AppShell {
     /// Toggle whether the open fight is recorded (persisted to disk). Purely a
     /// flag — the snapshot/calculator are untouched.
     fn toggle_battle_record(&mut self) {
+        if self.build_voyage_view().read_only {
+            return;
+        }
         let Some(page) = self.voyage_ui.battles_popup else {
             return;
         };
@@ -1204,6 +1446,18 @@ impl AppShell {
     fn handle_battles_key(&mut self, key: KeyEvent) -> InputResult {
         use crate::damage::{ROW_HEADON, ROW_SHIP, Side};
         use crate::voyage::ui::BattlesFocus::{Calc, Pager, Record};
+
+        // A read-only history page: only paging between fights and closing — the
+        // calculator and record toggle are inert (nothing persists).
+        if self.build_voyage_view().read_only {
+            match key.code {
+                KeyCode::Esc => self.voyage_ui.battles_popup = None,
+                KeyCode::Left | KeyCode::PageUp => self.battles_page(-1),
+                KeyCode::Right | KeyCode::PageDown => self.battles_page(1),
+                _ => {}
+            }
+            return InputResult::Consumed;
+        }
 
         // While the editor has its own modal (ship picker or reset confirm), every
         // key — including Esc, which dismisses that modal keeping the ship — drives
@@ -2240,6 +2494,8 @@ impl AppShell {
                     pf.idx = (pf.idx + 1).min(count.saturating_sub(1));
                 }
             }
+            ClickTarget::VoyagePrev => self.nav_voyage(-1),
+            ClickTarget::VoyageNext => self.nav_voyage(1),
             ClickTarget::VoyageSaveOpen => self.open_voyage_save_prompt(),
             ClickTarget::VoyageSaveConfirm => {
                 self.save_displayed_voyage();

@@ -63,6 +63,9 @@ pub enum ClickTarget {
     /// Previous / next fight (wave) in the per-fight popup.
     JobberPerFightPrev,
     JobberPerFightNext,
+    /// Previous / next selectable voyage in the Voyage Statistics pager.
+    VoyagePrev,
+    VoyageNext,
     /// The "save voyage to history" prompt opener on the Voyage Statistics page.
     VoyageSaveOpen,
     /// Buttons inside the save/discard prompt.

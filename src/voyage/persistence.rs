@@ -17,10 +17,10 @@ use std::path::Path;
 use serde::{Deserialize, Serialize};
 
 use crate::ships::SHIPS;
-use crate::voyage::stats::ConsumptionStats;
+use crate::voyage::stats::{AlcoholUse, ConsumptionStats};
 use crate::voyage::{
-    effective_outcome, BattleCategory, BattleOutcome, FightTimeline, KoEvent, KoSide, TeamSide,
-    Voyage,
+    effective_outcome, Battle, BattleCategory, BattleOutcome, BattleSnapshot, FightTimeline,
+    KoEvent, KoSide, TeamSide, Voyage,
 };
 
 /// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
@@ -333,6 +333,182 @@ fn saved_snapshot(s: crate::voyage::BattleSnapshot) -> SavedSnapshot {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Reconstruction (disk -> RAM) for read-only history pages
+// ---------------------------------------------------------------------------
+//
+// The Voyage Statistics pager shows past voyages (loaded from this file) as
+// read-only pages alongside the current login's live runs. Rendering reuses the
+// live pipeline ([`crate::voyage::stats::battle_stats`], the chart/battle-row
+// builders), so a `SavedVoyage` is rebuilt into an in-RAM [`Voyage`]. The shape
+// is lossy — raw crew samples and exact clocks weren't persisted — so battle
+// timestamps are synthesized from the stored per-fight durations (origin at the
+// Unix epoch; only the gaps matter) and crew averages ride in via
+// [`Voyage::avg_override`]. Consumption is rebuilt from the frozen counts, not
+// recomputed from the (now-unrelated) live inventory.
+
+/// A `SHIPS` index for a stored ship name, or `None` if the name isn't known.
+fn ship_index(name: &str) -> Option<usize> {
+    SHIPS.iter().position(|s| s.name == name)
+}
+
+fn outcome_from_str(s: &str) -> BattleOutcome {
+    match s {
+        "won" => BattleOutcome::Won,
+        "lost" => BattleOutcome::Lost,
+        "disengaged" => BattleOutcome::Disengaged,
+        "unknown" => BattleOutcome::Unknown,
+        _ => BattleOutcome::Ongoing,
+    }
+}
+
+/// Inverse of [`category_str`]. Unrecognized labels fall back to a generic
+/// Brigand (older files, or a category we no longer emit).
+fn category_from_str(s: &str) -> BattleCategory {
+    match s {
+        "Vampirates" => BattleCategory::Vampirate,
+        "Skellies" => BattleCategory::Skelly,
+        "Werewolves" => BattleCategory::Werewolf,
+        "Zombies" => BattleCategory::Zombie,
+        "Black Ship" => BattleCategory::BlackShip,
+        "Monkey Boat" => BattleCategory::MonkeyBoat,
+        "Players" => BattleCategory::Pvp,
+        other => match other.strip_prefix("King: ") {
+            Some(name) => BattleCategory::BrigandKing(name.to_string()),
+            None => BattleCategory::Brigand,
+        },
+    }
+}
+
+impl SavedTeam {
+    fn to_team(&self) -> TeamSide {
+        TeamSide {
+            players: self.players.clone(),
+            swabbies: self.swabbies,
+        }
+    }
+}
+
+impl SavedSnapshot {
+    fn to_snapshot(&self) -> BattleSnapshot {
+        BattleSnapshot {
+            our_ship: ship_index(&self.our_ship).unwrap_or(0),
+            foe_ship: ship_index(&self.foe_ship).unwrap_or(0),
+            our_hits: self.our_hits,
+            foe_hits: self.foe_hits,
+            headon: self.headon,
+            our_pirates: self.our_pirates,
+        }
+    }
+}
+
+/// The Unix epoch as a naive timestamp — the synthetic origin for reconstructed
+/// battle/voyage clocks (only the relative gaps are meaningful).
+fn epoch() -> Option<chrono::NaiveDateTime> {
+    chrono::DateTime::from_timestamp(0, 0).map(|d| d.naive_utc())
+}
+
+impl SavedBattle {
+    /// Rebuild an in-RAM [`Battle`] for a read-only history page. Timestamps are
+    /// synthesized so `sea_secs`/`boarding_secs`/`total_secs` reproduce the stored
+    /// durations; `advantage_*` stay `None` (derived from the snapshot in the UI).
+    fn to_battle(&self) -> Battle {
+        let base = epoch();
+        let after = |secs: Option<i64>| {
+            secs.zip(base)
+                .map(|(s, b)| b + chrono::Duration::seconds(s))
+        };
+        Battle {
+            enemy: None,
+            started_at: base,
+            grappled_at: after(self.naval_secs),
+            ended_at: after(self.total_secs),
+            outcome: outcome_from_str(&self.outcome),
+            poe: self.poe,
+            goods: self.goods,
+            my_cut: None,
+            pirates: self.pirates,
+            swabbies: self.swabbies,
+            category: category_from_str(&self.category),
+            advantage_dmg: None,
+            advantage_crew: None,
+            snapshot: self.snapshot.as_ref().map(SavedSnapshot::to_snapshot),
+            recorded: self.recorded,
+            melee_kos: Vec::new(),
+            timeline: self.to_timeline(),
+            our_team: self.our_team.as_ref().map(SavedTeam::to_team),
+            their_team: self.their_team.as_ref().map(SavedTeam::to_team),
+            foe_ship: self.foe_ship.as_deref().and_then(ship_index),
+        }
+    }
+}
+
+impl SavedConsumption {
+    /// Rebuild [`ConsumptionStats`] from the frozen counts plus the voyage's
+    /// persisted averages/duration — the live inventory delta is long gone, so we
+    /// reuse the stored figures rather than recompute. Mirrors the rate math in
+    /// [`crate::voyage::stats::consumption_stats`].
+    pub fn to_stats(&self, voyage: &Voyage) -> ConsumptionStats {
+        let alcohol = AlcoholUse {
+            swill: self.swill,
+            grog: self.grog,
+            fine_rum: self.fine_rum,
+        };
+        let battles = voyage.battles.len() as u32;
+        let minutes = voyage
+            .duration_secs()
+            .map(|s| s as f64 / 60.0)
+            .filter(|m| *m > 0.0);
+        let avg_swabbies = voyage.avg_swabbies();
+        let avg_crew = match (voyage.avg_pirates(), avg_swabbies) {
+            (Some(p), Some(s)) => Some(p + s),
+            _ => None,
+        };
+        let per = |amount: u64, denom: Option<f64>| {
+            denom.filter(|d| *d > 0.0).map(|d| amount as f64 / d)
+        };
+        let alcohol_per_crew = per(alcohol.weighted(), avg_crew);
+        let rum_spice_per_swabbie = per(self.rum_spice, avg_swabbies);
+        ConsumptionStats {
+            balls: self.cannonballs,
+            balls_per_battle: (battles > 0).then(|| self.cannonballs as f64 / battles as f64),
+            alcohol,
+            alcohol_per_crew,
+            alcohol_per_crew_per_min: alcohol_per_crew.and_then(|a| minutes.map(|m| a / m)),
+            rum_spice: self.rum_spice,
+            rum_spice_per_swabbie,
+            rum_spice_per_swabbie_per_min: rum_spice_per_swabbie
+                .and_then(|a| minutes.map(|m| a / m)),
+        }
+    }
+}
+
+impl SavedVoyage {
+    /// Reconstruct an in-RAM [`Voyage`] from its persisted form for a read-only
+    /// history page. `saved` is set (never re-offered) and `avg_override` carries
+    /// the persisted crew averages, since the raw samples weren't stored.
+    pub fn to_voyage(&self) -> Voyage {
+        let base = epoch();
+        let ported = self
+            .duration_secs
+            .zip(base)
+            .map(|(s, b)| b + chrono::Duration::seconds(s));
+        Voyage {
+            id: 0,
+            saved_to: None,
+            job_kind: None,
+            sailed_at: base,
+            ported_at: ported,
+            current_battle: None,
+            battles: self.battles.iter().map(SavedBattle::to_battle).collect(),
+            crew_samples: Vec::new(),
+            poisoned: false,
+            saved: true,
+            avg_override: Some((self.avg_pirates, self.avg_swabbies)),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,6 +539,70 @@ mod tests {
             .map(|&(x, _)| x)
             .collect();
         assert_eq!(xs, vec![0.0, 0.0, 12.0, 20.0]);
+    }
+
+    #[test]
+    fn saved_voyage_reconstructs_read_only_stats() {
+        let sv = SavedVoyage {
+            vessel: Some("Test Vessel".into()),
+            ship_type: Some("Sloop".into()),
+            duration_secs: Some(3600),
+            avg_pirates: Some(5.0),
+            avg_swabbies: Some(3.0),
+            consumption: Some(SavedConsumption {
+                cannonballs: 150,
+                swill: 0,
+                grog: 60,
+                fine_rum: 15,
+                rum_spice: 18,
+            }),
+            battles: vec![
+                SavedBattle {
+                    outcome: "won".into(),
+                    category: "Brigands".into(),
+                    poe: Some(8000),
+                    goods: Some(10),
+                    naval_secs: Some(120),
+                    total_secs: Some(300),
+                    our_start: 5,
+                    their_start: Some(4),
+                    ..SavedBattle::default()
+                },
+                SavedBattle {
+                    outcome: "lost".into(),
+                    category: "Brigands".into(),
+                    poe: Some(-2000),
+                    goods: Some(50),
+                    total_secs: Some(240),
+                    ..SavedBattle::default()
+                },
+            ],
+            ..SavedVoyage::default()
+        };
+
+        let voy = sv.to_voyage();
+        assert!(voy.saved, "reconstructed runs are never re-offered for saving");
+        assert_eq!(voy.battles.len(), 2);
+        // Per-fight durations reconstruct from the stored second-offsets.
+        assert_eq!(voy.battles[0].total_secs(), Some(300));
+        assert_eq!(voy.battles[0].sea_secs(), Some(120));
+        assert_eq!(voy.battles[0].boarding_secs(), Some(180)); // 300 − 120
+        // Crew averages ride in via the override — the raw samples weren't persisted.
+        assert_eq!(voy.avg_pirates(), Some(5.0));
+        assert_eq!(voy.avg_swabbies(), Some(3.0));
+
+        // With `confirmed = true` (a saved verdict is final) the win/loss pass through.
+        let bs = crate::voyage::stats::battle_stats(&voy, true);
+        assert_eq!((bs.wins, bs.losses), (1, 1));
+        assert_eq!(bs.poe_won_total, 8000);
+        assert_eq!(bs.poe_net_total, 6000);
+
+        // Consumption rebuilds from the frozen counts (not the live inventory).
+        let cs = sv.consumption.as_ref().unwrap().to_stats(&voy);
+        assert_eq!(cs.balls, 150);
+        assert_eq!(cs.alcohol.weighted(), 60 * 3 + 15 * 6);
+        // 270 weighted alcohol over an average crew of 8.
+        assert!((cs.alcohol_per_crew.unwrap() - 270.0 / 8.0).abs() < 1e-9);
     }
 }
 
