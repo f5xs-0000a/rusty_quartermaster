@@ -630,6 +630,7 @@ impl AppShell {
         if self.voyage_ui.chart_popup.is_some() {
             if matches!(key.code, KeyCode::Esc | KeyCode::Enter) {
                 self.voyage_ui.chart_popup = None;
+                self.voyage_ui.winrate_hover = None;
             }
             return InputResult::Consumed;
         }
@@ -1059,6 +1060,28 @@ impl AppShell {
                 .filter_map(&decisive_poe)
                 .sum::<i64>() as f64;
 
+            // Ship Winrate: this voyage's decisive fights bucketed by the *enemy*
+            // hull. Only fights whose foe hull is known contribute (an unknown foe
+            // can't be attributed to a ship type).
+            use crate::voyage::ui::WinCount;
+            let mut wr_voyage: std::collections::BTreeMap<usize, WinCount> = Default::default();
+            let mut voyage_fights = 0usize;
+            for b in &voyage.battles {
+                let o = eff(b.outcome);
+                if !matches!(o, Won | Lost) {
+                    continue;
+                }
+                // A decisive fight counts toward "have we fought" regardless of whether
+                // we can name the enemy hull.
+                voyage_fights += 1;
+                // The enemy hull: the game-announced type when known (Black Ship,
+                // Monkey Boats), else whatever ship type was set in the Damage
+                // calculator for the fight. Most brigand fights only have the latter.
+                let foe = b.foe_ship.or_else(|| b.snapshot.map(|s| s.foe_ship));
+                if let Some(foe) = foe {
+                    wr_voyage.entry(foe).or_default().add(matches!(o, Won));
+                }
+            }
             let mut hist_totals = Vec::new();
             // Signed per-fight PoE of the *rest* of the voyages sharing this
             // voyage's hull — drives the "History" box beneath the per-fight bars.
@@ -1081,6 +1104,79 @@ impl AppShell {
                     }
                 }
                 hist_totals.push(total as f64);
+            }
+
+            // Ship Winrate history keyed by (our hull, enemy hull): every OTHER voyage
+            // the app knows — the current session's in-RAM runs (active + completed,
+            // saved or not) plus disk history from prior sessions. In-RAM runs read the
+            // live snapshot for the foe hull, so a fight counts even when it was never
+            // flagged "recorded" (the disk format drops unrecorded snapshots). Deduped
+            // so a saved session run isn't tallied twice, and the displayed voyage (the
+            // Voyage layer) is excluded.
+            let mut wr_history: std::collections::BTreeMap<(usize, usize), WinCount> =
+                Default::default();
+            // Disk indices already represented by an in-RAM run — skip their copies.
+            let mut covered_disk: std::collections::HashSet<usize> = Default::default();
+            for vessel in self.chatlog.vessels.values() {
+                for v in vessel.voyages.iter().chain(vessel.current_voyage.as_ref()) {
+                    if let Some(idx) = v.saved_to {
+                        covered_disk.insert(idx);
+                    }
+                }
+            }
+            // Session runs (in-RAM): freshest, and independent of the `recorded` flag.
+            for (key, vessel) in &self.chatlog.vessels {
+                let Some(our_idx) = self.jobbers_ui.ship_types.get(key).copied() else {
+                    continue;
+                };
+                for v in vessel.voyages.iter().chain(vessel.current_voyage.as_ref()) {
+                    // Skip the run shown as the Voyage layer (matched by id when live,
+                    // or by its disk index when a saved run is on screen).
+                    let displayed = v.id == voyage.id
+                        || (exclude_saved_idx.is_some() && v.saved_to == exclude_saved_idx);
+                    if displayed {
+                        continue;
+                    }
+                    for b in &v.battles {
+                        let o = eff(b.outcome);
+                        if !matches!(o, Won | Lost) {
+                            continue;
+                        }
+                        let foe = b.foe_ship.or_else(|| b.snapshot.map(|s| s.foe_ship));
+                        if let Some(foe_idx) = foe {
+                            wr_history
+                                .entry((our_idx, foe_idx))
+                                .or_default()
+                                .add(matches!(o, Won));
+                        }
+                    }
+                }
+            }
+            // Disk runs from prior sessions (those with no in-RAM counterpart).
+            for (i, v) in self.voyage_history.voyages.iter().enumerate() {
+                if exclude_saved_idx == Some(i) || covered_disk.contains(&i) {
+                    continue;
+                }
+                let Some(our_idx) = v.ship_type.as_deref().and_then(crate::ships::ship_index)
+                else {
+                    continue;
+                };
+                for bt in &v.battles {
+                    if !matches!(bt.outcome.as_str(), "won" | "lost") {
+                        continue;
+                    }
+                    let foe = bt
+                        .foe_ship
+                        .as_deref()
+                        .or(bt.snapshot.as_ref().map(|s| s.foe_ship.as_str()))
+                        .and_then(crate::ships::ship_index);
+                    if let Some(foe_idx) = foe {
+                        wr_history
+                            .entry((our_idx, foe_idx))
+                            .or_default()
+                            .add(bt.outcome == "won");
+                    }
+                }
             }
             // Boxes under the bars: this voyage's fights, then the same-hull rest.
             // With no hull selected we can't say what "same hull" means, so the
@@ -1107,11 +1203,18 @@ impl AppShell {
                 },
                 history_box,
             ];
+            let winrate = crate::voyage::ui::ShipWinrate {
+                our_ship: ship_type.as_deref().and_then(crate::ships::ship_index),
+                voyage_fights,
+                voyage: wr_voyage,
+                history: wr_history,
+            };
             crate::voyage::ui::ChartData {
                 cur_fight_poe,
                 fight_boxes,
                 cur_total,
                 hist_totals,
+                winrate,
             }
         };
 
@@ -2179,6 +2282,18 @@ impl AppShell {
                         }
                     }
                 }
+                // Live hover over the Ship Winrate matrix highlights the cell and its
+                // row/column headers; leaving the grid clears the highlight.
+                if self.voyage_ui.chart_popup == Some(0) {
+                    self.voyage_ui.winrate_hover = match clickmap::hit_test(
+                        &self.click_regions,
+                        mouse.column,
+                        mouse.row,
+                    ) {
+                        Some(ClickTarget::VoyageWinrateCell { row, col }) => Some((row, col)),
+                        _ => None,
+                    };
+                }
                 // Live hover over a Profit Breakdown row parks the tooltip cursor.
                 if matches!(
                     self.profits.popup,
@@ -2547,6 +2662,11 @@ impl AppShell {
             }
             ClickTarget::VoyageChartClose => {
                 self.voyage_ui.chart_popup = None;
+                self.voyage_ui.winrate_hover = None;
+            }
+            // Clicking a matrix cell just parks the highlight there (same as hover).
+            ClickTarget::VoyageWinrateCell { row, col } => {
+                self.voyage_ui.winrate_hover = Some((row, col));
             }
             ClickTarget::VoyageBattlesClose => {
                 // Closing the editor's ship picker takes priority over the popup.

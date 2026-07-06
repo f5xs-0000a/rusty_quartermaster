@@ -25,6 +25,10 @@ pub enum ShipClass {
 
 pub struct Ship {
     pub name: &'static str,
+    /// Short two-character hull tag for compact tables (e.g. the Ship Winrate
+    /// matrix headers). Community-standard abbreviations; `[char; 2]` so the
+    /// length is enforced at compile time.
+    pub abbr: [char; 2],
     pub sail_stations: u8,
     pub bilge_stations: u8,
     pub carpentry_stations: u8,
@@ -48,6 +52,7 @@ pub struct Ship {
 
 const SLOOP: Ship = Ship {
     name: "Sloop",
+    abbr: ['S', 'l'],
     max_mercenaries: 6,
     max_pirates: 7,
     sail_stations: 3,
@@ -68,6 +73,7 @@ const SLOOP: Ship = Ship {
 
 const CUTTER: Ship = Ship {
     name: "Cutter",
+    abbr: ['C', 't'],
     max_mercenaries: 10,
     max_pirates: 12,
     sail_stations: 5,
@@ -88,6 +94,7 @@ const CUTTER: Ship = Ship {
 
 const DHOW: Ship = Ship {
     name: "Dhow",
+    abbr: ['D', 'h'],
     max_mercenaries: 10,
     max_pirates: 12,
     sail_stations: 5,
@@ -108,6 +115,7 @@ const DHOW: Ship = Ship {
 
 const FANCHUAN: Ship = Ship {
     name: "Fanchuan",
+    abbr: ['F', 'n'],
     max_mercenaries: 10,
     max_pirates: 12,
     sail_stations: 5,
@@ -128,6 +136,7 @@ const FANCHUAN: Ship = Ship {
 
 const LONGSHIP: Ship = Ship {
     name: "Longship",
+    abbr: ['L', 'S'],
     max_mercenaries: 13,
     max_pirates: 15,
     sail_stations: 5,
@@ -148,6 +157,7 @@ const LONGSHIP: Ship = Ship {
 
 const BAGHLAH: Ship = Ship {
     name: "Baghlah",
+    abbr: ['B', 'g'],
     max_mercenaries: 16,
     max_pirates: 18,
     sail_stations: 6,
@@ -168,6 +178,7 @@ const BAGHLAH: Ship = Ship {
 
 const JUNK: Ship = Ship {
     name: "Junk",
+    abbr: ['J', 'n'],
     max_mercenaries: 16,
     max_pirates: 18,
     sail_stations: 6,
@@ -188,6 +199,7 @@ const JUNK: Ship = Ship {
 
 const MERCHANT_BRIG: Ship = Ship {
     name: "Merchant Brig",
+    abbr: ['M', 'B'],
     max_mercenaries: 18,
     max_pirates: 20,
     sail_stations: 6,
@@ -208,6 +220,7 @@ const MERCHANT_BRIG: Ship = Ship {
 
 const WAR_BRIG: Ship = Ship {
     name: "War Brig",
+    abbr: ['W', 'B'],
     max_mercenaries: 23,
     max_pirates: 30,
     sail_stations: 9,
@@ -228,6 +241,7 @@ const WAR_BRIG: Ship = Ship {
 
 const MERCHANT_GALLEON: Ship = Ship {
     name: "Merchant Galleon",
+    abbr: ['M', 'G'],
     max_mercenaries: 28,
     max_pirates: 30,
     sail_stations: 9,
@@ -248,6 +262,7 @@ const MERCHANT_GALLEON: Ship = Ship {
 
 const WAR_GALLEON: Ship = Ship {
     name: "War Galleon",
+    abbr: ['W', 'G'],
     max_mercenaries: 32,
     max_pirates: 40,
     sail_stations: 12,
@@ -268,6 +283,7 @@ const WAR_GALLEON: Ship = Ship {
 
 const XEBEC: Ship = Ship {
     name: "Xebec",
+    abbr: ['X', 'b'],
     max_mercenaries: 36,
     max_pirates: 45,
     sail_stations: 14,
@@ -288,6 +304,7 @@ const XEBEC: Ship = Ship {
 
 const WAR_FRIGATE: Ship = Ship {
     name: "War Frigate",
+    abbr: ['W', 'F'],
     max_mercenaries: 54,
     max_pirates: 75,
     sail_stations: 18,
@@ -308,6 +325,7 @@ const WAR_FRIGATE: Ship = Ship {
 
 const GRAND_FRIGATE: Ship = Ship {
     name: "Grand Frigate",
+    abbr: ['G', 'F'],
     max_mercenaries: 75,
     max_pirates: 159,
     sail_stations: 30,

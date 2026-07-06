@@ -7,9 +7,9 @@
 //! focus chain (↑/↓): pressing Down off the last number focuses the first chart.
 //! The body scrolls to keep the focused item visible; because the chart boxes are
 //! bordered, the body is rendered into an offscreen [`Buffer`] and the visible
-//! window blitted, so partially-scrolled boxes clip cleanly. Charts (PoE
-//! box-&-whiskers, PoE-per-fight bars, total-value point-vs-box — each this
-//! voyage vs historical) enlarge to a popup on Enter. The page shows the current
+//! window blitted, so partially-scrolled boxes clip cleanly. Charts (Ship Winrate
+//! table/matrix, PoE-per-fight bars, total-value point-vs-box — each this voyage vs
+//! historical) enlarge to a popup on Enter. The page shows the current
 //! vessel's live or most-recent-completed run. All figures are computed up-front
 //! (see [`crate::voyage::stats`]) and handed in via [`VoyageView`]. See the
 //! `voyage-statistics-model` memory.
@@ -26,16 +26,18 @@ use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, CategoryTally, Consum
 use crate::voyage::{AxisMode, BattleOutcome, BattleSnapshot};
 
 /// The charts, in display order.
-pub const CHART_TITLES: [&str; 2] = ["PoE per fight", "Total value"];
+pub const CHART_TITLES: [&str; 3] = ["Ship Winrate", "PoE per fight", "Total value"];
 
 /// Which charts can enlarge into a popup (parallel to [`CHART_TITLES`]). The
 /// "Total value" box-plot shows everything in its mini box, so it has no popup —
-/// it stays selectable for its tooltip only.
-pub const CHART_ENLARGEABLE: [bool; 2] = [true, false];
+/// it stays selectable for its tooltip only. "Ship Winrate" enlarges into the full
+/// hull-matchup matrix.
+pub const CHART_ENLARGEABLE: [bool; 3] = [true, true, false];
 
 /// One-liners shown below the widget when a chart is focused (parallel to
 /// [`CHART_TITLES`]).
-const CHART_TOOLTIPS: [&str; 2] = [
+const CHART_TOOLTIPS: [&str; 3] = [
+    "Win rate of our hull against each enemy hull we've fought this voyage (and, once a hull is picked, historically). Enter for the full ship-matchup matrix.",
     "PoE of each concluded fight, newest first (losses negative), with box-plots for this voyage and the rest of the same-hull voyages. Enter to enlarge.",
     "This voyage's total value (a point) against a historical box of past voyages.",
 ];
@@ -100,6 +102,10 @@ pub struct VoyageStatsUi {
     pub prompt: Option<SaveChoice>,
     /// When `Some(i)`, chart `i` is enlarged in a popup.
     pub chart_popup: Option<usize>,
+    /// Hovered cell in the enlarged Ship Winrate matrix: `(our hull, enemy hull)`
+    /// as [`crate::ships::SHIPS`] indices. Drives the cell + header highlight; set by
+    /// mouse hover, cleared when the pointer leaves the grid or the popup closes.
+    pub winrate_hover: Option<(usize, usize)>,
     /// When `Some(i)`, the Sea Battles popup is open on page `i` (battle index).
     pub battles_popup: Option<usize>,
     /// Interactive Damage calculator bound to the open page's fight. Edits flow
@@ -133,6 +139,8 @@ pub struct ChartData {
     pub cur_total: f64,
     /// Total value of each past voyage (one point each).
     pub hist_totals: Vec<f64>,
+    /// Ship-vs-ship win rates for the Ship Winrate widget (chart 0).
+    pub winrate: ShipWinrate,
 }
 
 /// One box-and-whiskers row beneath the per-fight bars. `values` is the signed
@@ -143,6 +151,53 @@ pub struct ChartBox {
     pub label: String,
     pub values: Vec<f64>,
     pub empty_note: Option<String>,
+}
+
+/// A win/loss tally over a set of decisive (won or lost) fights. Drives the Ship
+/// Winrate widget's cells.
+#[derive(Default, Clone, Copy)]
+pub struct WinCount {
+    pub wins: u32,
+    /// Total decisive fights (wins + losses); the count shown in parentheses.
+    pub decisive: u32,
+}
+
+impl WinCount {
+    /// Record one decisive fight.
+    pub fn add(&mut self, won: bool) {
+        self.decisive += 1;
+        if won {
+            self.wins += 1;
+        }
+    }
+    /// The `"67% (3)"`-style label, or `None` when no decisive fights are tallied.
+    /// The percentage is rounded to the nearest whole (2 of 3 → `67%`).
+    pub fn label(&self) -> Option<String> {
+        (self.decisive > 0).then(|| {
+            let pct = (self.wins as f64 / self.decisive as f64 * 100.0).round() as u32;
+            format!("{pct}% ({})", self.decisive)
+        })
+    }
+}
+
+/// Win-rate tallies for the Ship Winrate widget (chart 0), bucketed by hull matchup.
+/// Keys are [`crate::ships::SHIPS`] indices. The mini widget shows a per-enemy table
+/// for the current voyage; the enlarged widget is a full our-hull × enemy-hull matrix.
+#[derive(Default, Clone)]
+pub struct ShipWinrate {
+    /// Our current voyage's hull, or `None` when the ship picker is unset. When
+    /// `None`, the mini table hides the Historical column and the matrix's voyage
+    /// layer is all dashes.
+    pub our_ship: Option<usize>,
+    /// Number of decisive (won/lost) fights this voyage, regardless of whether the
+    /// enemy hull is known. Distinguishes "haven't fought yet" from "fought, but the
+    /// enemy ships weren't identified" for the mini's empty state.
+    pub voyage_fights: usize,
+    /// This voyage's tally against each enemy hull index.
+    pub voyage: std::collections::BTreeMap<usize, WinCount>,
+    /// Historical tally keyed by `(our hull index, enemy hull index)` across past
+    /// voyages (excluding the displayed one).
+    pub history: std::collections::BTreeMap<(usize, usize), WinCount>,
 }
 
 /// One fight's metadata for the Sea Battles popup. The editable Damage-calculator
@@ -502,7 +557,11 @@ pub fn render(
     if ui.battles_popup.is_some() {
         render_battles_popup(frame, full, view, ui, regions);
     } else if let Some(i) = ui.chart_popup {
-        render_chart_popup(frame, full, i, &view.charts, regions);
+        if i == 0 {
+            render_winrate_popup(frame, full, &view.charts.winrate, ui.winrate_hover, regions);
+        } else {
+            render_chart_popup(frame, full, i, &view.charts, regions);
+        }
     } else if let Some(choice) = ui.prompt {
         render_save_prompt(frame, area, choice, regions);
     }
@@ -936,8 +995,11 @@ fn render_chart_popup(
         rect: area,
         target: ClickTarget::VoyageChartClose,
     });
-    let w = area.width.saturating_sub(2).min(78).max(24);
-    let h = area.height.saturating_sub(2).min(20).max(6);
+    // The Ship Winrate matrix (chart 0) needs the whole 14×14 grid, so it takes as
+    // much of the screen as it can; the other charts stay in a tidy centered box.
+    let (cap_w, cap_h) = if idx == 0 { (u16::MAX, u16::MAX) } else { (78, 20) };
+    let w = area.width.saturating_sub(2).min(cap_w).max(24);
+    let h = area.height.saturating_sub(2).min(cap_h).max(6);
     let rect = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -977,7 +1039,11 @@ fn chart_lines(
     enlarged: bool,
 ) -> Vec<Line<'static>> {
     match idx {
-        0 => poe_bar_lines(data, width, height, enlarged),
+        // The Ship Winrate mini is always the compact table; its enlarged form is a
+        // dedicated Rect-based matrix popup (see `render_winrate_popup`), not routed
+        // through here.
+        0 => ship_winrate_table(&data.winrate, width, height),
+        1 => poe_bar_lines(data, width, height, enlarged),
         _ => total_value_lines(data, width),
     }
 }
@@ -985,7 +1051,304 @@ fn chart_lines(
 /// Width of the row-label column on the Total-value chart (fits "Historical" + gap).
 const PBOX_LABEL_W: usize = 12;
 
-/// Chart 0 — signed PoE bars for this voyage's concluded fights (newest at top),
+/// Mini Ship Winrate table: one row per enemy hull met this voyage, with a Voyage
+/// column and — only when our hull is known — a Historical column.
+fn ship_winrate_table(wr: &ShipWinrate, width: usize, height: usize) -> Vec<Line<'static>> {
+    let show_hist = wr.our_ship.is_some();
+    // Enemy hulls met this voyage, in SHIPS order (BTreeMap keys are sorted).
+    let rows: Vec<usize> = wr.voyage.keys().copied().collect();
+    if rows.is_empty() {
+        // Distinguish "no fights yet" from "fought, but no enemy hull was identified"
+        // (the winrate needs the enemy ship type to bucket a fight). Both are centered
+        // horizontally and vertically, dim italic — like the PoE chart's empty state.
+        let note = if wr.voyage_fights == 0 {
+            "Engage in a Sea Battle first"
+        } else {
+            "Enemy ship types not identified"
+        };
+        let mut lines = vec![Line::from(""); height.saturating_sub(1) / 2];
+        lines.push(centered_line(
+            note.to_string(),
+            width,
+            Style::default().fg(Color::DarkGray).italic(),
+        ));
+        return lines;
+    }
+    let voy_of = |e: usize| {
+        wr.voyage
+            .get(&e)
+            .and_then(|w| w.label())
+            .unwrap_or_else(|| "—".to_string())
+    };
+    let hist_of = |e: usize| {
+        wr.our_ship
+            .and_then(|o| wr.history.get(&(o, e)))
+            .and_then(|w| w.label())
+            .unwrap_or_else(|| "—".to_string())
+    };
+    let ship_w = rows.iter().map(|&e| SHIPS[e].name.len()).chain([4]).max().unwrap();
+    let voy_w = rows
+        .iter()
+        .map(|&e| voy_of(e).len())
+        .chain(["Voyage".len()])
+        .max()
+        .unwrap();
+    let hist_w = rows
+        .iter()
+        .map(|&e| hist_of(e).len())
+        .chain(["Historical".len()])
+        .max()
+        .unwrap();
+
+    // Horizontal centering: pad every line to the same offset so columns stay
+    // aligned while the whole table sits centered in the widget.
+    let table_w = ship_w + 1 + voy_w + if show_hist { 1 + hist_w } else { 0 };
+    let left_pad = width.saturating_sub(table_w) / 2;
+    let pad = || Span::raw(" ".repeat(left_pad));
+
+    let bold = Style::default().bold();
+    let mut lines = Vec::new();
+    // Header row — every header centered over its column.
+    let mut head = vec![
+        pad(),
+        Span::styled(format!("{:^ship_w$}", "Ship"), bold),
+        Span::raw(" "),
+        Span::styled(format!("{:^voy_w$}", "Voyage"), bold),
+    ];
+    if show_hist {
+        head.push(Span::raw(" "));
+        head.push(Span::styled(format!("{:^hist_w$}", "Historical"), bold));
+    }
+    lines.push(Line::from(head));
+    // One row per enemy hull: ship name left-aligned, the rates centered.
+    for &e in &rows {
+        let mut spans = vec![
+            pad(),
+            Span::raw(format!("{:<ship_w$}", SHIPS[e].name)),
+            Span::raw(" "),
+            Span::styled(format!("{:^voy_w$}", voy_of(e)), cur_style()),
+        ];
+        if show_hist {
+            spans.push(Span::raw(" "));
+            spans.push(Span::styled(format!("{:^hist_w$}", hist_of(e)), hist_style()));
+        }
+        lines.push(Line::from(spans));
+    }
+    // Vertical centering: pad the block down to the middle of the widget.
+    let top_pad = height.saturating_sub(lines.len()) / 2;
+    let mut out = vec![Line::from(""); top_pad];
+    out.extend(lines);
+    out
+}
+
+/// Enlarged Ship Winrate matrix popup: our hull (rows) × enemy hull (columns), sized
+/// to its content with a 1-cell screen margin. A voyage is sailed on a single hull,
+/// so only **our current hull's** row carries a Current Voyage rate — rendered as two
+/// lines (this voyage's rate on top, the grayed historical rate below, the hull tag on
+/// the historical line). Every other row is a single historical-only line. When our
+/// hull is unknown, no row shows a voyage rate. Both axes list the full [`SHIPS`]
+/// roster. `hover` highlights a cell and its row/column headers. Dash rules: no voyage
+/// encounter → a dash where the voyage rate would be; no encounters at all → a lone
+/// dash on the historical line.
+fn render_winrate_popup(
+    frame: &mut Frame,
+    area: Rect,
+    wr: &ShipWinrate,
+    hover: Option<(usize, usize)>,
+    regions: &mut Vec<ClickRegion>,
+) {
+    // Backdrop closes on click; registered first so per-cell hovers win the hit-test.
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::VoyageChartClose,
+    });
+
+    let ours = wr.our_ship;
+    let show_voyage = ours.is_some() && !wr.voyage.is_empty();
+    let abbr = |i: usize| SHIPS[i].abbr.iter().collect::<String>();
+    let voy = |c: usize| wr.voyage.get(&c).and_then(|w| w.label());
+    let hist = |r: usize, c: usize| wr.history.get(&(r, c)).and_then(|w| w.label());
+    let (title, _) = offset_title(CHART_TITLES[0]);
+
+    let make_block = |title: &str| {
+        Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::White))
+            .title(title.to_string())
+            .title_bottom(Line::from(" Esc to close ").right_aligned())
+            .padding(Padding::uniform(1))
+    };
+
+    // Nothing to display → a small centered note.
+    if wr.history.is_empty() && !show_voyage {
+        let w = 34u16.min(area.width.saturating_sub(2)).max(10);
+        let h = 5u16.min(area.height.saturating_sub(2)).max(3);
+        let rect = Rect {
+            x: area.x + area.width.saturating_sub(w) / 2,
+            y: area.y + area.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        };
+        frame.render_widget(Clear, rect);
+        let block = make_block(&title);
+        let inner = block.inner(rect);
+        frame.render_widget(block, rect);
+        frame.render_widget(
+            Paragraph::new("No sea battles recorded yet")
+                .style(Style::default().fg(Color::DarkGray).italic())
+                .centered(),
+            inner,
+        );
+        return;
+    }
+
+    let n = SHIPS.len();
+    // Column width = widest label (floored at 2 for the abbreviations / dash).
+    let mut cw = 2usize;
+    for c in 0..n {
+        if let Some(s) = voy(c) {
+            cw = cw.max(s.chars().count());
+        }
+        for r in 0..n {
+            if let Some(s) = hist(r, c) {
+                cw = cw.max(s.chars().count());
+            }
+        }
+    }
+    let cw = cw as u16;
+    let lw = 3u16; // row-label gutter (hull tag)
+    let stride = cw + 1; // 1-column gap between columns
+
+    let legend: [&str; 3] = [
+        "left = our ship   ·   top = opposing ship",
+        "cell = winrate% (total fights)",
+        "colored hull: this voyage (upper) / historical (lower)",
+    ];
+
+    let grid_w = lw + (n as u16) * cw + (n as u16 - 1); // cells + 1-wide gaps
+    let legend_w = legend
+        .iter()
+        .map(|s| s.chars().count() as u16)
+        .max()
+        .unwrap_or(0);
+    let content_w = grid_w.max(legend_w);
+    let body_h = n as u16 + if show_voyage { 1 } else { 0 };
+    let content_h = 1 + body_h + 1 + legend.len() as u16; // header + body + blank + legend
+
+    // Size to content, leaving a 1-cell screen margin all around.
+    let w = (content_w + 4).min(area.width.saturating_sub(2)).max(12);
+    let h = (content_h + 4).min(area.height.saturating_sub(2)).max(6);
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(w) / 2,
+        y: area.y + area.height.saturating_sub(h) / 2,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let block = make_block(&title);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let hl = Style::default().bg(Color::White).fg(Color::Black).bold();
+    let bold = Style::default().bold();
+    let grid_x = inner.x + lw;
+    let right = inner.x + inner.width;
+    let bottom = inner.y + inner.height;
+    let col_x = |c: u16| grid_x + c * stride;
+
+    // Column headers (enemy hull tags).
+    for c in 0..n as u16 {
+        let x = col_x(c);
+        if x + cw > right {
+            break;
+        }
+        let hot = hover.is_some_and(|(_, hc)| hc == c as usize);
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                abbr(c as usize),
+                if hot { hl } else { bold },
+            )))
+            .centered(),
+            Rect::new(x, inner.y, cw, 1),
+        );
+    }
+
+    // Data rows.
+    let mut y = inner.y + 1;
+    for r in 0..n {
+        if y >= bottom {
+            break;
+        }
+        let is_cur = show_voyage && Some(r) == ours;
+        let row_h: u16 = if is_cur { 2 } else { 1 };
+        let hist_y = if is_cur { y + 1 } else { y };
+        let row_hot = hover.is_some_and(|(hr, _)| hr == r);
+
+        // Hull tag on the historical line — colored for our current hull.
+        if hist_y < bottom {
+            let base = if is_cur { cur_style().bold() } else { bold };
+            frame.render_widget(
+                Paragraph::new(Line::from(Span::styled(
+                    abbr(r),
+                    if row_hot { hl } else { base },
+                ))),
+                Rect::new(inner.x, hist_y, lw, 1),
+            );
+        }
+
+        for c in 0..n {
+            let x = col_x(c as u16);
+            if x + cw > right {
+                break;
+            }
+            let cell_hot = hover == Some((r, c));
+            if hist_y < bottom {
+                let s = hist(r, c).unwrap_or_else(|| "—".to_string());
+                let style = if cell_hot { hl } else { hist_style() };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(s, style))).centered(),
+                    Rect::new(x, hist_y, cw, 1),
+                );
+            }
+            if is_cur && y < bottom {
+                let s = voy(c).unwrap_or_else(|| "—".to_string());
+                let style = if cell_hot { hl } else { cur_style() };
+                frame.render_widget(
+                    Paragraph::new(Line::from(Span::styled(s, style))).centered(),
+                    Rect::new(x, y, cw, 1),
+                );
+            }
+            // Hover/click region spans the whole cell (both lines for our hull).
+            let top = if is_cur { y } else { hist_y };
+            if top < bottom {
+                regions.push(ClickRegion {
+                    rect: Rect::new(x, top, cw, row_h.min(bottom - top)),
+                    target: ClickTarget::VoyageWinrateCell { row: r, col: c },
+                });
+            }
+        }
+        y += row_h;
+    }
+
+    // Legend, after a blank line.
+    let mut ly = y + 1;
+    for line in legend {
+        if ly >= bottom {
+            break;
+        }
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(Color::DarkGray),
+            )))
+            .centered(),
+            Rect::new(inner.x, ly, inner.width, 1),
+        );
+        ly += 1;
+    }
+}
+
+/// Chart 1 — signed PoE bars for this voyage's concluded fights (newest at top),
 /// with one box-and-whiskers row per [`ChartData::fight_boxes`] population below
 /// them, all on one shared scale. See [`signed_bars_with_boxes`].
 fn poe_bar_lines(data: &ChartData, width: usize, height: usize, enlarged: bool) -> Vec<Line<'static>> {
@@ -1212,7 +1575,7 @@ fn signed_box_line(w: usize, lo: f64, hi: f64, bp: &BoxPlot) -> String {
     cells.into_iter().collect()
 }
 
-/// Chart 1 — total value: this voyage's total as a single point (the Current
+/// Chart 2 — total value: this voyage's total as a single point (the Current
 /// row) against a historical box & whiskers of past voyages' totals, sharing one
 /// axis, with a legend below. No popup.
 fn total_value_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {

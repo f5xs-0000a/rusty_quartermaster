@@ -273,7 +273,15 @@ pub fn from_voyage(
                 SavedBattle {
                     outcome: outcome_str(outcome).to_string(),
                     category: category_str(&b.category),
-                    foe_ship: b.foe_ship.and_then(ship_name),
+                    // Persist the known foe hull regardless of `recorded`: the
+                    // game-announced type, else the ship type set in the Damage
+                    // calculator. Lightweight metadata (the full snapshot below is
+                    // still gated on `recorded`), so the Ship Winrate history keeps
+                    // this matchup even for unrecorded saved fights.
+                    foe_ship: b
+                        .foe_ship
+                        .or_else(|| b.snapshot.map(|s| s.foe_ship))
+                        .and_then(ship_name),
                     poe,
                     goods: b.goods,
                     pirates: b.pirates,

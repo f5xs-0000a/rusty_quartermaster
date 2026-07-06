@@ -80,6 +80,10 @@ pub enum ClickTarget {
     VoyageChart { idx: usize },
     /// The backdrop behind an enlarged chart popup; clicking it closes.
     VoyageChartClose,
+    /// A cell in the enlarged Ship Winrate matrix: `row` is our hull, `col` the
+    /// enemy hull (both [`crate::ships::SHIPS`] indices). Hovering it highlights the
+    /// cell and its row/column headers.
+    VoyageWinrateCell { row: usize, col: usize },
     /// The backdrop behind the Sea Battles popup; clicking it closes.
     VoyageBattlesClose,
     /// Previous / next page (fight) buttons in the Sea Battles popup.
