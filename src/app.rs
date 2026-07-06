@@ -1045,14 +1045,6 @@ impl AppShell {
                     .then_some(b.poe)
                     .flatten()
             };
-            let cur_won_poe: Vec<f64> = voyage
-                .battles
-                .iter()
-                .filter(|b| eff(b.outcome) == Won)
-                .filter_map(&decisive_poe)
-                .filter(|p| *p > 0)
-                .map(|p| p as f64)
-                .collect();
             // Signed PoE of each concluded (won or lost) fight, chronological —
             // losses are negative. Drives the per-fight bar chart.
             let cur_fight_poe: Vec<f64> = voyage
@@ -1061,20 +1053,12 @@ impl AppShell {
                 .filter_map(&decisive_poe)
                 .map(|p| p as f64)
                 .collect();
-            let last_win = voyage
-                .battles
-                .iter()
-                .rev()
-                .find(|b| eff(b.outcome) == Won)
-                .and_then(&decisive_poe)
-                .map(|p| p as f64);
             let cur_total = voyage
                 .battles
                 .iter()
                 .filter_map(&decisive_poe)
                 .sum::<i64>() as f64;
 
-            let mut hist_won_poe = Vec::new();
             let mut hist_totals = Vec::new();
             // Signed per-fight PoE of the *rest* of the voyages sharing this
             // voyage's hull — drives the "History" box beneath the per-fight bars.
@@ -1087,9 +1071,6 @@ impl AppShell {
                 for bt in &v.battles {
                     if let Some(p) = bt.poe {
                         total += p;
-                        if p > 0 && bt.outcome == "won" {
-                            hist_won_poe.push(p as f64);
-                        }
                         // Decisive (won/lost) fights on the same hull, signed.
                         if same_hull
                             && !is_self
@@ -1127,11 +1108,8 @@ impl AppShell {
                 history_box,
             ];
             crate::voyage::ui::ChartData {
-                cur_won_poe,
                 cur_fight_poe,
-                hist_won_poe,
                 fight_boxes,
-                last_win,
                 cur_total,
                 hist_totals,
             }

@@ -25,24 +25,24 @@ use crate::utils::offset_title;
 use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, CategoryTally, ConsumptionStats};
 use crate::voyage::{AxisMode, BattleOutcome, BattleSnapshot};
 
-/// The three charts, in display order.
-pub const CHART_TITLES: [&str; 3] = ["PoE won", "PoE per fight", "Total value"];
+/// The charts, in display order.
+pub const CHART_TITLES: [&str; 2] = ["PoE per fight", "Total value"];
 
-/// Which charts can enlarge into a popup (parallel to [`CHART_TITLES`]). The two
-/// box-plot charts ("PoE won", "Total value") show everything in their mini box,
-/// so they have no popup — they stay selectable for their tooltip only.
-pub const CHART_ENLARGEABLE: [bool; 3] = [false, true, false];
+/// Which charts can enlarge into a popup (parallel to [`CHART_TITLES`]). The
+/// "Total value" box-plot shows everything in its mini box, so it has no popup —
+/// it stays selectable for its tooltip only.
+pub const CHART_ENLARGEABLE: [bool; 2] = [true, false];
 
 /// One-liners shown below the widget when a chart is focused (parallel to
 /// [`CHART_TITLES`]).
-const CHART_TOOLTIPS: [&str; 3] = [
-    "Pieces of eight per won fight — this voyage's spread vs history.",
+const CHART_TOOLTIPS: [&str; 2] = [
     "PoE of each concluded fight, newest first (losses negative), with box-plots for this voyage and the rest of the same-hull voyages. Enter to enlarge.",
     "This voyage's total value (a point) against a historical box of past voyages.",
 ];
 
-/// Height in rows of each chart's bordered box in the scrolling body.
-const CHART_H: u16 = 7;
+/// Height in rows of each chart's bordered box in the scrolling body (2 borders
+/// + 1 padding each side + 5 content rows).
+const CHART_H: u16 = 9;
 
 /// Which button the save/discard prompt has focused.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -90,8 +90,8 @@ pub struct VoyageStatsUi {
     pub scroll: u16,
     /// Focused item index. Indices `0..n_stats` are the in-body focusables (the
     /// Sea Battles section, then the Timing-onward stat numbers); `n_stats..
-    /// n_stats+3` are the three charts. The focused item's tooltip shows below
-    /// the widget.
+    /// n_stats+CHART_TITLES.len()` are the charts. The focused item's tooltip
+    /// shows below the widget.
     pub focus: usize,
     /// Number of non-chart focusables in the last render — the boundary at which
     /// [`Self::focus`] crosses into the charts. Set by `render`.
@@ -121,20 +121,14 @@ pub struct VoyageStatsUi {
 /// Per-fight series for the charts: current voyage vs persisted history.
 #[derive(Default, Clone)]
 pub struct ChartData {
-    /// PoE of each won fight this voyage (chronological).
-    pub cur_won_poe: Vec<f64>,
     /// Signed PoE of each concluded (won or lost) fight this voyage, in order —
     /// losses are negative. Drives the per-fight bar chart.
     pub cur_fight_poe: Vec<f64>,
-    /// PoE of every won fight across saved history.
-    pub hist_won_poe: Vec<f64>,
     /// Box-and-whiskers rows drawn beneath the per-fight bars, on the bars' shared
     /// scale. The first is styled as "current", the rest as "historical".
     /// Typically `[Voyage, History]` — this voyage vs the rest of the same-hull
     /// voyages — but the renderer takes any number.
     pub fight_boxes: Vec<ChartBox>,
-    /// PoE of the most recent won fight this voyage (highlighted marker).
-    pub last_win: Option<f64>,
     /// This voyage's total value (net PoE for now; goods fold in later).
     pub cur_total: f64,
     /// Total value of each past voyage (one point each).
@@ -358,7 +352,7 @@ pub fn render(
 
     // Render the body rows into lines now that the width is fixed. The parallel
     // focusable list (Sea Battles, then the stat numbers) is already populated;
-    // the three charts follow them in the focus order.
+    // the charts follow them in the focus order.
     built.finalize(body.width as usize);
     let n_stats = built.focusable.len();
     let n_charts = CHART_TITLES.len();
@@ -906,8 +900,8 @@ fn hist_style() -> Style {
     Style::default().fg(Color::Gray)
 }
 
-/// Render the three charts as full-width bordered boxes stacked down `area`,
-/// into `canvas` (an offscreen buffer the caller blits into the scroll body).
+/// Render the charts as full-width bordered boxes stacked down `area`, into
+/// `canvas` (an offscreen buffer the caller blits into the scroll body).
 /// `focused_chart` highlights one box's border.
 fn render_charts(canvas: &mut Buffer, area: Rect, data: &ChartData, focused_chart: Option<usize>) {
     for i in 0..CHART_TITLES.len() {
@@ -921,7 +915,8 @@ fn render_charts(canvas: &mut Buffer, area: Rect, data: &ChartData, focused_char
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border)
-            .title(title);
+            .title(title)
+            .padding(Padding::uniform(1));
         let inner = block.inner(slot);
         block.render(slot, canvas);
         Paragraph::new(chart_lines(i, data, inner.width as usize, inner.height as usize, false))
@@ -982,56 +977,15 @@ fn chart_lines(
     enlarged: bool,
 ) -> Vec<Line<'static>> {
     match idx {
-        0 => poe_box_lines(data, width),
-        1 => poe_bar_lines(data, width, height, enlarged),
+        0 => poe_bar_lines(data, width, height, enlarged),
         _ => total_value_lines(data, width),
     }
 }
 
-/// Width of the row-label column on the PoE-won chart (fits "Historical" + gap).
+/// Width of the row-label column on the Total-value chart (fits "Historical" + gap).
 const PBOX_LABEL_W: usize = 12;
 
-/// Chart 0 — box & whiskers of won-fight PoE: this voyage vs historical, with a
-/// marker at the most recent win and a legend below. It has no popup (it shows
-/// everything in its mini box), so all of it must fit the box's rows.
-fn poe_box_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
-    let axis = width.saturating_sub(PBOX_LABEL_W);
-    let range = combined_range(&[data.cur_won_poe.as_slice(), data.hist_won_poe.as_slice()]);
-    let mut lines = vec![
-        box_or_msg(
-            "Current",
-            PBOX_LABEL_W,
-            box_plot(&data.cur_won_poe),
-            range,
-            axis,
-            data.last_win.map(|v| (v, '✦')),
-            cur_style(),
-        ),
-        box_or_msg(
-            "Historical",
-            PBOX_LABEL_W,
-            box_plot(&data.hist_won_poe),
-            range,
-            axis,
-            None,
-            hist_style(),
-        ),
-    ];
-    if let Some((lo, hi)) = range {
-        lines.push(axis_line(lo, hi, width, PBOX_LABEL_W));
-    }
-    lines.push(Line::from(Span::styled(
-        "Legend:",
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(Span::styled(
-        "  ✦ - Last Win",
-        Style::default().fg(Color::Cyan),
-    )));
-    lines
-}
-
-/// Chart 1 — signed PoE bars for this voyage's concluded fights (newest at top),
+/// Chart 0 — signed PoE bars for this voyage's concluded fights (newest at top),
 /// with one box-and-whiskers row per [`ChartData::fight_boxes`] population below
 /// them, all on one shared scale. See [`signed_bars_with_boxes`].
 fn poe_bar_lines(data: &ChartData, width: usize, height: usize, enlarged: bool) -> Vec<Line<'static>> {
@@ -1258,9 +1212,9 @@ fn signed_box_line(w: usize, lo: f64, hi: f64, bp: &BoxPlot) -> String {
     cells.into_iter().collect()
 }
 
-/// Chart 2 — total value, drawn like chart 0: this voyage's total as a single
-/// point (the Current row) against a historical box & whiskers of past voyages'
-/// totals, sharing one axis, with a legend below. No popup.
+/// Chart 1 — total value: this voyage's total as a single point (the Current
+/// row) against a historical box & whiskers of past voyages' totals, sharing one
+/// axis, with a legend below. No popup.
 fn total_value_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
     let axis = width.saturating_sub(PBOX_LABEL_W);
     let mut all = data.hist_totals.clone();
