@@ -596,6 +596,15 @@ pub fn is_player_name(name: &str) -> bool {
         .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
 }
 
+/// Whether `name` is one of the special characters (Brigand Kings, "Mother o'
+/// Nyght", ...) in [`SPECIAL_NAMES`], matched case-insensitively against the
+/// *whole* name. Callers use this to exclude specials as atomic units rather than
+/// breaking them into name segments (their words overlap ordinary ones).
+pub fn is_special_name(name: &str) -> bool {
+    let trimmed = name.trim();
+    SPECIAL_NAMES.iter().any(|s| trimmed.eq_ignore_ascii_case(s))
+}
+
 /// Normalize a pirate name for use in yoweb URLs.
 ///
 /// Special NPC names are matched case-insensitively and returned as-is.

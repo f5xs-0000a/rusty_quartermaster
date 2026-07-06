@@ -524,6 +524,13 @@ pub struct GameState {
     /// don't use this). Reset at the top of each [`Self::process_line`]; consumed by
     /// [`Self::take_battle_first_blood`].
     battle_first_blood: bool,
+
+    /// Learned brigand naming vocabulary (see [`crate::cache::NameSegments`]),
+    /// accumulated from brigand-victory rosters and persisted in the cache. Used
+    /// to tell swabbies from mercenaries among the NPCs aboard. Seeded from the
+    /// cache at startup; not reset on relog (the vocabulary is game-wide, not
+    /// session-scoped).
+    pub name_segments: crate::cache::NameSegments,
 }
 
 impl GameState {
@@ -547,6 +554,7 @@ impl GameState {
             boarded_vessel: None,
             cursed_isles_just_detected: false,
             battle_first_blood: false,
+            name_segments: crate::cache::NameSegments::default(),
         }
     }
 
@@ -1258,6 +1266,16 @@ impl GameState {
             && winners
                 .iter()
                 .any(|n| pirate::is_player_name(n) && !self.is_own_crew(n));
+        // A *pure brigand victory* (we lost, no enemy players, no Brigand King) has
+        // a uniformly `[adjective] [name]` winners roster, so we can learn the
+        // naming vocabulary from it (feeds swabbie-vs-mercenary classification). Our
+        // own wins and PvP losses are skipped — those crews mix mercenaries and
+        // swabbies, so the split is ambiguous. Specials are excluded by `learn_brigand`.
+        if outcome == BattleOutcome::Lost && !lost_to_players && king.is_none() {
+            for w in &winners {
+                self.name_segments.learn_brigand(w);
+            }
+        }
         // Split a roster into real players (kept by name) and a bare swabbie count.
         let split_side = |names: &[String]| TeamSide {
             players: names

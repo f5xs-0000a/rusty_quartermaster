@@ -157,6 +157,7 @@ async fn main() -> io::Result<()> {
         inventory: saved_inventory,
         commodities: saved_commodities,
         mut oceans,
+        name_segments: saved_name_segments,
     } = cache_path.as_deref().map(cache::load).unwrap_or_default();
 
     // -- Resolve ocean + pirate name (interactive popup if either is missing) --
@@ -223,6 +224,9 @@ async fn main() -> io::Result<()> {
     }
 
     let mut shell = AppShell::new(commodities);
+    // Seed the learned NPC naming vocabulary (swabbie vs mercenary) from the cache;
+    // it grows further as brigand-victory rosters are parsed this session.
+    shell.chatlog.name_segments = saved_name_segments;
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
@@ -471,6 +475,7 @@ async fn main() -> io::Result<()> {
                 .map(|c| SavedCommodity { id: c.id, name: c.name.clone() })
                 .collect(),
             oceans,
+            name_segments: std::mem::take(&mut shell.chatlog.name_segments),
         };
         crate::utils::write_json_atomic(path, &saved, "cache");
     }
