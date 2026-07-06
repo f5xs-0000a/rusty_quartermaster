@@ -26,10 +26,10 @@ use crate::voyage::stats::{box_plot, BattleStats, BoxPlot, CategoryTally, Consum
 use crate::voyage::{AxisMode, BattleOutcome, BattleSnapshot};
 
 /// The charts, in display order.
-pub const CHART_TITLES: [&str; 3] = ["Ship Winrate", "PoE per fight", "Total value"];
+pub const CHART_TITLES: [&str; 3] = ["Ship Winrate", "PoE per fight", "Value per share"];
 
 /// Which charts can enlarge into a popup (parallel to [`CHART_TITLES`]). The
-/// "Total value" box-plot shows everything in its mini box, so it has no popup —
+/// "Value per share" box-plot shows everything in its mini box, so it has no popup —
 /// it stays selectable for its tooltip only. "Ship Winrate" enlarges into the full
 /// hull-matchup matrix.
 pub const CHART_ENLARGEABLE: [bool; 3] = [true, true, false];
@@ -39,7 +39,7 @@ pub const CHART_ENLARGEABLE: [bool; 3] = [true, true, false];
 const CHART_TOOLTIPS: [&str; 3] = [
     "Win rate of our hull against each enemy hull we've fought this voyage (and, once a hull is picked, historically). Enter for the full ship-matchup matrix.",
     "PoE of each concluded fight, newest first (losses negative), with box-plots for this voyage and the rest of the same-hull voyages. Enter to enlarge.",
-    "This voyage's total value (a point) against a historical box of past voyages.",
+    "This voyage's value per share — total value ÷ (pirates+mercenaries summed over its fights, swabbies excluded) — as a point against a historical box of past voyages. Ship- and length-agnostic.",
 ];
 
 /// Height in rows of each chart's bordered box in the scrolling body (2 borders
@@ -135,10 +135,13 @@ pub struct ChartData {
     /// Typically `[Voyage, History]` — this voyage vs the rest of the same-hull
     /// voyages — but the renderer takes any number.
     pub fight_boxes: Vec<ChartBox>,
-    /// This voyage's total value (net PoE for now; goods fold in later).
-    pub cur_total: f64,
-    /// Total value of each past voyage (one point each).
-    pub hist_totals: Vec<f64>,
+    /// This voyage's **value per share** — total value ÷ Σ(pirates+mercs per fight).
+    /// The per-head take a pirate/merc earns; swabbies don't dilute it. `0` when no
+    /// shares were recorded yet.
+    pub cur_per_share: f64,
+    /// Value per share of each past voyage (one point each). Reloaded voyages have no
+    /// merc split, so their shares count pirates only.
+    pub hist_per_share: Vec<f64>,
     /// Ship-vs-ship win rates for the Ship Winrate widget (chart 0).
     pub winrate: ShipWinrate,
 }
@@ -1044,7 +1047,7 @@ fn chart_lines(
         // through here.
         0 => ship_winrate_table(&data.winrate, width, height),
         1 => poe_bar_lines(data, width, height, enlarged),
-        _ => total_value_lines(data, width),
+        _ => per_share_lines(data, width),
     }
 }
 
@@ -1575,19 +1578,20 @@ fn signed_box_line(w: usize, lo: f64, hi: f64, bp: &BoxPlot) -> String {
     cells.into_iter().collect()
 }
 
-/// Chart 2 — total value: this voyage's total as a single point (the Current
-/// row) against a historical box & whiskers of past voyages' totals, sharing one
-/// axis, with a legend below. No popup.
-fn total_value_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
+/// Chart 2 — value per share: this voyage's per-head take (total value ÷
+/// Σ(pirates+mercs per fight)) as a single point (the Current row) against a
+/// historical box & whiskers of past voyages' per-share values, sharing one axis,
+/// with a legend below. No popup.
+fn per_share_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
     let axis = width.saturating_sub(PBOX_LABEL_W);
-    let mut all = data.hist_totals.clone();
-    all.push(data.cur_total);
+    let mut all = data.hist_per_share.clone();
+    all.push(data.cur_per_share);
     let range = combined_range(&[all.as_slice()]);
     let mut lines = vec![
         box_or_msg(
             "Current",
             PBOX_LABEL_W,
-            box_plot(&[data.cur_total]),
+            box_plot(&[data.cur_per_share]),
             range,
             axis,
             None,
@@ -1596,7 +1600,7 @@ fn total_value_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
         box_or_msg(
             "Historical",
             PBOX_LABEL_W,
-            box_plot(&data.hist_totals),
+            box_plot(&data.hist_per_share),
             range,
             axis,
             None,

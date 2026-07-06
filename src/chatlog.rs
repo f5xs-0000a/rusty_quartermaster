@@ -328,6 +328,16 @@ pub struct Vessel {
     /// fight (see [`on_battle_end`]). Departures saturate at zero so a poisoned
     /// vessel (we missed lines while away) can't underflow.
     pub swabbies: u32,
+    /// Mercenaries believed aboard right now, by name — the `[name] [epithet]` NPCs,
+    /// a distinct crew kind from swabbies but a **subset** of the bodies the log lumps
+    /// into [`Self::swabbies`] (so genuine-swabbie count = `swabbies -
+    /// mercenaries.len()`). NPCs never announce by name, so this can only be *ground
+    /// truthed* from a won fight's winners roster (classified via
+    /// [`crate::cache::NameSegments`]); between wins it's maintained best-effort:
+    /// swabbies leave before mercs, and the rum-spice depletion swap sheds one merc.
+    /// A merc both hired and lost between two wins is invisible until the next roster
+    /// re-truths it. Drives the mercenary half of each fight's divvy shares.
+    pub mercenaries: BTreeSet<String>,
     /// Lone dragoons currently aboard on an Atlantis run: +1 per "Ye hear a
     /// splash, and the sound of foreign footsteps." line, −1 per dragoon driven off
     /// the ship. Reset to zero once the crew repels all invaders. Always zero on
@@ -531,6 +541,12 @@ pub struct GameState {
     /// don't use this). Reset at the top of each [`Self::process_line`]; consumed by
     /// [`Self::take_battle_first_blood`].
     battle_first_blood: bool,
+    /// Armed by the rum-spice limit tell (`Avast, yer mercenary hirin' is limited by
+    /// the rum spice…`) and consumed by the *next single* `A swabbie has left the
+    /// vessel.` — that departure is really a mercenary shed to spice, not a swabbie.
+    /// Persists across intervening lines (chat, etc.); cleared by any swabbie delta
+    /// (so a bulk board/leave disarms it without a swap) and at battle/relog resets.
+    spice_swap_armed: bool,
 
     /// Learned brigand naming vocabulary (see [`crate::cache::NameSegments`]),
     /// accumulated from brigand-victory rosters and persisted in the cache. Used
@@ -561,6 +577,7 @@ impl GameState {
             boarded_vessel: None,
             cursed_isles_just_detected: false,
             battle_first_blood: false,
+            spice_swap_armed: false,
             name_segments: crate::cache::NameSegments::default(),
         }
     }
@@ -919,16 +936,47 @@ impl GameState {
             return;
         }
 
-        // Swabbie head-count deltas. These are the only board-count signal for
-        // NPC crew (there is no absolute "N swabbies aboard" line between
-        // fights); a won fight later resyncs the tally from the winners roster.
+        // Rum-spice hiring-limit tell: arms the very next *single* swabbie departure
+        // as a mercenary shed to spice, not a genuine swabbie (see `spice_swap_armed`).
+        if body
+            == "Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary."
+        {
+            self.spice_swap_armed = true;
+            return;
+        }
+
+        // NPC head-count deltas. The log's `… swabbie …` lines fire for mercenaries
+        // too (mercs never get their own board/leave line), so this count lumps both
+        // crew kinds — a won fight later resyncs the tally *and* the merc roster from
+        // the winners roster.
         if let Some(delta) = parse_swabbie_delta(body) {
+            // Only a *single* departure right after the tell is a depletion swap; a
+            // bulk board/leave (re-staffing) just disarms it.
+            let spice_swap = self.spice_swap_armed && delta == -1;
+            self.spice_swap_armed = false;
             if let Some(v) = self.current_vessel_mut() {
-                v.swabbies = if delta >= 0 {
-                    v.swabbies.saturating_add(delta as u32)
+                if delta >= 0 {
+                    // New bodies always board as swabbies (mercs are hired, not
+                    // boarded via a delta line).
+                    v.swabbies = v.swabbies.saturating_add(delta as u32);
                 } else {
-                    v.swabbies.saturating_sub(delta.unsigned_abs() as u32)
-                };
+                    let n = delta.unsigned_abs() as u32;
+                    if spice_swap {
+                        // A merc's spice ran out: it departs (logged as a swabbie
+                        // leaving) and a genuine swabbie replaces it via the paired
+                        // come-aboard. Shed one merc; the total dips here and is
+                        // restored by the come, netting -1 merc / +1 genuine swabbie.
+                        shed_mercs(&mut v.mercenaries, 1);
+                        v.swabbies = v.swabbies.saturating_sub(1);
+                    } else {
+                        // Ordinary departure: genuine swabbies leave first; only once
+                        // they're exhausted do mercs start leaving (the overflow past
+                        // the genuine-swabbie pool).
+                        let genuine = v.swabbies.saturating_sub(v.mercenaries.len() as u32);
+                        shed_mercs(&mut v.mercenaries, n.saturating_sub(genuine));
+                        v.swabbies = v.swabbies.saturating_sub(n);
+                    }
+                }
             }
             self.sample_crew();
             return;
@@ -1192,13 +1240,16 @@ impl GameState {
         let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             let players: Vec<String> = v.crewmates.iter().cloned().collect();
-            let swabbies = v.swabbies;
+            let mercenaries = v.mercenaries.len() as u32;
+            // `v.swabbies` is the raw lumped NPC count; the roster stores genuine
+            // swabbies and mercenaries disjointly, so subtract the known mercs.
+            let swabbies = v.swabbies.saturating_sub(mercenaries);
             if let Some(b) = v.current_voyage.as_mut().and_then(|voy| voy.current_battle.as_mut()) {
                 if b.grappled_at.is_none() {
                     b.grappled_at = now;
                     // Our side as it stood at boarding start; finalized at
                     // resolution (resynced roster ∪ this, minus the disconnected).
-                    b.our_team = Some(TeamSide { players, swabbies });
+                    b.our_team = Some(TeamSide { players, swabbies, mercenaries });
                 }
             }
         }
@@ -1229,6 +1280,10 @@ impl GameState {
     /// per-wave swordfights aren't sea battles. Run *after* [`Self::on_battle_end`]
     /// so the crew snapshot uses the resynced roster.
     fn on_sea_battle_resolve(&mut self, summary: &str) {
+        // A fight's conclusion closes any pending rum-spice swap window: the tell and
+        // its paired departure are always adjacent, so an arm that survived a whole
+        // battle is stale and must not mis-tag a later swabbie departure.
+        self.spice_swap_armed = false;
         if self.current_vessel().is_some_and(|v| v.lair_active) {
             return;
         }
@@ -1276,6 +1331,12 @@ impl GameState {
         let disconnected: HashSet<String> =
             self.current_vessel().map(|v| v.disconnected.clone()).unwrap_or_default();
         let swabbies = self.current_vessel().map(|v| v.swabbies).unwrap_or(0);
+        // Mercenary count for this fight's divvy shares, read from the roster that
+        // `on_battle_end` (run just before us on this same `Game over`) re-truthed from
+        // the winners list on a win. On a loss/disengage our side isn't named, so the
+        // roster is the carried best-effort estimate. See the mercenary roster on
+        // `Vessel`.
+        let mercenaries = self.current_vessel().map(|v| v.mercenaries.len() as u32).unwrap_or(0);
         // A king on the winning side means we lost to that king — name the fight.
         let king = find_brigand_king(summary);
         // PvP on a loss: a winner who's a real player and not ours = an enemy
@@ -1296,7 +1357,9 @@ impl GameState {
                 self.name_segments.learn_brigand(w);
             }
         }
-        // Split a roster into real players (kept by name) and a bare swabbie count.
+        // Split a roster into real players (kept by name) and a bare NPC count. Used
+        // for the enemy side, which we never classify — `mercenaries` stays 0 (their
+        // divvy isn't ours; see the PvP note in the design).
         let split_side = |names: &[String]| TeamSide {
             players: names
                 .iter()
@@ -1304,6 +1367,7 @@ impl GameState {
                 .cloned()
                 .collect(),
             swabbies: names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32,
+            mercenaries: 0,
         };
         let now = self.now;
         let mut resolved = false;
@@ -1326,15 +1390,22 @@ impl GameState {
                     .collect();
                 let fought = our_players.len() as u32;
                 b.pirates = fought + 1;
+                // `b.swabbies` keeps the total NPC crew (for manpower); the roster
+                // splits it into genuine swabbies and mercenaries, disjointly.
                 b.swabbies = swabbies;
-                // Record our side by name (swabbies as a count). Include ourselves
-                // when our name is known so the roster is complete.
+                let genuine_swabbies = swabbies.saturating_sub(mercenaries);
+                // Record our side by name. Include ourselves when our name is known so
+                // the roster is complete.
                 if let Some(me) = me {
                     if !our_players.iter().any(|n| n.eq_ignore_ascii_case(me)) {
                         our_players.push(me.to_string());
                     }
                 }
-                b.our_team = Some(TeamSide { players: our_players, swabbies });
+                b.our_team = Some(TeamSide {
+                    players: our_players,
+                    swabbies: genuine_swabbies,
+                    mercenaries,
+                });
                 // PvP (its own category) may already be set from the melee; a loss
                 // to a real-player crew flags it too. PvP overrides a king label.
                 if b.category == BattleCategory::Pvp || lost_to_players {
@@ -2029,10 +2100,25 @@ impl GameState {
         // player name is one. This resyncs the running delta tally, correcting
         // any drift accumulated while the vessel was poisoned.
         let swabbies = names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32;
+        // ...and for the mercenary roster: the winners list is the only place NPCs are
+        // named, so it's our sole merc/swabbie ground truth. Mercenaries are the
+        // `[name][epithet]` NPCs; everyone else non-player is a genuine swabbie. This
+        // re-truthing corrects any drift (departures, rum-spice swaps) since the last
+        // win. See the merc roster on `Vessel`.
+        let mercenaries: BTreeSet<String> = names
+            .iter()
+            .filter(|n| !pirate::is_player_name(n))
+            // A generic unnamed swabbie ("A swabbie") isn't a real NPC name; the
+            // classifier would default its unknown tokens to Mercenary, so skip it.
+            .filter(|n| !n.eq_ignore_ascii_case("A swabbie"))
+            .filter(|n| self.name_segments.classify(n) == Some(crate::cache::NpcKind::Mercenary))
+            .map(|n| n.to_string())
+            .collect();
 
         if let Some(v) = self.current_vessel_mut() {
             v.crewmates = new_crew;
             v.swabbies = swabbies;
+            v.mercenaries = mercenaries;
         }
     }
 
@@ -2278,6 +2364,18 @@ impl Default for GameState {
 ///   "N swabbies have come aboard."      -> +N
 ///   "A swabbie has left the vessel."    -> -1
 ///   "N swabbies have left the vessel."  -> -N
+/// Remove `n` mercenaries from the roster. NPC departures are anonymous, so *which*
+/// merc leaves is unknowable — we drop arbitrary (lowest-sorted) names. The roster is
+/// re-truthed from the next winners roster anyway, so only the count matters here.
+fn shed_mercs(mercs: &mut BTreeSet<String>, n: u32) {
+    for _ in 0..n {
+        let Some(first) = mercs.iter().next().cloned() else {
+            break;
+        };
+        mercs.remove(&first);
+    }
+}
+
 fn parse_swabbie_delta(body: &str) -> Option<i64> {
     match body {
         "A swabbie has come aboard." => return Some(1),
@@ -3569,5 +3667,124 @@ mod tests {
         let voy = gs.current_voyage().unwrap();
         assert_eq!(voy.battles[0].category, BattleCategory::Vampirate);
         assert_eq!(voy.battles[1].category, BattleCategory::Werewolf);
+    }
+
+    // ---- Mercenary roster + divvy shares -------------------------------------
+
+    #[test]
+    fn won_roster_splits_mercenaries_from_swabbies() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        // Vocabulary so the classifier knows the swabbie names; a merc's epithet is in
+        // neither set, so `[name] [epithet]` falls through to Mercenary.
+        gs.name_segments.learn_brigand("Gentle Gayle");
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[01:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line("[01:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[01:02:00] Test Vessel has grappled Modest Sild. A melee breaks out between the crews!",
+        );
+        // Winners = us + one mercenary + two swabbies (one named, one generic). The
+        // generic "A swabbie" never actually appears in a real Game Over roster
+        // (production swabbies are always named), but we handle it defensively: its
+        // unknown tokens would otherwise default to Mercenary in the classifier.
+        gs.process_line(
+            "[01:04:00] Game over.  Winners: Playerone, Luka Merciless, Gentle Gayle, A swabbie.",
+        );
+        let v = gs.current_vessel().unwrap();
+        // Vessel keeps the raw lumped NPC tally (all three non-players); the merc
+        // roster names just the one `[name][epithet]`.
+        assert_eq!(v.swabbies, 3);
+        assert_eq!(v.mercenaries.len(), 1);
+        assert!(v.mercenaries.contains("Luka Merciless"));
+        // The generic swabbie is a swabbie, not a merc — the guard held.
+        assert!(!v.mercenaries.contains("A swabbie"));
+        assert!(!v.mercenaries.contains("Gentle Gayle"));
+        let b = v.current_voyage.as_ref().unwrap().battles.last().unwrap();
+        assert_eq!(b.outcome, BattleOutcome::Won);
+        assert_eq!(b.pirates, 1); // just us
+        // Flat `b.swabbies` is the total NPC crew (for manpower); the roster splits it
+        // into disjoint genuine swabbies vs mercenaries.
+        assert_eq!(b.swabbies, 3);
+        let team = b.our_team.as_ref().unwrap();
+        assert_eq!(team.swabbies, 2); // genuine swabbies only (Gentle Gayle + A swabbie)
+        assert_eq!(team.mercenaries, 1);
+        assert_eq!(team.headcount(), 4); // 1 pirate + 2 swabbies + 1 merc
+        // Divvy shares: us (1 pirate) + 1 merc; the two genuine swabbies earn none.
+        assert_eq!(team.shares(), 2);
+    }
+
+    #[test]
+    fn rum_spice_swap_sheds_one_mercenary() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        {
+            let v = gs.current_vessel_mut().unwrap();
+            v.swabbies = 5; // 5 NPC bodies, 2 of them mercs => 3 genuine swabbies
+            v.mercenaries.insert("Luka Merciless".to_string());
+            v.mercenaries.insert("Bree Steeljaw".to_string());
+        }
+        // The tell arms the swap; the paired single leave/come shift -1 merc / +1 swabbie.
+        gs.process_line(
+            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary.",
+        );
+        gs.process_line("[01:00:11] A swabbie has left the vessel.");
+        gs.process_line("[01:00:11] A swabbie has come aboard.");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.swabbies, 5); // total unchanged (a merc left, a swabbie replaced it)
+        assert_eq!(v.mercenaries.len(), 1); // one merc shed
+    }
+
+    #[test]
+    fn swabbies_leave_before_mercenaries() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        {
+            let v = gs.current_vessel_mut().unwrap();
+            v.swabbies = 5; // 3 genuine swabbies + 2 mercs
+            v.mercenaries.insert("Luka Merciless".to_string());
+            v.mercenaries.insert("Bree Steeljaw".to_string());
+        }
+        // First 2 leave: within the genuine-swabbie pool (3), no merc touched.
+        gs.process_line("[01:00:10] 2 swabbies have left the vessel.");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.swabbies, 3);
+            assert_eq!(v.mercenaries.len(), 2);
+        }
+        // Next 2 leave: only 1 genuine swabbie remains, so the overflow sheds 1 merc.
+        gs.process_line("[01:00:20] 2 swabbies have left the vessel.");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.swabbies, 1);
+        assert_eq!(v.mercenaries.len(), 1);
+    }
+
+    #[test]
+    fn bulk_board_after_tell_does_not_swap() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        {
+            let v = gs.current_vessel_mut().unwrap();
+            v.swabbies = 5;
+            v.mercenaries.insert("Luka Merciless".to_string());
+            v.mercenaries.insert("Bree Steeljaw".to_string());
+        }
+        gs.process_line(
+            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary.",
+        );
+        // A bulk board is re-staffing, not a swap: it disarms without shedding a merc.
+        gs.process_line("[01:00:11] 5 swabbies have come aboard.");
+        {
+            let v = gs.current_vessel().unwrap();
+            assert_eq!(v.swabbies, 10);
+            assert_eq!(v.mercenaries.len(), 2);
+        }
+        // Proof the arm was consumed: a later single leave is now an ordinary swabbie
+        // departure (genuine pool has room), so no merc is shed.
+        gs.process_line("[01:00:20] A swabbie has left the vessel.");
+        let v = gs.current_vessel().unwrap();
+        assert_eq!(v.swabbies, 9);
+        assert_eq!(v.mercenaries.len(), 2);
     }
 }

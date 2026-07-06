@@ -75,14 +75,31 @@ pub enum BattleCategory {
 pub struct TeamSide {
     /// Real-player names on this side.
     pub players: Vec<String>,
-    /// Swabbies (NPC crew, incl. named mercenaries) on this side.
+    /// Genuine **swabbies** on this side — the NPC crew that take only a pre-divvy
+    /// skim, *excluding* mercenaries (a distinct crew kind, counted in
+    /// [`Self::mercenaries`]). The two are disjoint: total NPC crew = `swabbies +
+    /// mercenaries`. (The log's raw count lines lump the two; the split is resolved
+    /// from a winners-roster ground truth — see the mercenary roster on `Vessel`.)
     pub swabbies: u32,
+    /// **Mercenaries** on this side — the NPCs with the `[name] [epithet]` convention,
+    /// distinct from and disjoint with [`Self::swabbies`]. Our side only, and only as
+    /// accurate as the last winners-roster ground truth; `0` on the enemy side (never
+    /// classified). Mercs take a full divvy share, swabbies none — so this is the merc
+    /// half of a fight's [`Self::shares`].
+    pub mercenaries: u32,
 }
 
 impl TeamSide {
-    /// Total headcount on this side (players + swabbies).
+    /// Total headcount on this side (players + all NPC crew, swabbies + mercenaries).
     pub fn headcount(&self) -> u32 {
-        self.players.len() as u32 + self.swabbies
+        self.players.len() as u32 + self.swabbies + self.mercenaries
+    }
+
+    /// Divvy shares on this side: every real pirate and every mercenary earns one
+    /// full share; free swabbies earn none (they're paid off the top). Drives the
+    /// "Value per Share" metric.
+    pub fn shares(&self) -> u32 {
+        self.players.len() as u32 + self.mercenaries
     }
 }
 
@@ -137,7 +154,10 @@ pub struct Battle {
     pub my_cut: Option<u64>,
     /// Pirates aboard our vessel at resolution (real players incl. us).
     pub pirates: u32,
-    /// Swabbies aboard our vessel at resolution.
+    /// Total NPC crew aboard at resolution — swabbies **and** mercenaries, the raw
+    /// combined count that drives manpower/strength (both kinds fight). The genuine
+    /// swabbie-vs-mercenary split is kept separately in [`Self::our_team`]. Named
+    /// `swabbies` for history.
     pub swabbies: u32,
     /// What we were fighting (best-effort; defaults to generic Brigand).
     pub category: BattleCategory,

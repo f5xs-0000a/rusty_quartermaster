@@ -1036,7 +1036,7 @@ impl AppShell {
             .collect();
 
         // Chart series: current voyage vs persisted history (won-fight PoE +
-        // per-voyage totals). Total value is net PoE for now; goods fold in later.
+        // per-voyage value-per-share). Value is net PoE for now; goods fold in later.
         let charts = {
             use crate::voyage::BattleOutcome::{Lost, Won};
             // Signed PoE of a fight, but only for a *confirmed* win/loss (an
@@ -1054,11 +1054,31 @@ impl AppShell {
                 .filter_map(&decisive_poe)
                 .map(|p| p as f64)
                 .collect();
-            let cur_total = voyage
-                .battles
-                .iter()
-                .filter_map(&decisive_poe)
-                .sum::<i64>() as f64;
+            // "Value per Share": total value ÷ total divvy shares. Shares are summed
+            // over the same decisive fights as the numerator — each pirate and each
+            // mercenary aboard a fight is one share; swabbies none. Ship- and
+            // duration-agnostic (crew size and fight count both divide out). Merc
+            // counts are exact live; a reloaded voyage has none, so it falls back to
+            // pirates-only shares (see the persistence note).
+            let (cur_total_i, cur_shares) = voyage.battles.iter().fold(
+                (0i64, 0u32),
+                |(poe, shares), b| match decisive_poe(b) {
+                    // A fight's shares = pirates + mercenaries aboard (swabbies none).
+                    // `our_team` is always present for a decisive fight; fall back to
+                    // the pirate count if somehow absent.
+                    Some(p) => (
+                        poe + p,
+                        shares + b.our_team.as_ref().map_or(b.pirates, |t| t.shares()),
+                    ),
+                    None => (poe, shares),
+                },
+            );
+            let cur_total = cur_total_i as f64;
+            let cur_per_share = if cur_shares > 0 {
+                cur_total / cur_shares as f64
+            } else {
+                0.0
+            };
 
             // Ship Winrate: this voyage's decisive fights bucketed by the *enemy*
             // hull. Only fights whose foe hull is known contribute (an unknown foe
@@ -1082,18 +1102,23 @@ impl AppShell {
                     wr_voyage.entry(foe).or_default().add(matches!(o, Won));
                 }
             }
-            let mut hist_totals = Vec::new();
+            let mut hist_per_share = Vec::new();
             // Signed per-fight PoE of the *rest* of the voyages sharing this
             // voyage's hull — drives the "History" box beneath the per-fight bars.
             // Only when the hull is actually known (no guessing).
             let mut hull_fight_poe = Vec::new();
             for (i, v) in self.voyage_history.voyages.iter().enumerate() {
                 let mut total = 0i64;
+                let mut shares = 0u32;
                 let same_hull = ship_type.is_some() && v.ship_type == ship_type;
                 let is_self = exclude_saved_idx == Some(i);
                 for bt in &v.battles {
                     if let Some(p) = bt.poe {
                         total += p;
+                        // Shares = pirates + mercenaries aboard (persisted). Legacy
+                        // files (pre-merc-field) restore mercs = 0, falling back to
+                        // pirates-only shares. Paired with the numerator per fight.
+                        shares += bt.pirates + bt.our_team.as_ref().map_or(0, |t| t.mercenaries);
                         // Decisive (won/lost) fights on the same hull, signed.
                         if same_hull
                             && !is_self
@@ -1103,7 +1128,12 @@ impl AppShell {
                         }
                     }
                 }
-                hist_totals.push(total as f64);
+                // Value per share for this past voyage (0 when no shares recorded).
+                hist_per_share.push(if shares > 0 {
+                    total as f64 / shares as f64
+                } else {
+                    0.0
+                });
             }
 
             // Ship Winrate history keyed by (our hull, enemy hull): every OTHER voyage
@@ -1212,8 +1242,8 @@ impl AppShell {
             crate::voyage::ui::ChartData {
                 cur_fight_poe,
                 fight_boxes,
-                cur_total,
-                hist_totals,
+                cur_per_share,
+                hist_per_share,
                 winrate,
             }
         };

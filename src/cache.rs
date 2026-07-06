@@ -52,7 +52,6 @@ pub struct NameSegments {
 
 /// The kind of NPC aboard, per [`NameSegments::classify`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)] // consumed by the (deferred) Total-Value-per-pirate headcount.
 pub enum NpcKind {
     /// `[adjective] [name]` — takes only a pre-divvy skim, not a counted share.
     Swabbie,
@@ -90,7 +89,6 @@ impl NameSegments {
     /// it keeps "Red Ear-biter" a mercenary even though "Red" is also a name. The
     /// right-side test needs no such guard, because a mercenary's epithet is never
     /// a name; that's what lets "Red Red" correctly resolve to a swabbie.
-    #[allow(dead_code)] // consumed by the (deferred) Total-Value-per-pirate headcount.
     pub fn classify(&self, npc: &str) -> Option<NpcKind> {
         if crate::pirate::is_special_name(npc) {
             return None;

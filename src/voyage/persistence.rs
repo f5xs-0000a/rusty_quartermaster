@@ -41,13 +41,21 @@ pub struct SavedSnapshot {
     pub our_pirates: u32,
 }
 
-/// One side of a persisted melee — real players by name + a swabbie count.
+/// One side of a persisted melee — real players by name + disjoint NPC-crew counts.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedTeam {
     #[serde(default)]
     pub players: Vec<String>,
+    /// Genuine swabbies (excluding mercenaries). Total NPC crew = `swabbies +
+    /// mercenaries`.
     #[serde(default)]
     pub swabbies: u32,
+    /// Mercenaries — a distinct crew kind, disjoint with `swabbies`. Persisted so the
+    /// "Value per share" metric keeps its exact shares split after a reload. Legacy
+    /// files (pre-field) and the enemy side default to `0`, folding those bodies into
+    /// `swabbies` and yielding pirates-only shares.
+    #[serde(default)]
+    pub mercenaries: u32,
 }
 
 /// One persisted elimination on the per-fight advantage timeline. The KO'd name
@@ -83,6 +91,8 @@ pub struct SavedBattle {
     pub goods: Option<u32>,
     #[serde(default)]
     pub pirates: u32,
+    /// Total NPC crew (swabbies + mercenaries) for manpower; the genuine
+    /// swabbie/mercenary split is in `our_team`.
     #[serde(default)]
     pub swabbies: u32,
     #[serde(default)]
@@ -230,6 +240,7 @@ fn saved_team(t: &TeamSide) -> SavedTeam {
     SavedTeam {
         players: t.players.clone(),
         swabbies: t.swabbies,
+        mercenaries: t.mercenaries,
     }
 }
 
@@ -393,6 +404,9 @@ impl SavedTeam {
         TeamSide {
             players: self.players.clone(),
             swabbies: self.swabbies,
+            // Restored from disk; `0` for legacy files (pre-field) or the enemy side,
+            // which falls back to counting only pirates as divvy shares.
+            mercenaries: self.mercenaries,
         }
     }
 }
@@ -547,6 +561,35 @@ mod tests {
             .map(|&(x, _)| x)
             .collect();
         assert_eq!(xs, vec![0.0, 0.0, 12.0, 20.0]);
+    }
+
+    #[test]
+    fn team_split_round_trips_and_legacy_defaults() {
+        // A recorded roster carries genuine swabbies and mercenaries as *disjoint*
+        // counts; the split survives save -> load.
+        let team = TeamSide {
+            players: vec!["Playerone".into()],
+            swabbies: 4,   // genuine swabbies
+            mercenaries: 2, // distinct crew kind
+        };
+        let saved = saved_team(&team);
+        assert_eq!(saved.swabbies, 4);
+        assert_eq!(saved.mercenaries, 2);
+        let back = saved.to_team();
+        assert_eq!(back.swabbies, 4);
+        assert_eq!(back.mercenaries, 2);
+        assert_eq!(back.shares(), 1 + 2); // players + mercenaries (swabbies earn none)
+        assert_eq!(back.headcount(), 1 + 4 + 2); // players + swabbies + mercenaries
+
+        // A legacy file predates the merc field: `mercenaries` defaults to 0, so those
+        // bodies stay folded in `swabbies` — headcount is intact, shares fall back to
+        // pirates-only.
+        let legacy: SavedTeam =
+            serde_json::from_str(r#"{"players":["Playerone"],"swabbies":6}"#).unwrap();
+        assert_eq!(legacy.mercenaries, 0);
+        let lt = legacy.to_team();
+        assert_eq!(lt.shares(), 1); // pirates only
+        assert_eq!(lt.headcount(), 1 + 6);
     }
 
     #[test]
