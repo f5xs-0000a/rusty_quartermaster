@@ -131,6 +131,9 @@ struct AssembleView<'a> {
     badge: crate::voyage::ui::VoyageBadge,
     page: usize,
     page_count: usize,
+    /// Saved-history index of the voyage being shown, if it *is* a persisted one,
+    /// so the same-hull "History" box can exclude it (no double-count).
+    exclude_saved_idx: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -925,6 +928,8 @@ impl AppShell {
             badge,
             page,
             page_count,
+            // Only in the saved set if this run was persisted this session.
+            exclude_saved_idx: voyage.saved_to,
         }))
     }
 
@@ -960,6 +965,7 @@ impl AppShell {
             badge: VoyageBadge::ReadOnly,
             page,
             page_count,
+            exclude_saved_idx: Some(idx),
         })
     }
 
@@ -981,6 +987,7 @@ impl AppShell {
             badge,
             page,
             page_count,
+            exclude_saved_idx,
         } = a;
 
         // Identity confirmation gates win/loss: until our configured name is seen
@@ -1069,22 +1076,61 @@ impl AppShell {
 
             let mut hist_won_poe = Vec::new();
             let mut hist_totals = Vec::new();
-            for v in &self.voyage_history.voyages {
+            // Signed per-fight PoE of the *rest* of the voyages sharing this
+            // voyage's hull — drives the "History" box beneath the per-fight bars.
+            // Only when the hull is actually known (no guessing).
+            let mut hull_fight_poe = Vec::new();
+            for (i, v) in self.voyage_history.voyages.iter().enumerate() {
                 let mut total = 0i64;
+                let same_hull = ship_type.is_some() && v.ship_type == ship_type;
+                let is_self = exclude_saved_idx == Some(i);
                 for bt in &v.battles {
                     if let Some(p) = bt.poe {
                         total += p;
                         if p > 0 && bt.outcome == "won" {
                             hist_won_poe.push(p as f64);
                         }
+                        // Decisive (won/lost) fights on the same hull, signed.
+                        if same_hull
+                            && !is_self
+                            && matches!(bt.outcome.as_str(), "won" | "lost")
+                        {
+                            hull_fight_poe.push(p as f64);
+                        }
                     }
                 }
                 hist_totals.push(total as f64);
             }
+            // Boxes under the bars: this voyage's fights, then the same-hull rest.
+            // With no hull selected we can't say what "same hull" means, so the
+            // History row prompts the user to pick one instead of a box.
+            use crate::voyage::ui::ChartBox;
+            let history_box = if ship_type.is_none() {
+                ChartBox {
+                    label: "History".to_string(),
+                    values: Vec::new(),
+                    empty_note: Some("Select ship hull first to show historical.".to_string()),
+                }
+            } else {
+                ChartBox {
+                    label: "History".to_string(),
+                    values: hull_fight_poe,
+                    empty_note: None,
+                }
+            };
+            let fight_boxes = vec![
+                ChartBox {
+                    label: "Voyage".to_string(),
+                    values: cur_fight_poe.clone(),
+                    empty_note: None,
+                },
+                history_box,
+            ];
             crate::voyage::ui::ChartData {
                 cur_won_poe,
                 cur_fight_poe,
                 hist_won_poe,
+                fight_boxes,
                 last_win,
                 cur_total,
                 hist_totals,

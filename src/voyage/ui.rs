@@ -37,7 +37,7 @@ pub const CHART_ENLARGEABLE: [bool; 3] = [false, true, false];
 /// [`CHART_TITLES`]).
 const CHART_TOOLTIPS: [&str; 3] = [
     "Pieces of eight per won fight — this voyage's spread vs history.",
-    "PoE of each concluded fight, newest first (losses negative) vs a historical box. Enter to enlarge.",
+    "PoE of each concluded fight, newest first (losses negative), with box-plots for this voyage and the rest of the same-hull voyages. Enter to enlarge.",
     "This voyage's total value (a point) against a historical box of past voyages.",
 ];
 
@@ -128,12 +128,27 @@ pub struct ChartData {
     pub cur_fight_poe: Vec<f64>,
     /// PoE of every won fight across saved history.
     pub hist_won_poe: Vec<f64>,
+    /// Box-and-whiskers rows drawn beneath the per-fight bars, on the bars' shared
+    /// scale. The first is styled as "current", the rest as "historical".
+    /// Typically `[Voyage, History]` — this voyage vs the rest of the same-hull
+    /// voyages — but the renderer takes any number.
+    pub fight_boxes: Vec<ChartBox>,
     /// PoE of the most recent won fight this voyage (highlighted marker).
     pub last_win: Option<f64>,
     /// This voyage's total value (net PoE for now; goods fold in later).
     pub cur_total: f64,
     /// Total value of each past voyage (one point each).
     pub hist_totals: Vec<f64>,
+}
+
+/// One box-and-whiskers row beneath the per-fight bars. `values` is the signed
+/// population; when it's empty the row shows `empty_note` (dimmed) in place of a
+/// box, or is skipped entirely if that's `None`.
+#[derive(Default, Clone)]
+pub struct ChartBox {
+    pub label: String,
+    pub values: Vec<f64>,
+    pub empty_note: Option<String>,
 }
 
 /// One fight's metadata for the Sea Battles popup. The editable Damage-calculator
@@ -1016,75 +1031,120 @@ fn poe_box_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
     lines
 }
 
-/// Chart 1 — signed PoE bars for concluded fights, newest at top. The mini box
-/// shows at most the latest 5; the `enlarged` popup shows as many as fit. Bars
-/// share a zero baseline so a lost fight (negative PoE) extends left in red; the
-/// "#N" indices are right-aligned with a two-space gap before the bars. A
-/// historical box & whiskers sits on the last row.
+/// Chart 1 — signed PoE bars for this voyage's concluded fights (newest at top),
+/// with one box-and-whiskers row per [`ChartData::fight_boxes`] population below
+/// them, all on one shared scale. See [`signed_bars_with_boxes`].
 fn poe_bar_lines(data: &ChartData, width: usize, height: usize, enlarged: bool) -> Vec<Line<'static>> {
+    signed_bars_with_boxes(&data.cur_fight_poe, &data.fight_boxes, width, height, enlarged)
+}
+
+/// Signed horizontal bars — one per value in `bars` (chronological; index `i` is
+/// fight `#(i+1)`), newest at the top, with the `#N` label on the left and the
+/// value on the right — followed by any number of box-and-whiskers rows from
+/// `boxes` (`(label, population)`), drawn beneath on the **same** zero-bracketing
+/// scale and the **same** column band so bars and boxes line up glyph-for-glyph.
+///
+/// General-purpose: a lost fight (negative value) extends left in red; the first
+/// box is drawn in the "current" (cyan) style and the rest in the "historical"
+/// (gray) style. The mini widget shows at most the latest 5 bars; the enlarged
+/// popup shows as many as fit. Empty box populations are skipped.
+fn signed_bars_with_boxes(
+    bars: &[f64],
+    boxes: &[ChartBox],
+    width: usize,
+    height: usize,
+    enlarged: bool,
+) -> Vec<Line<'static>> {
+    if bars.is_empty() {
+        // Centered horizontally and vertically in the plot area.
+        let mut lines = vec![Line::from(""); height.saturating_sub(1) / 2];
+        lines.push(centered_line(
+            "Engage in a Sea Battle first".to_string(),
+            width,
+            Style::default().fg(Color::DarkGray).italic(),
+        ));
+        return lines;
+    }
+    // A box row renders if it has data, or a note to show in place of data.
+    let renders = |b: &ChartBox| box_plot(&b.values).is_some() || b.empty_note.is_some();
+    // Reserve one row per rendering box, then fit bars in the rest.
+    let box_rows = boxes.iter().filter(|b| renders(b)).count();
+    let fits = height.saturating_sub(box_rows).max(1);
+    let cap = if enlarged { fits } else { fits.min(5) };
+    let start = bars.len().saturating_sub(cap);
+    // Newest first, keeping each value's 1-based index.
+    let shown: Vec<(usize, f64)> = bars
+        .iter()
+        .enumerate()
+        .skip(start)
+        .map(|(i, &v)| (i + 1, v))
+        .rev()
+        .collect();
+
+    // The left gutter fits the widest of the "#N" bar labels and the box labels,
+    // so the bar band and every box band begin at the same column.
+    let idx_w = shown
+        .iter()
+        .map(|(i, _)| format!("#{i}").chars().count())
+        .max()
+        .unwrap_or(2);
+    let label_w = boxes
+        .iter()
+        .map(|b| b.label.chars().count())
+        .chain(std::iter::once(idx_w))
+        .max()
+        .unwrap_or(idx_w);
+    let vals_s: Vec<String> = shown.iter().map(|(_, v)| commas(v.round() as i64)).collect();
+    let val_w = vals_s.iter().map(|s| s.chars().count()).max().unwrap_or(1);
+    let bar_cols = width.saturating_sub(label_w + 2 + 1 + val_w).max(1);
+
+    // One shared scale over the shown bars *and* every box population, always
+    // bracketing zero so `signed_bar`'s zero boundary lines up across all rows.
+    let (mut lo, mut hi) = (0.0_f64, 0.0_f64);
+    for v in shown
+        .iter()
+        .map(|(_, v)| *v)
+        .chain(boxes.iter().flat_map(|b| b.values.iter().copied()))
+    {
+        lo = lo.min(v);
+        hi = hi.max(v);
+    }
+
     let mut lines = Vec::new();
-    let all = &data.cur_fight_poe;
-    if all.is_empty() {
+    for ((i, v), vs) in shown.iter().zip(&vals_s) {
+        let label = format!("{:>label_w$}", format!("#{i}"));
+        let bar = signed_bar(*v, lo, hi, bar_cols);
+        let style = if *v < 0.0 {
+            Style::default().fg(Color::Red)
+        } else {
+            cur_style()
+        };
         lines.push(Line::from(Span::styled(
-            "no fights yet",
-            Style::default().fg(Color::DarkGray),
+            format!("{label}  {bar} {vs:>val_w$}"),
+            style,
         )));
-    } else {
-        // How many bars fit (leave a row for the hist box). The mini box also
-        // caps at the latest 5; the popup shows as many as fit.
-        let fits = height.saturating_sub(1).max(1);
-        let cap = if enlarged { fits } else { fits.min(5) };
-        let start = all.len().saturating_sub(cap);
-        // Latest first (newest at top), keeping each fight's 1-based index.
-        let shown: Vec<(usize, f64)> = all
-            .iter()
-            .enumerate()
-            .skip(start)
-            .map(|(i, &v)| (i + 1, v))
-            .rev()
-            .collect();
-
-        // Column widths: right-aligned "#N" labels, right-aligned value field.
-        let idx_w = shown
-            .iter()
-            .map(|(i, _)| format!("#{i}").chars().count())
-            .max()
-            .unwrap_or(2);
-        let vals_s: Vec<String> = shown.iter().map(|(_, v)| commas(v.round() as i64)).collect();
-        let val_w = vals_s.iter().map(|s| s.chars().count()).max().unwrap_or(1);
-        let bar_cols = width.saturating_sub(idx_w + 2 + 1 + val_w).max(1);
-
-        // Shared scale across the shown rows. `lo`/`hi` always bracket zero, so the
-        // zero boundary `signed_bar` derives from them lines up vertically.
-        let lo = shown.iter().map(|(_, v)| *v).fold(0.0_f64, f64::min);
-        let hi = shown.iter().map(|(_, v)| *v).fold(0.0_f64, f64::max);
-
-        for ((i, v), vs) in shown.iter().zip(&vals_s) {
-            let label = format!("{:>idx_w$}", format!("#{i}"));
-            let bar = signed_bar(*v, lo, hi, bar_cols);
-            let style = if *v < 0.0 {
-                Style::default().fg(Color::Red)
-            } else {
-                cur_style()
-            };
+    }
+    // Box rows — same band (`label_w + 2` prefix, then `bar_cols` cells) and scale
+    // as the bars above. First box "current", rest "historical". A box with no
+    // data shows its `empty_note` (dimmed) instead, or is skipped.
+    for (n, b) in boxes.iter().enumerate() {
+        if let Some(bp) = box_plot(&b.values) {
+            let style = if n == 0 { cur_style() } else { hist_style() };
             lines.push(Line::from(Span::styled(
-                format!("{label}  {bar} {vs:>val_w$}"),
+                format!(
+                    "{:<label_w$}  {}",
+                    b.label,
+                    signed_box_line(bar_cols, lo, hi, &bp)
+                ),
                 style,
             )));
+        } else if let Some(note) = &b.empty_note {
+            lines.push(centered_line(
+                note.clone(),
+                width,
+                Style::default().fg(Color::DarkGray).italic(),
+            ));
         }
-    }
-    // Historical reference box on the final row.
-    let axis = width.saturating_sub(5);
-    if let Some(range) = combined_range(&[data.hist_won_poe.as_slice()]) {
-        lines.push(box_or_msg(
-            "hist",
-            5,
-            box_plot(&data.hist_won_poe),
-            Some(range),
-            axis,
-            None,
-            hist_style(),
-        ));
     }
     lines
 }
@@ -1111,15 +1171,7 @@ fn signed_bar(v: f64, lo: f64, hi: f64, cols: usize) -> String {
         return cells.into_iter().collect();
     }
     // Cells left of the zero boundary (index `neg_w` is the first positive cell).
-    // When both signs are present, force at least one cell on each side so a small
-    // minority value isn't rounded into invisibility.
-    let neg_w = if lo < 0.0 && hi > 0.0 {
-        (((-lo / span) * w as f64).round() as usize).clamp(1, w - 1)
-    } else if lo < 0.0 {
-        w
-    } else {
-        0
-    };
+    let neg_w = neg_width(lo, hi, w);
     if v > 0.0 {
         let pos_w = w - neg_w;
         let len = (((v / hi) * pos_w as f64).round() as usize)
@@ -1136,6 +1188,72 @@ fn signed_bar(v: f64, lo: f64, hi: f64, cols: usize) -> String {
         for cell in cells.iter_mut().take(neg_w).skip(neg_w - len) {
             *cell = '█';
         }
+    }
+    cells.into_iter().collect()
+}
+
+/// Cells left of the zero boundary in a `signed_bar`/`signed_box_line` of `w`
+/// cells over `[lo, hi]` (index `neg_w` is the first positive cell). When both
+/// signs are present, force at least one cell on each side so a small minority
+/// value isn't rounded into invisibility. Shared so bars and the reference box
+/// place their zero boundary on the exact same column.
+fn neg_width(lo: f64, hi: f64, w: usize) -> usize {
+    let w = w.max(1);
+    let span = hi - lo;
+    if span <= 0.0 || w < 2 {
+        return 0;
+    }
+    if lo < 0.0 && hi > 0.0 {
+        (((-lo / span) * w as f64).round() as usize).clamp(1, w - 1)
+    } else if lo < 0.0 {
+        w
+    } else {
+        0
+    }
+}
+
+/// Column at which a value `v` lands in a `signed_bar` band — i.e. the cell a bar
+/// of that value would reach — so a reference box drawn with these columns lines
+/// up with the bars glyph-for-glyph. Positive `v` measures rightward from the
+/// zero boundary over `hi`, negative leftward over `lo`, matching `signed_bar`.
+fn signed_col(v: f64, lo: f64, hi: f64, w: usize) -> usize {
+    let w = w.max(1);
+    let neg_w = neg_width(lo, hi, w);
+    if v > 0.0 && hi > 0.0 {
+        let pos_w = (w - neg_w).max(1);
+        let len = (((v / hi) * pos_w as f64).round() as usize).max(1).min(pos_w);
+        (neg_w + len).saturating_sub(1).min(w - 1)
+    } else if v < 0.0 && lo < 0.0 && neg_w > 0 {
+        let len = (((v / lo) * neg_w as f64).round() as usize).max(1).min(neg_w);
+        neg_w.saturating_sub(len).min(w - 1)
+    } else {
+        neg_w.min(w - 1)
+    }
+}
+
+/// A box-and-whiskers of `w` cells drawn on the *same* scale and column band as
+/// [`signed_bar`] (via [`signed_col`]), so it aligns under the PoE-per-fight bars.
+fn signed_box_line(w: usize, lo: f64, hi: f64, bp: &BoxPlot) -> String {
+    let w = w.max(1);
+    let mut cells = vec![' '; w];
+    if bp.n == 1 {
+        cells[signed_col(bp.median, lo, hi, w)] = '●';
+    } else {
+        let cmin = signed_col(bp.min, lo, hi, w);
+        let cmax = signed_col(bp.max, lo, hi, w);
+        let (cmin, cmax) = (cmin.min(cmax), cmin.max(cmax));
+        let cq1 = signed_col(bp.q1, lo, hi, w);
+        let cq3 = signed_col(bp.q3, lo, hi, w);
+        let (cq1, cq3) = (cq1.min(cq3), cq1.max(cq3));
+        for c in cmin..=cmax {
+            cells[c] = '─';
+        }
+        for c in cq1..=cq3 {
+            cells[c] = '█';
+        }
+        cells[cmin] = '├';
+        cells[cmax] = '┤';
+        cells[signed_col(bp.median, lo, hi, w)] = '┃';
     }
     cells.into_iter().collect()
 }
