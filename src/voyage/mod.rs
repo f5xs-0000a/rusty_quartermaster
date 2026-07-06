@@ -367,7 +367,10 @@ pub struct Voyage {
     /// mercenary count and this advances to the end — so each inter-win stretch gets
     /// the count confirmed at its close. Runtime-only.
     pub merc_checkpoint: usize,
-    /// We left the vessel mid-run, so this voyage's data has gaps.
+    /// This voyage's data has gaps and shouldn't be fully trusted: set when we
+    /// leave the vessel mid-run (before booty is divided) or when the hold runs
+    /// too low on rum spice (the mercenary-hiring-limit tell). Gates
+    /// `rum_spice_unreliable`; persisted with the voyage.
     pub poisoned: bool,
     /// Runtime-only: the user has saved or dismissed this run via the
     /// save/discard prompt, so it shouldn't be offered again. Not persisted.

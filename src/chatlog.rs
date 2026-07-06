@@ -932,6 +932,13 @@ impl GameState {
             == "Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary."
         {
             self.spice_swap_armed = true;
+            // Too little rum spice in the hold to sustain the mercenaries: the hold
+            // ran short and mercs are being shed to spice, so this run's rum-spice
+            // consumption delta can no longer be trusted. Poison the voyage — the
+            // flag persists and gates `rum_spice_unreliable`.
+            if let Some(voy) = self.current_voyage_mut() {
+                voy.poisoned = true;
+            }
             return;
         }
 
@@ -3741,6 +3748,25 @@ mod tests {
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.swabbies, 5); // total unchanged (a merc left, a swabbie replaced it)
         assert_eq!(v.mercenaries.len(), 1); // one merc shed
+    }
+
+    #[test]
+    fn rum_spice_limit_poisons_voyage() {
+        let mut gs = GameState::new();
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[01:00:01] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line("[01:00:02] Playerone issued an order to set the vessel to sail.");
+        let poisoned =
+            |gs: &GameState| gs.current_vessel().unwrap().current_voyage.as_ref().unwrap().poisoned;
+        assert!(!poisoned(&gs), "a fresh run isn't poisoned");
+        // The hold ran too low on rum spice to sustain the mercenaries.
+        gs.process_line(
+            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary.",
+        );
+        assert!(
+            poisoned(&gs),
+            "the rum-spice hiring-limit tell poisons the underway voyage",
+        );
     }
 
     #[test]

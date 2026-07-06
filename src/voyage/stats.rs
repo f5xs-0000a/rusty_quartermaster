@@ -144,11 +144,14 @@ pub fn consumption_stats(
     let rum_spice_per_mercenary = per(rum_spice, avg_mercenaries);
     let rum_spice_per_mercenary_per_min =
         rum_spice_per_mercenary.and_then(|a| minutes.map(|m| a / m));
-    // A sea-battle loss disrupts the crew and denies a final ground truth.
-    let rum_spice_unreliable = voyage
-        .battles
-        .iter()
-        .any(|b| matches!(b.outcome, BattleOutcome::Lost));
+    // A sea-battle loss disrupts the crew and denies a final ground truth; a
+    // poisoned run (left mid-run, or the hold ran too low on rum spice) is
+    // likewise untrustworthy.
+    let rum_spice_unreliable = voyage.poisoned
+        || voyage
+            .battles
+            .iter()
+            .any(|b| matches!(b.outcome, BattleOutcome::Lost));
 
     ConsumptionStats {
         balls,

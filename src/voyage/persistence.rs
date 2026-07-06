@@ -109,10 +109,9 @@ pub struct SavedBattle {
     /// unknown-identity fight.
     #[serde(default)]
     pub their_team: Option<SavedTeam>,
-    /// Whether the fight was recorded — only recorded fights carry the calculator
-    /// snapshot on disk. (Damage advantage is derived from the snapshot, not stored.)
-    #[serde(default)]
-    pub recorded: bool,
+    /// The Damage-calculator snapshot, written only for recorded fights — its
+    /// presence *is* the "recorded" flag (damage advantage is derived from it, not
+    /// stored). Absent for unrecorded fights and older history.
     #[serde(default)]
     pub snapshot: Option<SavedSnapshot>,
     /// The side-tagged elimination timeline for the per-fight advantage graph.
@@ -188,9 +187,12 @@ pub struct SavedVoyage {
     #[serde(default)]
     pub ship_type: Option<String>,
     #[serde(default)]
-    pub job: Option<String>,
-    #[serde(default)]
     pub duration_secs: Option<i64>,
+    /// The voyage's data has gaps (we left mid-run, or the hold ran too low on rum
+    /// spice). Gates `rum_spice_unreliable` on reload. Older files default to
+    /// `false`.
+    #[serde(default)]
+    pub poisoned: bool,
     /// Time-weighted average crew over the run.
     #[serde(default)]
     pub avg_pirates: Option<f64>,
@@ -266,8 +268,8 @@ pub fn from_voyage(
         ended_at: v.ported_at.map(|t| t.to_string()).unwrap_or_default(),
         vessel: vessel.map(str::to_string),
         ship_type: ship_type.map(str::to_string),
-        job: v.job_kind.as_ref().map(|j| j.to_string()),
         duration_secs: v.duration_secs(),
+        poisoned: v.poisoned,
         avg_pirates: v.avg_pirates(),
         avg_swabbies: v.avg_swabbies(),
         avg_mercenaries: v.avg_mercenaries(),
@@ -309,8 +311,8 @@ pub fn from_voyage(
                     our_team: b.our_team.as_ref().map(saved_team),
                     their_team: b.their_team.as_ref().map(saved_team),
                     // The calculator snapshot is written only for recorded fights —
-                    // that's what "recording" means. Advantage is derived from it.
-                    recorded: b.recorded,
+                    // that's what "recording" means, and its presence is what marks
+                    // the fight recorded on reload. Advantage is derived from it.
                     snapshot: if b.recorded {
                         b.snapshot.map(saved_snapshot)
                     } else {
@@ -461,7 +463,8 @@ impl SavedBattle {
             advantage_dmg: None,
             advantage_crew: None,
             snapshot: self.snapshot.as_ref().map(SavedSnapshot::to_snapshot),
-            recorded: self.recorded,
+            // A persisted snapshot *is* the record of a recorded fight.
+            recorded: self.snapshot.is_some(),
             melee_kos: Vec::new(),
             timeline: self.to_timeline(),
             our_team: self.our_team.as_ref().map(SavedTeam::to_team),
@@ -508,10 +511,11 @@ impl SavedConsumption {
             rum_spice_per_mercenary,
             rum_spice_per_mercenary_per_min: rum_spice_per_mercenary
                 .and_then(|a| minutes.map(|m| a / m)),
-            rum_spice_unreliable: voyage
-                .battles
-                .iter()
-                .any(|b| matches!(b.outcome, BattleOutcome::Lost)),
+            rum_spice_unreliable: voyage.poisoned
+                || voyage
+                    .battles
+                    .iter()
+                    .any(|b| matches!(b.outcome, BattleOutcome::Lost)),
         }
     }
 }
@@ -536,7 +540,7 @@ impl SavedVoyage {
             battles: self.battles.iter().map(SavedBattle::to_battle).collect(),
             crew_samples: Vec::new(),
             merc_checkpoint: 0,
-            poisoned: false,
+            poisoned: self.poisoned,
             saved: true,
             avg_override: Some((self.avg_pirates, self.avg_swabbies, self.avg_mercenaries)),
         }
@@ -602,6 +606,40 @@ mod tests {
         let lt = legacy.to_team();
         assert_eq!(lt.shares(), 1); // pirates only
         assert_eq!(lt.headcount(), 1 + 6);
+    }
+
+    #[test]
+    fn poison_flag_round_trips_and_flags_rum_spice() {
+        // A run poisoned live (e.g. by the rum-spice hiring-limit tell) persists the
+        // flag, and a reloaded poisoned run reports its rum-spice figure as unreliable
+        // even without a lost battle.
+        let sv = SavedVoyage {
+            duration_secs: Some(3600),
+            avg_pirates: Some(5.0),
+            avg_swabbies: Some(3.0),
+            avg_mercenaries: Some(2.0),
+            poisoned: true,
+            consumption: Some(SavedConsumption { rum_spice: 40, ..SavedConsumption::default() }),
+            battles: vec![SavedBattle { outcome: "won".into(), ..SavedBattle::default() }],
+            ..SavedVoyage::default()
+        };
+        let voy = sv.to_voyage();
+        assert!(voy.poisoned, "the poison flag survives save -> load");
+        let cs = sv.consumption.as_ref().unwrap().to_stats(&voy);
+        assert!(
+            cs.rum_spice_unreliable,
+            "a poisoned run's rum-spice stat is untrustworthy despite no loss",
+        );
+    }
+
+    #[test]
+    fn snapshot_presence_marks_recorded() {
+        // `recorded` is no longer persisted — a stored snapshot *is* the record, so a
+        // battle with a snapshot reconstructs as recorded and one without does not.
+        let with = SavedBattle { snapshot: Some(SavedSnapshot::default()), ..SavedBattle::default() };
+        assert!(with.to_battle().recorded);
+        let without = SavedBattle::default();
+        assert!(!without.to_battle().recorded);
     }
 
     #[test]
