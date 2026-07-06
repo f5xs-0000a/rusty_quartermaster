@@ -42,7 +42,7 @@ pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInven
             .iter()
             .find(|c| c.name.eq_ignore_ascii_case(&saved_row.commodity))
         else {
-            eprintln!(
+            crate::diag!(
                 "warning: unknown commodity '{}' in inventory, skipping",
                 saved_row.commodity
             );

@@ -323,6 +323,13 @@ async fn main() -> io::Result<()> {
         None;
 
     // -- Terminal setup --
+    // Once the alternate screen is up, stderr still points at this terminal, so any
+    // stray `eprintln!` (notably the best-effort save messages) paints over the
+    // frame and garbles the render. Redirect diagnostics to a log file for the
+    // TUI's lifetime; startup progress above this point still goes to stderr.
+    if let Some(log) = exe_adjacent("ypp_quartermaster.log") {
+        utils::init_diag_log(&log);
+    }
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;

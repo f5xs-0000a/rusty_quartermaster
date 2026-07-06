@@ -97,6 +97,49 @@ pub fn text_similarity(a: &str, b: &str) -> f64 {
     strsim::jaro_winkler(a, b)
 }
 
+/// Sink for best-effort diagnostic lines (save results, load warnings). While the
+/// TUI owns the terminal it draws to stdout's alternate screen, but stderr still
+/// points at the same terminal — so an `eprintln!` mid-run paints raw bytes over
+/// the frame and garbles the render until the next full redraw. Once
+/// [`init_diag_log`] points this at a file, [`diag`] appends there instead; before
+/// the TUI starts (or if no log file could be opened) it falls back to stderr, so
+/// startup progress output is unaffected.
+static DIAG_LOG: std::sync::OnceLock<std::sync::Mutex<std::fs::File>> =
+    std::sync::OnceLock::new();
+
+/// Redirect [`diag`] output to `path` (append, created if absent) for the rest of
+/// the process. Call once, just before entering the alternate screen. On failure
+/// the sink stays on stderr rather than aborting — diagnostics are best-effort.
+pub fn init_diag_log(path: &std::path::Path) {
+    if let Ok(file) = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+    {
+        let _ = DIAG_LOG.set(std::sync::Mutex::new(file));
+    }
+}
+
+/// Emit a diagnostic line to the log file if one is configured (TUI is up), else
+/// to stderr. Prefer the [`diag!`] macro for `eprintln!`-style formatting.
+pub fn diag(msg: &str) {
+    if let Some(lock) = DIAG_LOG.get() {
+        if let Ok(mut file) = lock.lock() {
+            use std::io::Write;
+            let _ = writeln!(file, "{msg}");
+            return;
+        }
+    }
+    eprintln!("{msg}");
+}
+
+/// `eprintln!`-style wrapper over [`diag`]: formats its arguments and routes the
+/// line through the TUI-safe sink instead of straight to stderr.
+#[macro_export]
+macro_rules! diag {
+    ($($arg:tt)*) => { $crate::utils::diag(&format!($($arg)*)) };
+}
+
 /// Atomically write `value` to `path` as compact JSON.
 ///
 /// The single write path for every JSON file we persist. Serialization is
@@ -107,8 +150,10 @@ pub fn text_similarity(a: &str, b: &str) -> f64 {
 ///
 /// `label` names the payload for the log lines (e.g. `"cache"`,
 /// `"voyage history"`): a `Saved {label} to {path}` on success, or a
-/// `failed to … {label}` on error. Errors are reported to stderr and swallowed
-/// (save is best-effort, called from the save/discard prompt).
+/// `failed to … {label}` on error. Messages go through [`diag`] (the TUI-safe
+/// sink) rather than straight to stderr — this runs mid-render from the
+/// save/discard prompt, and a raw `eprintln!` would garble the alternate screen.
+/// Errors are swallowed beyond that line (save is best-effort).
 pub fn write_json_atomic<T: serde::Serialize>(
     path: &std::path::Path,
     value: &T,
@@ -127,32 +172,32 @@ pub fn write_json_atomic<T: serde::Serialize>(
     let file = match std::fs::File::create(&tmp) {
         Ok(file) => file,
         Err(e) => {
-            eprintln!("error: failed to open {} for writing: {e}", tmp.display());
+            crate::diag!("error: failed to open {} for writing: {e}", tmp.display());
             return;
         }
     };
     let mut writer = std::io::BufWriter::new(file);
     if let Err(e) = serde_json::to_writer(&mut writer, value) {
-        eprintln!("error: failed to serialize {label}: {e}");
+        crate::diag!("error: failed to serialize {label}: {e}");
         let _ = std::fs::remove_file(&tmp);
         return;
     }
     // Flush the BufWriter before the rename, or buffered bytes could be lost.
     if let Err(e) = writer.flush() {
-        eprintln!("error: failed to flush {}: {e}", tmp.display());
+        crate::diag!("error: failed to flush {}: {e}", tmp.display());
         let _ = std::fs::remove_file(&tmp);
         return;
     }
     drop(writer);
     if let Err(e) = std::fs::rename(&tmp, path) {
-        eprintln!(
+        crate::diag!(
             "error: failed to write {label} to {} (rename from temp failed: {e})",
             path.display()
         );
         let _ = std::fs::remove_file(&tmp);
         return;
     }
-    eprintln!("Saved {label} to {}", path.display());
+    crate::diag!("Saved {label} to {}", path.display());
 }
 
 pub fn parse_rate(field: &PromptField) -> f64 {
