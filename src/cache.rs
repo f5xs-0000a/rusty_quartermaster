@@ -129,11 +129,29 @@ pub struct SavedCache {
     pub name_segments: NameSegments,
 }
 
-/// Load the cache from `path`. A missing or unparseable file yields an empty
-/// cache rather than an error, so a first run just starts fresh.
+impl SavedCache {
+    /// A fresh cache seeded from the embedded [bare cache](crate::bare): the NPC
+    /// name vocabulary (swabbie names + adjectives) starts pre-populated so
+    /// swabbie/mercenary classification works from the very first fight, before
+    /// we've learned anything from brigand victories this run.
+    pub fn seeded() -> SavedCache {
+        let bare = &*crate::bare::BARE;
+        SavedCache {
+            name_segments: NameSegments {
+                name: bare.swabbie_names.iter().cloned().collect(),
+                adjectives: bare.adjectives.iter().cloned().collect(),
+            },
+            ..SavedCache::default()
+        }
+    }
+}
+
+/// Load the cache from `path`. A missing or unparseable file yields the bare
+/// (seeded) cache rather than an error, so a first run starts from the baked-in
+/// defaults.
 pub fn load(path: &Path) -> SavedCache {
     let Ok(data) = std::fs::read_to_string(path) else {
-        return SavedCache::default();
+        return SavedCache::seeded();
     };
     match serde_json::from_str(&data) {
         Ok(cache) => {
@@ -142,7 +160,7 @@ pub fn load(path: &Path) -> SavedCache {
         }
         Err(e) => {
             eprintln!("warning: failed to parse cache: {}", e);
-            SavedCache::default()
+            SavedCache::seeded()
         }
     }
 }
@@ -216,6 +234,22 @@ mod tests {
         assert_eq!(ns.classify("Playerone"), None); // single-word player
         assert_eq!(ns.classify("Vargas the Mad"), None); // special (three words)
         assert_eq!(ns.classify("Mother o' Nyght"), None); // special
+    }
+
+    #[test]
+    fn seeded_cache_pulls_vocabulary_from_bare() {
+        let bare = &*crate::bare::BARE;
+        let cache = SavedCache::seeded();
+        // Every bare swabbie name / adjective lands in the seeded vocabulary.
+        assert_eq!(cache.name_segments.name.len(), bare.swabbie_names.len());
+        assert_eq!(cache.name_segments.adjectives.len(), bare.adjectives.len());
+        for name in &bare.swabbie_names {
+            assert!(cache.name_segments.name.contains(name), "missing name {name}");
+        }
+        // A seeded cache classifies a known swabbie pattern immediately.
+        assert!(cache.name_segments.classify("Gentle Gayle").is_some());
+        // Other categories stay empty until learned/fetched.
+        assert!(cache.commodities.is_empty() && cache.oceans.is_empty());
     }
 
     #[test]

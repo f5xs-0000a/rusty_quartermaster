@@ -15,6 +15,7 @@ use ratatui::prelude::*;
 mod aliases;
 mod api;
 mod app;
+mod bare;
 mod cache;
 mod chatlog;
 mod clickmap;
@@ -158,7 +159,10 @@ async fn main() -> io::Result<()> {
         commodities: saved_commodities,
         mut oceans,
         name_segments: saved_name_segments,
-    } = cache_path.as_deref().map(cache::load).unwrap_or_default();
+    } = cache_path
+        .as_deref()
+        .map(cache::load)
+        .unwrap_or_else(cache::SavedCache::seeded);
 
     // -- Resolve ocean + pirate name (interactive popup if either is missing) --
     let http = reqwest::Client::new();
