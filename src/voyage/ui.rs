@@ -749,7 +749,7 @@ fn render_battles_popup(
     // Height = 6 fixed single rows (pager, toggle, blank, ship, category, outcome)
     // + an optional advantage chart + the calculator box + the 7-row stats table +
     // 2 borders.
-    let (_, calc_h) = crate::damage::ui::calc_box_size();
+    let (_, calc_h) = crate::damage::ui::calc_box_size(false);
     let n = view.battles.len();
     let page = ui.battles_popup.unwrap_or(0).min(n.saturating_sub(1));
     // A compact advantage-over-time chart is shown only when the fight logged melee
@@ -792,7 +792,7 @@ fn render_battles_popup(
     let recorded = ui.editor_recorded;
     let focus = ui.battles_focus;
     let editor_crew = ui.editor_crew;
-    let (box_w, box_h) = crate::damage::ui::calc_box_size();
+    let (box_w, box_h) = crate::damage::ui::calc_box_size(false);
 
     // Allocate rows explicitly so a short popup never shrinks the calculator box:
     // the 6 single header rows, the optional chart, and the calculator get their
@@ -897,9 +897,17 @@ fn render_battles_popup(
     );
 
     // -- Optional advantage-over-time chart (parts[6]); only when the fight logged
-    //    melee KOs. Wall-clock X-axis (the Sea Battles popup keeps no axis toggle). --
+    //    melee KOs. Wall-clock X-axis (the Sea Battles popup keeps no axis toggle).
+    //    Each side's headcount is weighted by its ship's morale advantage, read live
+    //    from this fight's calculator — so the curve re-weights as the hits/ships are
+    //    edited (both weights are 1.0 at full health → plain headcount). --
     if chart_rows > 0 {
-        let series = row.timeline.advantage_series(AxisMode::Time);
+        use crate::damage::Side;
+        let w_ours = ui.battle_editor.ship_advantage(Side::Left);
+        let w_theirs = ui.battle_editor.ship_advantage(Side::Right);
+        let series = row
+            .timeline
+            .advantage_series_weighted(AxisMode::Time, w_ours, w_theirs);
         let chart = fight_chart_lines(
             &series,
             parts[6].width as usize,
@@ -923,6 +931,7 @@ fn render_battles_popup(
         &ui.battle_editor,
         focus == BattlesFocus::Calc,
         regions,
+        false,
     );
 
     // -- Per-fight stats table (label-left / value-right). PoE/Goods/Melee come
@@ -1702,12 +1711,14 @@ fn box_line(width: usize, lo: f64, hi: f64, bp: &BoxPlot, marker: Option<(f64, c
     cells.into_iter().collect()
 }
 
-/// Format a signed advantage value for the Y-axis gutter (`+6`, `0`, `-3`).
-fn fmt_adv(v: i32) -> String {
-    if v > 0 {
-        format!("+{v}")
+/// Format a signed advantage value for the Y-axis gutter, to one decimal
+/// (`+6.0`, `0.0`, `-3.5`). `+ 0.0` normalises a possible `-0.0` to `0.0`.
+fn fmt_adv(v: f64) -> String {
+    let v = v + 0.0;
+    if v > 0.0 {
+        format!("+{v:.1}")
     } else {
-        v.to_string()
+        format!("{v:.1}")
     }
 }
 
@@ -1718,22 +1729,21 @@ fn fmt_mmss(secs: f64) -> String {
 }
 
 /// Render a per-fight **advantage-over-time** line graph: a single signed line
-/// (`our_alive − their_alive`) over a zero baseline, `height` plot rows tall plus
-/// two axis rows. `series` is `(x, advantage)` from
-/// [`crate::voyage::FightTimeline::advantage_series`] (`x` is seconds under
-/// [`AxisMode::Time`], else the event index). Drawn in the same text/braille style
-/// as the other charts (reuses the per-cell sign colouring: cyan when we're ahead,
-/// red when behind). Shared by the jobbers per-fight popup and the Sea Battles
-/// popup.
+/// over a zero baseline, `height` plot rows tall plus two axis rows. `series` is
+/// `(x, advantage)` — the advantage is a float so the Sea Battles caller can pass a
+/// morale-weighted curve ([`FightTimeline::advantage_series_weighted`]); the wave
+/// charts pass their raw `our_alive − their_alive` headcount as floats. `x` is
+/// seconds under [`AxisMode::Time`], else the event index. Drawn in the same
+/// text/braille style as the other charts (per-cell sign colouring: cyan when we're
+/// ahead, red when behind). Y labels are one-decimal. Shared by the jobbers
+/// per-fight popup and the Sea Battles popup.
 pub fn fight_chart_lines(
-    series: &[(f64, i32)],
+    series: &[(f64, f64)],
     width: usize,
     height: usize,
     axis: AxisMode,
 ) -> Vec<Line<'static>> {
-    const GUTTER: usize = 4; // 3-wide signed label + a space
     let rows = height.max(3);
-    let plot_w = width.saturating_sub(GUTTER + 1).max(2); // +1 for the axis column
     if series.is_empty() {
         return vec![Line::from(Span::styled(
             "(no fight data)",
@@ -1743,19 +1753,27 @@ pub fn fight_chart_lines(
     // Y-range, always spanning zero (the baseline), with a 1-unit minimum span.
     let (mut ymin, mut ymax) = series
         .iter()
-        .fold((0i32, 0i32), |(lo, hi), &(_, v)| (lo.min(v), hi.max(v)));
-    if ymin == ymax {
-        ymin -= 1;
-        ymax += 1;
+        .fold((0f64, 0f64), |(lo, hi), &(_, v)| (lo.min(v), hi.max(v)));
+    if (ymax - ymin) < 1.0 {
+        ymin -= 0.5;
+        ymax += 0.5;
     }
-    let span = (ymax - ymin) as f64;
+    let span = ymax - ymin;
     let row_of = |v: f64| -> usize {
-        (((ymax as f64 - v) / span) * (rows - 1) as f64)
+        (((ymax - v) / span) * (rows - 1) as f64)
             .round()
             .clamp(0.0, (rows - 1) as f64) as usize
     };
     let zero_row = row_of(0.0);
     let xmax = series.last().map(|&(x, _)| x).unwrap_or(0.0).max(1.0);
+
+    // Gutter sized to the widest Y label (one-decimal, signed), so a fractional
+    // or large-magnitude label never shoves the axis column out of alignment.
+    let ymax_lbl = fmt_adv(ymax);
+    let ymin_lbl = fmt_adv(ymin);
+    let label_w = ymax_lbl.len().max(ymin_lbl.len()).max(3); // >= "0.0"
+    let gutter = label_w + 1; // label field + a space
+    let plot_w = width.saturating_sub(gutter + 1).max(2); // +1 for the axis column
 
     // Rasterize the step function into a (char, colour) grid.
     let mut cells = vec![vec![(' ', Color::Reset); plot_w]; rows];
@@ -1771,11 +1789,13 @@ pub fn fight_chart_lines(
             idx += 1;
         }
         let v = series[idx].1;
-        let r = row_of(v as f64);
-        let color = match v.cmp(&0) {
-            std::cmp::Ordering::Greater => Color::Cyan,
-            std::cmp::Ordering::Less => Color::Red,
-            std::cmp::Ordering::Equal => Color::Gray,
+        let r = row_of(v);
+        let color = if v > 0.0 {
+            Color::Cyan
+        } else if v < 0.0 {
+            Color::Red
+        } else {
+            Color::Gray
         };
         match prev_row {
             // A level change: draw the riser in this column with rounded corners.
@@ -1808,17 +1828,20 @@ pub fn fight_chart_lines(
     let mut lines = Vec::with_capacity(rows + 2);
     for (r, row_cells) in cells.iter().enumerate() {
         let label = if r == 0 {
-            fmt_adv(ymax)
+            ymax_lbl.clone()
         } else if r == zero_row {
-            "0".to_string()
+            "0.0".to_string()
         } else if r == rows - 1 {
-            fmt_adv(ymin)
+            ymin_lbl.clone()
         } else {
             String::new()
         };
         let axis_char = if r == zero_row { '┼' } else { '┤' };
         let mut spans = vec![
-            Span::styled(format!("{label:>3} "), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("{label:>label_w$} "),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(axis_char.to_string(), Style::default().fg(Color::DarkGray)),
         ];
         let mut i = 0;
@@ -1836,7 +1859,7 @@ pub fn fight_chart_lines(
 
     // X-axis: a baseline tick row, then start/end labels.
     lines.push(Line::from(Span::styled(
-        format!("{}└{}", " ".repeat(GUTTER), "─".repeat(plot_w)),
+        format!("{}└{}", " ".repeat(gutter), "─".repeat(plot_w)),
         Style::default().fg(Color::DarkGray),
     )));
     let (start_lbl, end_lbl) = match axis {
@@ -1849,7 +1872,7 @@ pub fn fight_chart_lines(
     lines.push(Line::from(Span::styled(
         format!(
             "{}{start_lbl}{}{end_lbl}",
-            " ".repeat(GUTTER + 1),
+            " ".repeat(gutter + 1),
             " ".repeat(gap)
         ),
         Style::default().fg(Color::DarkGray),

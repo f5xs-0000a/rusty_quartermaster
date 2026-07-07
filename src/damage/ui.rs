@@ -5,19 +5,22 @@ use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::ships::SHIPS;
 use crate::utils::offset_title;
 use super::{
-    CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON, ROW_SHIP,
-    ROW_SHOTS_LEFT, Side,
+    CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON, ROW_MANPOWER,
+    ROW_SHIP, ROW_SHOTS_LEFT, Side,
 };
 
 const COL_GAP: u16 = 3;
 
 /// Outer dimensions `(width, height)` of the Damage-calculator box, so callers
-/// (the main page and the Sea Battles popup) can lay it out consistently.
-pub fn calc_box_size() -> (u16, u16) {
+/// (the main page and the Sea Battles popup) can lay it out consistently. The
+/// Manpower Advantage row is only present on the live page (`show_manpower`); the
+/// Sea Battles popup omits it, yielding a box one row shorter.
+pub fn calc_box_size(show_manpower: bool) -> (u16, u16) {
     let max_ship_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0) as u16;
     let center_width = CENTER_LABELS.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
     let inner_width = max_ship_name + COL_GAP + center_width + COL_GAP + max_ship_name;
-    (inner_width + 4, ROW_COUNT as u16 + 2) // +2 borders +2 padding ; rows + borders
+    let rows = if show_manpower { ROW_COUNT } else { ROW_MANPOWER };
+    (inner_width + 4, rows as u16 + 2) // +2 borders +2 padding ; rows + borders
 }
 
 /// Render the bordered Damage-calculator grid into `box_area` (which should be
@@ -29,6 +32,7 @@ pub fn render_calculator(
     app: &DamageApp,
     focused: bool,
     regions: &mut Vec<ClickRegion>,
+    show_manpower: bool,
 ) {
     let max_ship_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0) as u16;
     let center_width = CENTER_LABELS.iter().map(|l| l.len()).max().unwrap_or(0) as u16;
@@ -40,16 +44,20 @@ pub fn render_calculator(
     let inner = block.inner(box_area);
     frame.render_widget(block, box_area);
 
-    let row_constraints: Vec<Constraint> = (0..ROW_COUNT).map(|_| Constraint::Length(1)).collect();
+    let visible_rows = if show_manpower { ROW_COUNT } else { ROW_MANPOWER };
+    let row_constraints: Vec<Constraint> =
+        (0..visible_rows).map(|_| Constraint::Length(1)).collect();
     let rows = Layout::vertical(row_constraints).split(inner);
 
     let cells_active = focused && app.popup.is_none();
 
-    for i in 0..ROW_COUNT {
+    for i in 0..visible_rows {
         if i == ROW_GAP {
             continue;
         } else if i == ROW_HEADON {
             render_headon_row(frame, rows[i], app, max_ship_name, center_width, cells_active, regions);
+        } else if i == ROW_MANPOWER {
+            render_manpower_row(frame, rows[i], app, max_ship_name, center_width);
         } else {
             render_standard_row(
                 frame, rows[i], i, app, max_ship_name, center_width, cells_active, regions,
@@ -76,7 +84,7 @@ pub fn render(
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
-    let (box_width, box_height) = calc_box_size();
+    let (box_width, box_height) = calc_box_size(true);
 
     let vchunks = Layout::vertical([
         Constraint::Fill(1),
@@ -93,7 +101,7 @@ pub fn render(
     ])
     .split(vchunks[1]);
 
-    render_calculator(frame, hchunks[1], app, focused, regions);
+    render_calculator(frame, hchunks[1], app, focused, regions, true);
 
     // -- Hint --
     if focused && app.popup.is_none() {
@@ -349,6 +357,42 @@ fn render_headon_row(
         rect: sub_cols[2],
         target: ClickTarget::DamageHeadonIncrement,
     });
+}
+
+/// The Manpower Advantage row: same merged layout as head-on, but view-only. The
+/// value cell shows the inferred advantage **range** (both crew counts derived from
+/// the two ship types, weighted by each side's morale advantage), to two decimals.
+/// Collapses to a single number when the endpoints coincide.
+fn render_manpower_row(
+    frame: &mut Frame,
+    area: Rect,
+    app: &DamageApp,
+    max_ship_name: u16,
+    center_width: u16,
+) {
+    let merged_width = max_ship_name + COL_GAP + center_width;
+
+    let row_cols = Layout::horizontal([
+        Constraint::Length(merged_width),
+        Constraint::Length(COL_GAP),
+        Constraint::Length(max_ship_name),
+    ])
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(Span::styled("Manpower Advantage", Style::default().bold())).centered(),
+        row_cols[0],
+    );
+
+    let (min, max) = app.manpower_advantage();
+    // `+ 0.0` normalises a possible `-0.00` to `0.00`.
+    let fmt = |v: f64| format!("{:.2}", v + 0.0);
+    let text = if (max - min).abs() < 1e-9 {
+        fmt(min)
+    } else {
+        format!("{} – {}", fmt(min), fmt(max))
+    };
+    frame.render_widget(Paragraph::new(text).centered(), row_cols[2]);
 }
 
 /// Paint a damage bar onto the buffer after the text has been rendered.

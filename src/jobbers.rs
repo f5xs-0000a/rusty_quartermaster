@@ -1645,7 +1645,10 @@ fn render_per_fight_popup(
         rows[0],
     );
 
-    let chart = fight_chart_lines(&series, rows[1].width as usize, PLOT_H, popup.axis);
+    // Wave charts have no ship morale, so plot the raw headcount as floats (the
+    // shared renderer is morale-weighted for sea battles).
+    let fseries: Vec<(f64, f64)> = series.iter().map(|&(x, v)| (x, v as f64)).collect();
+    let chart = fight_chart_lines(&fseries, rows[1].width as usize, PLOT_H, popup.axis);
     frame.render_widget(Paragraph::new(chart), rows[1]);
 
     // Controls row: ◀ prev | Axis: Time/KOs | next ▶ | Close.

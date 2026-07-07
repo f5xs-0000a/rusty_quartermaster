@@ -315,6 +315,45 @@ impl FightTimeline {
         }
         out
     }
+
+    /// Like [`Self::advantage_series`], but each side's headcount is scaled by its
+    /// ship's morale-advantage weight (`w_ours`, `w_theirs`, each in `0.5..=1.0`
+    /// from [`crate::damage::DamageApp::ship_advantage`]). The signed value is then
+    /// `our_alive × w_ours − their_alive × w_theirs`: each of our KOs steps down by
+    /// `w_ours`, each of theirs steps up by `w_theirs`. With both weights `1.0` this
+    /// reproduces [`Self::advantage_series`] in floating point. Used by the Sea
+    /// Battles chart (which has a Damage calculator to weigh by); the wave charts
+    /// pass `1.0`/`1.0` (no ship morale).
+    pub fn advantage_series_weighted(
+        &self,
+        axis: AxisMode,
+        w_ours: f64,
+        w_theirs: f64,
+    ) -> Vec<(f64, f64)> {
+        let base = match self.their_start {
+            Some(theirs) => self.our_start as f64 * w_ours - theirs as f64 * w_theirs,
+            None => 0.0,
+        };
+        let mut adv = base;
+        let mut out = Vec::with_capacity(self.events.len() + 1);
+        out.push((0.0, adv));
+        for (i, ev) in self.events.iter().enumerate() {
+            adv += match ev.side {
+                KoSide::Ours => -w_ours,
+                KoSide::Theirs => w_theirs,
+            };
+            let x = match axis {
+                AxisMode::Time => self
+                    .started_at
+                    .zip(ev.at)
+                    .map(|(s, a)| (a - s).num_seconds() as f64)
+                    .unwrap_or((i + 1) as f64),
+                AxisMode::Event => (i + 1) as f64,
+            };
+            out.push((x, adv));
+        }
+        out
+    }
 }
 
 /// A snapshot of the headcount aboard at one instant — the basis for the
@@ -540,5 +579,42 @@ mod tests {
             .map(|&(_, v)| v)
             .collect();
         assert_eq!(vs, vec![0, -1, 0, 1]);
+    }
+
+    #[test]
+    fn weighted_series_scales_each_side() {
+        let tl = FightTimeline {
+            events: vec![
+                KoEvent { at: None, side: KoSide::Theirs },
+                KoEvent { at: None, side: KoSide::Ours },
+            ],
+            our_start: 5,
+            their_start: Some(4),
+            started_at: None,
+            ended_at: None,
+        };
+        // Ours full strength (1.0), theirs at 0.75 (morale-hurt).
+        // base = 5*1.0 - 4*0.75 = 2.0; +theirs KO (+0.75) = 2.75; +ours KO (-1.0) = 1.75.
+        let vs: Vec<f64> = tl
+            .advantage_series_weighted(AxisMode::Event, 1.0, 0.75)
+            .iter()
+            .map(|&(_, v)| v)
+            .collect();
+        assert!((vs[0] - 2.0).abs() < 1e-9);
+        assert!((vs[1] - 2.75).abs() < 1e-9);
+        assert!((vs[2] - 1.75).abs() < 1e-9);
+
+        // Both weights 1.0 reproduce the integer series exactly.
+        let plain: Vec<f64> = tl
+            .advantage_series(AxisMode::Event)
+            .iter()
+            .map(|&(_, v)| v as f64)
+            .collect();
+        let weighted: Vec<f64> = tl
+            .advantage_series_weighted(AxisMode::Event, 1.0, 1.0)
+            .iter()
+            .map(|&(_, v)| v)
+            .collect();
+        assert_eq!(plain, weighted);
     }
 }

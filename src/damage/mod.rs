@@ -34,10 +34,14 @@ pub const ROW_HEADON: usize = 4;
 pub const ROW_GAP: usize = 5;
 pub const ROW_SHOTS_LEFT: usize = 6;
 pub const ROW_DAMAGE: usize = 7;
-pub const ROW_COUNT: usize = 8;
+/// Manpower Advantage — a non-editable range row shown only on the live Damage
+/// page (the shared calculator omits it; see [`ui::calc_box_size`]).
+pub const ROW_MANPOWER: usize = 8;
+pub const ROW_COUNT: usize = 9;
 const LAST_INTERACTIVE_ROW: usize = 4;
 
-/// Labels for the center column. Head-on Collisions is rendered separately.
+/// Labels for the center column. Head-on Collisions and Manpower Advantage are
+/// rendered separately (they use the merged head-on layout).
 pub const CENTER_LABELS: &[&str] = &[
     "Ship",
     "Shots Taken",
@@ -47,6 +51,7 @@ pub const CENTER_LABELS: &[&str] = &[
     "",
     "Shots Left",
     "Damage",
+    "",
 ];
 
 // ---------------------------------------------------------------------------
@@ -150,6 +155,20 @@ impl DamageApp {
     /// estimate used when the real foe headcount isn't known.
     pub fn advantage_crew(&self, our_pirates: u32) -> f64 {
         self.crew_advantage(our_pirates, SHIPS[self.right_ship].max_pirates as u32)
+    }
+
+    /// The Manpower Advantage range `(min, max)` — our crew-weighted strength minus
+    /// the foe's, evaluated at the extremes of both hulls' inferred crew ranges
+    /// (see [`crew_range`]). Both ship-advantage weights are positive, so advantage
+    /// rises with our count and falls with theirs: the corners are (our low vs their
+    /// high) and (our high vs their low). Neither side uses live crew — the whole
+    /// range is inferred from the two selected ship types.
+    pub fn manpower_advantage(&self) -> (f64, f64) {
+        let (our_lo, our_hi) = crew_range(self.left_ship);
+        let (foe_lo, foe_hi) = crew_range(self.right_ship);
+        let min = self.crew_advantage(our_lo, foe_hi);
+        let max = self.crew_advantage(our_hi, foe_lo);
+        (min, max)
     }
 
     /// Capture the current calculator state as a [`BattleSnapshot`] for the Sea
@@ -415,6 +434,20 @@ impl DamageApp {
     }
 }
 
+/// Inferred swabbie count aboard a hull: its mercenary cap, less one on a Sloop
+/// (index 0), where the lone human displaces a swabbie slot.
+fn swabbie_count(ship_idx: usize) -> u32 {
+    let cap = SHIPS[ship_idx].max_mercenaries as u32;
+    if ship_idx == 0 { cap.saturating_sub(1) } else { cap }
+}
+
+/// Inferred crew range `(low, high)` aboard a hull for the Manpower Advantage:
+/// `swabbie_count + 1` (the lone human plus a full swabbie complement) up to the
+/// hull's pirate capacity. `high >= low` for every ship in [`SHIPS`].
+fn crew_range(ship_idx: usize) -> (u32, u32) {
+    (swabbie_count(ship_idx) + 1, SHIPS[ship_idx].max_pirates as u32)
+}
+
 /// Apply a Damage-calculator click `target` to `app`, returning true iff it was
 /// a `Damage*` variant (so the caller knows it was consumed). Mirrors the live
 /// page's click arms but owns no global focus — used by the Sea Battles editor.
@@ -538,5 +571,54 @@ mod tests {
         app.left[0] = 6; // 5760 damage = morale capped
         // morale exhausted -> 0; hull has 3840 left -> 4 shots.
         assert_eq!(app.shots_left(Side::Left), (0, 4));
+    }
+
+    #[test]
+    fn crew_range_infers_from_hull() {
+        // Sloop (idx 0): swabbie_count = max_mercenaries(6) - 1 = 5, so [6, 7].
+        assert_eq!(crew_range(0), (6, 7));
+        // Cutter (idx 1): swabbie_count = max_mercenaries(10), so [11, 12].
+        assert_eq!(crew_range(1), (11, 12));
+        // Every hull yields a non-empty range (high >= low).
+        for i in 0..SHIPS.len() {
+            let (lo, hi) = crew_range(i);
+            assert!(lo <= hi, "inverted range for ship {}", SHIPS[i].name);
+        }
+    }
+
+    #[test]
+    fn manpower_advantage_range_over_both_crews() {
+        // Our Sloop [6, 7] vs foe Cutter [11, 12], no damage: both advantages 1.0.
+        let mut app = DamageApp::new();
+        app.right_ship = 1; // Cutter
+        let (min, max) = app.manpower_advantage();
+        // max = our_high(7) - foe_low(11) = -4; min = our_low(6) - foe_high(12) = -6.
+        assert!((min - (-6.0)).abs() < 1e-9);
+        assert!((max - (-4.0)).abs() < 1e-9);
+        assert!(min <= max);
+    }
+
+    #[test]
+    fn manpower_advantage_weights_by_morale() {
+        // Sloop vs Sloop; drop the foe's morale to 50% (3 shots from the other
+        // Sloop's Small cannons = 2880 = 50% of 5760), so its weight is 0.75.
+        let mut app = DamageApp::new();
+        app.right[0] = 3;
+        assert_eq!(app.calculate_damage(Side::Right).0, 50);
+        let (min, max) = app.manpower_advantage();
+        // our [6,7] at 1.0, foe [6,7] at 0.75:
+        // min = 6*1.0 - 7*0.75 = 0.75; max = 7*1.0 - 6*0.75 = 2.5.
+        assert!((min - 0.75).abs() < 1e-9);
+        assert!((max - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn manpower_advantage_symmetric_sloops() {
+        // Sloop vs Sloop, no damage: our [6,7] vs foe [6,7] at advantage 1.0.
+        let app = DamageApp::new();
+        let (min, max) = app.manpower_advantage();
+        // max = 7 - 6 = 1; min = 6 - 7 = -1.
+        assert!((min - (-1.0)).abs() < 1e-9);
+        assert!((max - 1.0).abs() < 1e-9);
     }
 }
