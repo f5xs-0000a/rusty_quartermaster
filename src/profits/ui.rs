@@ -5,9 +5,8 @@ use crate::app::{self, SharedState};
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::{offset_title, offset_title_width};
 use super::{
-    is_place_field, BootyShare, BreakdownRow, Focus, InventoryRow, PopupKind, ProfitsApp, Rank,
-    FIRST_COL, P_BOOTY_CHEST, P_CO_RATE, P_DONATION, P_RESTOCK_PLACE, P_RESTOCK_RATE, P_SELL_PLACE,
-    P_STOCKING,
+    is_place_field, BreakdownRow, Focus, InventoryRow, PopupKind, ProfitsApp, FIRST_COL,
+    P_BOOTY_CHEST, P_CO_RATE, P_DONATION, P_RESTOCK_PLACE, P_RESTOCK_RATE, P_SELL_PLACE, P_STOCKING,
 };
 
 // Inventory numeric column widths (the Item column flexes).
@@ -75,11 +74,7 @@ pub fn render(
 
     // -- Vertical stack ----------------------------------------------------
     let visible_panels = app.visible_panels(shared.market_supported).len();
-    let params_h = visible_panels as u16
-        + 2 /*Rank + Booty Share rows*/
-        + 1 /*blank*/
-        + 1 /*button*/
-        + 2 /*borders*/;
+    let params_h = visible_panels as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
     let stats_h = 2 + 2; // 2 rows + borders
     let search_h = 2 + 2; // input + suggestion + borders
 
@@ -135,8 +130,6 @@ fn render_parameters(
     let visible = app.visible_panels(shared.market_supported);
     let mut constraints: Vec<Constraint> =
         visible.iter().map(|_| Constraint::Length(1)).collect();
-    constraints.push(Constraint::Length(1)); // Rank selector
-    constraints.push(Constraint::Length(1)); // Booty Share selector
     constraints.push(Constraint::Length(1)); // blank
     constraints.push(Constraint::Length(1)); // button
     let rows = Layout::vertical(constraints).split(inner);
@@ -200,30 +193,8 @@ fn render_parameters(
         });
     }
 
-    // Rank / Booty Share selector rows (label + current value; click opens a popup).
-    render_selector_row(
-        frame,
-        rows[visible.len()],
-        label_width,
-        "Rank",
-        app.rank.label(),
-        focused && app.focus == Focus::RankRow,
-        ClickTarget::ProfitsRankRow,
-        regions,
-    );
-    render_selector_row(
-        frame,
-        rows[visible.len() + 1],
-        label_width,
-        "Booty Share",
-        app.booty_share.label(),
-        focused && app.focus == Focus::ShareRow,
-        ClickTarget::ProfitsShareRow,
-        regions,
-    );
-
     // "Calculate Profits!" button (last inner row, after the blank spacer).
-    let button_area = rows[visible.len() + 3];
+    let button_area = rows[visible.len() + 1];
     let button_focused = focused && app.focus == Focus::Button;
     let button_style = if button_focused {
         Style::default().bg(Color::White).fg(Color::Black).bold()
@@ -238,45 +209,6 @@ fn render_parameters(
         rect: button_area,
         target: ClickTarget::ProfitsButton,
     });
-}
-
-/// One Rank / Booty Share selector row: a bold label and the current selection
-/// (right-aligned like the parameter values), highlighted when focused. Clicking
-/// anywhere on the row opens its selection popup.
-#[allow(clippy::too_many_arguments)]
-fn render_selector_row(
-    frame: &mut Frame,
-    area: Rect,
-    label_width: u16,
-    label: &str,
-    value: &str,
-    focused: bool,
-    target: ClickTarget,
-    regions: &mut Vec<ClickRegion>,
-) {
-    let cols = Layout::horizontal([
-        Constraint::Length(label_width),
-        Constraint::Length(2),
-        Constraint::Fill(1),
-    ])
-    .split(area);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(label, Style::default().bold())),
-        cols[0],
-    );
-
-    let value_style = if focused {
-        Style::default().bg(Color::White).fg(Color::Black)
-    } else {
-        Style::default()
-    };
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(value, value_style)).right_aligned()),
-        cols[2],
-    );
-
-    regions.push(ClickRegion { rect: area, target });
 }
 
 fn render_hold_stats(
@@ -681,8 +613,6 @@ fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Tex
                 Line::from(muted("Press Delete to remove commodity".to_owned())),
             ]))
         }
-        Focus::RankRow => hint("Press Enter to pick your crew rank."),
-        Focus::ShareRow => hint("Press Enter to pick the crew's booty-share scheme."),
         Focus::Button => hint("Press Enter to calculate profits."),
         _ => None,
     }
@@ -1124,68 +1054,5 @@ fn render_popup(
                 target: ClickTarget::ProfitsPopupOk,
             });
         }
-        PopupKind::RankSelect { cursor } => {
-            let labels: Vec<&str> = Rank::ALL.iter().map(|r| r.label()).collect();
-            render_select_popup(frame, "Rank", &labels, *cursor, ClickTarget::ProfitsRankItem, regions);
-        }
-        PopupKind::ShareSelect { cursor } => {
-            let labels: Vec<&str> = BootyShare::ALL.iter().map(|s| s.label()).collect();
-            render_select_popup(
-                frame,
-                "Booty Share",
-                &labels,
-                *cursor,
-                ClickTarget::ProfitsShareItem,
-                regions,
-            );
-        }
-    }
-}
-
-/// Render a centered single-column selection list (one entry per line, the
-/// `cursor` row highlighted). Each row is a click target via `item_target(i)`.
-fn render_select_popup(
-    frame: &mut Frame,
-    title: &'static str,
-    items: &[&str],
-    cursor: usize,
-    item_target: impl Fn(usize) -> ClickTarget,
-    regions: &mut Vec<ClickRegion>,
-) {
-    let area = frame.area();
-    let widest = items.iter().map(|s| s.len()).max().unwrap_or(0) as u16;
-    // widest + 2 padding + 2 borders, and never narrower than the title needs.
-    let w = (widest + 4).max(offset_title_width(title));
-    let h = items.len() as u16 + 2; // rows + borders
-    let x = area.width.saturating_sub(w) / 2;
-    let y = area.height.saturating_sub(h) / 2;
-    let popup_area = Rect::new(x, y, w, h);
-
-    frame.render_widget(Clear, popup_area);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1))
-        .title(offset_title(title).0);
-    let inner = block.inner(popup_area);
-    frame.render_widget(block, popup_area);
-
-    let rows = Layout::vertical(
-        items.iter().map(|_| Constraint::Length(1)).collect::<Vec<_>>(),
-    )
-    .split(inner);
-
-    for (i, label) in items.iter().enumerate() {
-        let style = if i == cursor {
-            Style::default().bg(Color::White).fg(Color::Black).bold()
-        } else {
-            Style::default()
-        };
-        // Pad to the full inner width so the highlight spans the whole row.
-        let padded = format!("{label:<width$}", width = inner.width as usize);
-        frame.render_widget(Paragraph::new(Span::styled(padded, style)), rows[i]);
-        regions.push(ClickRegion {
-            rect: rows[i],
-            target: item_target(i),
-        });
     }
 }

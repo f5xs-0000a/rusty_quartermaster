@@ -29,21 +29,12 @@ pub struct SavedInventory {
     /// backward compatibility with caches written before it existed.
     #[serde(default)]
     pub selling_island: String,
-    /// The player's crew rank (a [`crate::profits::Rank`] label). Defaulted for
-    /// backward compatibility with caches written before it existed.
-    #[serde(default)]
-    pub rank: String,
-    /// The crew's booty-share scheme (a [`crate::profits::BootyShare`] label).
-    #[serde(default)]
-    pub booty_share: String,
 }
 
 pub struct LoadedInventory {
     pub rows: Vec<InventoryRow>,
     pub restocking_island: String,
     pub selling_island: String,
-    pub rank: String,
-    pub booty_share: String,
     pub panel_values: Vec<String>,
 }
 
@@ -83,21 +74,16 @@ pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInven
         rows,
         restocking_island: inv.restocking_island,
         selling_island: inv.selling_island,
-        rank: inv.rank,
-        booty_share: inv.booty_share,
         panel_values: inv.panel,
     }
 }
 
 /// Build a savable [`SavedInventory`] snapshot from live app state.
-#[allow(clippy::too_many_arguments)]
 pub fn to_saved(
     rows: &[InventoryRow],
     panel: &[crate::utils::PromptField],
     restocking_island: &str,
     selling_island: &str,
-    rank: &str,
-    booty_share: &str,
     commod_name: impl Fn(u64) -> String,
 ) -> SavedInventory {
     SavedInventory {
@@ -114,8 +100,6 @@ pub fn to_saved(
             .collect(),
         restocking_island: restocking_island.to_owned(),
         selling_island: selling_island.to_owned(),
-        rank: rank.to_owned(),
-        booty_share: booty_share.to_owned(),
         panel: panel.iter().map(|f| f.value.clone()).collect(),
     }
 }

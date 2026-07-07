@@ -10,14 +10,6 @@ pub enum ClickTarget {
     ProfitsTableCell { row: usize, col: usize },
     ProfitsPanel(usize),
     ProfitsButton,
-    /// The "Rank" selector row: opens the rank-selection popup.
-    ProfitsRankRow,
-    /// The "Booty Share" selector row: opens the scheme-selection popup.
-    ProfitsShareRow,
-    /// A rank in the rank popup (index into [`crate::profits::Rank::ALL`]).
-    ProfitsRankItem(usize),
-    /// A scheme in the booty-share popup (index into [`crate::profits::BootyShare::ALL`]).
-    ProfitsShareItem(usize),
     ProfitsPopupNo,
     ProfitsPopupYes,
     ProfitsPopupOk,

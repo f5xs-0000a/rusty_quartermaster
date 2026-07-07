@@ -37,144 +37,6 @@ pub const LAST_COL: usize = 3;
 /// Rightmost editable column when prices are entered manually (Buy Price).
 pub const LAST_COL_OFFLINE: usize = 5;
 
-/// The player's crew rank. Governs the player's slice of a booty division
-/// together with the crew's [`BootyShare`] scheme. Ordered high → low as the
-/// game lists them. See <https://yppedia.puzzlepirates.com/Officer>.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum Rank {
-    Captain,
-    SeniorOfficer,
-    FleetOfficer,
-    Officer,
-    Pirate,
-    CabinPerson,
-    JobbingPirate,
-}
-
-impl Rank {
-    /// Every rank, in display order (highest first) — the order the selection
-    /// popup lists them.
-    pub const ALL: [Rank; 7] = [
-        Rank::Captain,
-        Rank::SeniorOfficer,
-        Rank::FleetOfficer,
-        Rank::Officer,
-        Rank::Pirate,
-        Rank::CabinPerson,
-        Rank::JobbingPirate,
-    ];
-
-    /// Human-readable name; also the persisted key.
-    pub fn label(self) -> &'static str {
-        match self {
-            Rank::Captain => "Captain",
-            Rank::SeniorOfficer => "Senior officer",
-            Rank::FleetOfficer => "Fleet officer",
-            Rank::Officer => "Officer",
-            Rank::Pirate => "Pirate",
-            Rank::CabinPerson => "Cabin person",
-            Rank::JobbingPirate => "Jobbing pirate",
-        }
-    }
-
-    /// Column index into a [`BootyShare`] share table (0 = jobbing pirate …
-    /// 6 = captain), matching the booty-share page's rank ordering.
-    // Consumed by [`BootyShare::share_for`] once the divvy calc lands.
-    #[allow(dead_code)]
-    fn share_index(self) -> usize {
-        match self {
-            Rank::JobbingPirate => 0,
-            Rank::CabinPerson => 1,
-            Rank::Pirate => 2,
-            Rank::Officer => 3,
-            Rank::FleetOfficer => 4,
-            Rank::SeniorOfficer => 5,
-            Rank::Captain => 6,
-        }
-    }
-
-    /// Parse a persisted [`label`](Self::label); `None` if unrecognised.
-    pub fn from_label(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|r| r.label().eq_ignore_ascii_case(s))
-    }
-}
-
-/// The crew's booty-share scheme — how the divvy is split across ranks. Each
-/// scheme carries the per-rank share counts in booty-share-table column order
-/// (jobbing pirate … captain). See
-/// <https://yppedia.puzzlepirates.com/Booty_share>.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum BootyShare {
-    Even,
-    RanksPrivilege,
-    JobbersDelight,
-    CrewLoyalty,
-    PromotionPays,
-    OfficerClub,
-    JobbersBane,
-    TraderShares,
-    CruelShelf,
-}
-
-impl BootyShare {
-    /// Every scheme, in the order the game (and the selection popup) lists them.
-    pub const ALL: [BootyShare; 9] = [
-        BootyShare::Even,
-        BootyShare::RanksPrivilege,
-        BootyShare::JobbersDelight,
-        BootyShare::CrewLoyalty,
-        BootyShare::PromotionPays,
-        BootyShare::OfficerClub,
-        BootyShare::JobbersBane,
-        BootyShare::TraderShares,
-        BootyShare::CruelShelf,
-    ];
-
-    /// Human-readable name; also the persisted key.
-    pub fn label(self) -> &'static str {
-        match self {
-            BootyShare::Even => "Even",
-            BootyShare::RanksPrivilege => "Rank's Privilege",
-            BootyShare::JobbersDelight => "Jobber's Delight",
-            BootyShare::CrewLoyalty => "Crew Loyalty",
-            BootyShare::PromotionPays => "Promotion Pays",
-            BootyShare::OfficerClub => "Officer Club",
-            BootyShare::JobbersBane => "Jobber's Bane",
-            BootyShare::TraderShares => "Trader Shares",
-            BootyShare::CruelShelf => "The Cruel Shelf",
-        }
-    }
-
-    /// Per-rank share counts, indexed by [`Rank::share_index`] (jobbing pirate,
-    /// cabin person, pirate, officer, fleet officer, senior officer, captain).
-    /// Kept for the eventual divvy calc even though the popup doesn't show them.
-    #[allow(dead_code)]
-    pub fn shares(self) -> [u32; 7] {
-        match self {
-            BootyShare::Even => [1, 1, 1, 1, 1, 1, 1],
-            BootyShare::RanksPrivilege => [3, 2, 3, 4, 4, 4, 4],
-            BootyShare::JobbersDelight => [5, 3, 4, 4, 4, 4, 4],
-            BootyShare::CrewLoyalty => [4, 4, 5, 5, 5, 5, 5],
-            BootyShare::PromotionPays => [5, 6, 7, 8, 8, 9, 10],
-            BootyShare::OfficerClub => [7, 5, 7, 8, 8, 9, 10],
-            BootyShare::JobbersBane => [1, 1, 2, 2, 2, 2, 2],
-            BootyShare::TraderShares => [4, 4, 5, 2, 2, 2, 2],
-            BootyShare::CruelShelf => [5, 10, 12, 15, 20, 20, 20],
-        }
-    }
-
-    /// This scheme's share count for a single rank.
-    #[allow(dead_code)]
-    pub fn share_for(self, rank: Rank) -> u32 {
-        self.shares()[rank.share_index()]
-    }
-
-    /// Parse a persisted [`label`](Self::label); `None` if unrecognised.
-    pub fn from_label(s: &str) -> Option<Self> {
-        Self::ALL.into_iter().find(|b| b.label().eq_ignore_ascii_case(s))
-    }
-}
-
 /// Booty-chest figures deduced from the battle ledger and the restocking rate,
 /// kept as floats so halving and theft subtraction don't round prematurely.
 struct ChestBreakdown {
@@ -360,10 +222,6 @@ pub enum PopupKind {
     /// need a Sell Price (they have excess to sell).
     PriceBlock { need_buy: Vec<String>, need_sell: Vec<String> },
     ProfitResult(ProfitResult),
-    /// Picking the player's crew rank. `cursor` indexes [`Rank::ALL`].
-    RankSelect { cursor: usize },
-    /// Picking the crew's booty-share scheme. `cursor` indexes [`BootyShare::ALL`].
-    ShareSelect { cursor: usize },
 }
 
 pub struct InventoryRow {
@@ -406,10 +264,6 @@ pub enum Focus {
     Input,
     Table,
     Panel(usize),
-    /// The "Rank" selector row (opens the rank popup).
-    RankRow,
-    /// The "Booty Share" selector row (opens the scheme popup).
-    ShareRow,
     Button,
     Popup,
 }
@@ -436,11 +290,6 @@ pub struct ProfitsApp {
     /// Selected row in the Profit Breakdown popup, into [`ProfitResult::breakdown`]
     /// — drives the per-row tooltip. Moved by arrows or mouse hover.
     pub breakdown_cursor: usize,
-    /// The player's crew rank; persisted, and (eventually) an input to the
-    /// booty-from-treasure divvy.
-    pub rank: Rank,
-    /// The crew's booty-share scheme; persisted alongside [`rank`](Self::rank).
-    pub booty_share: BootyShare,
 }
 
 impl ProfitsApp {
@@ -467,8 +316,6 @@ impl ProfitsApp {
             show_co_rate: false,
             show_donation: false,
             breakdown_cursor: 0,
-            rank: Rank::Officer,
-            booty_share: BootyShare::Even,
         }
     }
 
@@ -1076,8 +923,6 @@ impl ProfitsApp {
             Focus::Input => self.handle_input_key(key, shared),
             Focus::Table => self.handle_table_key(key, shared),
             Focus::Panel(idx) => self.handle_panel_key(key, idx, shared),
-            Focus::RankRow => self.handle_selector_row_key(key, false, shared),
-            Focus::ShareRow => self.handle_selector_row_key(key, true, shared),
             Focus::Button => self.handle_button_key(key, shared),
             Focus::Popup => self.handle_popup_key(key, shared),
         }
@@ -1101,14 +946,6 @@ impl ProfitsApp {
                 self.focus = Focus::Panel(0);
             }
             Some(PopupKind::PriceBlock { .. }) => self.dismiss_ok_popup(),
-            Some(PopupKind::RankSelect { .. }) => {
-                self.popup = None;
-                self.focus = Focus::RankRow;
-            }
-            Some(PopupKind::ShareSelect { .. }) => {
-                self.popup = None;
-                self.focus = Focus::ShareRow;
-            }
             _ => {
                 self.popup = None;
                 self.focus = Focus::Input;
@@ -1262,8 +1099,7 @@ impl ProfitsApp {
             KeyCode::Down => {
                 match self.step_visible_panel(idx, true, shared.market_supported) {
                     Some(next) => self.focus = Focus::Panel(next),
-                    // Below the last parameter sit the Rank / Booty Share rows.
-                    None => self.focus = Focus::RankRow,
+                    None => self.focus = Focus::Button,
                 }
             }
             KeyCode::Left => {
@@ -1402,9 +1238,6 @@ impl ProfitsApp {
             }
             // PriceBlock has a single "Ok" button handled via ProfitsPopupOk.
             Some(PopupKind::PriceBlock { .. }) => {}
-            // The selection popups use per-item click targets (ProfitsRankItem /
-            // ProfitsShareItem), not a yes/no button, so this is a no-op.
-            Some(PopupKind::RankSelect { .. }) | Some(PopupKind::ShareSelect { .. }) => {}
             None => {}
         }
         InputResult::Consumed
@@ -1415,75 +1248,15 @@ impl ProfitsApp {
             KeyCode::Enter => {
                 return self.handle_button_activate(shared);
             }
-            // Above the Calculate button sits the Booty Share selector row.
-            KeyCode::Up => self.focus = Focus::ShareRow,
+            KeyCode::Up => {
+                if let Some(i) = self.last_visible_panel(shared.market_supported) {
+                    self.focus = Focus::Panel(i);
+                }
+            }
             // The button is the bottom of the focus chain; ↓ goes nowhere.
             _ => {}
         }
         InputResult::Consumed
-    }
-
-    /// Keyboard handling for the Rank (`is_share == false`) and Booty Share
-    /// (`is_share == true`) selector rows. Enter opens the matching popup;
-    /// Up/Down walk the focus chain (… last panel → Rank → Booty Share → Button).
-    fn handle_selector_row_key(
-        &mut self,
-        key: KeyEvent,
-        is_share: bool,
-        shared: &SharedState,
-    ) -> InputResult {
-        match key.code {
-            KeyCode::Enter => self.open_selector_popup(is_share),
-            KeyCode::Up => {
-                if is_share {
-                    self.focus = Focus::RankRow;
-                } else {
-                    match self.last_visible_panel(shared.market_supported) {
-                        Some(i) => self.focus = Focus::Panel(i),
-                        None => self.focus_input(),
-                    }
-                }
-            }
-            KeyCode::Down => {
-                self.focus = if is_share { Focus::Button } else { Focus::ShareRow };
-            }
-            _ => {}
-        }
-        InputResult::Consumed
-    }
-
-    /// Open the Rank or Booty Share selection popup, pre-positioning the cursor
-    /// on the currently-selected entry.
-    pub fn open_selector_popup(&mut self, is_share: bool) {
-        self.popup = Some(if is_share {
-            let cursor = BootyShare::ALL
-                .iter()
-                .position(|&s| s == self.booty_share)
-                .unwrap_or(0);
-            PopupKind::ShareSelect { cursor }
-        } else {
-            let cursor = Rank::ALL.iter().position(|&r| r == self.rank).unwrap_or(0);
-            PopupKind::RankSelect { cursor }
-        });
-        self.focus = Focus::Popup;
-    }
-
-    /// Commit a rank choice (from a clicked list item) and return to its row.
-    pub fn select_rank(&mut self, i: usize) {
-        if let Some(&r) = Rank::ALL.get(i) {
-            self.rank = r;
-        }
-        self.popup = None;
-        self.focus = Focus::RankRow;
-    }
-
-    /// Commit a booty-share choice (from a clicked list item) and return to its row.
-    pub fn select_share(&mut self, i: usize) {
-        if let Some(&s) = BootyShare::ALL.get(i) {
-            self.booty_share = s;
-        }
-        self.popup = None;
-        self.focus = Focus::ShareRow;
     }
 
     fn handle_popup_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
@@ -1566,24 +1339,6 @@ impl ProfitsApp {
                     self.dismiss_ok_popup();
                 }
             }
-            Some(PopupKind::RankSelect { ref mut cursor }) => match key.code {
-                KeyCode::Up => *cursor = cursor.saturating_sub(1),
-                KeyCode::Down => *cursor = (*cursor + 1).min(Rank::ALL.len() - 1),
-                KeyCode::Enter => {
-                    let i = *cursor;
-                    self.select_rank(i);
-                }
-                _ => {}
-            },
-            Some(PopupKind::ShareSelect { ref mut cursor }) => match key.code {
-                KeyCode::Up => *cursor = cursor.saturating_sub(1),
-                KeyCode::Down => *cursor = (*cursor + 1).min(BootyShare::ALL.len() - 1),
-                KeyCode::Enter => {
-                    let i = *cursor;
-                    self.select_share(i);
-                }
-                _ => {}
-            },
             None => {}
         }
         InputResult::Consumed

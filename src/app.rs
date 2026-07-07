@@ -2583,24 +2583,6 @@ impl AppShell {
             ClickTarget::ProfitsBreakdownRow(i) => {
                 self.profits.breakdown_cursor = i;
             }
-            ClickTarget::ProfitsRankRow => {
-                self.global_focus = GlobalFocus::Content;
-                self.profits.focus = crate::profits::Focus::RankRow;
-                self.profits.open_selector_popup(false);
-            }
-            ClickTarget::ProfitsShareRow => {
-                self.global_focus = GlobalFocus::Content;
-                self.profits.focus = crate::profits::Focus::ShareRow;
-                self.profits.open_selector_popup(true);
-            }
-            ClickTarget::ProfitsRankItem(i) => {
-                self.global_focus = GlobalFocus::Content;
-                self.profits.select_rank(i);
-            }
-            ClickTarget::ProfitsShareItem(i) => {
-                self.global_focus = GlobalFocus::Content;
-                self.profits.select_share(i);
-            }
             ClickTarget::ProfitsPopupNo => {
                 let (pillage_gross, pillage_stolen, pillage_chest) =
                     self.chatlog.current_pillage_poe();

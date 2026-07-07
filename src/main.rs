@@ -266,13 +266,6 @@ async fn main() -> io::Result<()> {
         shell.profits.panel[0].cursor = loaded.restocking_island.len();
         shell.profits.panel[1].value = loaded.selling_island.clone();
         shell.profits.panel[1].cursor = loaded.selling_island.len();
-        // Rank / Booty Share: unrecognised or absent labels keep the defaults.
-        if let Some(r) = profits::Rank::from_label(&loaded.rank) {
-            shell.profits.rank = r;
-        }
-        if let Some(b) = profits::BootyShare::from_label(&loaded.booty_share) {
-            shell.profits.booty_share = b;
-        }
         // The saved `panel` vec is everything after the two Place fields, so it
         // lands at panel[2..]. Old caches (no Selling Place) slot in identically.
         for (i, val) in loaded.panel_values.into_iter().enumerate() {
@@ -490,8 +483,6 @@ async fn main() -> io::Result<()> {
                 &shell.profits.panel[2..],
                 &shell.profits.panel[0].value,
                 &shell.profits.panel[1].value,
-                shell.profits.rank.label(),
-                shell.profits.booty_share.label(),
                 |id| app::commod_name(&shell.commodities, id).to_owned(),
             ),
             commodities: shell
