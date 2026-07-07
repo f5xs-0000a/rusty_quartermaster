@@ -4,7 +4,10 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Tab
 use crate::app::{self, SharedState};
 use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::utils::{offset_title, offset_title_width};
-use super::{BreakdownRow, Focus, InventoryRow, PopupKind, ProfitsApp, FIRST_COL};
+use super::{
+    is_place_field, BreakdownRow, Focus, InventoryRow, PopupKind, ProfitsApp, FIRST_COL,
+    P_BOOTY_CHEST, P_CO_RATE, P_DONATION, P_RESTOCK_PLACE, P_RESTOCK_RATE, P_SELL_PLACE, P_STOCKING,
+};
 
 // Inventory numeric column widths (the Item column flexes).
 const RESTOCK_W: u16 = 7; // "Restock"
@@ -152,9 +155,9 @@ fn render_parameters(
             Style::default()
         };
 
-        if i == 0 {
+        if is_place_field(i) {
             render_island_field(frame, field, cols[2], is_focused, value_style, shared);
-        } else if i == 1 && field.value.is_empty() {
+        } else if i == P_BOOTY_CHEST && field.value.is_empty() {
             // Booty Chest: when blank, show the auto-deduced value as a dim
             // placeholder. The calc uses it unless the user types an override.
             let deduced = app.deduced_chest(shared).to_string();
@@ -501,6 +504,57 @@ fn build_suggestion_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Op
     }
 }
 
+/// Focus hint for a market-location field (Restocking/Selling Place): confirms
+/// an exact island/archipelago, suggests a fuzzy match, or flags an unknown
+/// name. `verb` is the action word in the archipelago note ("restocking" or
+/// "selling"). Returns owned text so it outlives the borrowed `value`.
+fn place_hint(value: &str, verb: &str, shared: &SharedState) -> Option<Text<'static>> {
+    let query = value.trim();
+    if query.is_empty() {
+        return Some(Text::from(Line::from(Span::styled(
+            "Leave blank for ocean-wide pricing, or name an island or archipelago.".to_owned(),
+            Style::default().fg(Color::DarkGray),
+        ))));
+    }
+    // "Did you mean "<name>" (<kind>)? Press enter to accept." in muted text.
+    let did_you_mean = |name: &str, kind: &'static str| {
+        Some(Text::from(Line::from(vec![
+            Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                name.to_owned(),
+                Style::default().bold().italic().fg(Color::DarkGray),
+            ),
+            Span::styled(
+                format!("\" ({kind})? Press enter to accept."),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])))
+    };
+    match app::resolve_restock_scope(value, shared.available_islands, shared.ocean_geo) {
+        // Exact island typed — nothing to suggest.
+        app::RestockScope::Island(name) if name.eq_ignore_ascii_case(query) => None,
+        app::RestockScope::Island(name) => did_you_mean(&name, "island"),
+        // Exact archipelago — confirm it fans out across its islands.
+        app::RestockScope::Archipelago { name, islands } if name.eq_ignore_ascii_case(query) => {
+            Some(Text::from(Line::from(vec![
+                Span::styled("Archipelago \"", Style::default().fg(Color::DarkGray)),
+                Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
+                Span::styled(
+                    format!("\" — {verb} across {} islands.", islands.len()),
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ])))
+        }
+        app::RestockScope::Archipelago { name, .. } => did_you_mean(&name, "archipelago"),
+        app::RestockScope::OceanWide | app::RestockScope::Unknown => {
+            Some(Text::from(Line::from(Span::styled(
+                "No matching island or archipelago".to_owned(),
+                Style::default().fg(Color::Red),
+            ))))
+        }
+    }
+}
+
 /// Focus-bound context help (plus loading/error status) shown on the bottom
 /// line(s). The inventory table returns a two-line, per-column hint.
 fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Text<'a>> {
@@ -522,66 +576,27 @@ fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Tex
     let hint = |text: &'static str| Some(Text::from(Line::from(muted(text.to_owned()))));
 
     match app.focus {
-        Focus::Panel(0) if shared.cached_offers.is_empty() => hint("Press Enter to find islands"),
-        Focus::Panel(0) => {
-            let query = app.panel[0].value.trim();
-            if query.is_empty() {
-                return hint(
-                    "Leave blank for ocean-wide pricing, or name an island or archipelago.",
-                );
-            }
-            // "Did you mean "<name>" (<kind>)? Press enter to accept." in muted text.
-            let did_you_mean = |name: &str, kind: &'static str| {
-                Some(Text::from(Line::from(vec![
-                    Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
-                    Span::styled(
-                        name.to_owned(),
-                        Style::default().bold().italic().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        format!("\" ({kind})? Press enter to accept."),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ])))
-            };
-            match app::resolve_restock_scope(
-                &app.panel[0].value,
-                shared.available_islands,
-                shared.ocean_geo,
-            ) {
-                // Exact island typed — nothing to suggest.
-                app::RestockScope::Island(name) if name.eq_ignore_ascii_case(query) => None,
-                app::RestockScope::Island(name) => did_you_mean(&name, "island"),
-                // Exact archipelago — confirm it fans out across its islands.
-                app::RestockScope::Archipelago { name, islands }
-                    if name.eq_ignore_ascii_case(query) =>
-                {
-                    Some(Text::from(Line::from(vec![
-                        Span::styled("Archipelago \"", Style::default().fg(Color::DarkGray)),
-                        Span::styled(
-                            name,
-                            Style::default().bold().italic().fg(Color::DarkGray),
-                        ),
-                        Span::styled(
-                            format!("\" — restocking across {} islands.", islands.len()),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ])))
-                }
-                app::RestockScope::Archipelago { name, .. } => did_you_mean(&name, "archipelago"),
-                app::RestockScope::OceanWide | app::RestockScope::Unknown => {
-                    Some(Text::from(Line::from(Span::styled(
-                        "No matching island or archipelago",
-                        Style::default().fg(Color::Red),
-                    ))))
-                }
-            }
+        Focus::Panel(P_RESTOCK_PLACE) if shared.cached_offers.is_empty() => {
+            hint("Press Enter to find islands")
         }
-        Focus::Panel(1) => hint("Auto: each fight's retained half, less stolen. Type to override."),
-        Focus::Panel(2) => hint("Share of total gained the commanding officer keeps."),
-        Focus::Panel(3) => hint("Share of total gained donated to the crew."),
-        Focus::Panel(4) => hint("Skimmed from the crew's cut for restocking (not the chest)."),
-        Focus::Panel(5) => hint("PoE spent stocking up before the voyage; recouped at the divvy."),
+        Focus::Panel(P_RESTOCK_PLACE) => {
+            place_hint(&app.panel[P_RESTOCK_PLACE].value, "restocking", shared)
+        }
+        Focus::Panel(P_SELL_PLACE) if shared.cached_offers.is_empty() => {
+            hint("Query the market first to pick where to sell.")
+        }
+        Focus::Panel(P_SELL_PLACE) => place_hint(&app.panel[P_SELL_PLACE].value, "selling", shared),
+        Focus::Panel(P_BOOTY_CHEST) => {
+            hint("Auto: each fight's retained half, less stolen. Type to override.")
+        }
+        Focus::Panel(P_CO_RATE) => hint("Share of total gained the commanding officer keeps."),
+        Focus::Panel(P_DONATION) => hint("Share of total gained donated to the crew."),
+        Focus::Panel(P_RESTOCK_RATE) => {
+            hint("Skimmed from the crew's cut for restocking (not the chest).")
+        }
+        Focus::Panel(P_STOCKING) => {
+            hint("PoE spent stocking up before the voyage; recouped at the divvy.")
+        }
         Focus::Input => hint("Type a commodity and press Enter to add it."),
         Focus::Table => {
             // Per-column action for the selected inventory cell.

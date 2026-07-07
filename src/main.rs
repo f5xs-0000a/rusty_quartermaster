@@ -264,10 +264,14 @@ async fn main() -> io::Result<()> {
         shell.profits.rows = loaded.rows;
         shell.profits.panel[0].value = loaded.restocking_island.clone();
         shell.profits.panel[0].cursor = loaded.restocking_island.len();
+        shell.profits.panel[1].value = loaded.selling_island.clone();
+        shell.profits.panel[1].cursor = loaded.selling_island.len();
+        // The saved `panel` vec is everything after the two Place fields, so it
+        // lands at panel[2..]. Old caches (no Selling Place) slot in identically.
         for (i, val) in loaded.panel_values.into_iter().enumerate() {
-            if i + 1 < profits::PANEL_COUNT {
-                shell.profits.panel[i + 1].value = val.clone();
-                shell.profits.panel[i + 1].cursor = val.len();
+            if i + 2 < profits::PANEL_COUNT {
+                shell.profits.panel[i + 2].value = val.clone();
+                shell.profits.panel[i + 2].cursor = val.len();
             }
         }
     }
@@ -476,8 +480,9 @@ async fn main() -> io::Result<()> {
         let saved = SavedCache {
             inventory: profits::persistence::to_saved(
                 &shell.profits.rows,
-                &shell.profits.panel[1..],
+                &shell.profits.panel[2..],
                 &shell.profits.panel[0].value,
+                &shell.profits.panel[1].value,
                 |id| app::commod_name(&shell.commodities, id).to_owned(),
             ),
             commodities: shell

@@ -13,8 +13,25 @@ use crate::utils::{text_similarity, parse_rate, FieldKind, PromptField};
 // Types
 // ---------------------------------------------------------------------------
 
-pub const PANEL_COUNT: usize = 6;
+pub const PANEL_COUNT: usize = 7;
 pub const FIRST_COL: usize = 1;
+
+// Parameter-panel field indices, in display order. The first two are
+// market-location "place" fields — where we buy the restock shortfall and
+// where we sell the surplus; the rest are the chest / rate / stocking inputs.
+pub(crate) const P_RESTOCK_PLACE: usize = 0;
+pub(crate) const P_SELL_PLACE: usize = 1;
+pub(crate) const P_BOOTY_CHEST: usize = 2;
+pub(crate) const P_CO_RATE: usize = 3;
+pub(crate) const P_DONATION: usize = 4;
+pub(crate) const P_RESTOCK_RATE: usize = 5;
+pub(crate) const P_STOCKING: usize = 6;
+
+/// Whether a panel index is a market-location field (restocking / selling),
+/// which is entered as free text and locked until the market has been queried.
+pub(crate) const fn is_place_field(idx: usize) -> bool {
+    idx == P_RESTOCK_PLACE || idx == P_SELL_PLACE
+}
 /// Rightmost editable column when prices come from Market (Booty).
 pub const LAST_COL: usize = 3;
 /// Rightmost editable column when prices are entered manually (Buy Price).
@@ -285,6 +302,7 @@ impl ProfitsApp {
             table_state: TableState::default(),
             panel: [
                 PromptField::new("Restocking Place", FieldKind::Text),
+                PromptField::new("Selling Place", FieldKind::Text),
                 PromptField::new("Booty Chest", FieldKind::PositiveInt),
                 PromptField::new("C.O. Rate", FieldKind::Rate),
                 PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
@@ -304,14 +322,14 @@ impl ProfitsApp {
     // -- visible parameter rows --
 
     /// Panel indices that are actually shown (and thus navigable), in order.
-    /// The Restocking Place row only matters with Market pricing; the C.O.
-    /// Rate and Crew Donation rows are revealed by CLI flags.
+    /// The Restocking/Selling Place rows only matter with Market pricing; the
+    /// C.O. Rate and Crew Donation rows are revealed by CLI flags.
     pub fn visible_panels(&self, market_supported: bool) -> Vec<usize> {
         (0..PANEL_COUNT)
             .filter(|&i| match i {
-                0 => market_supported,
-                2 => self.show_co_rate,
-                3 => self.show_donation,
+                P_RESTOCK_PLACE | P_SELL_PLACE => market_supported,
+                P_CO_RATE => self.show_co_rate,
+                P_DONATION => self.show_donation,
                 _ => true,
             })
             .collect()
@@ -678,6 +696,16 @@ impl ProfitsApp {
         // islands, or `None` for ocean-wide (blank or unrecognized).
         let restock_islands = scope.island_filter();
 
+        // The Selling Place is the mirror of the Restocking Place: it constrains
+        // where we offload the surplus (the buy offers we sell *into*). Blank =
+        // ocean-wide, i.e. the market's single best price anywhere.
+        let sell_scope = app::resolve_restock_scope(
+            &self.panel[P_SELL_PLACE].value,
+            shared.available_islands,
+            shared.ocean_geo,
+        );
+        let sell_islands = sell_scope.island_filter();
+
         let mut goods_value: u64 = 0;
         let mut restock_value: u64 = 0;
 
@@ -706,10 +734,16 @@ impl ProfitsApp {
             let offers = &cached.offers;
 
             if restock < booty + stock {
-                // Goods Value: sell excess at best buy prices (ocean-wide)
+                // Goods Value: sell excess at the best buy prices on the selling
+                // place (ocean-wide when it's blank).
                 let mut buy_offers: Vec<_> = offers
                     .iter()
                     .filter(|o| 0 < o.buyprice && 0 < o.buyqty)
+                    .filter(|o| {
+                        sell_islands.map_or(true, |islands| {
+                            islands.iter().any(|i| o.islandname.eq_ignore_ascii_case(i))
+                        })
+                    })
                     .collect();
                 buy_offers.sort_by(|a, b| b.buyprice.cmp(&a.buyprice));
 
@@ -754,15 +788,16 @@ impl ProfitsApp {
         // accumulate truncation error.
         //
         // A hidden parameter row means that deduction doesn't apply.
-        let co_rate = if self.show_co_rate { parse_rate(&self.panel[2]) } else { 0.0 };
-        let donation_rate = if self.show_donation { parse_rate(&self.panel[3]) } else { 0.0 };
+        let co_rate = if self.show_co_rate { parse_rate(&self.panel[P_CO_RATE]) } else { 0.0 };
+        let donation_rate =
+            if self.show_donation { parse_rate(&self.panel[P_DONATION]) } else { 0.0 };
 
         // Chest figures deduced from the battle ledger and the restocking rate.
         let cb = self.chest_components(shared);
 
         // The Booty Chest field overrides the deduced net; blank uses the deduced.
         let chest_net = {
-            let s = self.panel[1].value.trim();
+            let s = self.panel[P_BOOTY_CHEST].value.trim();
             if s.is_empty() {
                 cb.chest_net
             } else {
@@ -770,7 +805,7 @@ impl ProfitsApp {
             }
         };
 
-        let stocking = self.panel[5].value.parse::<u64>().unwrap_or(0);
+        let stocking = self.panel[P_STOCKING].value.parse::<u64>().unwrap_or(0);
 
         // Restocking is paid from the reserve first; the overflow is funded by the
         // goods cash (and the officer's pocket if it falls short).
@@ -827,7 +862,7 @@ impl ProfitsApp {
     /// The booty-chest breakdown deduced from the battle ledger and the
     /// restocking rate. Carried as floats; rounded only when displayed.
     fn chest_components(&self, shared: &SharedState) -> ChestBreakdown {
-        let restocking_rate = parse_rate(&self.panel[4]);
+        let restocking_rate = parse_rate(&self.panel[P_RESTOCK_RATE]);
         // The chest keeps the full retained half of every fight (the ledger
         // already sums each fight's half, rounding the odd PoE up into the chest).
         // The restocking skim comes off the *other* half — the crew's cut — not
@@ -855,7 +890,7 @@ impl ProfitsApp {
     /// "Booty Chest" figure if given, else the auto-deduced net chest. Mirrors the
     /// `chest_net` resolution in [`Self::calculate_profits`].
     pub fn recorded_chest(&self, shared: &SharedState) -> u64 {
-        let s = self.panel[1].value.trim();
+        let s = self.panel[P_BOOTY_CHEST].value.trim();
         if s.is_empty() {
             self.deduced_chest(shared)
         } else {
@@ -1007,6 +1042,25 @@ impl ProfitsApp {
         InputResult::Consumed
     }
 
+    /// Snap a place field (Restocking/Selling) to its canonical island or
+    /// archipelago name, if the typed text resolves to one. No-op otherwise.
+    fn canonicalize_place(&mut self, idx: usize, shared: &SharedState) {
+        let canonical = match app::resolve_restock_scope(
+            &self.panel[idx].value,
+            shared.available_islands,
+            shared.ocean_geo,
+        ) {
+            app::RestockScope::Island(name) | app::RestockScope::Archipelago { name, .. } => {
+                Some(name)
+            }
+            app::RestockScope::OceanWide | app::RestockScope::Unknown => None,
+        };
+        if let Some(name) = canonical {
+            self.panel[idx].value = name;
+            self.panel[idx].cursor = self.panel[idx].value.len();
+        }
+    }
+
     fn handle_panel_key(
         &mut self,
         key: KeyEvent,
@@ -1025,21 +1079,15 @@ impl ProfitsApp {
                     }
                 } else {
                     // Snap the field to the canonical island or archipelago name.
-                    let canonical = match app::resolve_restock_scope(
-                        &self.panel[0].value,
-                        shared.available_islands,
-                        shared.ocean_geo,
-                    ) {
-                        app::RestockScope::Island(name) => Some(name),
-                        app::RestockScope::Archipelago { name, .. } => Some(name),
-                        app::RestockScope::OceanWide | app::RestockScope::Unknown => None,
-                    };
-                    if let Some(name) = canonical {
-                        self.panel[0].value = name;
-                        self.panel[0].cursor = self.panel[0].value.len();
-                    }
-                    self.focus = Focus::Panel(1);
+                    self.canonicalize_place(P_RESTOCK_PLACE, shared);
+                    self.focus = Focus::Panel(P_SELL_PLACE);
                 }
+            }
+            KeyCode::Enter if idx == P_SELL_PLACE => {
+                if !shared.cached_offers.is_empty() {
+                    self.canonicalize_place(P_SELL_PLACE, shared);
+                }
+                self.focus = Focus::Panel(P_BOOTY_CHEST);
             }
             KeyCode::Up => {
                 match self.step_visible_panel(idx, false, shared.market_supported) {
@@ -1055,25 +1103,25 @@ impl ProfitsApp {
                 }
             }
             KeyCode::Left => {
-                // The island field is a button until the market is queried; only
-                // move the text cursor once it accepts input.
-                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                // The place fields are buttons until the market is queried; only
+                // move the text cursor once they accept input.
+                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
                     self.panel[idx].move_left();
                 }
             }
             KeyCode::Right => {
-                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
                     self.panel[idx].move_right();
                 }
             }
             KeyCode::Backspace => {
-                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
                     self.panel[idx].delete_char_before();
                     self.calc_error = None;
                 }
             }
             KeyCode::Delete => {
-                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
                     self.panel[idx].delete_char_at();
                     self.calc_error = None;
                 }
@@ -1084,7 +1132,7 @@ impl ProfitsApp {
                 self.panel[idx].cursor = len;
             }
             KeyCode::Char(c) => {
-                if !(idx == 0 && shared.cached_offers.is_empty()) {
+                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
                     self.panel[idx].insert_char(c);
                     self.calc_error = None;
                 }
@@ -1116,15 +1164,19 @@ impl ProfitsApp {
             return InputResult::Consumed;
         }
 
-        if matches!(
-            app::resolve_restock_scope(
-                &self.panel[0].value,
-                shared.available_islands,
-                shared.ocean_geo,
-            ),
-            app::RestockScope::Unknown
-        ) {
-            self.calc_error = Some("Unknown restocking island or archipelago".to_owned());
+        let unknown_place = [P_RESTOCK_PLACE, P_SELL_PLACE].into_iter().find(|&i| {
+            matches!(
+                app::resolve_restock_scope(
+                    &self.panel[i].value,
+                    shared.available_islands,
+                    shared.ocean_geo,
+                ),
+                app::RestockScope::Unknown
+            )
+        });
+        if let Some(i) = unknown_place {
+            let which = if i == P_RESTOCK_PLACE { "restocking" } else { "selling" };
+            self.calc_error = Some(format!("Unknown {which} island or archipelago"));
         } else if shared.cached_offers.is_empty() {
             self.fetch_purpose = FetchPurpose::Profits;
             return InputResult::StartFetch(FetchPurpose::Profits);
@@ -1307,6 +1359,7 @@ mod tests {
             commodities: &commodities,
             cached_offers: &offers,
             available_islands: &islands,
+            ocean_geo: None,
             loading: false,
             market_supported: false,
             pillage_gross: 10_000,
@@ -1317,7 +1370,7 @@ mod tests {
         // Blank Booty Chest field -> auto-deduced net chest = retained − stolen.
         assert_eq!(app.recorded_chest(&shared), 4_200);
         // A user-entered figure wins over the deduction.
-        app.panel[1].value = "1234".into();
+        app.panel[P_BOOTY_CHEST].value = "1234".into();
         assert_eq!(app.recorded_chest(&shared), 1_234);
     }
 

@@ -25,11 +25,16 @@ pub struct SavedInventory {
     pub panel: Vec<String>,
     #[serde(default)]
     pub restocking_island: String,
+    /// The Selling Place (where surplus goods are offloaded). Defaulted for
+    /// backward compatibility with caches written before it existed.
+    #[serde(default)]
+    pub selling_island: String,
 }
 
 pub struct LoadedInventory {
     pub rows: Vec<InventoryRow>,
     pub restocking_island: String,
+    pub selling_island: String,
     pub panel_values: Vec<String>,
 }
 
@@ -68,6 +73,7 @@ pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInven
     LoadedInventory {
         rows,
         restocking_island: inv.restocking_island,
+        selling_island: inv.selling_island,
         panel_values: inv.panel,
     }
 }
@@ -77,6 +83,7 @@ pub fn to_saved(
     rows: &[InventoryRow],
     panel: &[crate::utils::PromptField],
     restocking_island: &str,
+    selling_island: &str,
     commod_name: impl Fn(u64) -> String,
 ) -> SavedInventory {
     SavedInventory {
@@ -92,6 +99,7 @@ pub fn to_saved(
             })
             .collect(),
         restocking_island: restocking_island.to_owned(),
+        selling_island: selling_island.to_owned(),
         panel: panel.iter().map(|f| f.value.clone()).collect(),
     }
 }
