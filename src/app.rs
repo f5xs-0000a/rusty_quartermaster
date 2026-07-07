@@ -6,6 +6,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
 use crate::aliases;
 use crate::api::{CachedOffers, Commodity, fetch_offers_for};
+use crate::bare;
 use crate::ocean::Ocean;
 use crate::chatlog::GameState;
 use crate::clickmap::{self, ClickRegion, ClickTarget};
@@ -103,6 +104,11 @@ pub struct SharedState<'a> {
     pub commodities: &'a [Commodity],
     pub cached_offers: &'a HashMap<String, CachedOffers>,
     pub available_islands: &'a [String],
+    /// The selected ocean's geography (archipelago → island membership) from the
+    /// baked-in [bare cache](crate::bare), used to resolve a Restocking-field
+    /// query that names an archipelago rather than a single island. `None` when
+    /// no ocean is selected or it isn't present in the bare cache.
+    pub ocean_geo: Option<&'static bare::Ocean>,
     pub loading: bool,
     /// Whether the selected ocean has Market market data (profit calc works).
     pub market_supported: bool,
@@ -200,6 +206,102 @@ pub fn suggest_island<'a>(query: &str, available_islands: &'a [String]) -> Optio
     }
 
     None
+}
+
+/// Match `query` to one of an ocean's archipelagos by exact name, unique prefix,
+/// then a strict Jaro-Winkler (≥0.85 — stricter than [`suggest_island`] so an
+/// archipelago never gets fuzzily "stolen" out from under an island the user
+/// actually meant). No alias table: archipelago names are few and distinctive.
+pub fn suggest_archipelago<'a>(query: &str, ocean: &'a bare::Ocean) -> Option<&'a bare::Archipelago> {
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return None;
+    }
+
+    // Exact match
+    if let Some(arch) = ocean.archipelagos.iter().find(|a| a.name.eq_ignore_ascii_case(&query)) {
+        return Some(arch);
+    }
+
+    // Unique prefix
+    let prefix_matches: Vec<_> = ocean
+        .archipelagos
+        .iter()
+        .filter(|a| a.name.to_lowercase().starts_with(&query))
+        .collect();
+    if prefix_matches.len() == 1 {
+        return Some(prefix_matches[0]);
+    }
+
+    // Jaro-Winkler (minimum 0.85, unique winner)
+    let mut best_score = f64::NEG_INFINITY;
+    let mut best = None;
+    let mut tie = false;
+    for arch in &ocean.archipelagos {
+        let score = text_similarity(&query, &arch.name.to_lowercase());
+        if best_score < score {
+            best_score = score;
+            best = Some(arch);
+            tie = false;
+        } else if score == best_score {
+            tie = true;
+        }
+    }
+    if 0.85 <= best_score && !tie {
+        return best;
+    }
+
+    None
+}
+
+/// What the Restocking field resolves to. The field accepts either a single
+/// island *or* a whole archipelago; a blank field prices ocean-wide.
+pub enum RestockScope {
+    /// Blank field — no location filter; restock at the cheapest offers ocean-wide.
+    OceanWide,
+    /// One island: restock offers must be on this island.
+    Island(String),
+    /// A whole archipelago: restock offers may be on any of its islands.
+    Archipelago { name: String, islands: Vec<String> },
+    /// Non-blank text that matched neither an island nor an archipelago.
+    Unknown,
+}
+
+impl RestockScope {
+    /// The island names offers must be on, or `None` for no restriction
+    /// (ocean-wide / unrecognized). A single-island scope yields one name; an
+    /// archipelago yields all of its islands.
+    pub fn island_filter(&self) -> Option<&[String]> {
+        match self {
+            RestockScope::Island(name) => Some(std::slice::from_ref(name)),
+            RestockScope::Archipelago { islands, .. } => Some(islands),
+            RestockScope::OceanWide | RestockScope::Unknown => None,
+        }
+    }
+}
+
+/// Resolve a Restocking-field query to a [`RestockScope`]. An archipelago name
+/// (exact/prefix/strict-fuzzy) takes precedence, since archipelago names are
+/// distinctive and won't collide with the island most users type; anything else
+/// non-blank is handed to [`suggest_island`].
+pub fn resolve_restock_scope(
+    query: &str,
+    available_islands: &[String],
+    ocean_geo: Option<&bare::Ocean>,
+) -> RestockScope {
+    if query.trim().is_empty() {
+        return RestockScope::OceanWide;
+    }
+    if let Some(arch) = ocean_geo.and_then(|o| suggest_archipelago(query, o)) {
+        return RestockScope::Archipelago {
+            name: arch.name.clone(),
+            islands: arch.islands.iter().map(|i| i.name.clone()).collect(),
+        };
+    }
+    if let Some(island) = suggest_island(query, available_islands) {
+        return RestockScope::Island(island.to_owned());
+    }
+    RestockScope::Unknown
 }
 
 pub fn rebuild_island_list(
@@ -340,6 +442,13 @@ impl AppShell {
         self.query_market && self.ocean.is_some_and(Ocean::market_supported)
     }
 
+    /// The selected ocean's geography from the baked-in [bare cache](crate::bare),
+    /// if any. Feeds [`SharedState::ocean_geo`] so archipelago restock filtering
+    /// can resolve names.
+    pub fn ocean_geo(&self) -> Option<&'static bare::Ocean> {
+        self.ocean.and_then(|o| bare::BARE.ocean(o.name()))
+    }
+
     pub fn rebuild_island_list(&mut self) {
         let commod_names: Vec<String> = self
             .profits
@@ -380,6 +489,7 @@ impl AppShell {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
+                    ocean_geo: self.ocean_geo(),
                     loading: self.loading,
                     market_supported: self.market_ok(),
                     pillage_gross,
@@ -515,6 +625,7 @@ impl AppShell {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
+                    ocean_geo: self.ocean_geo(),
                     loading: self.loading,
                     market_supported: self.market_ok(),
                     pillage_gross,
@@ -1429,6 +1540,7 @@ impl AppShell {
             commodities: &self.commodities,
             cached_offers: &self.cached_offers,
             available_islands: &self.available_islands,
+            ocean_geo: self.ocean_geo(),
             loading: self.loading,
             market_supported: self.market_ok(),
             pillage_gross,
@@ -2458,6 +2570,7 @@ impl AppShell {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
+                    ocean_geo: self.ocean_geo(),
                     loading: self.loading,
                     market_supported: self.market_ok(),
                     pillage_gross,
@@ -2477,6 +2590,7 @@ impl AppShell {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
+                    ocean_geo: self.ocean_geo(),
                     loading: self.loading,
                     market_supported: self.market_ok(),
                     pillage_gross,
@@ -2493,6 +2607,7 @@ impl AppShell {
                     commodities: &self.commodities,
                     cached_offers: &self.cached_offers,
                     available_islands: &self.available_islands,
+                    ocean_geo: self.ocean_geo(),
                     loading: self.loading,
                     market_supported: self.market_ok(),
                     pillage_gross,
@@ -2928,6 +3043,7 @@ impl AppShell {
                         commodities: &self.commodities,
                         cached_offers: &self.cached_offers,
                         available_islands: &self.available_islands,
+                        ocean_geo: self.ocean_geo(),
                         loading: self.loading,
                         market_supported: self.market_ok(),
                         pillage_gross,
@@ -2979,5 +3095,68 @@ impl AppShell {
             };
             let _ = tx.send(result);
         });
+    }
+}
+
+#[cfg(test)]
+mod restock_scope_tests {
+    use super::*;
+
+    /// The real Emerald geography from the embedded bare cache. Orion has seven
+    /// islands (Aimuari, Chachapoya, Matariki, Pukru, Quetzal, Saiph, Toba).
+    fn emerald() -> &'static bare::Ocean {
+        bare::BARE.ocean("Emerald").expect("Emerald in bare cache")
+    }
+
+    #[test]
+    fn blank_query_is_ocean_wide() {
+        let scope = resolve_restock_scope("   ", &[], Some(emerald()));
+        assert!(matches!(scope, RestockScope::OceanWide));
+        assert!(scope.island_filter().is_none());
+    }
+
+    #[test]
+    fn archipelago_name_fans_out_to_all_its_islands() {
+        // Even with no offers yet, the archipelago resolves to its full island set.
+        let scope = resolve_restock_scope("Orion", &[], Some(emerald()));
+        let RestockScope::Archipelago { name, islands } = scope else {
+            panic!("expected an archipelago scope");
+        };
+        assert_eq!(name, "Orion");
+        assert_eq!(islands.len(), 7);
+        assert!(islands.contains(&"Pukru Island".to_string()));
+        assert!(islands.contains(&"Toba Island".to_string()));
+        assert!(islands.contains(&"Saiph Island".to_string()));
+    }
+
+    #[test]
+    fn island_name_resolves_to_a_single_island() {
+        let islands = vec!["Pukru Island".to_string(), "Toba Island".to_string()];
+        let scope = resolve_restock_scope("Pukru Island", &islands, Some(emerald()));
+        let filter = scope.island_filter().expect("island scope filters");
+        assert_eq!(filter, ["Pukru Island".to_string()]);
+    }
+
+    #[test]
+    fn island_prefix_wins_over_archipelago_fuzz() {
+        // "Pukru" is a unique island prefix and no archipelago; it must stay an island.
+        let islands = vec!["Pukru Island".to_string()];
+        let scope = resolve_restock_scope("Pukru", &islands, Some(emerald()));
+        assert!(matches!(scope, RestockScope::Island(ref n) if n == "Pukru Island"));
+    }
+
+    #[test]
+    fn unrecognized_text_is_unknown() {
+        let scope =
+            resolve_restock_scope("Nowhere", &["Pukru Island".to_string()], Some(emerald()));
+        assert!(matches!(scope, RestockScope::Unknown));
+        assert!(scope.island_filter().is_none());
+    }
+
+    #[test]
+    fn archipelago_needs_geography() {
+        // Without ocean geography, an archipelago name can't resolve.
+        let scope = resolve_restock_scope("Orion", &["Pukru Island".to_string()], None);
+        assert!(matches!(scope, RestockScope::Unknown));
     }
 }

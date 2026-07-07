@@ -85,6 +85,13 @@ pub struct BareCache {
     pub oceans: Vec<Ocean>,
 }
 
+impl BareCache {
+    /// Look up an ocean's geography by (case-insensitive) name, e.g. `"Emerald"`.
+    pub fn ocean(&self, name: &str) -> Option<&Ocean> {
+        self.oceans.iter().find(|o| o.name.eq_ignore_ascii_case(name))
+    }
+}
+
 // The pretty source (`data/bare_cache.json`) is minified at build time by
 // `build.rs`; we embed the compact copy it drops in `OUT_DIR`, not the source.
 const BARE_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/bare_cache.min.json"));

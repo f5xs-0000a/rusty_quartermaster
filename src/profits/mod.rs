@@ -284,7 +284,7 @@ impl ProfitsApp {
             focus: Focus::Input,
             table_state: TableState::default(),
             panel: [
-                PromptField::new("Restocking Island", FieldKind::Text),
+                PromptField::new("Restocking Place", FieldKind::Text),
                 PromptField::new("Booty Chest", FieldKind::PositiveInt),
                 PromptField::new("C.O. Rate", FieldKind::Rate),
                 PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
@@ -304,7 +304,7 @@ impl ProfitsApp {
     // -- visible parameter rows --
 
     /// Panel indices that are actually shown (and thus navigable), in order.
-    /// The Restocking Island row only matters with Market pricing; the C.O.
+    /// The Restocking Place row only matters with Market pricing; the C.O.
     /// Rate and Crew Donation rows are revealed by CLI flags.
     pub fn visible_panels(&self, market_supported: bool) -> Vec<usize> {
         (0..PANEL_COUNT)
@@ -575,7 +575,9 @@ impl ProfitsApp {
 
     // -- calculation --
 
-    pub fn missing_restock_on_island(&self, island: &str, shared: &SharedState) -> Vec<String> {
+    /// Goods that need restocking but have no sell supply anywhere in the restock
+    /// scope (`islands`) — a single island, or every island in an archipelago.
+    pub fn missing_restock_in_scope(&self, islands: &[String], shared: &SharedState) -> Vec<String> {
         let mut missing = Vec::new();
         for row in &self.rows {
             let name = app::commod_name(shared.commodities, row.commod_id);
@@ -594,7 +596,7 @@ impl ProfitsApp {
                     cached.offers.iter().any(|o| {
                         0 < o.sellprice
                             && 0 < o.sellqty
-                            && o.islandname.eq_ignore_ascii_case(island)
+                            && islands.iter().any(|i| o.islandname.eq_ignore_ascii_case(i))
                     })
                 });
             if !has_supply {
@@ -628,11 +630,13 @@ impl ProfitsApp {
     }
 
     pub fn calculate_or_warn(&mut self, shared: &SharedState) {
-        let query = self.panel[0].value.trim();
-        if let Some(island) = app::suggest_island(query, shared.available_islands)
-            .map(|s| s.to_owned())
-        {
-            let missing = self.missing_restock_on_island(&island, shared);
+        let scope = app::resolve_restock_scope(
+            &self.panel[0].value,
+            shared.available_islands,
+            shared.ocean_geo,
+        );
+        if let Some(islands) = scope.island_filter() {
+            let missing = self.missing_restock_in_scope(islands, shared);
             if !missing.is_empty() {
                 self.popup = Some(PopupKind::RestockWarning {
                     missing,
@@ -665,12 +669,14 @@ impl ProfitsApp {
     }
 
     pub fn calculate_profits(&self, shared: &SharedState) -> ProfitResult {
-        let query = self.panel[0].value.trim();
-        let restock_island = if query.is_empty() {
-            None
-        } else {
-            app::suggest_island(query, shared.available_islands).map(|s| s.to_owned())
-        };
+        let scope = app::resolve_restock_scope(
+            &self.panel[0].value,
+            shared.available_islands,
+            shared.ocean_geo,
+        );
+        // The island(s) restock offers must be on: one island, an archipelago's
+        // islands, or `None` for ocean-wide (blank or unrecognized).
+        let restock_islands = scope.island_filter();
 
         let mut goods_value: u64 = 0;
         let mut restock_value: u64 = 0;
@@ -723,9 +729,9 @@ impl ProfitsApp {
                     .iter()
                     .filter(|o| 0 < o.sellprice && 0 < o.sellqty)
                     .filter(|o| {
-                        restock_island
-                            .as_ref()
-                            .map_or(true, |island| o.islandname.eq_ignore_ascii_case(island))
+                        restock_islands.map_or(true, |islands| {
+                            islands.iter().any(|i| o.islandname.eq_ignore_ascii_case(i))
+                        })
                     })
                     .collect();
                 sell_offers.sort_by(|a, b| a.sellprice.cmp(&b.sellprice));
@@ -1018,11 +1024,18 @@ impl ProfitsApp {
                         return InputResult::StartFetch(FetchPurpose::Islands);
                     }
                 } else {
-                    let query = self.panel[0].value.trim();
-                    if let Some(island) =
-                        app::suggest_island(query, shared.available_islands).map(|s| s.to_owned())
-                    {
-                        self.panel[0].value = island;
+                    // Snap the field to the canonical island or archipelago name.
+                    let canonical = match app::resolve_restock_scope(
+                        &self.panel[0].value,
+                        shared.available_islands,
+                        shared.ocean_geo,
+                    ) {
+                        app::RestockScope::Island(name) => Some(name),
+                        app::RestockScope::Archipelago { name, .. } => Some(name),
+                        app::RestockScope::OceanWide | app::RestockScope::Unknown => None,
+                    };
+                    if let Some(name) = canonical {
+                        self.panel[0].value = name;
                         self.panel[0].cursor = self.panel[0].value.len();
                     }
                     self.focus = Focus::Panel(1);
@@ -1103,11 +1116,15 @@ impl ProfitsApp {
             return InputResult::Consumed;
         }
 
-        if !self.panel[0].value.trim().is_empty()
-            && app::suggest_island(self.panel[0].value.trim(), shared.available_islands)
-                .is_none()
-        {
-            self.calc_error = Some("Unknown restocking island".to_owned());
+        if matches!(
+            app::resolve_restock_scope(
+                &self.panel[0].value,
+                shared.available_islands,
+                shared.ocean_geo,
+            ),
+            app::RestockScope::Unknown
+        ) {
+            self.calc_error = Some("Unknown restocking island or archipelago".to_owned());
         } else if shared.cached_offers.is_empty() {
             self.fetch_purpose = FetchPurpose::Profits;
             return InputResult::StartFetch(FetchPurpose::Profits);

@@ -93,7 +93,10 @@ pub fn render(
 
     // -- Tooltip (focus-bound) --------------------------------------------
     if let Some(text) = build_tooltip(app, shared) {
-        frame.render_widget(Paragraph::new(text), vchunks[4]);
+        frame.render_widget(
+            Paragraph::new(text).wrap(Wrap { trim: true }),
+            vchunks[4],
+        );
     }
 
     // -- Popup overlay -----------------------------------------------------
@@ -523,22 +526,55 @@ fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Tex
         Focus::Panel(0) => {
             let query = app.panel[0].value.trim();
             if query.is_empty() {
-                return hint("Leave blank for ocean-wide pricing, or name a restocking island.");
+                return hint(
+                    "Leave blank for ocean-wide pricing, or name an island or archipelago.",
+                );
             }
-            match app::suggest_island(query, shared.available_islands) {
-                Some(name) if name.eq_ignore_ascii_case(query) => None,
-                Some(name) => Some(Text::from(Line::from(vec![
+            // "Did you mean "<name>" (<kind>)? Press enter to accept." in muted text.
+            let did_you_mean = |name: &str, kind: &'static str| {
+                Some(Text::from(Line::from(vec![
                     Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
-                    Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
                     Span::styled(
-                        "\"? Press enter to accept.",
+                        name.to_owned(),
+                        Style::default().bold().italic().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        format!("\" ({kind})? Press enter to accept."),
                         Style::default().fg(Color::DarkGray),
                     ),
-                ]))),
-                None => Some(Text::from(Line::from(Span::styled(
-                    "No matching island",
-                    Style::default().fg(Color::Red),
-                )))),
+                ])))
+            };
+            match app::resolve_restock_scope(
+                &app.panel[0].value,
+                shared.available_islands,
+                shared.ocean_geo,
+            ) {
+                // Exact island typed — nothing to suggest.
+                app::RestockScope::Island(name) if name.eq_ignore_ascii_case(query) => None,
+                app::RestockScope::Island(name) => did_you_mean(&name, "island"),
+                // Exact archipelago — confirm it fans out across its islands.
+                app::RestockScope::Archipelago { name, islands }
+                    if name.eq_ignore_ascii_case(query) =>
+                {
+                    Some(Text::from(Line::from(vec![
+                        Span::styled("Archipelago \"", Style::default().fg(Color::DarkGray)),
+                        Span::styled(
+                            name,
+                            Style::default().bold().italic().fg(Color::DarkGray),
+                        ),
+                        Span::styled(
+                            format!("\" — restocking across {} islands.", islands.len()),
+                            Style::default().fg(Color::DarkGray),
+                        ),
+                    ])))
+                }
+                app::RestockScope::Archipelago { name, .. } => did_you_mean(&name, "archipelago"),
+                app::RestockScope::OceanWide | app::RestockScope::Unknown => {
+                    Some(Text::from(Line::from(Span::styled(
+                        "No matching island or archipelago",
+                        Style::default().fg(Color::Red),
+                    ))))
+                }
             }
         }
         Focus::Panel(1) => hint("Auto: each fight's retained half, less stolen. Type to override."),
