@@ -24,29 +24,28 @@ pub struct ShipSelectPopup {
     pub selected: usize,
 }
 
-const ROCK_DAMAGE: u64 = 480;
-
 pub const ROW_SHIP: usize = 0;
 pub const ROW_SHOTS: usize = 1;
 pub const ROW_ROCKS: usize = 2;
+/// Times Rammed — a single shared counter (a ram damages *both* ships), rendered
+/// in the merged single-cell layout. A head-on collision is entered here too,
+/// counted twice when the two hulls are different size classes.
 pub const ROW_RAMS: usize = 3;
-pub const ROW_HEADON: usize = 4;
-pub const ROW_GAP: usize = 5;
-pub const ROW_SHOTS_LEFT: usize = 6;
-pub const ROW_DAMAGE: usize = 7;
+pub const ROW_GAP: usize = 4;
+pub const ROW_SHOTS_LEFT: usize = 5;
+pub const ROW_DAMAGE: usize = 6;
 /// Manpower Advantage — a non-editable range row shown only on the live Damage
 /// page (the shared calculator omits it; see [`ui::calc_box_size`]).
-pub const ROW_MANPOWER: usize = 8;
-pub const ROW_COUNT: usize = 9;
-const LAST_INTERACTIVE_ROW: usize = 4;
+pub const ROW_MANPOWER: usize = 7;
+pub const ROW_COUNT: usize = 8;
+const LAST_INTERACTIVE_ROW: usize = 3;
 
-/// Labels for the center column. Head-on Collisions and Manpower Advantage are
-/// rendered separately (they use the merged head-on layout).
+/// Labels for the center column. Times Rammed and Manpower Advantage are rendered
+/// separately (they use the merged single-cell layout).
 pub const CENTER_LABELS: &[&str] = &[
     "Ship",
     "Shots Taken",
     "Rocks Banged",
-    "Times Rammed",
     "",
     "",
     "Shots Left",
@@ -61,9 +60,10 @@ pub const CENTER_LABELS: &[&str] = &[
 pub struct DamageApp {
     pub left_ship: usize,
     pub right_ship: usize,
-    pub left: [u32; 3],
-    pub right: [u32; 3],
-    pub headon: u32,
+    pub left: [u32; 2],
+    pub right: [u32; 2],
+    /// Times rammed — a single shared count; each ram damages both ships.
+    pub rams: u32,
     pub focus_row: usize,
     pub focus_side: Side,
     pub popup: Option<ShipSelectPopup>,
@@ -84,9 +84,9 @@ impl DamageApp {
         Self {
             left_ship: 0,
             right_ship: 0,
-            left: [0; 3],
-            right: [0; 3],
-            headon: 0,
+            left: [0; 2],
+            right: [0; 2],
+            rams: 0,
             focus_row: 0,
             focus_side: Side::Left,
             popup: None,
@@ -97,7 +97,9 @@ impl DamageApp {
 
     // -- damage calculation --
 
-    /// Total raw damage taken by `side` from shots + rocks + rams + head-on.
+    /// Total raw damage taken by `side` from shots + rocks + rams. A ram (`self.rams`
+    /// is a single shared count) damages both ships by the *other* hull's ram value —
+    /// head-ons are entered here too, counted twice for a different-size-class foe.
     fn total_damage(&self, side: Side) -> u64 {
         let (values, own_ship, other_ship) = match side {
             Side::Left => (&self.left, &SHIPS[self.left_ship], &SHIPS[self.right_ship]),
@@ -105,14 +107,12 @@ impl DamageApp {
         };
 
         let shot_dmg = values[0] as u64 * other_ship.cannon_size.damage() as u64;
-        let rock_dmg = values[1] as u64 * ROCK_DAMAGE;
-        let ram_dmg = values[2] as u64 * other_ship.ram_damage as u64;
+        // A rock/edge hit is 3 swordfight blocks = 1/12 of the ship's own rest
+        // (morale) bar — so it scales per hull, not a flat constant.
+        let rock_dmg = values[1] as u64 * (own_ship.morale_hp as u64 / 12);
+        let ram_dmg = self.rams as u64 * other_ship.ram_damage as u64;
 
-        let headon_mult: u64 =
-            if own_ship.ship_size_class != other_ship.ship_size_class { 2 } else { 1 };
-        let headon_dmg = self.headon as u64 * other_ship.ram_damage as u64 * headon_mult;
-
-        shot_dmg + rock_dmg + ram_dmg + headon_dmg
+        shot_dmg + rock_dmg + ram_dmg
     }
 
     /// Returns (morale_percent, hull_percent) for the given side.
@@ -179,7 +179,7 @@ impl DamageApp {
             foe_ship: self.right_ship,
             our_hits: self.left,
             foe_hits: self.right,
-            headon: self.headon,
+            rams: self.rams,
             our_pirates,
         }
     }
@@ -192,26 +192,26 @@ impl DamageApp {
         app.right_ship = s.foe_ship;
         app.left = s.our_hits;
         app.right = s.foe_hits;
-        app.headon = s.headon;
+        app.rams = s.rams;
         app
     }
 
     /// Whether any hits have been entered (so we only snapshot a fight we tracked).
     pub fn has_input(&self) -> bool {
-        self.headon > 0 || self.left.iter().chain(&self.right).any(|&n| n > 0)
+        self.rams > 0 || self.left.iter().chain(&self.right).any(|&n| n > 0)
     }
 
     /// Clear the hit counts (keep ship selections) — ready for the next fight.
     pub fn clear_counts(&mut self) {
-        self.left = [0; 3];
-        self.right = [0; 3];
-        self.headon = 0;
+        self.left = [0; 2];
+        self.right = [0; 2];
+        self.rams = 0;
     }
 
     /// True when the tally board is untouched (all counts zero). A ship change
     /// then has nothing to invalidate, so we skip the "Reset values?" confirm.
     pub fn counts_are_default(&self) -> bool {
-        self.left == [0; 3] && self.right == [0; 3] && self.headon == 0
+        self.left == [0; 2] && self.right == [0; 2] && self.rams == 0
     }
 
     /// Returns (shots-to-max-morale, shots-to-sink) for `side`: how many more
@@ -232,7 +232,7 @@ impl DamageApp {
         (to_morale.div_ceil(cannon_dmg) as u32, to_hull.div_ceil(cannon_dmg) as u32)
     }
 
-    fn values_mut(&mut self, side: Side) -> &mut [u32; 3] {
+    fn values_mut(&mut self, side: Side) -> &mut [u32; 2] {
         match side {
             Side::Left => &mut self.left,
             Side::Right => &mut self.right,
@@ -240,8 +240,8 @@ impl DamageApp {
     }
 
     pub fn increment(&mut self) {
-        if self.focus_row == ROW_HEADON {
-            self.headon = self.headon.saturating_add(1);
+        if self.focus_row == ROW_RAMS {
+            self.rams = self.rams.saturating_add(1);
             return;
         }
         let idx = self.focus_row - 1;
@@ -250,8 +250,8 @@ impl DamageApp {
     }
 
     pub fn decrement(&mut self) {
-        if self.focus_row == ROW_HEADON {
-            self.headon = self.headon.saturating_sub(1);
+        if self.focus_row == ROW_RAMS {
+            self.rams = self.rams.saturating_sub(1);
             return;
         }
         let idx = self.focus_row - 1;
@@ -320,12 +320,12 @@ impl DamageApp {
                 }
             }
             KeyCode::Left => {
-                if self.focus_side == Side::Right && self.focus_row != ROW_HEADON {
+                if self.focus_side == Side::Right && self.focus_row != ROW_RAMS {
                     self.focus_side = Side::Left;
                 }
             }
             KeyCode::Right => {
-                if self.focus_side == Side::Left && self.focus_row != ROW_HEADON {
+                if self.focus_side == Side::Left && self.focus_row != ROW_RAMS {
                     self.focus_side = Side::Right;
                 }
             }
@@ -478,18 +478,18 @@ pub fn apply_click(app: &mut DamageApp, target: &ClickTarget) -> bool {
             app.focus_side = side;
             app.decrement();
         }
-        ClickTarget::DamageHeadon => {
+        ClickTarget::DamageRam => {
             app.popup = None;
-            app.focus_row = ROW_HEADON;
+            app.focus_row = ROW_RAMS;
         }
-        ClickTarget::DamageHeadonIncrement => {
+        ClickTarget::DamageRamIncrement => {
             app.popup = None;
-            app.focus_row = ROW_HEADON;
+            app.focus_row = ROW_RAMS;
             app.increment();
         }
-        ClickTarget::DamageHeadonDecrement => {
+        ClickTarget::DamageRamDecrement => {
             app.popup = None;
-            app.focus_row = ROW_HEADON;
+            app.focus_row = ROW_RAMS;
             app.decrement();
         }
         ClickTarget::DamageShipItem(i) => {
@@ -610,6 +610,44 @@ mod tests {
         // min = 6*1.0 - 7*0.75 = 0.75; max = 7*1.0 - 6*0.75 = 2.5.
         assert!((min - 0.75).abs() < 1e-9);
         assert!((max - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn ram_is_shared_and_hits_both_ships() {
+        // Sloop vs Sloop: `rams` is a single shared count, and each side takes the
+        // *other* hull's ram (480). One ram -> 480 = 8% of 5760 morale, both sides.
+        let mut app = DamageApp::new();
+        app.rams = 1;
+        assert!(app.has_input());
+        assert_eq!(app.calculate_damage(Side::Left).0, 8);
+        assert_eq!(app.calculate_damage(Side::Right).0, 8);
+        // A head-on vs a different-size hull is entered as two rams: 960 = 16%.
+        app.rams = 2;
+        assert_eq!(app.calculate_damage(Side::Left).0, 16);
+    }
+
+    #[test]
+    fn rock_damage_scales_with_own_morale_bar() {
+        // A rock/edge hit is 1/12 of the ship's own rest bar. Sloop: 5760/12 = 480,
+        // i.e. 8% of morale — no longer a flat constant shared by every hull.
+        let mut app = DamageApp::new();
+        app.left[1] = 1; // one rock banged
+        assert_eq!(app.calculate_damage(Side::Left).0, 8);
+    }
+
+    #[test]
+    fn corrected_ship_stats() {
+        use crate::ships::{SHIPS, ship_index};
+        // Junk <-> Merchant Brig were transposed (morale/hull/ram); Xebec <-> War
+        // Galleon had their HP transposed. Lock in the yppedia-correct values.
+        let junk = &SHIPS[ship_index("Junk").unwrap()];
+        assert_eq!((junk.morale_hp, junk.hull_hp, junk.ram_damage), (14400, 24000, 1440));
+        let mb = &SHIPS[ship_index("Merchant Brig").unwrap()];
+        assert_eq!((mb.morale_hp, mb.hull_hp, mb.ram_damage), (11520, 19200, 960));
+        let xebec = &SHIPS[ship_index("Xebec").unwrap()];
+        assert_eq!((xebec.morale_hp, xebec.hull_hp), (20160, 33600));
+        let wg = &SHIPS[ship_index("War Galleon").unwrap()];
+        assert_eq!((wg.morale_hp, wg.hull_hp), (14400, 24000));
     }
 
     #[test]

@@ -114,12 +114,12 @@ pub struct BattleSnapshot {
     pub our_ship: usize,
     /// The foe's ship type (the Damage calculator's "Right").
     pub foe_ship: usize,
-    /// Hits *we* took: `[shots, rocks, rams]`.
-    pub our_hits: [u32; 3],
-    /// Hits the *foe* took: `[shots, rocks, rams]`.
-    pub foe_hits: [u32; 3],
-    /// Head-on collisions.
-    pub headon: u32,
+    /// Hits *we* took: `[shots, rocks]`.
+    pub our_hits: [u32; 2],
+    /// Hits the *foe* took: `[shots, rocks]`.
+    pub foe_hits: [u32; 2],
+    /// Times rammed — a single shared count (a ram damages both ships).
+    pub rams: u32,
     /// Our full crew aboard at capture — real pirates + swabbies/named mercenaries
     /// (the manpower used for the crew advantage). Named `our_pirates` for history.
     pub our_pirates: u32,

@@ -31,12 +31,16 @@ pub struct SavedSnapshot {
     pub our_ship: String,
     #[serde(default)]
     pub foe_ship: String,
+    /// Hits *we* took: `[shots, rocks]`.
     #[serde(default)]
-    pub our_hits: [u32; 3],
+    pub our_hits: [u32; 2],
+    /// Hits the *foe* took: `[shots, rocks]`.
     #[serde(default)]
-    pub foe_hits: [u32; 3],
+    pub foe_hits: [u32; 2],
+    /// Times rammed — a single shared count (a ram damages both ships; a head-on
+    /// counts twice for a different-size-class foe).
     #[serde(default)]
-    pub headon: u32,
+    pub rams: u32,
     #[serde(default)]
     pub our_pirates: u32,
 }
@@ -405,7 +409,7 @@ fn saved_snapshot(s: crate::voyage::BattleSnapshot) -> SavedSnapshot {
         foe_ship: name(s.foe_ship),
         our_hits: s.our_hits,
         foe_hits: s.foe_hits,
-        headon: s.headon,
+        rams: s.rams,
         our_pirates: s.our_pirates,
     }
 }
@@ -476,7 +480,7 @@ impl SavedSnapshot {
             foe_ship: ship_index(&self.foe_ship).unwrap_or(0),
             our_hits: self.our_hits,
             foe_hits: self.foe_hits,
-            headon: self.headon,
+            rams: self.rams,
             our_pirates: self.our_pirates,
         }
     }

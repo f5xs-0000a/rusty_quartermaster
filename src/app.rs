@@ -61,9 +61,9 @@ fn is_damage_target(target: &ClickTarget) -> bool {
         ClickTarget::DamageCell { .. }
             | ClickTarget::DamageIncrement { .. }
             | ClickTarget::DamageDecrement { .. }
-            | ClickTarget::DamageHeadon
-            | ClickTarget::DamageHeadonIncrement
-            | ClickTarget::DamageHeadonDecrement
+            | ClickTarget::DamageRam
+            | ClickTarget::DamageRamIncrement
+            | ClickTarget::DamageRamDecrement
             | ClickTarget::DamageShipItem(_)
             | ClickTarget::DamageResetYes
             | ClickTarget::DamageResetNo
@@ -1762,7 +1762,7 @@ impl AppShell {
     /// it) — moved between with ↑/↓. Esc closes the editor's ship picker / reset
     /// confirm first, otherwise the popup.
     fn handle_battles_key(&mut self, key: KeyEvent) -> InputResult {
-        use crate::damage::{ROW_HEADON, ROW_SHIP, Side};
+        use crate::damage::{ROW_RAMS, ROW_SHIP, Side};
         use crate::voyage::ui::BattlesFocus::{Calc, Pager, Record};
 
         // A read-only history page: only paging between fights and closing — the
@@ -1818,7 +1818,7 @@ impl AppShell {
                 if key.code == KeyCode::Up && self.voyage_ui.battle_editor.focus_row == ROW_SHIP {
                     self.voyage_ui.battles_focus = Record;
                 } else if key.code == KeyCode::Down
-                    && self.voyage_ui.battle_editor.focus_row == ROW_HEADON
+                    && self.voyage_ui.battle_editor.focus_row == ROW_RAMS
                 {
                     // bottom of the chain — stay put.
                 } else {
@@ -2652,21 +2652,21 @@ impl AppShell {
                 self.damage.focus_side = side;
                 self.damage.decrement();
             }
-            ClickTarget::DamageHeadon => {
+            ClickTarget::DamageRam => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.focus_row = crate::damage::ROW_HEADON;
+                self.damage.focus_row = crate::damage::ROW_RAMS;
             }
-            ClickTarget::DamageHeadonIncrement => {
+            ClickTarget::DamageRamIncrement => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.focus_row = crate::damage::ROW_HEADON;
+                self.damage.focus_row = crate::damage::ROW_RAMS;
                 self.damage.increment();
             }
-            ClickTarget::DamageHeadonDecrement => {
+            ClickTarget::DamageRamDecrement => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
-                self.damage.focus_row = crate::damage::ROW_HEADON;
+                self.damage.focus_row = crate::damage::ROW_RAMS;
                 self.damage.decrement();
             }
             ClickTarget::DamageShipItem(i) => {

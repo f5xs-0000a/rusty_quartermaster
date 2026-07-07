@@ -5,7 +5,7 @@ use crate::clickmap::{ClickRegion, ClickTarget};
 use crate::ships::SHIPS;
 use crate::utils::offset_title;
 use super::{
-    CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_HEADON, ROW_MANPOWER,
+    CENTER_LABELS, DamageApp, ROW_COUNT, ROW_DAMAGE, ROW_GAP, ROW_MANPOWER, ROW_RAMS,
     ROW_SHIP, ROW_SHOTS_LEFT, Side,
 };
 
@@ -54,8 +54,8 @@ pub fn render_calculator(
     for i in 0..visible_rows {
         if i == ROW_GAP {
             continue;
-        } else if i == ROW_HEADON {
-            render_headon_row(frame, rows[i], app, max_ship_name, center_width, cells_active, regions);
+        } else if i == ROW_RAMS {
+            render_ram_row(frame, rows[i], app, max_ship_name, center_width, cells_active, regions);
         } else if i == ROW_MANPOWER {
             render_manpower_row(frame, rows[i], app, max_ship_name, center_width);
         } else {
@@ -107,6 +107,7 @@ pub fn render(
     if focused && app.popup.is_none() {
         let hint = match app.focus_row {
             ROW_SHIP => Some("Press Enter to select a different ship"),
+            ROW_RAMS => Some("Head-on? Increment twice (once for same size class)"),
             ROW_DAMAGE => None,
             _ => Some("Space/Enter to increment, Backspace to decrement"),
         };
@@ -287,7 +288,7 @@ fn render_value_with_buttons(
     });
 }
 
-fn render_headon_row(
+fn render_ram_row(
     frame: &mut Frame,
     area: Rect,
     app: &DamageApp,
@@ -308,7 +309,7 @@ fn render_headon_row(
     // Label in merged area, right-aligned
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "Head-on Collisions",
+            "Times Rammed",
             Style::default().bold(),
         ))
         .centered(),
@@ -316,7 +317,7 @@ fn render_headon_row(
     );
 
     // Value with +/- buttons
-    let focused = cells_active && app.focus_row == ROW_HEADON;
+    let focused = cells_active && app.focus_row == ROW_RAMS;
     let style = if focused {
         Style::default().bg(Color::White).fg(Color::Black)
     } else {
@@ -335,7 +336,7 @@ fn render_headon_row(
         sub_cols[0],
     );
     frame.render_widget(
-        Paragraph::new(app.headon.to_string())
+        Paragraph::new(app.rams.to_string())
             .centered()
             .style(style),
         sub_cols[1],
@@ -347,19 +348,19 @@ fn render_headon_row(
 
     regions.push(ClickRegion {
         rect: sub_cols[0],
-        target: ClickTarget::DamageHeadonDecrement,
+        target: ClickTarget::DamageRamDecrement,
     });
     regions.push(ClickRegion {
         rect: sub_cols[1],
-        target: ClickTarget::DamageHeadon,
+        target: ClickTarget::DamageRam,
     });
     regions.push(ClickRegion {
         rect: sub_cols[2],
-        target: ClickTarget::DamageHeadonIncrement,
+        target: ClickTarget::DamageRamIncrement,
     });
 }
 
-/// The Manpower Advantage row: same merged layout as head-on, but view-only. The
+/// The Manpower Advantage row: same merged layout as the ram row, but view-only. The
 /// value cell shows the inferred advantage **range** (both crew counts derived from
 /// the two ship types, weighted by each side's morale advantage), to two decimals.
 /// Collapses to a single number when the endpoints coincide.

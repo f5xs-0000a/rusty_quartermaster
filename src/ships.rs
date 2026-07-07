@@ -40,6 +40,10 @@ pub struct Ship {
     pub hull_hp: u32,
     pub morale_hp: u32,
     pub ram_damage: u32,
+    /// Ram size class. Retained as reference data (and to document each hull's
+    /// collision tier); the calculator no longer auto-doubles head-ons — the user
+    /// enters a different-class head-on as two rams instead.
+    #[allow(dead_code)]
     pub ship_size_class: ShipClass,
     pub move_tokens: u8,
     /// Maximum *mercenaries* (improved NPC crew) hireable, per yppedia. Used as
@@ -189,9 +193,9 @@ const JUNK: Ship = Ship {
     shots_per_move: 1,
     mass: 18000,
     volume: 27000,
-    morale_hp: 11520,
-    hull_hp: 19200,
-    ram_damage: 960,
+    morale_hp: 14400,
+    hull_hp: 24000,
+    ram_damage: 1440,
     ship_size_class: ShipClass::Medium,
     move_tokens: 3,
     image_data: include_bytes!("../assets/junk.png"),
@@ -210,9 +214,9 @@ const MERCHANT_BRIG: Ship = Ship {
     shots_per_move: 1,
     mass: 90000,
     volume: 135000,
-    morale_hp: 14400,
-    hull_hp: 24000,
-    ram_damage: 1440,
+    morale_hp: 11520,
+    hull_hp: 19200,
+    ram_damage: 960,
     ship_size_class: ShipClass::Medium,
     move_tokens: 3,
     image_data: include_bytes!("../assets/merchant_brig.png"),
@@ -273,8 +277,8 @@ const WAR_GALLEON: Ship = Ship {
     shots_per_move: 2,
     mass: 90000,
     volume: 135000,
-    morale_hp: 20160,
-    hull_hp: 33600,
+    morale_hp: 14400,
+    hull_hp: 24000,
     ram_damage: 2400, // NOTE: unknown
     ship_size_class: ShipClass::Large,
     move_tokens: 3,
@@ -294,8 +298,8 @@ const XEBEC: Ship = Ship {
     shots_per_move: 2,
     mass: 121500,
     volume: 182250,
-    morale_hp: 14400,
-    hull_hp: 24000,
+    morale_hp: 20160,
+    hull_hp: 33600,
     ram_damage: 2400,
     ship_size_class: ShipClass::Large,
     move_tokens: 3,

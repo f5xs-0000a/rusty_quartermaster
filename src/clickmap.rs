@@ -19,9 +19,11 @@ pub enum ClickTarget {
     DamageCell { row: usize, side: Side },
     DamageIncrement { row: usize, side: Side },
     DamageDecrement { row: usize, side: Side },
-    DamageHeadon,
-    DamageHeadonIncrement,
-    DamageHeadonDecrement,
+    /// Times Rammed cell / +/- buttons — a single shared counter (one row, not
+    /// per-side), so it has no `side` field like the standard damage rows.
+    DamageRam,
+    DamageRamIncrement,
+    DamageRamDecrement,
     DamageShipItem(usize),
     /// Yes / No on the "Reset values?" confirm shown after a ship change.
     DamageResetYes,
