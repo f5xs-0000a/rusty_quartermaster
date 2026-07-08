@@ -341,7 +341,10 @@ pub fn render(
     };
 
     // Size to content (+2 for the borders) and center, never exceeding the area.
-    let width = ((content_w + 2) as u16).min(widget_area.width);
+    // A default floor keeps the panel a comfortable width on short content instead
+    // of hugging the text; wider content still expands past it.
+    const DEFAULT_W: u16 = 50; // total width incl. borders
+    let width = ((content_w + 2) as u16).max(DEFAULT_W).min(widget_area.width);
     let area = Rect {
         x: widget_area.x + widget_area.width.saturating_sub(width) / 2,
         y: widget_area.y,
