@@ -2,6 +2,9 @@
 name = "rusty_quartermaster"
 version = "0.1.0"
 edition = "2024"
+authors = ["F5XS"]
+description = "Unofficial fan tool for Puzzle Pirates: parses the game chat log to track voyages, battles, and crew stats."
+license = "MIT"
 
 [dependencies]
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
