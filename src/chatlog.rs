@@ -1176,6 +1176,10 @@ impl GameState {
             let mut battle = Battle {
                 enemy,
                 started_at: now,
+                // Live-tracked fights are recorded (persisted) by default; the Sea
+                // Battles popup's Recorded toggle can still opt an individual fight
+                // out. On save this writes the fight's snapshot when one exists.
+                recorded: true,
                 ..Battle::default()
             };
             if let Some(idx) = monkey_ship {

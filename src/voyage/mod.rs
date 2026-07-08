@@ -174,7 +174,9 @@ pub struct Battle {
     pub snapshot: Option<BattleSnapshot>,
     /// Whether this fight is **recorded** — i.e. written to the voyage history on
     /// disk. Independent of [`Self::snapshot`]: the calculator/strength/advantage
-    /// always display; this flag only governs persistence. Default `false`.
+    /// always display; this flag only governs persistence. Live-tracked fights are
+    /// created with this set (see `on_interception`); the Sea Battles popup can opt
+    /// an individual fight out. `Battle::default()` itself leaves it `false`.
     pub recorded: bool,
     /// Names knocked out during this fight's melee (`<Name> is eliminated!`, both
     /// sides), accumulated while the fight is open and cleared once resolved. The
