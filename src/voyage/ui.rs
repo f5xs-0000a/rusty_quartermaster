@@ -98,6 +98,15 @@ pub struct VoyageStatsUi {
     /// Number of non-chart focusables in the last render — the boundary at which
     /// [`Self::focus`] crosses into the charts. Set by `render`.
     pub n_stats: usize,
+    /// Stable key per focusable (label / section title / chart title), in focus
+    /// order, from the last render. Lets a page turn re-focus the *same field* by
+    /// key rather than by raw index — indices shift when conditional sections
+    /// (Divvy/Enemies/Advantage/Consumption) appear or vanish between voyages.
+    pub focus_keys: Vec<String>,
+    /// Set by a page turn to the outgoing page's focused-field key; the next render
+    /// resolves it to an index on the incoming page (falling back to the clamped
+    /// index when that field doesn't exist), then clears it.
+    pub pending_focus_key: Option<String>,
     /// When `Some`, the save/discard prompt is open with this button focused.
     pub prompt: Option<SaveChoice>,
     /// When `Some(i)`, chart `i` is enlarged in a popup.
@@ -424,6 +433,22 @@ pub fn render(
     let n_charts = CHART_TITLES.len();
     let n_focus = n_stats + n_charts;
     ui.n_stats = n_stats;
+
+    // Focus keys in focus order (stats, then charts) — recorded so the next page
+    // turn can carry focus to the same field by key. A pending key set by a page
+    // turn is resolved here: land on the matching field, or keep the (clamped)
+    // index when the incoming voyage lacks that field.
+    ui.focus_keys = built
+        .focusable
+        .iter()
+        .map(|f| f.key.clone())
+        .chain(CHART_TITLES.iter().map(|t| t.to_string()))
+        .collect();
+    if let Some(key) = ui.pending_focus_key.take() {
+        if let Some(idx) = ui.focus_keys.iter().position(|k| *k == key) {
+            ui.focus = idx;
+        }
+    }
     ui.focus = ui.focus.min(n_focus.saturating_sub(1));
     let focused_chart = if ui.focus >= n_stats {
         Some(ui.focus - n_stats)
@@ -1893,11 +1918,13 @@ fn combined_range(slices: &[&[f64]]) -> Option<(f64, f64)> {
     any.then_some((lo, hi))
 }
 
-/// A focusable stat: which built line it lives on, and the tooltip to show
-/// below the widget when it's focused.
+/// A focusable stat: which built line it lives on, the tooltip to show below the
+/// widget when it's focused, and a stable `key` (the label / section title) used to
+/// carry focus onto the same field across a voyage page turn.
 struct Focusable {
     line: usize,
     tooltip: String,
+    key: String,
 }
 
 /// One body row kept in raw form until the widget's width is known. The width is
@@ -1961,14 +1988,17 @@ impl Built {
         self.focusable.push(Focusable {
             line: self.rows.len(),
             tooltip: tooltip.to_string(),
+            key: title.to_string(),
         });
         self.push(Row::Section(title.to_string()));
     }
-    /// Push a focusable `label .... value` stat row tied to `tooltip`.
+    /// Push a focusable `label .... value` stat row tied to `tooltip`. The `label`
+    /// doubles as the focus key (unique across the body).
     fn stat(&mut self, label: &str, value: String, tooltip: &str) {
         self.focusable.push(Focusable {
             line: self.rows.len(),
             tooltip: tooltip.to_string(),
+            key: label.to_string(),
         });
         self.push(Row::Stat {
             label: label.to_string(),

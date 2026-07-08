@@ -906,8 +906,12 @@ impl AppShell {
     }
 
     /// Step the pager by `delta` pages (clamped). Landing on the newest page
-    /// returns to `Live` so the page keeps auto-following new runs; any page
-    /// change closes the Sea Battles popup and resets scroll/focus.
+    /// returns to `Live` so the page keeps auto-following new runs; any page change
+    /// closes the Sea Battles popup. Scroll and the *focused field* are preserved
+    /// across the turn: we stash the outgoing field's stable key so the next render
+    /// re-focuses the same field by name on the incoming voyage — robust to the
+    /// conditional sections (Divvy/Enemies/Advantage/Consumption) that shift raw
+    /// indices between voyages. Scroll then follows via the render's auto-scroll.
     fn nav_voyage(&mut self, delta: isize) {
         use crate::voyage::ui::VoyageSel;
         let pages = self.voyage_pages();
@@ -922,8 +926,9 @@ impl AppShell {
             pages[next]
         };
         self.voyage_ui.battles_popup = None;
-        self.voyage_ui.scroll = 0;
-        self.voyage_ui.focus = 0;
+        // Carry focus to the same field on the new page (resolved at render).
+        self.voyage_ui.pending_focus_key =
+            self.voyage_ui.focus_keys.get(self.voyage_ui.focus).cloned();
     }
 
     /// The computed view for the Voyage Statistics page, resolving the pager
