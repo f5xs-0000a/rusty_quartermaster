@@ -137,9 +137,6 @@ struct AssembleView<'a> {
     badge: crate::voyage::ui::VoyageBadge,
     page: usize,
     page_count: usize,
-    /// Saved-history index of the voyage being shown, if it *is* a persisted one,
-    /// so the same-hull "History" box can exclude it (no double-count).
-    exclude_saved_idx: Option<usize>,
 }
 
 // ---------------------------------------------------------------------------
@@ -1043,8 +1040,6 @@ impl AppShell {
             badge,
             page,
             page_count,
-            // Only in the saved set if this run was persisted this session.
-            exclude_saved_idx: voyage.saved_to,
         }))
     }
 
@@ -1080,7 +1075,6 @@ impl AppShell {
             badge: VoyageBadge::ReadOnly,
             page,
             page_count,
-            exclude_saved_idx: Some(idx),
         })
     }
 
@@ -1102,7 +1096,6 @@ impl AppShell {
             badge,
             page,
             page_count,
-            exclude_saved_idx,
         } = a;
         // Booty was frozen onto the voyage at its divvy (live) or restored from disk
         // (saved), so both paths read it straight off the voyage.
@@ -1226,11 +1219,10 @@ impl AppShell {
             // voyage's hull — drives the "History" box beneath the per-fight bars.
             // Only when the hull is actually known (no guessing).
             let mut hull_fight_poe = Vec::new();
-            for (i, v) in self.voyage_history.voyages.iter().enumerate() {
+            for v in &self.voyage_history.voyages {
                 let mut total = 0i64;
                 let mut shares = 0u32;
                 let same_hull = ship_type.is_some() && v.ship_type == ship_type;
-                let is_self = exclude_saved_idx == Some(i);
                 for bt in &v.battles {
                     if let Some(p) = bt.poe {
                         total += p;
@@ -1238,11 +1230,10 @@ impl AppShell {
                         // files (pre-merc-field) restore mercs = 0, falling back to
                         // pirates-only shares. Paired with the numerator per fight.
                         shares += bt.pirates + bt.our_team.as_ref().map_or(0, |t| t.mercenaries);
-                        // Decisive (won/lost) fights on the same hull, signed.
-                        if same_hull
-                            && !is_self
-                            && matches!(bt.outcome.as_str(), "won" | "lost")
-                        {
+                        // Decisive (won/lost) fights on the same hull, signed. The
+                        // displayed voyage is included (History no longer self-excludes),
+                        // consistent with the Ship Winrate history.
+                        if same_hull && matches!(bt.outcome.as_str(), "won" | "lost") {
                             hull_fight_poe.push(p as f64);
                         }
                     }
@@ -1255,57 +1246,18 @@ impl AppShell {
                 });
             }
 
-            // Ship Winrate history keyed by (our hull, enemy hull): every OTHER voyage
-            // the app knows — the current session's in-RAM runs (active + completed,
-            // saved or not) plus disk history from prior sessions. In-RAM runs read the
-            // live snapshot for the foe hull, so a fight counts even when it was never
-            // flagged "recorded" (the disk format drops unrecorded snapshots). Deduped
-            // so a saved session run isn't tallied twice, and the displayed voyage (the
-            // Voyage layer) is excluded.
+            // Ship Winrate history keyed by (our hull, enemy hull): the *persisted*
+            // voyage set only — runs already written to disk plus those saved this
+            // session (`save_displayed_voyage` pushes here and flushes immediately, so
+            // this is exactly "written or confirmed about to be written"). Unsaved
+            // in-RAM runs are deliberately NOT counted, and the displayed voyage is NOT
+            // excluded: when it's a saved run it counts here too, so Historical overlaps
+            // the Voyage column rather than being disjoint from it. The per-fight foe
+            // hull persists independently of the `recorded` flag (top-level `foe_ship`),
+            // so unrecorded fights still bucket correctly.
             let mut wr_history: std::collections::BTreeMap<(usize, usize), WinCount> =
                 Default::default();
-            // Disk indices already represented by an in-RAM run — skip their copies.
-            let mut covered_disk: std::collections::HashSet<usize> = Default::default();
-            for vessel in self.chatlog.vessels.values() {
-                for v in vessel.voyages.iter().chain(vessel.current_voyage.as_ref()) {
-                    if let Some(idx) = v.saved_to {
-                        covered_disk.insert(idx);
-                    }
-                }
-            }
-            // Session runs (in-RAM): freshest, and independent of the `recorded` flag.
-            for (key, vessel) in &self.chatlog.vessels {
-                let Some(our_idx) = self.jobbers_ui.ship_types.get(key).copied() else {
-                    continue;
-                };
-                for v in vessel.voyages.iter().chain(vessel.current_voyage.as_ref()) {
-                    // Skip the run shown as the Voyage layer (matched by id when live,
-                    // or by its disk index when a saved run is on screen).
-                    let displayed = v.id == voyage.id
-                        || (exclude_saved_idx.is_some() && v.saved_to == exclude_saved_idx);
-                    if displayed {
-                        continue;
-                    }
-                    for b in &v.battles {
-                        let o = eff(b.outcome);
-                        if !matches!(o, Won | Lost) {
-                            continue;
-                        }
-                        let foe = b.foe_ship.or_else(|| b.snapshot.map(|s| s.foe_ship));
-                        if let Some(foe_idx) = foe {
-                            wr_history
-                                .entry((our_idx, foe_idx))
-                                .or_default()
-                                .add(matches!(o, Won));
-                        }
-                    }
-                }
-            }
-            // Disk runs from prior sessions (those with no in-RAM counterpart).
-            for (i, v) in self.voyage_history.voyages.iter().enumerate() {
-                if exclude_saved_idx == Some(i) || covered_disk.contains(&i) {
-                    continue;
-                }
+            for v in &self.voyage_history.voyages {
                 let Some(our_idx) = v.ship_type.as_deref().and_then(crate::ships::ship_index)
                 else {
                     continue;

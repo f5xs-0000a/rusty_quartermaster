@@ -24,11 +24,11 @@ use crate::voyage::{
 };
 
 /// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
-/// by name (robust to `SHIPS` reordering).
+/// by name (robust to `SHIPS` reordering). Our own hull is *not* stored here — it's
+/// the same for every fight of a voyage, so it's derived from the voyage's
+/// `ship_type` on load (see [`SavedBattle::to_battle`]).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedSnapshot {
-    #[serde(default)]
-    pub our_ship: String,
     #[serde(default)]
     pub foe_ship: String,
     /// Hits *we* took: `[shots, rocks]`.
@@ -404,8 +404,9 @@ pub fn from_voyage(
 /// resolving ship indices to names.
 fn saved_snapshot(s: crate::voyage::BattleSnapshot) -> SavedSnapshot {
     let name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string()).unwrap_or_default();
+    // `our_ship` is intentionally not persisted — it's derived from the voyage hull
+    // on load. Only the foe hull (which varies per fight) is stored.
     SavedSnapshot {
-        our_ship: name(s.our_ship),
         foe_ship: name(s.foe_ship),
         our_hits: s.our_hits,
         foe_hits: s.foe_hits,
@@ -474,9 +475,11 @@ impl SavedTeam {
 }
 
 impl SavedSnapshot {
-    fn to_snapshot(&self) -> BattleSnapshot {
+    /// `our_ship` is the voyage's hull index (derived by the caller from
+    /// `SavedVoyage::ship_type`), since it isn't stored per-snapshot.
+    fn to_snapshot(&self, our_ship: usize) -> BattleSnapshot {
         BattleSnapshot {
-            our_ship: ship_index(&self.our_ship).unwrap_or(0),
+            our_ship,
             foe_ship: ship_index(&self.foe_ship).unwrap_or(0),
             our_hits: self.our_hits,
             foe_hits: self.foe_hits,
@@ -496,7 +499,9 @@ impl SavedBattle {
     /// Rebuild an in-RAM [`Battle`] for a read-only history page. Timestamps are
     /// synthesized so `sea_secs`/`boarding_secs`/`total_secs` reproduce the stored
     /// durations; `advantage_*` stay `None` (derived from the snapshot in the UI).
-    fn to_battle(&self) -> Battle {
+    /// `our_ship` is the voyage's hull index (all fights share it) used to rebuild
+    /// the snapshot's own-ship, which isn't persisted per-fight.
+    fn to_battle(&self, our_ship: usize) -> Battle {
         let base = epoch();
         let after = |secs: Option<i64>| {
             secs.zip(base)
@@ -516,7 +521,7 @@ impl SavedBattle {
             category: category_from_str(&self.category),
             advantage_dmg: None,
             advantage_crew: None,
-            snapshot: self.snapshot.as_ref().map(SavedSnapshot::to_snapshot),
+            snapshot: self.snapshot.as_ref().map(|s| s.to_snapshot(our_ship)),
             // A persisted snapshot *is* the record of a recorded fight.
             recorded: self.snapshot.is_some(),
             melee_kos: Vec::new(),
@@ -584,6 +589,9 @@ impl SavedVoyage {
             .duration_secs
             .zip(base)
             .map(|(s, b)| b + chrono::Duration::seconds(s));
+        // Our hull is voyage-wide; each fight's snapshot derives its own-ship from it
+        // (unknown/legacy hull falls back to the first ship, matching the old default).
+        let our_ship = self.ship_type.as_deref().and_then(ship_index).unwrap_or(0);
         Voyage {
             id: 0,
             saved_to: None,
@@ -591,7 +599,7 @@ impl SavedVoyage {
             sailed_at: base,
             ported_at: ported,
             current_battle: None,
-            battles: self.battles.iter().map(SavedBattle::to_battle).collect(),
+            battles: self.battles.iter().map(|b| b.to_battle(our_ship)).collect(),
             crew_samples: Vec::new(),
             merc_checkpoint: 0,
             poisoned: self.poisoned,
@@ -738,9 +746,9 @@ mod tests {
         // `recorded` is no longer persisted — a stored snapshot *is* the record, so a
         // battle with a snapshot reconstructs as recorded and one without does not.
         let with = SavedBattle { snapshot: Some(SavedSnapshot::default()), ..SavedBattle::default() };
-        assert!(with.to_battle().recorded);
+        assert!(with.to_battle(0).recorded);
         let without = SavedBattle::default();
-        assert!(!without.to_battle().recorded);
+        assert!(!without.to_battle(0).recorded);
     }
 
     #[test]
@@ -805,6 +813,39 @@ mod tests {
         assert_eq!(cs.alcohol.weighted(), 60 * 3 + 15 * 6);
         // 270 weighted alcohol over an average crew of 8.
         assert!((cs.alcohol_per_crew.unwrap() - 270.0 / 8.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn snapshot_our_ship_derives_from_voyage_hull() {
+        // `our_ship` isn't stored per-snapshot; it's rebuilt from the voyage's hull.
+        let junk = ship_index("Junk").unwrap();
+        let sv = SavedVoyage {
+            ship_type: Some("Junk".into()),
+            battles: vec![SavedBattle {
+                outcome: "won".into(),
+                snapshot: Some(SavedSnapshot {
+                    foe_ship: "Sloop".into(),
+                    ..SavedSnapshot::default()
+                }),
+                ..SavedBattle::default()
+            }],
+            ..SavedVoyage::default()
+        };
+        let voy = sv.to_voyage();
+        let snap = voy.battles[0].snapshot.expect("snapshot present");
+        assert_eq!(snap.our_ship, junk, "own hull comes from the voyage ship_type");
+        assert_eq!(snap.foe_ship, ship_index("Sloop").unwrap());
+
+        // An unknown/absent hull falls back to the first ship (index 0), as before.
+        let sv0 = SavedVoyage {
+            ship_type: None,
+            battles: vec![SavedBattle {
+                snapshot: Some(SavedSnapshot::default()),
+                ..SavedBattle::default()
+            }],
+            ..SavedVoyage::default()
+        };
+        assert_eq!(sv0.to_voyage().battles[0].snapshot.unwrap().our_ship, 0);
     }
 }
 
