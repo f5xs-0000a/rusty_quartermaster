@@ -4186,6 +4186,7 @@ mod tests {
         // boarding win.
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/06/23 ======");
         gs.process_line("[02:33:00] Going aboard the Test Vessel...");
         gs.process_line(
             "[02:33:01] This vessel is now Pillaging, Average Barbarians.",
@@ -4579,6 +4580,7 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.name_segments.learn_brigand("Gentle Gayle");
+        gs.process_line("====== 2026/06/23 ======");
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
         gs.process_line(
             "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
@@ -4618,9 +4620,14 @@ mod tests {
             .unwrap();
         assert!(!voy.crew_samples.is_empty());
         assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 1));
+        // The win backfills every sample of the just-closed stretch and advances
+        // the checkpoint over them. The post-resolution `sample_crew` then opens
+        // the next stretch with one fresh baseline sample, which stays
+        // uncheckpointed until the next win closes it — so the checkpoint sits
+        // exactly one behind the sample count.
         assert_eq!(
             voy.merc_checkpoint,
-            voy.crew_samples.len()
+            voy.crew_samples.len() - 1
         );
     }
 }
