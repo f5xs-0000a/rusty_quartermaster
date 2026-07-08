@@ -143,6 +143,14 @@ struct AssembleView<'a> {
 // Free functions operating on shared data
 // ---------------------------------------------------------------------------
 
+/// The voyage's clock span for the Voyage Statistics header: the start date and
+/// time, then the end time, e.g. `"2026-07-05 15:09 to 17:32"`. The date is shown
+/// once on the start (a run rarely crosses midnight; if it does, only the start
+/// date is labelled).
+fn voyage_period(start: chrono::NaiveDateTime, end: chrono::NaiveDateTime) -> String {
+    format!("{} to {}", start.format("%Y-%m-%d %H:%M"), end.format("%H:%M"))
+}
+
 pub fn commod_name<'a>(commodities: &'a [Commodity], id: u64) -> &'a str {
     commodities
         .iter()
@@ -1011,11 +1019,7 @@ impl AppShell {
             _ => None,
         };
         let period = match (voyage.sailed_at, end_at) {
-            (Some(start), Some(end)) => Some(format!(
-                "{} to {}",
-                start.format("%H:%M"),
-                end.format("%H:%M")
-            )),
+            (Some(start), Some(end)) => Some(voyage_period(start, end)),
             _ => None,
         };
         let confirmed = self.chatlog.self_confirmed;
@@ -1065,10 +1069,19 @@ impl AppShell {
             .as_ref()
             .map(|c| c.to_stats(&voyage))
             .unwrap_or_default();
+        // The real ported time only survives as the `ended_at` string (the in-RAM
+        // voyage uses synthetic epoch clocks); the start is it minus the duration.
+        let period = chrono::NaiveDateTime::parse_from_str(&saved.ended_at, "%Y-%m-%d %H:%M:%S")
+            .ok()
+            .zip(saved.duration_secs)
+            .map(|(end, dur)| {
+                let start = end - chrono::Duration::seconds(dur);
+                voyage_period(start, end)
+            });
         self.assemble_voyage_view(AssembleView {
             vessel_name: saved.vessel.clone(),
             ship_type: saved.ship_type.clone(),
-            period: None,
+            period,
             elapsed_secs: voyage.duration_secs(),
             voyage: &voyage,
             // Persisted outcomes are already final — don't re-mask them by the

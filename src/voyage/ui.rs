@@ -325,16 +325,14 @@ pub fn render(
     const NO_VOYAGE_TITLE: &str = "No voyage tracked yet.";
     const NO_VOYAGE_HINT: &str = "Set sail on a vessel to begin recording stats.";
     let content_w = if view.has_voyage {
-        let header_w = [
-            view.vessel.as_deref(),
-            view.ship_type.as_deref(),
-            view.period.as_deref(),
-        ]
-        .into_iter()
-        .flatten()
-        .map(|s| s.chars().count())
-        .max()
-        .unwrap_or(0);
+        // The name + parenthesized hull now share one line, so measure them
+        // together (the widest header line drives the panel width).
+        let title_w = view.vessel.as_deref().map(|s| s.chars().count()).unwrap_or(0)
+            + match view.ship_type.as_deref() {
+                Some(t) => t.chars().count() + 3, // " ()" around the hull
+                None => "Unknown Ship Hull".chars().count() + 3,
+            };
+        let header_w = title_w.max(view.period.as_deref().map(|s| s.chars().count()).unwrap_or(0));
         built.natural_width().max(header_w).max(FOOTER_W)
     } else {
         NO_VOYAGE_HINT.chars().count()
@@ -382,20 +380,24 @@ pub fn render(
     // Pinned header (ship name / type / clock span), kept out of the scroll so
     // it never disappears. The scroll body starts at "Sea Battles".
     let iw = inner.width as usize;
-    let mut header: Vec<Line<'static>> = vec![centered_line(
+    // Ship name (bold) with its hull in parentheses on one centered line, e.g.
+    // "Test Vessel (Sloop)". The second line is the run's clock span. An
+    // unknown hull reads as a dimmed, italic placeholder in the parentheses.
+    let mut title = vec![Span::styled(
         view.vessel.clone().unwrap_or_default(),
-        iw,
         Style::default().bold(),
     )];
     match &view.ship_type {
-        Some(t) => header.push(centered_line(t.clone(), iw, Style::default().fg(Color::Gray))),
-        // No hull assigned — say so, dimmed and italic so it reads as a placeholder.
-        None => header.push(centered_line(
-            "Unknown Ship Hull".to_string(),
-            iw,
+        Some(t) => title.push(Span::styled(
+            format!(" ({t})"),
+            Style::default().fg(Color::Gray),
+        )),
+        None => title.push(Span::styled(
+            " (Unknown Ship Hull)".to_string(),
             Style::default().fg(Color::DarkGray).italic(),
         )),
     }
+    let mut header: Vec<Line<'static>> = vec![centered_spans(title, iw)];
     if let Some(p) = &view.period {
         header.push(centered_line(p.clone(), iw, Style::default().fg(Color::DarkGray)));
     }
@@ -2333,6 +2335,24 @@ fn build_lines(view: &VoyageView) -> Built {
 fn centered_line(text: String, width: usize, style: Style) -> Line<'static> {
     let w = width.max(1);
     Line::from(Span::styled(format!("{text:^w$}"), style))
+}
+
+/// Center a run of individually-styled spans as one unit, padding both sides so
+/// the combined text sits centered while each span keeps its own style.
+fn centered_spans(spans: Vec<Span<'static>>, width: usize) -> Line<'static> {
+    let w = width.max(1);
+    let text_w: usize = spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = w.saturating_sub(text_w);
+    let (left, right) = (pad / 2, pad - pad / 2);
+    let mut out = Vec::with_capacity(spans.len() + 2);
+    if left > 0 {
+        out.push(Span::raw(" ".repeat(left)));
+    }
+    out.extend(spans);
+    if right > 0 {
+        out.push(Span::raw(" ".repeat(right)));
+    }
+    Line::from(out)
 }
 
 /// A full-width row of three centered, individually-styled columns.
