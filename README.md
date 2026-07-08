@@ -1,5 +1,7 @@
 # Rusty Quartermaster
 
+[![CI](https://github.com/f5xs-0000a/rusty_quartermaster/actions/workflows/ci.yml/badge.svg)](https://github.com/f5xs-0000a/rusty_quartermaster/actions/workflows/ci.yml)
+
 A terminal application for [Yohoho! Puzzle Pirates](https://www.puzzlepirates.com/) players. It runs entirely in your terminal and you navigate with the keyboard and/or mouse.
 
 ## Prerequisites
