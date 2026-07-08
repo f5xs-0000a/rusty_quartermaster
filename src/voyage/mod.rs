@@ -15,8 +15,6 @@ pub mod ui;
 
 use chrono::NaiveDateTime;
 
-use crate::chatlog::JobKind;
-
 // ---------------------------------------------------------------------------
 // Voyage statistics (per sail->port run)
 // ---------------------------------------------------------------------------
@@ -415,8 +413,6 @@ pub struct Voyage {
     /// read-only twin, so a just-saved run isn't listed twice. `None`
     /// until saved. Runtime-only.
     pub saved_to: Option<usize>,
-    /// Job kind in force when we set sail.
-    pub job_kind: Option<JobKind>,
     /// When we set sail (first `set the vessel to sail` order of the run).
     pub sailed_at: Option<NaiveDateTime>,
     /// When we put into port — the end of the timed run. `None` while still

@@ -302,10 +302,10 @@ async fn main() -> io::Result<()> {
     // fetched) it — otherwise the verification fetch would be thrown away
     // and re-queried every run. `apply_update` builds the cache entry,
     // leaving trophies stale for the lazy background fetcher.
-    if let (Some(update), Some(name)) = (self_update, user.as_deref()) {
-        if let Ok(norm) = pirate::normalize_name(name) {
-            shell.pirate_cache.apply_update(norm, update);
-        }
+    if let (Some(update), Some(name)) = (self_update, user.as_deref())
+        && let Ok(norm) = pirate::normalize_name(name)
+    {
+        shell.pirate_cache.apply_update(norm, update);
     }
 
     // -- Load inventory --
@@ -334,33 +334,32 @@ async fn main() -> io::Result<()> {
     //    when Market querying is enabled) --
     if let Some(o) =
         ocean.filter(|o| o.market_supported() && args.query_market)
+        && !shell.profits.rows.is_empty()
     {
-        if !shell.profits.rows.is_empty() {
-            let missing: Vec<String> = shell
-                .profits
-                .rows
-                .iter()
-                .map(|r| {
-                    app::commod_name(&shell.commodities, r.commod_id).to_owned()
-                })
-                .filter(|name| !shell.cached_offers.contains_key(name.as_str()))
-                .collect();
+        let missing: Vec<String> = shell
+            .profits
+            .rows
+            .iter()
+            .map(|r| {
+                app::commod_name(&shell.commodities, r.commod_id).to_owned()
+            })
+            .filter(|name| !shell.cached_offers.contains_key(name.as_str()))
+            .collect();
 
-            if !missing.is_empty() {
-                eprintln!(
-                    "Fetching market data for {} missing commodities...",
-                    missing.len()
-                );
-                match api::fetch_offers_for(&http, &missing, o).await {
-                    Ok(new_offers) => {
-                        shell.cached_offers.extend(new_offers);
-                    }
-                    Err(e) => {
-                        eprintln!(
-                            "warning: failed to fetch missing market data: {}",
-                            e
-                        );
-                    }
+        if !missing.is_empty() {
+            eprintln!(
+                "Fetching market data for {} missing commodities...",
+                missing.len()
+            );
+            match api::fetch_offers_for(&http, &missing, o).await {
+                Ok(new_offers) => {
+                    shell.cached_offers.extend(new_offers);
+                }
+                Err(e) => {
+                    eprintln!(
+                        "warning: failed to fetch missing market data: {}",
+                        e
+                    );
                 }
             }
         }
@@ -465,10 +464,10 @@ async fn main() -> io::Result<()> {
                     }
                 }
             }
-            if let Some(me) = shell.chatlog.player_name.as_deref() {
-                if let Ok(n) = pirate::normalize_name(me) {
-                    aboard.insert(n);
-                }
+            if let Some(me) = shell.chatlog.player_name.as_deref()
+                && let Ok(n) = pirate::normalize_name(me)
+            {
+                aboard.insert(n);
             }
 
             let order = shell.pirate_cache.next_order(

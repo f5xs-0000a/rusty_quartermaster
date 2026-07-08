@@ -13,16 +13,6 @@ use crate::{
     voyage::{BattleCategory, BattleOutcome, Voyage, effective_outcome},
 };
 
-/// Caveat to show beside the rum-spice figures. The total is a stock delta, and
-/// the per-mercenary rate leans on the mercenary count over time — which is
-/// only ground-truthed at each won fight (mercs board invisibly), can't survive
-/// a restock we never see, and is thrown off when spice runs out mid-run.
-pub const RUM_SPICE_CAVEAT: &str =
-    "Approximate: rum spice is a stock delta, and the per-mercenary rate \
-     depends on the mercenary count over time (only confirmed at won fights). \
-     A mid-voyage restock, running out of spice, or a sea-battle loss can all \
-     skew it.";
-
 /// Raw item counts of each alcohol tier used over a voyage (`Restock - Stock`
 /// per tier), kept un-weighted so the breakdown can be shown and persisted. The
 /// potency-weighted total (the Hold Stats "alcohol" figure) is
@@ -67,7 +57,9 @@ pub struct ConsumptionStats {
     pub alcohol_per_crew: Option<f64>,
     /// Alcohol per (pirate + swabbie) per minute.
     pub alcohol_per_crew_per_min: Option<f64>,
-    /// Rum spice used (`Restock - Stock`). See [`RUM_SPICE_CAVEAT`].
+    /// Rum spice used (`Restock - Stock`). Approximate: a stock delta whose
+    /// per-mercenary rate is only ground-truthed at won fights and skewed by
+    /// an unseen restock, running out mid-run, or a sea-battle loss.
     pub rum_spice: u64,
     /// Rum spice per mercenary (time-weighted average mercenaries) — spice
     /// fuels mercenaries, not swabbies. `None` when no mercenaries were
@@ -77,8 +69,7 @@ pub struct ConsumptionStats {
     pub rum_spice_per_mercenary_per_min: Option<f64>,
     /// The run contains a sea-battle loss, which disrupts the crew and denies
     /// a final winners-roster ground truth — so the per-mercenary figure
-    /// is especially unreliable here (beyond the usual
-    /// [`RUM_SPICE_CAVEAT`]).
+    /// is especially unreliable here (beyond the usual caveats).
     pub rum_spice_unreliable: bool,
 }
 
@@ -403,10 +394,10 @@ pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
                 s.poe_won_total += p;
             }
         }
-        if outcome == BattleOutcome::Won {
-            if let Some(g) = b.goods {
-                s.goods_won_total += g as u64;
-            }
+        if outcome == BattleOutcome::Won
+            && let Some(g) = b.goods
+        {
+            s.goods_won_total += g as u64;
         }
         if let Some(t) = b.total_secs() {
             s.time_in_battle_secs += t;

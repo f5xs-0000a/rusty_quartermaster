@@ -9,7 +9,7 @@ use crossterm::event::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph, Wrap},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::{
@@ -184,7 +184,7 @@ fn voyage_period(
     )
 }
 
-pub fn commod_name<'a>(commodities: &'a [Commodity], id: u64) -> &'a str {
+pub fn commod_name(commodities: &[Commodity], id: u64) -> &str {
     commodities
         .iter()
         .find(|c| c.id == id)
@@ -202,13 +202,12 @@ pub fn suggest_island<'a>(
     }
 
     // Alias lookup
-    if let Some(&target) = aliases::get_islands().get(query.as_str()) {
-        if let Some(island) = available_islands
+    if let Some(&target) = aliases::get_islands().get(query.as_str())
+        && let Some(island) = available_islands
             .iter()
             .find(|i| i.eq_ignore_ascii_case(target))
-        {
-            return Some(island);
-        }
+    {
+        return Some(island);
     }
 
     // Exact match
@@ -1259,9 +1258,6 @@ impl AppShell {
                     .then_some(b.poe)
                     .flatten(),
                     goods: b.goods,
-                    my_cut: b.my_cut,
-                    total_secs: b.total_secs(),
-                    sea_secs: b.sea_secs(),
                     boarding_secs: b.boarding_secs(),
                     pirates: b.pirates,
                     swabbies: b.swabbies,
@@ -1837,16 +1833,16 @@ impl AppShell {
         // encounters that announce their hull (Monkey Boats,
         // and the Black Ship, which can be staffed beyond any hull's capacity)
         // carry `foe_ship = Some(..)` and are left untouched.
-        if row.foe_ship.is_none() {
-            if let Some(their) = row.their_manpower {
-                let cur = crate::ships::SHIPS
-                    [self.voyage_ui.battle_editor.right_ship]
-                    .max_pirates;
-                if (cur as u32) < their {
-                    if let Some(idx) = crate::ships::smallest_ship_for(their) {
-                        self.voyage_ui.battle_editor.right_ship = idx;
-                    }
-                }
+        if row.foe_ship.is_none()
+            && let Some(their) = row.their_manpower
+        {
+            let cur = crate::ships::SHIPS
+                [self.voyage_ui.battle_editor.right_ship]
+                .max_pirates;
+            if (cur as u32) < their
+                && let Some(idx) = crate::ships::smallest_ship_for(their)
+            {
+                self.voyage_ui.battle_editor.right_ship = idx;
             }
         }
     }
@@ -2190,11 +2186,11 @@ impl AppShell {
                     Aboard | Greedy | Planked | Enthralled => {
                         let cur =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                        if let Some(i) = panes.iter().position(|p| *p == cur) {
-                            if i + 1 < panes.len() {
-                                self.jobbers_ui.focus =
-                                    Self::pane_focus(panes[i + 1]);
-                            }
+                        if let Some(i) = panes.iter().position(|p| *p == cur)
+                            && i + 1 < panes.len()
+                        {
+                            self.jobbers_ui.focus =
+                                Self::pane_focus(panes[i + 1]);
                         }
                     }
                     _ => {}
@@ -2678,10 +2674,10 @@ impl AppShell {
 
     /// Clear the poisoned flag on the selected vessel.
     fn jobbers_unpoison(&mut self) {
-        if let Some(key) = self.jobbers_ui.selected.clone() {
-            if let Some(v) = self.chatlog.vessels.get_mut(&key) {
-                v.poisoned = false;
-            }
+        if let Some(key) = self.jobbers_ui.selected.clone()
+            && let Some(v) = self.chatlog.vessels.get_mut(&key)
+        {
+            v.poisoned = false;
         }
     }
 
@@ -2714,21 +2710,18 @@ impl AppShell {
             // the mouse over a cell parks the cursor there (updates
             // the detail panel).
             MouseEventKind::Moved => {
-                if self.jobbers_ui.skill_dist_popup.is_some() {
-                    if let Some(ClickTarget::JobberSkillDistCell {
+                if self.jobbers_ui.skill_dist_popup.is_some()
+                    && let Some(ClickTarget::JobberSkillDistCell {
                         th,
                         carp,
                     }) = clickmap::hit_test(
                         &self.click_regions,
                         mouse.column,
                         mouse.row,
-                    ) {
-                        if let Some(sd) =
-                            self.jobbers_ui.skill_dist_popup.as_mut()
-                        {
-                            sd.cursor = (th, carp);
-                        }
-                    }
+                    )
+                    && let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut()
+                {
+                    sd.cursor = (th, carp);
                 }
                 // Live hover over the Ship Winrate matrix highlights the cell
                 // and its row/column headers; leaving the grid
@@ -2753,16 +2746,14 @@ impl AppShell {
                     Some(crate::profits::PopupKind::ProfitResult(
                         _
                     ))
-                ) {
-                    if let Some(ClickTarget::ProfitsBreakdownRow(i)) =
-                        clickmap::hit_test(
-                            &self.click_regions,
-                            mouse.column,
-                            mouse.row,
-                        )
-                    {
-                        self.profits.breakdown_cursor = i;
-                    }
+                ) && let Some(ClickTarget::ProfitsBreakdownRow(i)) =
+                    clickmap::hit_test(
+                        &self.click_regions,
+                        mouse.column,
+                        mouse.row,
+                    )
+                {
+                    self.profits.breakdown_cursor = i;
                 }
             }
             _ => {}
@@ -3000,10 +2991,10 @@ impl AppShell {
                 self.open_ship_popup();
             }
             ClickTarget::JobberShipItem(i) => {
-                if i < crate::ships::SHIPS.len() {
-                    if let Some(vessel) = self.jobbers_ui.selected.clone() {
-                        self.jobbers_ui.ship_types.insert(vessel, i);
-                    }
+                if i < crate::ships::SHIPS.len()
+                    && let Some(vessel) = self.jobbers_ui.selected.clone()
+                {
+                    self.jobbers_ui.ship_types.insert(vessel, i);
                 }
                 self.jobbers_ui.ship_popup = None;
             }
@@ -3205,10 +3196,10 @@ impl AppShell {
                     if delta < 0 {
                         self.profits.table_up();
                     } else {
-                        if let Some(row) = self.profits.table_state.selected() {
-                            if row + 1 < self.profits.rows.len() {
-                                self.profits.table_state.select(Some(row + 1));
-                            }
+                        if let Some(row) = self.profits.table_state.selected()
+                            && row + 1 < self.profits.rows.len()
+                        {
+                            self.profits.table_state.select(Some(row + 1));
                         }
                     }
                 }

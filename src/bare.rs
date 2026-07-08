@@ -23,6 +23,8 @@ use serde::Deserialize;
 /// One commodity group with its members, in canonical (in-game) order.
 #[derive(Deserialize)]
 pub struct GoodGroup {
+    #[allow(dead_code)]
+    // deserialized data model; read only via commodities::group_of
     pub group: String,
     pub commodities: Vec<String>,
 }
@@ -53,7 +55,9 @@ pub enum Status {
 #[derive(Deserialize)]
 pub struct Island {
     pub name: String,
+    #[allow(dead_code)] // deserialized reference data; not yet read
     pub size: Size,
+    #[allow(dead_code)] // deserialized reference data; read only via capital()
     pub status: Status,
 }
 
@@ -66,6 +70,7 @@ pub struct Archipelago {
 
 impl Archipelago {
     /// The archipelago's capital (hub) island, if one is designated.
+    #[allow(dead_code)] // geography helper; not yet used
     pub fn capital(&self) -> Option<&Island> {
         self.islands.iter().find(|i| i.status == Status::Capital)
     }

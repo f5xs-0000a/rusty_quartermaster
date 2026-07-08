@@ -124,12 +124,12 @@ pub fn init_diag_log(path: &std::path::Path) {
 /// Emit a diagnostic line to the log file if one is configured (TUI is up),
 /// else to stderr. Prefer the [`diag!`] macro for `eprintln!`-style formatting.
 pub fn diag(msg: &str) {
-    if let Some(lock) = DIAG_LOG.get() {
-        if let Ok(mut file) = lock.lock() {
-            use std::io::Write;
-            let _ = writeln!(file, "{msg}");
-            return;
-        }
+    if let Some(lock) = DIAG_LOG.get()
+        && let Ok(mut file) = lock.lock()
+    {
+        use std::io::Write;
+        let _ = writeln!(file, "{msg}");
+        return;
     }
     eprintln!("{msg}");
 }

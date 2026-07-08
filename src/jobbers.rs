@@ -514,7 +514,7 @@ impl PirateCache {
                 match self.fetched.get_mut(&norm) {
                     Some(entry) => {
                         if let Some((info, at)) = basic {
-                            entry.basic = info;
+                            entry.basic = *info;
                             entry.basic_fetched_at = at;
                         }
                         if let Some((t, at)) = trophies {
@@ -541,7 +541,7 @@ impl PirateCache {
                             self.fetched.insert(
                                 norm,
                                 CachedPirate {
-                                    basic: info,
+                                    basic: *info,
                                     trophies,
                                     basic_fetched_at: basic_at,
                                     trophies_fetched_at: trophies_at,
@@ -1865,10 +1865,10 @@ pub fn render(
     }
 
     // The pirate-stats popup, and the trophies popup layered over it.
-    if ui.trophy_popup.is_none() {
-        if let Some(pp) = ui.pirate_popup.clone() {
-            render_pirate_popup(frame, &pp, cache, focused, regions);
-        }
+    if ui.trophy_popup.is_none()
+        && let Some(pp) = ui.pirate_popup.clone()
+    {
+        render_pirate_popup(frame, &pp, cache, focused, regions);
     }
     if let Some(tp) = ui.trophy_popup.as_mut() {
         render_trophy_popup(frame, tp, cache, regions);
@@ -2406,8 +2406,7 @@ fn render_stats_box(
     }
 
     // Centered note lines below the rows, separated by one blank line.
-    let mut y = stats.rows.len() as u16 + 1;
-    for note in &stats.notes {
+    for (y, note) in (stats.rows.len() as u16 + 1 ..).zip(stats.notes.iter()) {
         if y >= inner.height {
             break;
         }
@@ -2415,7 +2414,6 @@ fn render_stats_box(
             Paragraph::new(note.clone()).centered(),
             Rect::new(inner.x, inner.y + y, inner.width, 1),
         );
-        y += 1;
     }
 }
 
@@ -2661,30 +2659,25 @@ fn render_skill_dist_popup(
     // ---- detail panel: centered header naming the cell's standings, then the
     //      jobbers there (names only — their standings are the cell itself).
     // ----
-    let mut lines: Vec<Line> = Vec::new();
     // Line 0 is the count; lines 1–2 carry the standings, emphasised by tier.
-    lines.push(
+    let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
             header[0].clone(),
             Style::default().bold(),
         ))
         .centered(),
-    );
-    lines.push(
         Line::from(Span::styled(
             header[1].clone(),
             standing_style(carp_standing),
         ))
         .centered(),
-    );
-    lines.push(
         Line::from(Span::styled(
             header[2].clone(),
             standing_style(th_standing),
         ))
         .centered(),
-    );
-    lines.push(Line::from(""));
+        Line::from(""),
+    ];
     for e in &here {
         lines.push(Line::from(e.name.clone()).centered());
     }
@@ -3514,10 +3507,9 @@ fn top_panel_inner_width(columns: &[RankedColumn], show_codes: bool) -> u16 {
 }
 
 /// The Skill Leaderboard panel's natural outer width (codes shown): columns +
-/// gaps
-/// + padding + borders, with a floor so the title stays readable. This drives
-///   the
-/// block sizing, so codes are dropped only when the terminal can't fit this.
+/// gaps + padding + borders, with a floor so the title stays readable. This
+/// drives the block sizing, so codes are dropped only when the terminal can't
+/// fit this.
 fn top_panel_width(columns: &[RankedColumn]) -> u16 {
     // Floor so the title stays readable when no jobbers have fetched stats yet.
     const FLOOR: u16 = offset_title_width("Skill Leaderboard");

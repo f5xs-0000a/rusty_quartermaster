@@ -407,13 +407,12 @@ impl ProfitsApp {
         }
 
         // Alias lookup
-        if let Some(&target) = aliases::get().get(query.as_str()) {
-            if let Some(c) = commodities
+        if let Some(&target) = aliases::get().get(query.as_str())
+            && let Some(c) = commodities
                 .iter()
                 .find(|c| c.name.eq_ignore_ascii_case(target))
-            {
-                return Some(c.id);
-            }
+        {
+            return Some(c.id);
         }
 
         // Exact match
@@ -589,10 +588,10 @@ impl ProfitsApp {
     }
 
     pub fn table_up(&mut self) {
-        if let Some(row) = self.table_state.selected() {
-            if 0 < row {
-                self.table_state.select(Some(row - 1));
-            }
+        if let Some(row) = self.table_state.selected()
+            && 0 < row
+        {
+            self.table_state.select(Some(row - 1));
         }
     }
 
@@ -617,26 +616,26 @@ impl ProfitsApp {
     }
 
     pub fn table_right(&mut self, last_col: usize) {
-        if let Some(col) = self.table_state.selected_column() {
-            if col < last_col {
-                self.table_state.select_column(Some(col + 1));
-            }
+        if let Some(col) = self.table_state.selected_column()
+            && col < last_col
+        {
+            self.table_state.select_column(Some(col + 1));
         }
     }
 
     pub fn table_insert_digit(&mut self, d: char) {
-        if let Some((row, col)) = self.selected_cell() {
-            if let Some(field) = self.rows[row].field_mut(col) {
-                field.push(d);
-            }
+        if let Some((row, col)) = self.selected_cell()
+            && let Some(field) = self.rows[row].field_mut(col)
+        {
+            field.push(d);
         }
     }
 
     pub fn table_delete_digit(&mut self) {
-        if let Some((row, col)) = self.selected_cell() {
-            if let Some(field) = self.rows[row].field_mut(col) {
-                field.pop();
-            }
+        if let Some((row, col)) = self.selected_cell()
+            && let Some(field) = self.rows[row].field_mut(col)
+        {
+            field.pop();
         }
     }
 
@@ -798,14 +797,14 @@ impl ProfitsApp {
                     .iter()
                     .filter(|o| 0 < o.buyprice && 0 < o.buyqty)
                     .filter(|o| {
-                        sell_islands.map_or(true, |islands| {
+                        sell_islands.is_none_or(|islands| {
                             islands
                                 .iter()
                                 .any(|i| o.islandname.eq_ignore_ascii_case(i))
                         })
                     })
                     .collect();
-                buy_offers.sort_by(|a, b| b.buyprice.cmp(&a.buyprice));
+                buy_offers.sort_by_key(|b| std::cmp::Reverse(b.buyprice));
 
                 let mut remaining = booty + stock - restock;
                 for offer in &buy_offers {
@@ -823,14 +822,14 @@ impl ProfitsApp {
                     .iter()
                     .filter(|o| 0 < o.sellprice && 0 < o.sellqty)
                     .filter(|o| {
-                        restock_islands.map_or(true, |islands| {
+                        restock_islands.is_none_or(|islands| {
                             islands
                                 .iter()
                                 .any(|i| o.islandname.eq_ignore_ascii_case(i))
                         })
                     })
                     .collect();
-                sell_offers.sort_by(|a, b| a.sellprice.cmp(&b.sellprice));
+                sell_offers.sort_by_key(|a| a.sellprice);
 
                 let mut remaining = need;
                 for offer in &sell_offers {
@@ -1120,10 +1119,10 @@ impl ProfitsApp {
             }
             KeyCode::Down => self.table_down(),
             KeyCode::Left => {
-                if let Some(col) = self.table_state.selected_column() {
-                    if FIRST_COL < col {
-                        self.table_state.select_column(Some(col - 1));
-                    }
+                if let Some(col) = self.table_state.selected_column()
+                    && FIRST_COL < col
+                {
+                    self.table_state.select_column(Some(col - 1));
                 }
             }
             KeyCode::Right => {
@@ -1257,11 +1256,12 @@ impl ProfitsApp {
                 let len = self.panel[idx].value.len();
                 self.panel[idx].cursor = len;
             }
-            KeyCode::Char(c) => {
-                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
-                    self.panel[idx].insert_char(c);
-                    self.calc_error = None;
-                }
+            KeyCode::Char(c)
+                if !(is_place_field(idx)
+                    && shared.cached_offers.is_empty()) =>
+            {
+                self.panel[idx].insert_char(c);
+                self.calc_error = None;
             }
             _ => {}
         }
@@ -1519,11 +1519,12 @@ impl ProfitsApp {
             }
             Some(PopupKind::PriceBlock {
                 ..
-            }) => {
-                if key.code == KeyCode::Enter {
-                    self.dismiss_ok_popup();
-                }
+            }) if key.code == KeyCode::Enter => {
+                self.dismiss_ok_popup();
             }
+            Some(PopupKind::PriceBlock {
+                ..
+            }) => {}
             None => {}
         }
         InputResult::Consumed

@@ -259,9 +259,6 @@ pub struct BattleRow {
     pub category: String,
     pub poe: Option<i64>,
     pub goods: Option<u32>,
-    pub my_cut: Option<u64>,
-    pub total_secs: Option<i64>,
-    pub sea_secs: Option<i64>,
     pub boarding_secs: Option<i64>,
     pub pirates: u32,
     pub swabbies: u32,
@@ -475,14 +472,14 @@ pub fn render(
     // on its own line, then a blank, then the ship name / type / clock
     // headline. A saved current-login run shows no badge (and no reserved
     // line).
-    if view.page_count > 1 {
-        if let Some((label, style)) = voyage_badge_span(view.badge) {
-            header.insert(0, Line::from("")); // blank between badge and ship name
-            header.insert(
-                0,
-                centered_line(label.to_string(), iw, style),
-            );
-        }
+    if view.page_count > 1
+        && let Some((label, style)) = voyage_badge_span(view.badge)
+    {
+        header.insert(0, Line::from("")); // blank between badge and ship name
+        header.insert(
+            0,
+            centered_line(label.to_string(), iw, style),
+        );
     }
     let header_h = header.len() as u16;
 
@@ -523,10 +520,10 @@ pub fn render(
         .map(|f| f.key.clone())
         .chain(CHART_TITLES.iter().map(|t| t.to_string()))
         .collect();
-    if let Some(key) = ui.pending_focus_key.take() {
-        if let Some(idx) = ui.focus_keys.iter().position(|k| *k == key) {
-            ui.focus = idx;
-        }
+    if let Some(key) = ui.pending_focus_key.take()
+        && let Some(idx) = ui.focus_keys.iter().position(|k| *k == key)
+    {
+        ui.focus = idx;
     }
     ui.focus = ui.focus.min(n_focus.saturating_sub(1));
     let focused_chart = if ui.focus >= n_stats {
@@ -598,13 +595,13 @@ pub fn render(
             break;
         }
         for col in 0 .. body.width {
-            if let Some(src) = canvas.cell(Position::new(col, src_y)).cloned() {
-                if let Some(dst) = frame.buffer_mut().cell_mut(Position::new(
+            if let Some(src) = canvas.cell(Position::new(col, src_y)).cloned()
+                && let Some(dst) = frame.buffer_mut().cell_mut(Position::new(
                     body.x + col,
                     body.y + row,
-                )) {
-                    *dst = src;
-                }
+                ))
+            {
+                *dst = src;
             }
         }
     }
@@ -919,7 +916,7 @@ fn outcome_label(o: BattleOutcome) -> &'static str {
 /// metadata, an always-editable Damage calculator bound to its snapshot, and
 /// the strengths
 /// + advantage derived from it. The Recorded/Not Recorded toggle only controls
-/// whether the fight persists to disk — it never gates the display.
+///   whether the fight persists to disk — it never gates the display.
 fn render_battles_popup(
     frame: &mut Frame,
     area: Rect,
@@ -1232,7 +1229,7 @@ fn render_charts(
     data: &ChartData,
     focused_chart: Option<usize>,
 ) {
-    for i in 0 .. CHART_TITLES.len() {
+    for (i, chart_title) in CHART_TITLES.iter().copied().enumerate() {
         let slot = Rect::new(
             area.x,
             area.y + i as u16 * CHART_H,
@@ -1244,7 +1241,7 @@ fn render_charts(
         } else {
             Style::default().fg(Color::DarkGray)
         };
-        let (title, _) = offset_title(CHART_TITLES[i]);
+        let (title, _) = offset_title(chart_title);
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(border)
@@ -1645,8 +1642,7 @@ fn render_winrate_popup(
     }
 
     // Legend, after a blank line.
-    let mut ly = y + 1;
-    for line in legend {
+    for (ly, line) in (y + 1 ..).zip(legend) {
         if ly >= bottom {
             break;
         }
@@ -1658,7 +1654,6 @@ fn render_winrate_popup(
             .centered(),
             Rect::new(inner.x, ly, inner.width, 1),
         );
-        ly += 1;
     }
 }
 
@@ -1903,11 +1898,11 @@ fn signed_box_line(w: usize, lo: f64, hi: f64, bp: &BoxPlot) -> String {
         let cq1 = signed_col(bp.q1, lo, hi, w);
         let cq3 = signed_col(bp.q3, lo, hi, w);
         let (cq1, cq3) = (cq1.min(cq3), cq1.max(cq3));
-        for c in cmin ..= cmax {
-            cells[c] = '─';
+        for cell in cells.iter_mut().take(cmax + 1).skip(cmin) {
+            *cell = '─';
         }
-        for c in cq1 ..= cq3 {
-            cells[c] = '█';
+        for cell in cells.iter_mut().take(cq3 + 1).skip(cq1) {
+            *cell = '█';
         }
         cells[cmin] = '├';
         cells[cmax] = '┤';
@@ -2035,11 +2030,11 @@ fn box_line(
         let cmax = val_col(bp.max, lo, hi, w);
         let cq1 = val_col(bp.q1, lo, hi, w);
         let cq3 = val_col(bp.q3, lo, hi, w);
-        for c in cmin ..= cmax {
-            cells[c] = '─';
+        for cell in cells.iter_mut().take(cmax + 1).skip(cmin) {
+            *cell = '─';
         }
-        for c in cq1 ..= cq3 {
-            cells[c] = '█';
+        for cell in cells.iter_mut().take(cq3 + 1).skip(cq1) {
+            *cell = '█';
         }
         cells[cmin] = '├';
         cells[cmax] = '┤';
@@ -2124,8 +2119,7 @@ pub fn fight_chart_lines(
     let mut idx = 0usize;
     let mut prev_row: Option<usize> = None;
     let denom = (plot_w - 1).max(1) as f64;
-    for c in 0 .. plot_w {
-        let x = (c as f64 / denom) * xmax;
+    for (c, x) in (0 .. plot_w).map(|c| (c, (c as f64 / denom) * xmax)) {
         while idx + 1 < series.len() && series[idx + 1].0 <= x {
             idx += 1;
         }
@@ -2147,8 +2141,10 @@ pub fn fight_chart_lines(
             // column c-1) and gets the elbow here; the new level's `─`
             // continues at c+1.
             Some(pr) if pr != r => {
-                for rr in (pr.min(r) + 1) .. pr.max(r) {
-                    cells[rr][c] = ('│', color);
+                for row_cells in
+                    cells.iter_mut().take(pr.max(r)).skip(pr.min(r) + 1)
+                {
+                    row_cells[c] = ('│', color);
                 }
                 let (old_corner, new_corner) = if r < pr {
                     ('╯', '╭') // rising: ─╯ leaves the old level upward, ╭─ joins the new
@@ -2879,7 +2875,7 @@ fn commas(n: i64) -> String {
     let bytes = digits.as_bytes();
     let mut out = String::new();
     for (i, ch) in bytes.iter().enumerate() {
-        if i > 0 && (bytes.len() - i) % 3 == 0 {
+        if i > 0 && (bytes.len() - i).is_multiple_of(3) {
             out.push(',');
         }
         out.push(*ch as char);

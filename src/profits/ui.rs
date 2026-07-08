@@ -453,7 +453,7 @@ fn render_inventory(
     let mut col_xs = vec![inner_x];
     let mut col_ws = vec![item_width];
     let mut x = inner_x + item_width + COL_GAP;
-    let mut push_col =
+    let push_col =
         |xs: &mut Vec<u16>, ws: &mut Vec<u16>, x: &mut u16, w: u16| {
             xs.push(*x);
             ws.push(w);
@@ -1149,9 +1149,9 @@ fn render_popup(
                 "Enter the missing prices before calculating:",
             )];
 
-            let mut section = |lines: &mut Vec<Line>,
-                               title: &'static str,
-                               items: &[String]| {
+            let section = |lines: &mut Vec<Line>,
+                           title: &'static str,
+                           items: &[String]| {
                 lines.push(Line::from(""));
                 lines.push(Line::from(Span::styled(
                     title,

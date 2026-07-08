@@ -31,6 +31,7 @@ static INDEX: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
 });
 
 /// Lowercased name → its group label.
+#[allow(dead_code)] // companion to order_index; not yet used
 static GROUP_OF: LazyLock<HashMap<String, &'static str>> =
     LazyLock::new(|| {
         let mut map = HashMap::new();
@@ -51,6 +52,7 @@ pub fn order_index(name: &str) -> Option<usize> {
 }
 
 /// The group a commodity belongs to, or `None` if it isn't in our list.
+#[allow(dead_code)] // companion to order_index; not yet used
 pub fn group_of(name: &str) -> Option<&'static str> {
     GROUP_OF.get(&name.to_lowercase()).copied()
 }

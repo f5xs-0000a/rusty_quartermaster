@@ -32,6 +32,14 @@ use crate::{
 
 const COL_GAP: u16 = 3;
 
+/// Shared column widths for a Damage-calculator row: the outer ship-name
+/// columns and the center label column.
+#[derive(Clone, Copy)]
+struct RowWidths {
+    max_ship_name: u16,
+    center_width: u16,
+}
+
 /// Outer dimensions `(width, height)` of the Damage-calculator box, so callers
 /// (the main page and the Sea Battles popup) can lay it out consistently. The
 /// Manpower Advantage row is only present on the live page (`show_manpower`);
@@ -112,8 +120,10 @@ pub fn render_calculator(
                 rows[i],
                 i,
                 app,
-                max_ship_name,
-                center_width,
+                RowWidths {
+                    max_ship_name,
+                    center_width,
+                },
                 cells_active,
                 regions,
             );
@@ -194,17 +204,16 @@ fn render_standard_row(
     area: Rect,
     row: usize,
     app: &DamageApp,
-    max_ship_name: u16,
-    center_width: u16,
+    widths: RowWidths,
     cells_active: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
     let row_cols = Layout::horizontal([
-        Constraint::Length(max_ship_name),
+        Constraint::Length(widths.max_ship_name),
         Constraint::Length(COL_GAP),
-        Constraint::Length(center_width),
+        Constraint::Length(widths.center_width),
         Constraint::Length(COL_GAP),
-        Constraint::Length(max_ship_name),
+        Constraint::Length(widths.max_ship_name),
     ])
     .split(area);
 

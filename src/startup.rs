@@ -511,8 +511,7 @@ fn render(frame: &mut Frame, state: &Setup) {
         .split(ocean_inner);
     let cols = state.column_count();
     let col_areas = Layout::horizontal(
-        std::iter::repeat(Constraint::Ratio(1, cols as u32))
-            .take(cols)
+        std::iter::repeat_n(Constraint::Ratio(1, cols as u32), cols)
             .collect::<Vec<_>>(),
     )
     .split(oc[0]);

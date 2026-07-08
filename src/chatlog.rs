@@ -262,10 +262,10 @@ pub fn island_wave_band(pirates: u32, wave: u32) -> (u32, u32) {
 
 /// The kind of a 1-based island wave. Island waves always start at Rumble (wave
 /// 1) and alternate Rumble / Swordfight thereafter — so the kind is known the
-/// moment a wave begins, even before the first kill (and matches the observed
-/// enemy families: rumble waves field zombies / Enlightened Ones / Vargas,
-/// swordfight waves cultists / homunculi). `Unknown` only before landing (wave
-/// 0).
+///    moment a wave begins, even before the first kill (and matches the
+///    observed enemy families: rumble waves field zombies / Enlightened Ones /
+///    Vargas, swordfight waves cultists / homunculi). `Unknown` only before
+///    landing (wave 0).
 pub fn wave_kind_for(wave: u32) -> WaveKind {
     match wave {
         0 => WaveKind::Unknown,
@@ -690,11 +690,10 @@ impl GameState {
     /// time that goes backwards versus the previous line means the day rolled
     /// over — bump the date to keep timestamps monotonic.
     fn advance_clock(&mut self, time: NaiveTime) {
-        if let Some(prev) = self.last_time {
-            if time < prev {
-                self.current_date =
-                    self.current_date.and_then(|d| d.succ_opt());
-            }
+        if let Some(prev) = self.last_time
+            && time < prev
+        {
+            self.current_date = self.current_date.and_then(|d| d.succ_opt());
         }
         self.last_time = Some(time);
         self.now = self.current_date.map(|d| d.and_time(time));
@@ -837,24 +836,22 @@ impl GameState {
         // tag the just-resolved battle.
         if let Some(name) =
             body.strip_suffix("'s ship disappears into the mists.")
+            && BRIGAND_KINGS.contains(&name)
         {
-            if BRIGAND_KINGS.contains(&name) {
-                self.categorize_recent(BattleCategory::BrigandKing(
-                    name.to_string(),
-                ));
-                return;
-            }
+            self.categorize_recent(BattleCategory::BrigandKing(
+                name.to_string(),
+            ));
+            return;
         }
         if let Some(name) = body
             .strip_prefix("Ye have received one ")
             .and_then(|s| s.strip_suffix(" Chest as part of yer reward!"))
+            && BRIGAND_KINGS.contains(&name)
         {
-            if BRIGAND_KINGS.contains(&name) {
-                self.categorize_recent(BattleCategory::BrigandKing(
-                    name.to_string(),
-                ));
-                return;
-            }
+            self.categorize_recent(BattleCategory::BrigandKing(
+                name.to_string(),
+            ));
+            return;
         }
 
         // Atlantis: a lone dragoon sneaks aboard.
@@ -913,29 +910,29 @@ impl GameState {
         // (defeated, not thralled): "<p> has driven <Adjective> Zombie
         // from the ship!". The trailing "Zombie" keeps this from
         // matching an ordinary foe driven off in a pillage.
-        if let Some(rest) = body.strip_suffix(" from the ship!") {
-            if let Some((who, foe)) = rest.split_once(" has driven ") {
-                if foe.ends_with("Zombie") {
-                    self.confirm_self(who);
-                    self.note_pirate_aboard(who); // driving a zombie off proves they're aboard
-                    self.on_zombie_driven_off();
-                    return;
-                }
-                // Atlantis: a dragoon driven off the ship — one fewer aboard.
-                // Gated on the Atlantis encounter (set by the
-                // boarding tells) so an ordinary foe driven off
-                // in a pillage doesn't match. Dragoon names are bare Greek
-                // words, so we can't key off the foe name — context is the
-                // tell.
-                if self
-                    .current_vessel()
-                    .is_some_and(|v| v.encounter == EncounterKind::Atlantis)
-                {
-                    self.confirm_self(who);
-                    self.note_pirate_aboard(who); // driving a dragoon off proves they're aboard
-                    self.on_dragoon_driven_off();
-                    return;
-                }
+        if let Some(rest) = body.strip_suffix(" from the ship!")
+            && let Some((who, foe)) = rest.split_once(" has driven ")
+        {
+            if foe.ends_with("Zombie") {
+                self.confirm_self(who);
+                self.note_pirate_aboard(who); // driving a zombie off proves they're aboard
+                self.on_zombie_driven_off();
+                return;
+            }
+            // Atlantis: a dragoon driven off the ship — one fewer aboard.
+            // Gated on the Atlantis encounter (set by the
+            // boarding tells) so an ordinary foe driven off
+            // in a pillage doesn't match. Dragoon names are bare Greek
+            // words, so we can't key off the foe name — context is the
+            // tell.
+            if self
+                .current_vessel()
+                .is_some_and(|v| v.encounter == EncounterKind::Atlantis)
+            {
+                self.confirm_self(who);
+                self.note_pirate_aboard(who); // driving a dragoon off proves they're aboard
+                self.on_dragoon_driven_off();
+                return;
             }
         }
         // Cursed Isles: we land on the island — the boarding phase ends and the
@@ -1143,10 +1140,10 @@ impl GameState {
         // they're excluded from a battle's crew strength. Players only
         // (NPCs don't drop).
         if let Some(name) = body.strip_suffix(" has disconnected.") {
-            if pirate::is_player_name(name) {
-                if let Some(v) = self.current_vessel_mut() {
-                    v.disconnected.insert(name.to_string());
-                }
+            if pirate::is_player_name(name)
+                && let Some(v) = self.current_vessel_mut()
+            {
+                v.disconnected.insert(name.to_string());
             }
             return;
         }
@@ -1166,12 +1163,12 @@ impl GameState {
         }
 
         // Third-person plank: "<Planker> forced <Victim> to walk the plank."
-        if let Some(mid) = body.strip_suffix(" to walk the plank.") {
-            if let Some((planker, victim)) = mid.split_once(" forced ") {
-                self.on_plank(planker, victim);
-                self.sample_crew(); // a crewmate left the roster
-                return;
-            }
+        if let Some(mid) = body.strip_suffix(" to walk the plank.")
+            && let Some((planker, victim)) = mid.split_once(" forced ")
+        {
+            self.on_plank(planker, victim);
+            self.sample_crew(); // a crewmate left the roster
+            return;
         }
 
         // Presence: crewmates and hearties going online/offline.
@@ -1201,12 +1198,12 @@ impl GameState {
         // flavour chant names the king. Tag the open battle. Player
         // chatter is skipped so a mention of a king in chat doesn't
         // mislabel a fight.
-        if !is_chat_line(body) {
-            if let Some(king) = find_brigand_king(body) {
-                self.categorize_current(BattleCategory::BrigandKing(
-                    king.to_string(),
-                ));
-            }
+        if !is_chat_line(body)
+            && let Some(king) = find_brigand_king(body)
+        {
+            self.categorize_current(BattleCategory::BrigandKing(
+                king.to_string(),
+            ));
         }
     }
 
@@ -1350,10 +1347,8 @@ impl GameState {
                 }
             }
             None => {
-                let job_kind = v.job_kind.clone();
                 v.current_voyage = Some(Voyage {
                     id: new_id.unwrap_or_default(),
-                    job_kind,
                     sailed_at: now,
                     ..Voyage::default()
                 });
@@ -1401,18 +1396,17 @@ impl GameState {
                 .current_voyage
                 .as_mut()
                 .and_then(|voy| voy.current_battle.as_mut())
+                && b.grappled_at.is_none()
             {
-                if b.grappled_at.is_none() {
-                    b.grappled_at = now;
-                    // Our side as it stood at boarding start; finalized at
-                    // resolution (resynced roster ∪ this, minus the
-                    // disconnected).
-                    b.our_team = Some(TeamSide {
-                        players,
-                        swabbies,
-                        mercenaries,
-                    });
-                }
+                b.grappled_at = now;
+                // Our side as it stood at boarding start; finalized at
+                // resolution (resynced roster ∪ this, minus the
+                // disconnected).
+                b.our_team = Some(TeamSide {
+                    players,
+                    swabbies,
+                    mercenaries,
+                });
             }
         }
     }
@@ -1422,13 +1416,13 @@ impl GameState {
     fn on_disengage(&mut self) {
         let now = self.now;
         let mut resolved = false;
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(mut b) = voy.current_battle.take() {
-                b.outcome = BattleOutcome::Disengaged;
-                b.ended_at = now;
-                voy.battles.push(b);
-                resolved = true;
-            }
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(mut b) = voy.current_battle.take()
+        {
+            b.outcome = BattleOutcome::Disengaged;
+            b.ended_at = now;
+            voy.battles.push(b);
+            resolved = true;
         }
         self.battle_just_resolved |= resolved;
     }
@@ -1558,122 +1552,116 @@ impl GameState {
         };
         let now = self.now;
         let mut resolved = false;
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(mut b) = voy.current_battle.take() {
-                b.outcome = outcome;
-                b.ended_at = now;
-                // Our manpower = who actually fought: the grapple-time team
-                // unioned with the resynced crew, minus the
-                // disconnected (a held-but-idle melee slot),
-                // plus us. A leaver stays counted (captured at grapple);
-                // a never-reconnecting dropout is dropped even if the winners
-                // roster still lists them.
-                let mut roster: HashSet<String> = live_crew;
-                if let Some(team) = &b.our_team {
-                    roster.extend(team.players.iter().cloned());
-                }
-                let mut our_players: Vec<String> = roster
-                    .into_iter()
-                    .filter(|n| !disconnected.contains(n.as_str()))
-                    .collect();
-                let fought = our_players.len() as u32;
-                b.pirates = fought + 1;
-                // `b.swabbies` keeps the total NPC crew (for manpower); the
-                // roster splits it into genuine swabbies and
-                // mercenaries, disjointly.
-                b.swabbies = swabbies;
-                let genuine_swabbies = swabbies.saturating_sub(mercenaries);
-                // Record our side by name. Include ourselves when our name is
-                // known so the roster is complete.
-                if let Some(me) = me {
-                    if !our_players.iter().any(|n| n.eq_ignore_ascii_case(me)) {
-                        our_players.push(me.to_string());
-                    }
-                }
-                b.our_team = Some(TeamSide {
-                    players: our_players,
-                    swabbies: genuine_swabbies,
-                    mercenaries,
-                });
-                // PvP (its own category) may already be set from the melee; a
-                // loss to a real-player crew flags it too. PvP
-                // overrides a king label.
-                if b.category == BattleCategory::Pvp || lost_to_players {
-                    b.category = BattleCategory::Pvp;
-                } else if let Some(k) = king {
-                    b.category = BattleCategory::BrigandKing(k.to_string());
-                }
-                // The foe's side: on a win, the eliminations that aren't our
-                // crew (all enemies are eliminated, so they're
-                // the KOs not in the winners roster, which is
-                // our ship on a win); on a loss, the winners' (enemy)
-                // roster. On an unknown outcome we can't tell, so leave it
-                // absent.
-                b.their_team = match outcome {
-                    BattleOutcome::Won => {
-                        let foe: Vec<String> = b
-                            .melee_kos
-                            .iter()
-                            .filter(|ko| {
-                                !winners
-                                    .iter()
-                                    .any(|w| w.eq_ignore_ascii_case(ko))
-                            })
-                            .cloned()
-                            .collect();
-                        Some(split_side(&foe))
-                    }
-                    BattleOutcome::Lost => Some(split_side(&winners)),
-                    _ => None,
-                };
-                // Backfill the per-fight advantage timeline. Each event lines
-                // up with `melee_kos` (pushed in lockstep in
-                // `on_eliminated`): tag it `Ours` when the KO'd
-                // name is on our finalized roster, else
-                // `Theirs` — outcome-independent, so it's robust on wins,
-                // losses, and unknown fights alike. (Our own
-                // swabbie KOs can't be told from enemy NPCs, so
-                // they fall to `Theirs`; best-effort.)
-                let our_lc: HashSet<String> = b
-                    .our_team
-                    .as_ref()
-                    .map(|t| {
-                        t.players
-                            .iter()
-                            .map(|n| n.to_ascii_lowercase())
-                            .collect()
-                    })
-                    .unwrap_or_default();
-                let mut theirs = 0u32;
-                for (ev, ko) in
-                    b.timeline.events.iter_mut().zip(b.melee_kos.iter())
-                {
-                    ev.side = if our_lc.contains(&ko.to_ascii_lowercase()) {
-                        KoSide::Ours
-                    } else {
-                        theirs += 1;
-                        KoSide::Theirs
-                    };
-                }
-                b.timeline.our_start = b.pirates + b.swabbies;
-                // Their starting headcount: on a win all enemies were
-                // eliminated, so it's the enemy-KO count; on a
-                // loss it's those plus the enemy survivors (the
-                // winners). Unknown/disengage leaves it `None` (the
-                // graph then plots the net-KO differential).
-                b.timeline.their_start = match outcome {
-                    BattleOutcome::Won => Some(theirs),
-                    BattleOutcome::Lost => {
-                        Some(theirs + split_side(&winners).headcount())
-                    }
-                    _ => None,
-                };
-                b.timeline.started_at = b.grappled_at;
-                b.timeline.ended_at = b.ended_at;
-                b.melee_kos.clear();
-                voy.battles.push(b);
-                resolved = true;
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(mut b) = voy.current_battle.take()
+        {
+            b.outcome = outcome;
+            b.ended_at = now;
+            // Our manpower = who actually fought: the grapple-time team
+            // unioned with the resynced crew, minus the
+            // disconnected (a held-but-idle melee slot),
+            // plus us. A leaver stays counted (captured at grapple);
+            // a never-reconnecting dropout is dropped even if the winners
+            // roster still lists them.
+            let mut roster: HashSet<String> = live_crew;
+            if let Some(team) = &b.our_team {
+                roster.extend(team.players.iter().cloned());
             }
+            let mut our_players: Vec<String> = roster
+                .into_iter()
+                .filter(|n| !disconnected.contains(n.as_str()))
+                .collect();
+            let fought = our_players.len() as u32;
+            b.pirates = fought + 1;
+            // `b.swabbies` keeps the total NPC crew (for manpower); the
+            // roster splits it into genuine swabbies and
+            // mercenaries, disjointly.
+            b.swabbies = swabbies;
+            let genuine_swabbies = swabbies.saturating_sub(mercenaries);
+            // Record our side by name. Include ourselves when our name is
+            // known so the roster is complete.
+            if let Some(me) = me
+                && !our_players.iter().any(|n| n.eq_ignore_ascii_case(me))
+            {
+                our_players.push(me.to_string());
+            }
+            b.our_team = Some(TeamSide {
+                players: our_players,
+                swabbies: genuine_swabbies,
+                mercenaries,
+            });
+            // PvP (its own category) may already be set from the melee; a
+            // loss to a real-player crew flags it too. PvP
+            // overrides a king label.
+            if b.category == BattleCategory::Pvp || lost_to_players {
+                b.category = BattleCategory::Pvp;
+            } else if let Some(k) = king {
+                b.category = BattleCategory::BrigandKing(k.to_string());
+            }
+            // The foe's side: on a win, the eliminations that aren't our
+            // crew (all enemies are eliminated, so they're
+            // the KOs not in the winners roster, which is
+            // our ship on a win); on a loss, the winners' (enemy)
+            // roster. On an unknown outcome we can't tell, so leave it
+            // absent.
+            b.their_team = match outcome {
+                BattleOutcome::Won => {
+                    let foe: Vec<String> = b
+                        .melee_kos
+                        .iter()
+                        .filter(|ko| {
+                            !winners.iter().any(|w| w.eq_ignore_ascii_case(ko))
+                        })
+                        .cloned()
+                        .collect();
+                    Some(split_side(&foe))
+                }
+                BattleOutcome::Lost => Some(split_side(&winners)),
+                _ => None,
+            };
+            // Backfill the per-fight advantage timeline. Each event lines
+            // up with `melee_kos` (pushed in lockstep in
+            // `on_eliminated`): tag it `Ours` when the KO'd
+            // name is on our finalized roster, else
+            // `Theirs` — outcome-independent, so it's robust on wins,
+            // losses, and unknown fights alike. (Our own
+            // swabbie KOs can't be told from enemy NPCs, so
+            // they fall to `Theirs`; best-effort.)
+            let our_lc: HashSet<String> = b
+                .our_team
+                .as_ref()
+                .map(|t| {
+                    t.players.iter().map(|n| n.to_ascii_lowercase()).collect()
+                })
+                .unwrap_or_default();
+            let mut theirs = 0u32;
+            for (ev, ko) in b.timeline.events.iter_mut().zip(b.melee_kos.iter())
+            {
+                ev.side = if our_lc.contains(&ko.to_ascii_lowercase()) {
+                    KoSide::Ours
+                } else {
+                    theirs += 1;
+                    KoSide::Theirs
+                };
+            }
+            b.timeline.our_start = b.pirates + b.swabbies;
+            // Their starting headcount: on a win all enemies were
+            // eliminated, so it's the enemy-KO count; on a
+            // loss it's those plus the enemy survivors (the
+            // winners). Unknown/disengage leaves it `None` (the
+            // graph then plots the net-KO differential).
+            b.timeline.their_start = match outcome {
+                BattleOutcome::Won => Some(theirs),
+                BattleOutcome::Lost => {
+                    Some(theirs + split_side(&winners).headcount())
+                }
+                _ => None,
+            };
+            b.timeline.started_at = b.grappled_at;
+            b.timeline.ended_at = b.ended_at;
+            b.melee_kos.clear();
+            voy.battles.push(b);
+            resolved = true;
         }
         self.battle_just_resolved |= resolved;
     }
@@ -1697,32 +1685,32 @@ impl GameState {
                     .map(|n| n as u32)
             }
         });
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.battles.last_mut() {
-                if let Some(poe) = poe {
-                    // Signed by the (provisional) outcome: positive on a win,
-                    // negative on a loss. With no candidate identity the
-                    // direction is unknowable, so we keep
-                    // no signed value.
-                    b.poe = match b.outcome {
-                        BattleOutcome::Won => Some(poe as i64),
-                        BattleOutcome::Lost => Some(-(poe as i64)),
-                        _ => None,
-                    };
-                }
-                if goods.is_some() {
-                    b.goods = goods;
-                }
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy.battles.last_mut()
+        {
+            if let Some(poe) = poe {
+                // Signed by the (provisional) outcome: positive on a win,
+                // negative on a loss. With no candidate identity the
+                // direction is unknowable, so we keep
+                // no signed value.
+                b.poe = match b.outcome {
+                    BattleOutcome::Won => Some(poe as i64),
+                    BattleOutcome::Lost => Some(-(poe as i64)),
+                    _ => None,
+                };
+            }
+            if goods.is_some() {
+                b.goods = goods;
             }
         }
     }
 
     /// Attach our personal cut to the most-recently-resolved battle.
     fn on_my_cut(&mut self, poe: u64) {
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.battles.last_mut() {
-                b.my_cut = Some(poe);
-            }
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy.battles.last_mut()
+        {
+            b.my_cut = Some(poe);
         }
     }
 
@@ -1734,34 +1722,33 @@ impl GameState {
     fn on_black_ship(&mut self) {
         let grand = crate::ships::ship_index("Grand Frigate");
         self.detected_foe_ship = grand;
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.current_battle.as_mut() {
-                b.category = BattleCategory::BlackShip;
-                b.foe_ship = grand;
-            }
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy.current_battle.as_mut()
+        {
+            b.category = BattleCategory::BlackShip;
+            b.foe_ship = grand;
         }
     }
 
     /// Tag the battle currently in progress (engagement-time signals).
     fn categorize_current(&mut self, cat: BattleCategory) {
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.current_battle.as_mut() {
-                b.category = cat;
-            }
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy.current_battle.as_mut()
+        {
+            b.category = cat;
         }
     }
 
     /// Tag the open battle, or the just-resolved one if none is open (end-time
     /// signals like the victory/reward lines arrive after `Game over`).
     fn categorize_recent(&mut self, cat: BattleCategory) {
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy
                 .current_battle
                 .as_mut()
                 .or_else(|| voy.battles.last_mut())
-            {
-                b.category = cat;
-            }
+        {
+            b.category = cat;
         }
     }
 
@@ -1819,10 +1806,8 @@ impl GameState {
             self.next_voyage_id += 1;
             let id = self.next_voyage_id;
             let v = self.current_vessel_mut()?;
-            let job_kind = v.job_kind.clone();
             v.current_voyage = Some(Voyage {
                 id,
-                job_kind,
                 ..Voyage::default()
             });
         }
@@ -2140,10 +2125,10 @@ impl GameState {
         // phase).
         if let Some(who) = name.strip_suffix("'s Thrall") {
             let who = who.to_string();
-            if let Some(v) = self.current_vessel_mut() {
-                if let Some(n) = v.thralls_alive.get_mut(&who) {
-                    *n = n.saturating_sub(1);
-                }
+            if let Some(v) = self.current_vessel_mut()
+                && let Some(n) = v.thralls_alive.get_mut(&who)
+            {
+                *n = n.saturating_sub(1);
             }
             return;
         }
@@ -2205,26 +2190,26 @@ impl GameState {
             pirate::is_player_name(name) && !self.is_own_crew(name);
         let now = self.now;
         let mut first_blood = false;
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.current_battle.as_mut() {
-                b.melee_kos.push(name.to_string());
-                // Mirror the KO onto the per-fight timeline (same order as
-                // `melee_kos`); the side is provisional and backfilled at
-                // resolution from the rosters.
-                b.timeline.events.push(KoEvent {
-                    at: now,
-                    side: KoSide::Theirs,
-                });
-                if enemy_player {
-                    // PvP is its own, mutually exclusive category — once set it
-                    // overrides any king/monster telltale.
-                    b.category = BattleCategory::Pvp;
-                }
-                // First melee KO of a grappled fight surfaces the live
-                // advantage graph.
-                first_blood =
-                    b.grappled_at.is_some() && b.timeline.events.len() == 1;
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy.current_battle.as_mut()
+        {
+            b.melee_kos.push(name.to_string());
+            // Mirror the KO onto the per-fight timeline (same order as
+            // `melee_kos`); the side is provisional and backfilled at
+            // resolution from the rosters.
+            b.timeline.events.push(KoEvent {
+                at: now,
+                side: KoSide::Theirs,
+            });
+            if enemy_player {
+                // PvP is its own, mutually exclusive category — once set it
+                // overrides any king/monster telltale.
+                b.category = BattleCategory::Pvp;
             }
+            // First melee KO of a grappled fight surfaces the live
+            // advantage graph.
+            first_blood =
+                b.grappled_at.is_some() && b.timeline.events.len() == 1;
         }
         if first_blood {
             self.battle_first_blood = true;
@@ -2257,16 +2242,16 @@ impl GameState {
 
     fn on_vampire_defeated(&mut self) {
         let now = self.now;
-        if let Some(v) = self.current_vessel_mut() {
-            if v.lair_active {
-                v.vampires_defeated = v.vampires_defeated.saturating_add(1);
-                v.wave_observed = v.wave_observed.saturating_add(1);
-                // Their headcount drops → advantage steps up.
-                v.wave_timeline.events.push(KoEvent {
-                    at: now,
-                    side: KoSide::Theirs,
-                });
-            }
+        if let Some(v) = self.current_vessel_mut()
+            && v.lair_active
+        {
+            v.vampires_defeated = v.vampires_defeated.saturating_add(1);
+            v.wave_observed = v.wave_observed.saturating_add(1);
+            // Their headcount drops → advantage steps up.
+            v.wave_timeline.events.push(KoEvent {
+                at: now,
+                side: KoSide::Theirs,
+            });
         }
     }
 
@@ -2569,15 +2554,15 @@ impl GameState {
         dmg: f64,
         crew: f64,
     ) {
-        if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.battles.last_mut() {
-                if b.outcome == BattleOutcome::Disengaged {
-                    return;
-                }
-                b.snapshot = Some(snap);
-                b.advantage_dmg = Some(dmg);
-                b.advantage_crew = Some(crew);
+        if let Some(voy) = self.current_voyage_mut()
+            && let Some(b) = voy.battles.last_mut()
+        {
+            if b.outcome == BattleOutcome::Disengaged {
+                return;
             }
+            b.snapshot = Some(snap);
+            b.advantage_dmg = Some(dmg);
+            b.advantage_crew = Some(crew);
         }
     }
 
@@ -2667,10 +2652,10 @@ impl GameState {
             .get(key)
             .map(|v| v.crewmates.clone())
             .unwrap_or_default();
-        if self.current.as_ref() == Some(key) {
-            if let Some(me) = self.player_name.as_deref() {
-                set.insert(me.to_string());
-            }
+        if self.current.as_ref() == Some(key)
+            && let Some(me) = self.player_name.as_deref()
+        {
+            set.insert(me.to_string());
         }
         set
     }
@@ -2868,26 +2853,23 @@ pub fn spawn_tailer(
                 leftover.clear();
             }
 
-            if offset < len {
-                if file.seek(SeekFrom::Start(offset)).is_ok() {
-                    let mut buf = Vec::new();
-                    if let Ok(n) = file.take(len - offset).read_to_end(&mut buf)
-                    {
-                        offset += n as u64;
-                        leftover.extend_from_slice(&buf);
+            if offset < len && file.seek(SeekFrom::Start(offset)).is_ok() {
+                let mut buf = Vec::new();
+                if let Ok(n) = file.take(len - offset).read_to_end(&mut buf) {
+                    offset += n as u64;
+                    leftover.extend_from_slice(&buf);
 
-                        // Emit every complete line; keep the remainder.
-                        while let Some(pos) =
-                            leftover.iter().position(|&b| b == b'\n')
-                        {
-                            let line_bytes: Vec<u8> =
-                                leftover.drain(..= pos).collect();
-                            let line = String::from_utf8_lossy(&line_bytes);
-                            let line =
-                                line.trim_end_matches(['\n', '\r']).to_string();
-                            if tx.send(line).is_err() {
-                                return; // receiver gone
-                            }
+                    // Emit every complete line; keep the remainder.
+                    while let Some(pos) =
+                        leftover.iter().position(|&b| b == b'\n')
+                    {
+                        let line_bytes: Vec<u8> =
+                            leftover.drain(..= pos).collect();
+                        let line = String::from_utf8_lossy(&line_bytes);
+                        let line =
+                            line.trim_end_matches(['\n', '\r']).to_string();
+                        if tx.send(line).is_err() {
+                            return; // receiver gone
                         }
                     }
                 }
@@ -3193,7 +3175,7 @@ mod tests {
             ));
             let v = gs.current_vessel().unwrap();
             if i < 5 {
-                assert_eq!(v.dragoons_aboard, -(i as i32 + 1));
+                assert_eq!(v.dragoons_aboard, -(i + 1));
                 assert_eq!(v.dragoon_boardings, 1);
             } else {
                 assert_eq!(v.dragoons_aboard, 0);

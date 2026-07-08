@@ -306,8 +306,10 @@ mod tests {
 
     #[test]
     fn name_segments_round_trip_through_cache() {
-        let mut cache = SavedCache::default();
-        cache.name_segments = learned();
+        let cache = SavedCache {
+            name_segments: learned(),
+            ..Default::default()
+        };
         let json = serde_json::to_string(&cache).unwrap();
         let back: SavedCache = serde_json::from_str(&json).unwrap();
         assert_eq!(

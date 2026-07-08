@@ -20,9 +20,13 @@ pub enum ShipClass {
     Small,
     Medium,
     Large,
+    #[allow(dead_code)] // no Grand-class hull in the ship table yet
     Grand,
 }
 
+// Reference data mirroring the yppedia hull tables; several columns aren't read
+// yet, so allow unused fields across the struct.
+#[allow(dead_code)]
 pub struct Ship {
     pub name: &'static str,
     /// Short two-character hull tag for compact tables (e.g. the Ship Winrate
@@ -43,7 +47,6 @@ pub struct Ship {
     /// Ram size class. Retained as reference data (and to document each hull's
     /// collision tier); the calculator no longer auto-doubles head-ons — the
     /// user enters a different-class head-on as two rams instead.
-    #[allow(dead_code)]
     pub ship_size_class: ShipClass,
     pub move_tokens: u8,
     /// Maximum *mercenaries* (improved NPC crew) hireable, per yppedia. Used

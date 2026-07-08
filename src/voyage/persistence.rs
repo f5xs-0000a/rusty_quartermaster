@@ -658,7 +658,6 @@ impl SavedVoyage {
         Voyage {
             id: 0,
             saved_to: None,
-            job_kind: None,
             sailed_at: base,
             ported_at: ported,
             current_battle: None,
@@ -683,6 +682,27 @@ impl SavedVoyage {
                 self.avg_swabbies,
                 self.avg_mercenaries,
             )),
+        }
+    }
+}
+
+/// Load the voyage history from `path`. A missing or unparseable file yields an
+/// empty history rather than an error, so a first run just starts fresh.
+pub fn load(path: &Path) -> SavedVoyages {
+    let Ok(data) = std::fs::read_to_string(path) else {
+        return SavedVoyages::default();
+    };
+    match serde_json::from_str(&data) {
+        Ok(v) => {
+            eprintln!(
+                "Loaded voyage history from {}",
+                path.display()
+            );
+            v
+        }
+        Err(e) => {
+            eprintln!("warning: failed to parse voyage history: {e}");
+            SavedVoyages::default()
         }
     }
 }
@@ -826,13 +846,15 @@ mod tests {
         // are written by `from_voyage` and survive a JSON round-trip.
         // An older file with neither field defaults to `None` chest and
         // no goods.
-        let mut v = Voyage::default();
-        v.sailed_at = epoch();
-        v.ported_at = epoch().map(|b| b + chrono::Duration::seconds(600));
-        v.divvied = true;
         // Booty is frozen onto the voyage (at its divvy) before it's persisted.
-        v.booty_chest = Some(4200);
-        v.booty_goods = vec![("Iron".into(), 30), ("Hemp".into(), 12)];
+        let v = Voyage {
+            sailed_at: epoch(),
+            ported_at: epoch().map(|b| b + chrono::Duration::seconds(600)),
+            divvied: true,
+            booty_chest: Some(4200),
+            booty_goods: vec![("Iron".into(), 30), ("Hemp".into(), 12)],
+            ..Default::default()
+        };
         let saved = from_voyage(
             &v,
             Some("Test Vessel"),
@@ -999,26 +1021,5 @@ mod tests {
             sv0.to_voyage().battles[0].snapshot.unwrap().our_ship,
             0
         );
-    }
-}
-
-/// Load the voyage history from `path`. A missing or unparseable file yields an
-/// empty history rather than an error, so a first run just starts fresh.
-pub fn load(path: &Path) -> SavedVoyages {
-    let Ok(data) = std::fs::read_to_string(path) else {
-        return SavedVoyages::default();
-    };
-    match serde_json::from_str(&data) {
-        Ok(v) => {
-            eprintln!(
-                "Loaded voyage history from {}",
-                path.display()
-            );
-            v
-        }
-        Err(e) => {
-            eprintln!("warning: failed to parse voyage history: {e}");
-            SavedVoyages::default()
-        }
     }
 }

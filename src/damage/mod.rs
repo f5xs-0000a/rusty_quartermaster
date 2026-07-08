@@ -22,8 +22,6 @@ pub struct ShipSelectPopup {
 }
 
 pub const ROW_SHIP: usize = 0;
-pub const ROW_SHOTS: usize = 1;
-pub const ROW_ROCKS: usize = 2;
 /// Times Rammed — a single shared counter (a ram damages *both* ships),
 /// rendered in the merged single-cell layout. A head-on collision is entered
 /// here too, counted twice when the two hulls are different size classes.
@@ -161,15 +159,6 @@ impl DamageApp {
     pub fn crew_advantage(&self, ours: u32, theirs: u32) -> f64 {
         ours as f64 * self.ship_advantage(Side::Left)
             - theirs as f64 * self.ship_advantage(Side::Right)
-    }
-
-    /// [`Self::crew_advantage`] against the Right ship type's pirate capacity —
-    /// the estimate used when the real foe headcount isn't known.
-    pub fn advantage_crew(&self, our_pirates: u32) -> f64 {
-        self.crew_advantage(
-            our_pirates,
-            SHIPS[self.right_ship].max_pirates as u32,
-        )
     }
 
     /// The Manpower Advantage range `(min, max)` — our crew-weighted strength
@@ -585,9 +574,6 @@ mod tests {
         assert!(!app.has_input());
         // No damage: both ships fully healthy, so damage advantage is zero.
         assert!((app.advantage_dmg() - 0.0).abs() < 1e-9);
-        // Crew: our pirates at full advantage minus the foe Sloop's complement.
-        let foe = SHIPS[app.right_ship].max_pirates as f64;
-        assert!((app.advantage_crew(5) - (5.0 - foe)).abs() < 1e-9);
 
         // Land 3 shots on the foe (Right): 3*960 = 2880 = 50% of 5760 morale.
         app.right[0] = 3;
@@ -633,12 +619,12 @@ mod tests {
         // Cutter (idx 1): swabbie_count = max_mercenaries(10), so [11, 12].
         assert_eq!(crew_range(1), (11, 12));
         // Every hull yields a non-empty range (high >= low).
-        for i in 0 .. SHIPS.len() {
+        for (i, ship) in SHIPS.iter().enumerate() {
             let (lo, hi) = crew_range(i);
             assert!(
                 lo <= hi,
                 "inverted range for ship {}",
-                SHIPS[i].name
+                ship.name
             );
         }
     }

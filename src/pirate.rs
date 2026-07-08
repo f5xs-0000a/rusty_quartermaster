@@ -132,6 +132,7 @@ pub enum ReputationType {
 }
 
 /// The three families a [`Skill`] belongs to, matching how yoweb groups them.
+#[allow(dead_code)] // parsed model; grouping not yet surfaced in the UI
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SkillCategory {
     Piracy,
@@ -334,6 +335,7 @@ impl fmt::Display for ReputationType {
 impl Skill {
     /// Which family this skill belongs to (Piracy, Carousing, or Crafting),
     /// matching the grouping yoweb renders the skill tables in.
+    #[allow(dead_code)] // parsed model; not yet surfaced in the UI
     pub fn category(&self) -> SkillCategory {
         use Skill::*;
         match self {
@@ -468,6 +470,7 @@ pub struct SkillRecord {
 }
 
 impl SkillRecord {
+    #[allow(dead_code)] // parsed model; not yet surfaced in the UI
     pub fn archipelago_standing(&self) -> Standing {
         self.archipelago.unwrap_or(self.standing)
     }
@@ -480,6 +483,7 @@ pub struct TrophySection {
 }
 
 impl TrophySection {
+    #[allow(dead_code)] // parsed model; not yet surfaced in the UI
     pub fn has_trophy(&self, name: &str) -> bool {
         self.trophies.iter().any(|t| t == name)
     }
@@ -560,6 +564,7 @@ pub struct Trophies {
 }
 
 impl Trophies {
+    #[allow(dead_code)] // parsed model; not yet surfaced in the UI
     pub fn has_trophy(&self, name: &str) -> bool {
         self.sections.iter().any(|s| s.has_trophy(name))
     }
@@ -598,7 +603,7 @@ pub enum PirateUpdate {
     /// failed while the basic page succeeded — it stays stale for a later
     /// retry).
     Refreshed {
-        basic: Option<(BasicInfo, DateTime<Utc>)>,
+        basic: Option<(Box<BasicInfo>, DateTime<Utc>)>,
         trophies: Option<(Trophies, DateTime<Utc>)>,
     },
     /// The pirate page loaded but named no pirate ("no tell of that pirate"):
@@ -761,7 +766,7 @@ pub async fn fetch_pirate_update(
 
 /// Outcome of fetching just the basic pirate page.
 enum BasicOutcome {
-    Found(BasicInfo),
+    Found(Box<BasicInfo>),
     /// HTTP 200 but no pirate named on the page — doesn't exist or is banned.
     NotFound,
     Error(String),
@@ -806,7 +811,7 @@ async fn fetch_basic_page(
     if info.name.is_empty() {
         BasicOutcome::NotFound
     } else {
-        BasicOutcome::Found(info)
+        BasicOutcome::Found(Box::new(info))
     }
 }
 
@@ -1166,10 +1171,10 @@ fn find_ancestor_tag<'a>(
 ) -> Option<ElementRef<'a>> {
     let mut node = el.parent()?;
     loop {
-        if let Some(element) = ElementRef::wrap(node) {
-            if element.value().name() == tag {
-                return Some(element);
-            }
+        if let Some(element) = ElementRef::wrap(node)
+            && element.value().name() == tag
+        {
+            return Some(element);
         }
         node = node.parent()?;
     }
