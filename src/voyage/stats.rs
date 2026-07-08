@@ -7,22 +7,26 @@
 //! *won* and isn't consumable, so it's ignored here. See the
 //! `voyage-statistics-model` memory and [`crate::voyage::Voyage`].
 
-use crate::api::Commodity;
-use crate::profits::InventoryRow;
-use crate::voyage::{effective_outcome, BattleCategory, BattleOutcome, Voyage};
+use crate::{
+    api::Commodity,
+    profits::InventoryRow,
+    voyage::{BattleCategory, BattleOutcome, Voyage, effective_outcome},
+};
 
 /// Caveat to show beside the rum-spice figures. The total is a stock delta, and
-/// the per-mercenary rate leans on the mercenary count over time — which is only
-/// ground-truthed at each won fight (mercs board invisibly), can't survive a
-/// restock we never see, and is thrown off when spice runs out mid-run.
+/// the per-mercenary rate leans on the mercenary count over time — which is
+/// only ground-truthed at each won fight (mercs board invisibly), can't survive
+/// a restock we never see, and is thrown off when spice runs out mid-run.
 pub const RUM_SPICE_CAVEAT: &str =
-    "Approximate: rum spice is a stock delta, and the per-mercenary rate depends on \
-     the mercenary count over time (only confirmed at won fights). A mid-voyage \
-     restock, running out of spice, or a sea-battle loss can all skew it.";
+    "Approximate: rum spice is a stock delta, and the per-mercenary rate \
+     depends on the mercenary count over time (only confirmed at won fights). \
+     A mid-voyage restock, running out of spice, or a sea-battle loss can all \
+     skew it.";
 
 /// Raw item counts of each alcohol tier used over a voyage (`Restock - Stock`
 /// per tier), kept un-weighted so the breakdown can be shown and persisted. The
-/// potency-weighted total (the Hold Stats "alcohol" figure) is [`Self::weighted`].
+/// potency-weighted total (the Hold Stats "alcohol" figure) is
+/// [`Self::weighted`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct AlcoholUse {
     pub swill: u64,
@@ -31,9 +35,10 @@ pub struct AlcoholUse {
 }
 
 impl AlcoholUse {
-    /// Potency-weighted total alcohol (Swill×2 + Grog×3 + Fine rum×6), the figure
-    /// that matches the in-game Hold Stats "alcohol". Weights come from
-    /// [`crate::commodities::alcohol_multiplier`] so there's one source of truth.
+    /// Potency-weighted total alcohol (Swill×2 + Grog×3 + Fine rum×6), the
+    /// figure that matches the in-game Hold Stats "alcohol". Weights come
+    /// from [`crate::commodities::alcohol_multiplier`] so there's one
+    /// source of truth.
     pub fn weighted(&self) -> u64 {
         use crate::commodities::alcohol_multiplier;
         self.swill * alcohol_multiplier("Swill")
@@ -55,8 +60,8 @@ pub struct ConsumptionStats {
     pub balls: u64,
     /// Average balls per battle this voyage.
     pub balls_per_battle: Option<f64>,
-    /// Alcohol used, broken down by tier (raw item counts). The weighted total is
-    /// [`AlcoholUse::weighted`].
+    /// Alcohol used, broken down by tier (raw item counts). The weighted total
+    /// is [`AlcoholUse::weighted`].
     pub alcohol: AlcoholUse,
     /// Alcohol per (pirate + swabbie), over the time-weighted average crew.
     pub alcohol_per_crew: Option<f64>,
@@ -64,28 +69,37 @@ pub struct ConsumptionStats {
     pub alcohol_per_crew_per_min: Option<f64>,
     /// Rum spice used (`Restock - Stock`). See [`RUM_SPICE_CAVEAT`].
     pub rum_spice: u64,
-    /// Rum spice per mercenary (time-weighted average mercenaries) — spice fuels
-    /// mercenaries, not swabbies. `None` when no mercenaries were aboard.
+    /// Rum spice per mercenary (time-weighted average mercenaries) — spice
+    /// fuels mercenaries, not swabbies. `None` when no mercenaries were
+    /// aboard.
     pub rum_spice_per_mercenary: Option<f64>,
     /// Rum spice per mercenary per minute.
     pub rum_spice_per_mercenary_per_min: Option<f64>,
-    /// The run contains a sea-battle loss, which disrupts the crew and denies a
-    /// final winners-roster ground truth — so the per-mercenary figure is especially
-    /// unreliable here (beyond the usual [`RUM_SPICE_CAVEAT`]).
+    /// The run contains a sea-battle loss, which disrupts the crew and denies
+    /// a final winners-roster ground truth — so the per-mercenary figure
+    /// is especially unreliable here (beyond the usual
+    /// [`RUM_SPICE_CAVEAT`]).
     pub rum_spice_unreliable: bool,
 }
 
 /// Quantity consumed of one commodity by canonical name: `Restock - Stock`
 /// summed over matching rows, saturating at zero (a stock *gain* isn't usage).
 ///
-/// TODO: invalid inventory cells are currently swallowed silently — a non-numeric
-/// or blank value parses to 0, and `stock > restock` floors to 0 used, both
-/// indistinguishable from "consumed nothing". Add a validation pass that warns
-/// the user about invalid/inverted rows (and consider recording such commodities
-/// as unknown rather than 0) before this delta is trusted.
-fn used_by_name(rows: &[InventoryRow], commodities: &[Commodity], name: &str) -> u64 {
+/// TODO: invalid inventory cells are currently swallowed silently — a
+/// non-numeric or blank value parses to 0, and `stock > restock` floors to 0
+/// used, both indistinguishable from "consumed nothing". Add a validation pass
+/// that warns the user about invalid/inverted rows (and consider recording such
+/// commodities as unknown rather than 0) before this delta is trusted.
+fn used_by_name(
+    rows: &[InventoryRow],
+    commodities: &[Commodity],
+    name: &str,
+) -> u64 {
     rows.iter()
-        .filter(|r| crate::app::commod_name(commodities, r.commod_id).eq_ignore_ascii_case(name))
+        .filter(|r| {
+            crate::app::commod_name(commodities, r.commod_id)
+                .eq_ignore_ascii_case(name)
+        })
         .map(|r| {
             let restock = r.restock.parse::<u64>().unwrap_or(0);
             let stock = r.stock.parse::<u64>().unwrap_or(0);
@@ -96,7 +110,10 @@ fn used_by_name(rows: &[InventoryRow], commodities: &[Commodity], name: &str) ->
 
 /// Per-tier alcohol used (raw item counts) via `Restock - Stock` for each rum
 /// tier. Kept un-weighted; [`AlcoholUse::weighted`] applies the potencies.
-fn alcohol_used(rows: &[InventoryRow], commodities: &[Commodity]) -> AlcoholUse {
+fn alcohol_used(
+    rows: &[InventoryRow],
+    commodities: &[Commodity],
+) -> AlcoholUse {
     AlcoholUse {
         swill: used_by_name(rows, commodities, "Swill"),
         grog: used_by_name(rows, commodities, "Grog"),
@@ -113,10 +130,14 @@ pub fn consumption_stats(
     rows: &[InventoryRow],
     commodities: &[Commodity],
 ) -> ConsumptionStats {
-    let balls = ["Small cannon balls", "Medium cannon balls", "Large cannon balls"]
-        .iter()
-        .map(|name| used_by_name(rows, commodities, name))
-        .sum::<u64>();
+    let balls = [
+        "Small cannon balls",
+        "Medium cannon balls",
+        "Large cannon balls",
+    ]
+    .iter()
+    .map(|name| used_by_name(rows, commodities, name))
+    .sum::<u64>();
     let alcohol = alcohol_used(rows, commodities);
     let rum_spice = used_by_name(rows, commodities, "Rum spice");
 
@@ -139,7 +160,8 @@ pub fn consumption_stats(
 
     let balls_per_battle = (battles > 0).then(|| balls as f64 / battles as f64);
     let alcohol_per_crew = per(alcohol.weighted(), avg_crew);
-    let alcohol_per_crew_per_min = alcohol_per_crew.and_then(|a| minutes.map(|m| a / m));
+    let alcohol_per_crew_per_min =
+        alcohol_per_crew.and_then(|a| minutes.map(|m| a / m));
     // Spice fuels mercenaries, so it's charged per mercenary, not per swabbie.
     let rum_spice_per_mercenary = per(rum_spice, avg_mercenaries);
     let rum_spice_per_mercenary_per_min =
@@ -166,8 +188,8 @@ pub fn consumption_stats(
     }
 }
 
-/// Aggregate battle / loot / timing stats for a voyage. Per-crew figures use the
-/// time-weighted average crew and are `None` until the run has ported (no
+/// Aggregate battle / loot / timing stats for a voyage. Per-crew figures use
+/// the time-weighted average crew and are `None` until the run has ported (no
 /// duration / average yet). Disengaged fights count in the winrate and battle
 /// timing but not in the loot denominators.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -178,7 +200,8 @@ pub struct BattleStats {
     pub disengages: u32,
     /// Mean whole-engagement duration (intercept -> resolution), seconds.
     pub avg_battle_secs: Option<f64>,
-    /// Population σ of the whole-engagement durations, seconds (None if n < 3).
+    /// Population σ of the whole-engagement durations, seconds (None if n <
+    /// 3).
     pub avg_battle_sd: Option<f64>,
     /// Mean naval-phase duration (intercept -> grapple), seconds. The UI shows
     /// this as turns (35s per turn).
@@ -224,7 +247,8 @@ pub struct BattleStats {
     /// Net PoE per crew per decisive fight (wins + losses).
     pub poe_per_crew_per_fight_all: Option<f64>,
     /// Per-enemy-category outcome tallies (label, W/L/D), most-fought first.
-    /// Only categories that actually occurred appear — zero categories omitted.
+    /// Only categories that actually occurred appear — zero categories
+    /// omitted.
     pub categories: Vec<(String, CategoryTally)>,
     /// Mean damage advantage over fights where it was tracked (`[-0.5, 0.5]`).
     pub avg_advantage_dmg: Option<f64>,
@@ -309,13 +333,15 @@ pub fn category_label(c: &BattleCategory) -> String {
     }
 }
 
-/// Aggregate the per-battle records of a voyage. See [`BattleStats`]. `self_confirmed`
-/// masks unconfirmed win/loss verdicts to [`BattleOutcome::Unknown`] (see
-/// [`effective_outcome`]), which then drop out of every win/loss/loot figure.
+/// Aggregate the per-battle records of a voyage. See [`BattleStats`].
+/// `self_confirmed` masks unconfirmed win/loss verdicts to
+/// [`BattleOutcome::Unknown`] (see [`effective_outcome`]), which then drop out
+/// of every win/loss/loot figure.
 #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
 pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
     let mut s = BattleStats::default();
-    let (mut naval, mut boarding, mut total) = (Vec::new(), Vec::new(), Vec::new());
+    let (mut naval, mut boarding, mut total) =
+        (Vec::new(), Vec::new(), Vec::new());
     let (mut adv_dmg, mut adv_crew) = (Vec::new(), Vec::new());
     // Per-fight samples for the means' standard deviations.
     let (mut won_poe, mut net_decisive) = (Vec::new(), Vec::new());
@@ -324,17 +350,20 @@ pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
         // The verdict actually shown: an unconfirmed win/loss is Unknown and so
         // contributes to no win/loss/loot figure. PoE is masked to match.
         let outcome = effective_outcome(b.outcome, self_confirmed);
-        let poe = matches!(outcome, BattleOutcome::Won | BattleOutcome::Lost)
-            .then_some(b.poe)
-            .flatten();
+        let poe = matches!(
+            outcome,
+            BattleOutcome::Won | BattleOutcome::Lost
+        )
+        .then_some(b.poe)
+        .flatten();
         if let Some(a) = b.advantage_dmg {
             adv_dmg.push(a);
         }
         if let Some(a) = b.advantage_crew {
             adv_crew.push(a);
         }
-        // Tally enemy categories (insertion-order Vec; few distinct categories),
-        // broken down by outcome.
+        // Tally enemy categories (insertion-order Vec; few distinct
+        // categories), broken down by outcome.
         let label = category_label(&b.category);
         let idx = match s.categories.iter().position(|(l, _)| *l == label) {
             Some(i) => i,
@@ -390,7 +419,9 @@ pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
             boarding.push(t);
         }
     }
-    let mean = |v: &[i64]| (!v.is_empty()).then(|| v.iter().sum::<i64>() as f64 / v.len() as f64);
+    let mean = |v: &[i64]| {
+        (!v.is_empty()).then(|| v.iter().sum::<i64>() as f64 / v.len() as f64)
+    };
     s.avg_battle_secs = mean(&total);
     s.avg_battle_sd = stdev_i64(&total);
     s.avg_naval_secs = mean(&naval);
@@ -412,7 +443,10 @@ pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
     s.goods_per_engagement_sd = stdev_f64(&net_goods_decisive);
 
     let decisive = s.wins + s.losses;
-    let avg_crew = match (voyage.avg_pirates(), voyage.avg_swabbies()) {
+    let avg_crew = match (
+        voyage.avg_pirates(),
+        voyage.avg_swabbies(),
+    ) {
         (Some(p), Some(sw)) => Some(p + sw),
         _ => None,
     }
@@ -426,8 +460,9 @@ pub fn battle_stats(voyage: &Voyage, self_confirmed: bool) -> BattleStats {
         .map(|c| s.poe_net_total as f64 / c / decisive as f64);
 
     // Most-fought category first; ties alphabetical for stability.
-    s.categories
-        .sort_by(|a, b| b.1.total().cmp(&a.1.total()).then_with(|| a.0.cmp(&b.0)));
+    s.categories.sort_by(|a, b| {
+        b.1.total().cmp(&a.1.total()).then_with(|| a.0.cmp(&b.0))
+    });
 
     s.avg_advantage_dmg = mean_f64(&adv_dmg);
     s.avg_advantage_dmg_sd = stdev_f64(&adv_dmg);
@@ -442,7 +477,8 @@ fn mean_f64(v: &[f64]) -> Option<f64> {
 }
 
 /// Population standard deviation of an `f64` sample, or `None` with fewer than
-/// three data points (per the Voyage Statistics spec — too few to be meaningful).
+/// three data points (per the Voyage Statistics spec — too few to be
+/// meaningful).
 fn stdev_f64(v: &[f64]) -> Option<f64> {
     if v.len() < 3 {
         return None;
@@ -452,7 +488,8 @@ fn stdev_f64(v: &[f64]) -> Option<f64> {
     Some(var.sqrt())
 }
 
-/// Population standard deviation of an `i64` sample (e.g. durations in seconds).
+/// Population standard deviation of an `i64` sample (e.g. durations in
+/// seconds).
 fn stdev_i64(v: &[i64]) -> Option<f64> {
     let f: Vec<f64> = v.iter().map(|&x| x as f64).collect();
     stdev_f64(&f)
@@ -460,9 +497,16 @@ fn stdev_i64(v: &[i64]) -> Option<f64> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use crate::voyage::{Battle, BattleCategory, BattleOutcome, CrewSample, Voyage};
     use chrono::{NaiveDate, NaiveDateTime};
+
+    use super::*;
+    use crate::voyage::{
+        Battle,
+        BattleCategory,
+        BattleOutcome,
+        CrewSample,
+        Voyage,
+    };
 
     fn dt(h: u32, m: u32, s: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 5, 14)
@@ -486,7 +530,10 @@ mod tests {
     }
 
     fn approx(a: f64, b: f64) {
-        assert!((a - b).abs() < 1e-9, "expected {b}, got {a}");
+        assert!(
+            (a - b).abs() < 1e-9,
+            "expected {b}, got {a}"
+        );
     }
 
     #[test]
@@ -503,8 +550,8 @@ mod tests {
             row(3, "20", "5"),   // 15 fine rum -> x6 = 90 alcohol
             row(4, "30", "12"),  // 18 rum spice
         ];
-        // One-hour run, 4 battles, constant crew of 5 pirates + 3 NPC crew (2 of
-        // them mercenaries).
+        // One-hour run, 4 battles, constant crew of 5 pirates + 3 NPC crew (2
+        // of them mercenaries).
         let voy = Voyage {
             sailed_at: Some(dt(12, 0, 0)),
             ported_at: Some(dt(13, 0, 0)),
@@ -526,11 +573,23 @@ mod tests {
         assert_eq!(stats.alcohol.swill, 0);
         assert_eq!(stats.alcohol.weighted(), 270); // 60×3 + 15×6
         assert_eq!(stats.rum_spice, 18);
-        approx(stats.alcohol_per_crew.unwrap(), 270.0 / 8.0); // crew = 5 + 3
-        approx(stats.alcohol_per_crew_per_min.unwrap(), 270.0 / 8.0 / 60.0);
+        approx(
+            stats.alcohol_per_crew.unwrap(),
+            270.0 / 8.0,
+        ); // crew = 5 + 3
+        approx(
+            stats.alcohol_per_crew_per_min.unwrap(),
+            270.0 / 8.0 / 60.0,
+        );
         // Spice is charged per mercenary (2), not per swabbie.
-        approx(stats.rum_spice_per_mercenary.unwrap(), 9.0); // 18 / 2
-        approx(stats.rum_spice_per_mercenary_per_min.unwrap(), 9.0 / 60.0);
+        approx(
+            stats.rum_spice_per_mercenary.unwrap(),
+            9.0,
+        ); // 18 / 2
+        approx(
+            stats.rum_spice_per_mercenary_per_min.unwrap(),
+            9.0 / 60.0,
+        );
         assert!(!stats.rum_spice_unreliable); // no losses (default battles)
     }
 
@@ -608,7 +667,10 @@ mod tests {
             ..Voyage::default()
         };
         let s = battle_stats(&voy, true);
-        assert_eq!((s.wins, s.losses, s.disengages), (1, 1, 1));
+        assert_eq!(
+            (s.wins, s.losses, s.disengages),
+            (1, 1, 1)
+        );
         assert_eq!(s.poe_won_total, 8000);
         assert_eq!(s.poe_net_total, 6000); // 8000 − 2000
         assert_eq!(s.goods_won_total, 10); // wins only
@@ -617,8 +679,14 @@ mod tests {
         approx(s.goods_per_fight.unwrap(), 10.0);
         approx(s.goods_per_engagement.unwrap(), -20.0); // (+10 won, -50 lost) / 2
         approx(s.poe_per_crew.unwrap(), 600.0); // 6000 / 10 crew
-        approx(s.poe_per_crew_per_fight_won.unwrap(), 800.0); // 8000 / 10 / 1
-        approx(s.poe_per_crew_per_fight_all.unwrap(), 300.0); // 6000 / 10 / 2
+        approx(
+            s.poe_per_crew_per_fight_won.unwrap(),
+            800.0,
+        ); // 8000 / 10 / 1
+        approx(
+            s.poe_per_crew_per_fight_all.unwrap(),
+            300.0,
+        ); // 6000 / 10 / 2
         assert_eq!(s.time_in_battle_secs, 600); // 300 + 240 + 60
         assert_eq!(s.time_at_sea_secs, Some(3000)); // 3600 − 600
         approx(s.avg_battle_secs.unwrap(), 200.0); // 600 / 3
@@ -630,11 +698,19 @@ mod tests {
             vec![
                 (
                     "Brigands and Barbarians".to_string(),
-                    CategoryTally { wins: 0, losses: 1, disengages: 1 }
+                    CategoryTally {
+                        wins: 0,
+                        losses: 1,
+                        disengages: 1
+                    }
                 ),
                 (
                     "King: Vargas the Mad".to_string(),
-                    CategoryTally { wins: 1, losses: 0, disengages: 0 }
+                    CategoryTally {
+                        wins: 1,
+                        losses: 0,
+                        disengages: 0
+                    }
                 ),
             ]
         );
@@ -645,17 +721,22 @@ mod tests {
         assert_eq!(stdev_f64(&[]), None);
         assert_eq!(stdev_f64(&[1.0, 2.0]), None);
         // Population σ of {2,4,6} is sqrt(8/3) ≈ 1.632993...
-        approx(stdev_f64(&[2.0, 4.0, 6.0]).unwrap(), (8.0_f64 / 3.0).sqrt());
+        approx(
+            stdev_f64(&[2.0, 4.0, 6.0]).unwrap(),
+            (8.0_f64 / 3.0).sqrt(),
+        );
     }
 
     #[test]
     fn battle_stats_attaches_sd_with_three_wins() {
-        let win = |poe: i64, secs: u32| Battle {
-            outcome: BattleOutcome::Won,
-            started_at: Some(dt(12, 0, 0)),
-            ended_at: Some(dt(12, 0, secs)),
-            poe: Some(poe),
-            ..Battle::default()
+        let win = |poe: i64, secs: u32| {
+            Battle {
+                outcome: BattleOutcome::Won,
+                started_at: Some(dt(12, 0, 0)),
+                ended_at: Some(dt(12, 0, secs)),
+                poe: Some(poe),
+                ..Battle::default()
+            }
         };
         let voy = Voyage {
             sailed_at: Some(dt(12, 0, 0)),
@@ -666,7 +747,10 @@ mod tests {
         let s = battle_stats(&voy, true);
         approx(s.poe_per_fight_won.unwrap(), 2000.0);
         // σ of {1000,2000,3000} = sqrt(2_000_000/3) ≈ 816.5
-        approx(s.poe_per_fight_won_sd.unwrap(), (2_000_000.0_f64 / 3.0).sqrt());
+        approx(
+            s.poe_per_fight_won_sd.unwrap(),
+            (2_000_000.0_f64 / 3.0).sqrt(),
+        );
         assert!(s.avg_battle_sd.is_some()); // three durations
     }
 
@@ -683,7 +767,10 @@ mod tests {
         assert!(box_plot(&[]).is_none());
 
         let one = box_plot(&[7.0]).unwrap();
-        assert_eq!((one.min, one.median, one.max, one.n), (7.0, 7.0, 7.0, 1));
+        assert_eq!(
+            (one.min, one.median, one.max, one.n),
+            (7.0, 7.0, 7.0, 1)
+        );
     }
 
     #[test]

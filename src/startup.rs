@@ -1,19 +1,26 @@
-use std::collections::HashMap;
-use std::io;
-use std::time::Duration;
+use std::{collections::HashMap, io, time::Duration};
 
-use crossterm::event::{self, Event, KeyCode, KeyEventKind};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+use crossterm::{
+    event::{self, Event, KeyCode, KeyEventKind},
+    execute,
+    terminal::{
+        EnterAlternateScreen,
+        LeaveAlternateScreen,
+        disable_raw_mode,
+        enable_raw_mode,
+    },
 };
-use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Clear, Padding, Paragraph};
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, Clear, Padding, Paragraph},
+};
 
-use crate::cache::OceanCache;
-use crate::ocean::Ocean;
-use crate::pirate::{FetchPlan, PirateUpdate};
-use crate::utils::{offset_title, FieldKind, PromptField};
+use crate::{
+    cache::OceanCache,
+    ocean::Ocean,
+    pirate::{FetchPlan, PirateUpdate},
+    utils::{FieldKind, PromptField, offset_title},
+};
 
 // ---------------------------------------------------------------------------
 // Startup setup popup
@@ -40,7 +47,10 @@ fn ocean_grid() -> HashMap<(usize, usize), Ocean> {
 
 /// Locate an ocean's `(row, column)` slot in the grid. Falls back to the first
 /// cell if it isn't found (shouldn't happen — every live ocean is listed).
-fn ocean_pos(grid: &HashMap<(usize, usize), Ocean>, target: Ocean) -> (usize, usize) {
+fn ocean_pos(
+    grid: &HashMap<(usize, usize), Ocean>,
+    target: Ocean,
+) -> (usize, usize) {
     grid.iter()
         .find(|(_, o)| **o == target)
         .map(|(&pos, _)| pos)
@@ -69,8 +79,9 @@ struct Setup {
     grid: HashMap<(usize, usize), Ocean>,
     ocean_col: usize,
     ocean_row: usize,
-    /// The "Don't Choose" row (below the grid) is highlighted instead of a cell.
-    /// `ocean_col`/`ocean_row` still hold the last grid cell to return to.
+    /// The "Don't Choose" row (below the grid) is highlighted instead of a
+    /// cell. `ocean_col`/`ocean_row` still hold the last grid cell to
+    /// return to.
     dont_choose: bool,
     name: PromptField,
     status: Option<String>,
@@ -113,23 +124,38 @@ impl Setup {
 ///
 /// Drawn on the alternate screen in raw mode and torn down before returning,
 /// so the caller's later `eprintln!` progress and main loop are unaffected.
-/// Returns `Some((ocean, name, fetched))` on confirmation (`ocean`/`name` may be
-/// `None` when the user picked "Don't Choose" / left the name blank), or `None`
-/// when the user pressed Esc to quit. `fetched` is the pirate page pulled while
-/// verifying a not-yet-cached name, for the caller to fold into the cache; it is
-/// `None` when the name was already cached or no fetch happened.
+/// Returns `Some((ocean, name, fetched))` on confirmation (`ocean`/`name` may
+/// be `None` when the user picked "Don't Choose" / left the name blank), or
+/// `None` when the user pressed Esc to quit. `fetched` is the pirate page
+/// pulled while verifying a not-yet-cached name, for the caller to fold into
+/// the cache; it is `None` when the name was already cached or no fetch
+/// happened.
 pub async fn prompt(
     client: &reqwest::Client,
     ocean: Option<Ocean>,
     user: Option<String>,
     oceans: &HashMap<String, OceanCache>,
     query_market: bool,
-) -> io::Result<Option<(Option<Ocean>, Option<String>, Option<PirateUpdate>)>> {
+) -> io::Result<
+    Option<(
+        Option<Ocean>,
+        Option<String>,
+        Option<PirateUpdate>,
+    )>,
+> {
     enable_raw_mode()?;
     execute!(io::stdout(), EnterAlternateScreen)?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let result = run(client, ocean, user, oceans, query_market, &mut terminal).await;
+    let result = run(
+        client,
+        ocean,
+        user,
+        oceans,
+        query_market,
+        &mut terminal,
+    )
+    .await;
 
     disable_raw_mode()?;
     execute!(io::stdout(), LeaveAlternateScreen)?;
@@ -143,9 +169,16 @@ async fn run(
     oceans: &HashMap<String, OceanCache>,
     query_market: bool,
     terminal: &mut Terminal<CrosstermBackend<io::Stdout>>,
-) -> io::Result<Option<(Option<Ocean>, Option<String>, Option<PirateUpdate>)>> {
+) -> io::Result<
+    Option<(
+        Option<Ocean>,
+        Option<String>,
+        Option<PirateUpdate>,
+    )>,
+> {
     let grid = ocean_grid();
-    let (ocean_row, ocean_col) = ocean.map(|o| ocean_pos(&grid, o)).unwrap_or((0, 0));
+    let (ocean_row, ocean_col) =
+        ocean.map(|o| ocean_pos(&grid, o)).unwrap_or((0, 0));
     let mut name = PromptField::new("Pirate name", FieldKind::Text);
     if let Some(u) = &user {
         name.value = u.clone();
@@ -153,7 +186,11 @@ async fn run(
     }
     let mut state = Setup {
         // Start on whichever field still needs input.
-        field: if ocean.is_none() { Field::Ocean } else { Field::Name },
+        field: if ocean.is_none() {
+            Field::Ocean
+        } else {
+            Field::Name
+        },
         grid,
         ocean_col,
         ocean_row,
@@ -192,7 +229,9 @@ async fn run(
                     ));
                 }
                 Verify::Error(e) => {
-                    state.status = Some(format!("Couldn't verify: {e} (Esc to skip)"));
+                    state.status = Some(format!(
+                        "Couldn't verify: {e} (Esc to skip)"
+                    ));
                 }
             }
         }
@@ -237,77 +276,125 @@ async fn run(
             KeyCode::Down if state.field == Field::Ocean => {
                 if state.dont_choose {
                     // Already at the bottom.
-                } else if state.ocean_row + 1 < state.column_height(state.ocean_col) {
+                } else if state.ocean_row + 1
+                    < state.column_height(state.ocean_col)
+                {
                     state.ocean_row += 1;
                 } else {
                     // Off the bottom of the column → the "Don't Choose" row.
                     state.dont_choose = true;
                 }
             }
-            KeyCode::Left if state.field == Field::Ocean && !state.dont_choose => {
+            KeyCode::Left
+                if state.field == Field::Ocean && !state.dont_choose =>
+            {
                 if state.ocean_col > 0 {
                     state.ocean_col -= 1;
                     state.clamp_row();
                 }
             }
-            KeyCode::Right if state.field == Field::Ocean && !state.dont_choose => {
+            KeyCode::Right
+                if state.field == Field::Ocean && !state.dont_choose =>
+            {
                 if state.ocean_col + 1 < state.column_count() {
                     state.ocean_col += 1;
                     state.clamp_row();
                 }
             }
-            KeyCode::Up if state.field == Field::Name => state.field = Field::Ocean,
-            KeyCode::Enter => match state.field {
-                Field::Ocean => state.field = Field::Name,
-                Field::Name => {
-                    let trimmed = state.name.value.trim().to_owned();
-                    let ocean = state.selected_ocean();
-                    if trimmed.is_empty() {
-                        // Proceed without identifying a pirate.
-                        return Ok(Some((ocean, None, None)));
-                    }
-                    match ocean {
-                        // No ocean → nothing to verify against; take the name as-is.
-                        None => return Ok(Some((None, Some(trimmed), None))),
-                        Some(o) if cached_player(oceans, o, &trimmed).is_some() => {
-                            // Verified on a previous run — skip the yoweb round-trip.
-                            return Ok(Some((Some(o), Some(trimmed), None)));
+            KeyCode::Up if state.field == Field::Name => {
+                state.field = Field::Ocean
+            }
+            KeyCode::Enter => {
+                match state.field {
+                    Field::Ocean => state.field = Field::Name,
+                    Field::Name => {
+                        let trimmed = state.name.value.trim().to_owned();
+                        let ocean = state.selected_ocean();
+                        if trimmed.is_empty() {
+                            // Proceed without identifying a pirate.
+                            return Ok(Some((ocean, None, None)));
                         }
-                        Some(o) => {
-                            state.verifying = true;
-                            state.status = Some(format!("Verifying {trimmed} on {o}…"));
-                            let tx = tx.clone();
-                            let client = client.clone();
-                            tokio::spawn(async move {
-                                // Fetch the basic page (not just an existence check) so
-                                // the result can be cached and never re-queried next run.
-                                // Trophies are left for the lazy background fetcher.
-                                let plan = FetchPlan { basic: true, trophies: false };
-                                let update = crate::pirate::fetch_pirate_update(
-                                    &client, &trimmed, o, plan,
-                                )
-                                .await;
-                                let outcome = match update {
-                                    u @ PirateUpdate::Refreshed { basic: Some(_), .. } => {
-                                        Verify::Found(Box::new(u))
-                                    }
-                                    // basic was requested, so absent means no pirate.
-                                    PirateUpdate::Refreshed { .. }
-                                    | PirateUpdate::NotFound => Verify::NotFound,
-                                    PirateUpdate::Error(e) => Verify::Error(e),
-                                };
-                                let _ = tx.send(outcome);
-                            });
+                        match ocean {
+                            // No ocean → nothing to verify against; take the
+                            // name as-is.
+                            None => {
+                                return Ok(Some((None, Some(trimmed), None)));
+                            }
+                            Some(o)
+                                if cached_player(oceans, o, &trimmed)
+                                    .is_some() =>
+                            {
+                                // Verified on a previous run — skip the yoweb
+                                // round-trip.
+                                return Ok(Some((
+                                    Some(o),
+                                    Some(trimmed),
+                                    None,
+                                )));
+                            }
+                            Some(o) => {
+                                state.verifying = true;
+                                state.status = Some(format!(
+                                    "Verifying {trimmed} on {o}…"
+                                ));
+                                let tx = tx.clone();
+                                let client = client.clone();
+                                tokio::spawn(async move {
+                                    // Fetch the basic page (not just an
+                                    // existence check) so
+                                    // the result can be cached and never
+                                    // re-queried next run.
+                                    // Trophies are left for the lazy background
+                                    // fetcher.
+                                    let plan = FetchPlan {
+                                        basic: true,
+                                        trophies: false,
+                                    };
+                                    let update =
+                                        crate::pirate::fetch_pirate_update(
+                                            &client, &trimmed, o, plan,
+                                        )
+                                        .await;
+                                    let outcome = match update {
+                                        u @ PirateUpdate::Refreshed {
+                                            basic: Some(_),
+                                            ..
+                                        } => Verify::Found(Box::new(u)),
+                                        // basic was requested, so absent means
+                                        // no pirate.
+                                        PirateUpdate::Refreshed {
+                                            ..
+                                        }
+                                        | PirateUpdate::NotFound => {
+                                            Verify::NotFound
+                                        }
+                                        PirateUpdate::Error(e) => {
+                                            Verify::Error(e)
+                                        }
+                                    };
+                                    let _ = tx.send(outcome);
+                                });
+                            }
                         }
                     }
                 }
-            },
+            }
             // Text editing for the name field.
-            KeyCode::Char(c) if state.field == Field::Name => state.name.insert_char(c),
-            KeyCode::Backspace if state.field == Field::Name => state.name.delete_char_before(),
-            KeyCode::Delete if state.field == Field::Name => state.name.delete_char_at(),
-            KeyCode::Left if state.field == Field::Name => state.name.move_left(),
-            KeyCode::Right if state.field == Field::Name => state.name.move_right(),
+            KeyCode::Char(c) if state.field == Field::Name => {
+                state.name.insert_char(c)
+            }
+            KeyCode::Backspace if state.field == Field::Name => {
+                state.name.delete_char_before()
+            }
+            KeyCode::Delete if state.field == Field::Name => {
+                state.name.delete_char_at()
+            }
+            KeyCode::Left if state.field == Field::Name => {
+                state.name.move_left()
+            }
+            KeyCode::Right if state.field == Field::Name => {
+                state.name.move_right()
+            }
             _ => {}
         }
     }
@@ -325,33 +412,46 @@ fn cached_player<'a>(
     oceans.get(ocean.name())?.players.get(&norm)
 }
 
-/// Context-sensitive help for the bottom region. Always ends by advertising that
-/// Esc quits.
+/// Context-sensitive help for the bottom region. Always ends by advertising
+/// that Esc quits.
 fn tooltip_lines(state: &Setup) -> Vec<String> {
     let mut lines = match state.field {
-        Field::Ocean if state.dont_choose => vec![
-            "Select this to disable obtaining Pirate information.".to_owned(),
-            "Press Enter to select this.".to_owned(),
-        ],
+        Field::Ocean if state.dont_choose => {
+            vec![
+                "Select this to disable obtaining Pirate information."
+                    .to_owned(),
+                "Press Enter to select this.".to_owned(),
+            ]
+        }
         Field::Ocean => {
             let ocean = state.highlighted_ocean();
             let mut v = Vec::new();
-            // The Market note only applies when it would actually take effect.
+            // The Market note only applies when it would actually take
+            // effect.
             if state.query_market && ocean.market_supported() {
                 v.push("Select this to enable Market querying.".to_owned());
             }
-            v.push(format!("Press Enter to select {ocean} Ocean."));
+            v.push(format!(
+                "Press Enter to select {ocean} Ocean."
+            ));
             v
         }
-        Field::Name if state.name.value.trim().is_empty() => vec![
-            "Press Enter to not identify yourself.".to_owned(),
-            "Jobber functionality will be reduced as a result.".to_owned(),
-            "Voyage win/loss will also be indeterminate without a name.".to_owned(),
-        ],
+        Field::Name if state.name.value.trim().is_empty() => {
+            vec![
+                "Press Enter to not identify yourself.".to_owned(),
+                "Jobber functionality will be reduced as a result.".to_owned(),
+                "Voyage win/loss will also be indeterminate without a name."
+                    .to_owned(),
+            ]
+        }
         Field::Name => {
             let name = state.name.value.trim();
             match state.selected_ocean() {
-                Some(o) => vec![format!("Press Enter to identify as {name} of the {o} ocean.")],
+                Some(o) => {
+                    vec![format!(
+                        "Press Enter to identify as {name} of the {o} ocean."
+                    )]
+                }
                 None => vec![format!("Press Enter to identify as {name}.")],
             }
         }
@@ -407,7 +507,8 @@ fn render(frame: &mut Frame, state: &Setup) {
     let ocean_inner = ocean_block.inner(rows[0]);
     frame.render_widget(ocean_block, rows[0]);
 
-    let oc = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(ocean_inner);
+    let oc = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
+        .split(ocean_inner);
     let cols = state.column_count();
     let col_areas = Layout::horizontal(
         std::iter::repeat(Constraint::Ratio(1, cols as u32))
@@ -415,23 +516,30 @@ fn render(frame: &mut Frame, state: &Setup) {
             .collect::<Vec<_>>(),
     )
     .split(oc[0]);
-    for c in 0..cols {
+    for c in 0 .. cols {
         let width = col_areas[c].width as usize;
-        let lines: Vec<Line> = (0..state.column_height(c))
+        let lines: Vec<Line> = (0 .. state.column_height(c))
             .map(|r| {
                 let ocean = state.grid[&(r, c)];
-                let selected =
-                    !state.dont_choose && c == state.ocean_col && r == state.ocean_row;
+                let selected = !state.dont_choose
+                    && c == state.ocean_col
+                    && r == state.ocean_row;
                 // Pad to the column width so the highlight spans the cell.
                 let label = format!("{:<width$}", format!(" {ocean}"));
-                Line::from(Span::styled(label, cell_style(selected)))
+                Line::from(Span::styled(
+                    label,
+                    cell_style(selected),
+                ))
             })
             .collect();
         frame.render_widget(Paragraph::new(lines), col_areas[c]);
     }
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("Don't Choose", cell_style(state.dont_choose))))
-            .centered(),
+        Paragraph::new(Line::from(Span::styled(
+            "Don't Choose",
+            cell_style(state.dont_choose),
+        )))
+        .centered(),
         oc[1],
     );
 
@@ -445,13 +553,23 @@ fn render(frame: &mut Frame, state: &Setup) {
     let name_inner = name_block.inner(rows[1]);
     frame.render_widget(name_block, rows[1]);
     let name_span = if state.name.value.is_empty() && !name_focused {
-        Span::styled("<pirate name>", Style::default().fg(Color::DarkGray))
+        Span::styled(
+            "<pirate name>",
+            Style::default().fg(Color::DarkGray),
+        )
     } else {
-        Span::styled(state.name.value.clone(), Style::default().fg(Color::White))
+        Span::styled(
+            state.name.value.clone(),
+            Style::default().fg(Color::White),
+        )
     };
-    frame.render_widget(Paragraph::new(Line::from(name_span)), name_inner);
+    frame.render_widget(
+        Paragraph::new(Line::from(name_span)),
+        name_inner,
+    );
     if name_focused {
-        let prefix = state.name.value[..state.name.cursor].chars().count() as u16;
+        let prefix =
+            state.name.value[.. state.name.cursor].chars().count() as u16;
         frame.set_cursor_position((name_inner.x + prefix, name_inner.y));
     }
 
@@ -463,18 +581,27 @@ fn render(frame: &mut Frame, state: &Setup) {
             Style::default().fg(Color::Red)
         };
         frame.render_widget(
-            Paragraph::new(status.as_str())
-                .style(style)
-                .wrap(ratatui::widgets::Wrap { trim: true }),
+            Paragraph::new(status.as_str()).style(style).wrap(
+                ratatui::widgets::Wrap {
+                    trim: true,
+                },
+            ),
             rows[2],
         );
     } else {
         let lines: Vec<Line> = tooltip_lines(state)
             .into_iter()
-            .map(|s| Line::from(Span::styled(s, Style::default().fg(Color::DarkGray))))
+            .map(|s| {
+                Line::from(Span::styled(
+                    s,
+                    Style::default().fg(Color::DarkGray),
+                ))
+            })
             .collect();
         frame.render_widget(
-            Paragraph::new(lines).wrap(ratatui::widgets::Wrap { trim: true }),
+            Paragraph::new(lines).wrap(ratatui::widgets::Wrap {
+                trim: true,
+            }),
             rows[2],
         );
     }

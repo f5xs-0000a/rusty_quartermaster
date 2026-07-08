@@ -1,30 +1,43 @@
 //! Streaming reader + state machine for the Puzzle Pirates client chat log.
 //!
 //! The log is a single ever-growing file. A `====== YYYY/MM/DD ======` header
-//! line is written on every login/relog. Every other line is `[HH:MM:SS] <body>`.
+//! line is written on every login/relog. Every other line is `[HH:MM:SS]
+//! <body>`.
 //!
 //! [`GameState`] is the state machine: `process_line` classifies a line and
-//! delegates to a specific handler. State is organised per-vessel in a map keyed
-//! by ship name, so we can hop between vessels and come back. A vessel is marked
-//! `poisoned` if we leave it mid-run (before the booty is divided), since we then
-//! miss whatever happens while it keeps sailing.
+//! delegates to a specific handler. State is organised per-vessel in a map
+//! keyed by ship name, so we can hop between vessels and come back. A vessel is
+//! marked `poisoned` if we leave it mid-run (before the booty is divided),
+//! since we then miss whatever happens while it keeps sailing.
 //!
 //! [`spawn_tailer`] does the streaming: it reads bytes appended after a given
 //! offset and sends complete lines over a channel. Whole-file ingestion is done
 //! synchronously via [`GameState::process_existing`] before the tailer starts,
 //! so history is in place before the first frame.
 
-use std::collections::{BTreeSet, HashMap, HashSet};
-use std::fmt;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::{BTreeSet, HashMap, HashSet},
+    fmt,
+    sync::Arc,
+    time::Duration,
+};
 
 use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
-use crate::pirate;
-use crate::voyage::{
-    Battle, BattleCategory, BattleOutcome, BattleSnapshot, CrewSample, FightTimeline, KoEvent,
-    KoSide, TeamSide, Voyage,
+use crate::{
+    pirate,
+    voyage::{
+        Battle,
+        BattleCategory,
+        BattleOutcome,
+        BattleSnapshot,
+        CrewSample,
+        FightTimeline,
+        KoEvent,
+        KoSide,
+        TeamSide,
+        Voyage,
+    },
 };
 
 // ---------------------------------------------------------------------------
@@ -108,7 +121,8 @@ pub enum JobKind {
 }
 
 impl JobKind {
-    /// Parse the text after `This vessel is now ` (trailing `.` already removed).
+    /// Parse the text after `This vessel is now ` (trailing `.` already
+    /// removed).
     pub fn parse(s: &str) -> JobKind {
         if let Some(rest) = s.strip_prefix("Pillaging, ") {
             if let Some(job) = parse_pillaging(rest) {
@@ -142,13 +156,20 @@ impl fmt::Display for JobKind {
                 if lower == upper {
                     write!(f, "Pillaging, {lower} {targets}")
                 } else {
-                    write!(f, "Pillaging, {lower} to {upper} {targets}")
+                    write!(
+                        f,
+                        "Pillaging, {lower} to {upper} {targets}"
+                    )
                 }
             }
             JobKind::Evading => f.write_str("Evading"),
-            JobKind::SwabbieTransport => f.write_str("Swabbie Ship Transporting"),
+            JobKind::SwabbieTransport => {
+                f.write_str("Swabbie Ship Transporting")
+            }
             JobKind::Trading => f.write_str("Trading"),
-            JobKind::Exploring { monster } => write!(f, "Exploring the {monster}"),
+            JobKind::Exploring {
+                monster,
+            } => write!(f, "Exploring the {monster}"),
             JobKind::AttackingFlotilla => f.write_str("Attacking a Flotilla"),
             JobKind::Other(s) => f.write_str(s),
         }
@@ -160,14 +181,22 @@ impl fmt::Display for JobKind {
 fn parse_pillaging(rest: &str) -> Option<JobKind> {
     let words: Vec<&str> = rest.split_whitespace().collect();
     // Targets always come last; find where the first foe word starts.
-    let split = words
-        .iter()
-        .position(|w| matches!(*w, "Pirates" | "Brigands" | "Barbarians"))?;
-    let diff_text = words[..split].join(" ");
-    let target_text = words[split..].join(" ");
+    let split = words.iter().position(|w| {
+        matches!(
+            *w,
+            "Pirates" | "Brigands" | "Barbarians"
+        )
+    })?;
+    let diff_text = words[.. split].join(" ");
+    let target_text = words[split ..].join(" ");
 
     let (lower, upper) = match diff_text.split_once(" to ") {
-        Some((lo, hi)) => (Difficulty::parse(lo)?, Difficulty::parse(hi)?),
+        Some((lo, hi)) => {
+            (
+                Difficulty::parse(lo)?,
+                Difficulty::parse(hi)?,
+            )
+        }
         None => {
             let d = Difficulty::parse(&diff_text)?;
             (d, d)
@@ -208,32 +237,35 @@ pub const LAIR_WAVE_HI: f64 = 1.225;
 // Cursed Isles model
 // ---------------------------------------------------------------------------
 
-/// Crew-anchored forecast for a Cursed Isles island wave's enemy count. Unlike a
-/// vampire lair (exactly one vampire per pirate on wave 1), island waves only
-/// *loosely* scale with crew, and the multiplier here is a rough estimate from a
-/// single run — one where we often left fights early, so the observed counts that
-/// would calibrate it under-report. TODO: recalibrate from more recorded runs.
+/// Crew-anchored forecast for a Cursed Isles island wave's enemy count. Unlike
+/// a vampire lair (exactly one vampire per pirate on wave 1), island waves only
+/// *loosely* scale with crew, and the multiplier here is a rough estimate from
+/// a single run — one where we often left fights early, so the observed counts
+/// that would calibrate it under-report. TODO: recalibrate from more recorded
+/// runs.
 pub const ISLAND_ANCHOR_MULT: f64 = 1.5;
 pub const ISLAND_WAVE_GROWTH: f64 = 1.1;
 pub const ISLAND_WAVE_LO: f64 = 0.8;
 pub const ISLAND_WAVE_HI: f64 = 1.2;
 
-/// Crew-anchored projected `[low, high]` enemy count for a 1-based island `wave`.
-/// See the `ISLAND_*` constants — a deliberately wide, rough band.
+/// Crew-anchored projected `[low, high]` enemy count for a 1-based island
+/// `wave`. See the `ISLAND_*` constants — a deliberately wide, rough band.
 pub fn island_wave_band(pirates: u32, wave: u32) -> (u32, u32) {
-    let base =
-        pirates as f64 * ISLAND_ANCHOR_MULT * ISLAND_WAVE_GROWTH.powi(wave.saturating_sub(1) as i32);
+    let base = pirates as f64
+        * ISLAND_ANCHOR_MULT
+        * ISLAND_WAVE_GROWTH.powi(wave.saturating_sub(1) as i32);
     (
         (base * ISLAND_WAVE_LO).round() as u32,
         (base * ISLAND_WAVE_HI).round() as u32,
     )
 }
 
-/// The kind of a 1-based island wave. Island waves always start at Rumble (wave 1)
-/// and alternate Rumble / Swordfight thereafter — so the kind is known the moment a
-/// wave begins, even before the first kill (and matches the observed enemy families:
-/// rumble waves field zombies / Enlightened Ones / Vargas, swordfight waves cultists
-/// / homunculi). `Unknown` only before landing (wave 0).
+/// The kind of a 1-based island wave. Island waves always start at Rumble (wave
+/// 1) and alternate Rumble / Swordfight thereafter — so the kind is known the
+/// moment a wave begins, even before the first kill (and matches the observed
+/// enemy families: rumble waves field zombies / Enlightened Ones / Vargas,
+/// swordfight waves cultists / homunculi). `Unknown` only before landing (wave
+/// 0).
 pub fn wave_kind_for(wave: u32) -> WaveKind {
     match wave {
         0 => WaveKind::Unknown,
@@ -243,36 +275,38 @@ pub fn wave_kind_for(wave: u32) -> WaveKind {
 }
 
 /// Whether the boss Vargas the Mad is present in a 1-based island wave. He's
-/// *guaranteed* from wave 5 on, but only on Rumble waves — so it's derived from the
-/// wave number, never detected. His arrival herald is "Ye be tremored by the presence
-/// of Vargas the Mad! Man at arms!".
+/// *guaranteed* from wave 5 on, but only on Rumble waves — so it's derived from
+/// the wave number, never detected. His arrival herald is "Ye be tremored by
+/// the presence of Vargas the Mad! Man at arms!".
 ///
-/// TODO: track when Vargas is *eliminated* (his `Vargas the Mad is eliminated!` line)
-/// — useful for per-fight stats / "did we beat the boss this run" — separate from
-/// this presence check.
+/// TODO: track when Vargas is *eliminated* (his `Vargas the Mad is eliminated!`
+/// line) — useful for per-fight stats / "did we beat the boss this run" —
+/// separate from this presence check.
 pub fn vargas_in_wave(wave: u32) -> bool {
     wave >= 5 && matches!(wave_kind_for(wave), WaveKind::Rumble)
 }
 
 /// Which special-encounter mechanic is active on a vessel, inferred from the
 /// voyage's tell. Gates which "invaders aboard" lines are counted so a stray
-/// keyword on an ordinary pillage can't move the wrong counter. Each mechanic is
-/// exclusive to its voyage type — `Atlantis` is set by the dragoon boarding tells
-/// and gates the dragoon driven-off decrement; zombies are Cursed-Isles-only.
+/// keyword on an ordinary pillage can't move the wrong counter. Each mechanic
+/// is exclusive to its voyage type — `Atlantis` is set by the dragoon boarding
+/// tells and gates the dragoon driven-off decrement; zombies are
+/// Cursed-Isles-only.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum EncounterKind {
     #[default]
     None,
     Atlantis,
     CursedIsles,
-    // TODO(Haunted Seas): add a `HauntedSeas` variant and count phantasm boarders
-    // here, parallel to dragoons (Atlantis) / zombies (Cursed Isles).
+    // TODO(Haunted Seas): add a `HauntedSeas` variant and count phantasm
+    // boarders here, parallel to dragoons (Atlantis) / zombies (Cursed
+    // Isles).
 }
 
 /// A Cursed Isles island wave is either a swordfight or a rumble, and the two
 /// alternate. Classified from the enemy family seen — cultists/homunculi are
-/// swordfight foes; zombies, Enlightened Ones and Vargas are rumble foes — so it
-/// stays `Unknown` until the wave's first kill.
+/// swordfight foes; zombies, Enlightened Ones and Vargas are rumble foes — so
+/// it stays `Unknown` until the wave's first kill.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum WaveKind {
     #[default]
@@ -281,8 +315,8 @@ pub enum WaveKind {
     Rumble,
 }
 
-/// One completed wave of a Cursed Isles island assault or a Vampirate lair — its
-/// number, kind, and the side-tagged elimination timeline that drives the
+/// One completed wave of a Cursed Isles island assault or a Vampirate lair —
+/// its number, kind, and the side-tagged elimination timeline that drives the
 /// per-fight advantage graph. Live-only (not persisted), unlike sea
 /// [`Battle`] timelines.
 #[derive(Clone, Debug)]
@@ -306,57 +340,64 @@ pub struct Vessel {
     pub job_kind: Option<JobKind>,
     /// Pirates currently aboard with us.
     pub crewmates: HashSet<String>,
-    /// Crewmates whose client has dropped — between their `X has disconnected.` and
-    /// `X has reconnected.` lines. A disconnected pirate still holds a melee slot
-    /// (and stays on the winners roster) but doesn't actually fight, so they're
-    /// excluded from a battle's crew strength / manpower advantage. Cleared on
-    /// reconnect or when they leave the vessel.
+    /// Crewmates whose client has dropped — between their `X has
+    /// disconnected.` and `X has reconnected.` lines. A disconnected
+    /// pirate still holds a melee slot (and stays on the winners roster)
+    /// but doesn't actually fight, so they're excluded from a battle's
+    /// crew strength / manpower advantage. Cleared on reconnect or when
+    /// they leave the vessel.
     pub disconnected: HashSet<String>,
-    /// Swabbies (NPC crew) aboard. There's no absolute count line, so this is a
-    /// running tally from the four "swabbie(s) (has|have) come aboard / left the
-    /// vessel" delta lines, snapped to the authoritative roster whenever we win a
-    /// fight (see [`on_battle_end`]). Departures saturate at zero so a poisoned
-    /// vessel (we missed lines while away) can't underflow.
+    /// Swabbies (NPC crew) aboard. There's no absolute count line, so this is
+    /// a running tally from the four "swabbie(s) (has|have) come aboard /
+    /// left the vessel" delta lines, snapped to the authoritative roster
+    /// whenever we win a fight (see [`on_battle_end`]). Departures
+    /// saturate at zero so a poisoned vessel (we missed lines while away)
+    /// can't underflow.
     pub swabbies: u32,
-    /// Mercenaries believed aboard right now, by name — the `[name] [epithet]` NPCs,
-    /// a distinct crew kind from swabbies but a **subset** of the bodies the log lumps
-    /// into [`Self::swabbies`] (so genuine-swabbie count = `swabbies -
-    /// mercenaries.len()`). NPCs never announce by name, so this can only be *ground
-    /// truthed* from a won fight's winners roster (classified via
-    /// [`crate::cache::NameSegments`]); between wins it's maintained best-effort:
-    /// swabbies leave before mercs, and the rum-spice depletion swap sheds one merc.
-    /// A merc both hired and lost between two wins is invisible until the next roster
+    /// Mercenaries believed aboard right now, by name — the `[name] [epithet]`
+    /// NPCs, a distinct crew kind from swabbies but a **subset** of the
+    /// bodies the log lumps into [`Self::swabbies`] (so genuine-swabbie
+    /// count = `swabbies - mercenaries.len()`). NPCs never announce by
+    /// name, so this can only be *ground truthed* from a won fight's
+    /// winners roster (classified via [`crate::cache::NameSegments`]);
+    /// between wins it's maintained best-effort: swabbies leave before
+    /// mercs, and the rum-spice depletion swap sheds one merc. A merc both
+    /// hired and lost between two wins is invisible until the next roster
     /// re-truths it. Drives the mercenary half of each fight's divvy shares.
     pub mercenaries: BTreeSet<String>,
     /// Lone dragoons currently aboard on an Atlantis run: +1 per "Ye hear a
-    /// splash, and the sound of foreign footsteps." line, −1 per dragoon driven off
-    /// the ship. Reset to zero once the crew repels all invaders. Always zero on
-    /// voyage types without dragoons.
+    /// splash, and the sound of foreign footsteps." line, −1 per dragoon
+    /// driven off the ship. Reset to zero once the crew repels all
+    /// invaders. Always zero on voyage types without dragoons.
     ///
-    /// **Signed on purpose:** a "driven from the ship" line doesn't say whether the
-    /// dragoon was a lone splasher or a *party* member (whose head lives in
-    /// [`Self::dragoon_boardings`], not here), so driven-offs can exceed lone
-    /// boardings and take this below zero. That negative is meaningful — party heads
-    /// were cleared beyond the lone ones — so we keep it rather than saturating at 0.
+    /// **Signed on purpose:** a "driven from the ship" line doesn't say
+    /// whether the dragoon was a lone splasher or a *party* member (whose
+    /// head lives in [`Self::dragoon_boardings`], not here), so
+    /// driven-offs can exceed lone boardings and take this below zero.
+    /// That negative is meaningful — party heads were cleared beyond the
+    /// lone ones — so we keep it rather than saturating at 0.
     pub dragoons_aboard: i32,
     /// Monster boarding parties currently aboard: +1 per "Dragoons from the
-    /// monster took advantage..." line. Each party is 3/4/6 dragoons depending on
-    /// the monster — we can't tell which — so we count the parties, not the heads.
-    /// Reset alongside [`Self::dragoons_aboard`] when invaders are repelled.
+    /// monster took advantage..." line. Each party is 3/4/6 dragoons depending
+    /// on the monster — we can't tell which — so we count the parties, not
+    /// the heads. Reset alongside [`Self::dragoons_aboard`] when invaders
+    /// are repelled.
     pub dragoon_boardings: u32,
     /// --- Vampirate lair tracking (Vampirates voyages) ---
     /// Whether we're currently inside a vampire lair (between `Welcome to the
-    /// vampire sanctum.` / first `slaps mother` and the first lost `Game over`).
+    /// vampire sanctum.` / first `slaps mother` and the first lost `Game
+    /// over`).
     pub lair_active: bool,
-    /// Which wave we're in: 1 on lair entry, +1 per swordfight conclusion (`Game
-    /// over` the crew won). Stays at the final wave after the lair ends (a lost
-    /// swordfight); `0` if no lair has happened this run.
+    /// Which wave we're in: 1 on lair entry, +1 per swordfight conclusion
+    /// (`Game over` the crew won). Stays at the final wave after the lair
+    /// ends (a lost swordfight); `0` if no lair has happened this run.
     pub lair_wave: u32,
-    /// Real pirates aboard at lair entry — wave 1's vampire count (the anchor the
-    /// per-wave projection grows from at ~+20%).
+    /// Real pirates aboard at lair entry — wave 1's vampire count (the anchor
+    /// the per-wave projection grows from at ~+20%).
     pub lair_pirates: u32,
-    /// Vampires defeated this lair so far (cumulative `<NPC> is eliminated!`). Note:
-    /// undercounts while we're out of the fight — see [`Self::lair_warn`].
+    /// Vampires defeated this lair so far (cumulative `<NPC> is eliminated!`).
+    /// Note: undercounts while we're out of the fight — see
+    /// [`Self::lair_warn`].
     pub vampires_defeated: u32,
     /// Vampires eliminated in the current wave only (reset each wave); checked
     /// against the wave's projected range to detect that we left the fight.
@@ -365,58 +406,66 @@ pub struct Vessel {
     /// pirates exactly). Set on entry and on each wave advance.
     pub wave_lo: u32,
     pub wave_hi: u32,
-    /// Latched once any wave's observed count falls outside its projected range —
-    /// i.e. we left the swordfight and miscounted. Drives the on-screen reminder.
+    /// Latched once any wave's observed count falls outside its projected
+    /// range — i.e. we left the swordfight and miscounted. Drives the
+    /// on-screen reminder.
     pub lair_warn: bool,
-    /// Completed lair waves this run (one per cleared swordfight), each with its
-    /// side-tagged elimination timeline for the per-fight advantage graph.
-    /// Live-only; reset on a fresh run.
+    /// Completed lair waves this run (one per cleared swordfight), each with
+    /// its side-tagged elimination timeline for the per-fight advantage
+    /// graph. Live-only; reset on a fresh run.
     pub lair_waves: Vec<WaveRecord>,
     /// --- Cursed Isles tracking (Cursed Isles voyages) ---
-    /// Which special encounter this vessel's current run is, inferred from its tell
-    /// (the noxious fog, or any zombie/island line as a fallback). Gates the zombie
-    /// and island lines below, and the Game-over routing. Reset at each run's start.
+    /// Which special encounter this vessel's current run is, inferred from its
+    /// tell (the noxious fog, or any zombie/island line as a fallback).
+    /// Gates the zombie and island lines below, and the Game-over routing.
+    /// Reset at each run's start.
     pub encounter: EncounterKind,
     /// Zombies currently aboard during the raft-boarding (sea) phase: +1 per
-    /// "Boarders from the raft..." line; -1 when one is thralled or driven off.
-    /// Reset to zero on landing. Best-effort — a raft's exact head count isn't
-    /// logged, so this counts boarding events, not necessarily heads.
+    /// "Boarders from the raft..." line; -1 when one is thralled or driven
+    /// off. Reset to zero on landing. Best-effort — a raft's exact head
+    /// count isn't logged, so this counts boarding events, not necessarily
+    /// heads.
     pub zombies_aboard: u32,
-    /// Live thralls per pirate (zombies turned to our side and still alive): +1 on
-    /// "<p> has taken control of a zombie.", -1 on "<p>'s Thrall is eliminated!".
-    /// The sum is our bonus melee manpower on the island.
+    /// Live thralls per pirate (zombies turned to our side and still alive):
+    /// +1 on "<p> has taken control of a zombie.", -1 on "<p>'s Thrall is
+    /// eliminated!". The sum is our bonus melee manpower on the island.
     pub thralls_alive: HashMap<String, u32>,
     /// Lifetime thralls per pirate over the run (never decremented) — the
     /// "enthralled" total the Enthralled leaderboard ranks by.
     pub thralls_total: HashMap<String, u32>,
-    /// Whether we're in the island-foraging phase (between "Ye land on the island"
-    /// and a retreat / a lost wave / the run ending).
+    /// Whether we're in the island-foraging phase (between "Ye land on the
+    /// island" and a retreat / a lost wave / the run ending).
     pub island_active: bool,
-    /// Island wave number: 1 on landing, +1 per cleared wave (a `Game over` we won).
+    /// Island wave number: 1 on landing, +1 per cleared wave (a `Game over` we
+    /// won).
     pub island_wave: u32,
-    /// Real pirates aboard at landing — the crew anchor the wave forecast grows from.
+    /// Real pirates aboard at landing — the crew anchor the wave forecast
+    /// grows from.
     pub island_pirates: u32,
-    /// Enemy NPCs eliminated in the current wave only (reset each wave). Undercounts
-    /// when we leave the fight — see [`Self::island_left_warn`].
+    /// Enemy NPCs eliminated in the current wave only (reset each wave).
+    /// Undercounts when we leave the fight — see
+    /// [`Self::island_left_warn`].
     pub wave_enemies_observed: u32,
     /// Crew-anchored projected `[low, high]` enemy count for the current wave.
     pub wave_enemies_lo: u32,
     pub wave_enemies_hi: u32,
-    /// Latched once a wave's observed kills fell short of its projection — i.e. we
-    /// left the fight early, so the counts are unreliable. Drives an on-screen note.
+    /// Latched once a wave's observed kills fell short of its projection —
+    /// i.e. we left the fight early, so the counts are unreliable. Drives
+    /// an on-screen note.
     pub island_left_warn: bool,
-    /// The current wave's kind (rumble / swordfight). Waves start at Rumble (wave 1)
-    /// and alternate, so this is set deterministically from the wave number — see
-    /// [`wave_kind_for`]. Whether the Vargas boss is present is likewise derived from
-    /// the wave number (see [`vargas_in_wave`]), not stored.
+    /// The current wave's kind (rumble / swordfight). Waves start at Rumble
+    /// (wave 1) and alternate, so this is set deterministically from the
+    /// wave number — see [`wave_kind_for`]. Whether the Vargas boss is
+    /// present is likewise derived from the wave number (see
+    /// [`vargas_in_wave`]), not stored.
     pub wave_kind: WaveKind,
     /// Completed island waves this run (one per cleared wave), each with its
     /// side-tagged elimination timeline for the per-fight advantage graph.
     /// Live-only; reset on a fresh run.
     pub island_waves: Vec<WaveRecord>,
     /// The in-progress wave's elimination timeline (Cursed Isles island *or*
-    /// Vampirate lair — only one is active at a time). Enemy KOs step it up, our
-    /// own KOs step it down; finalized into [`Self::island_waves`] /
+    /// Vampirate lair — only one is active at a time). Enemy KOs step it up,
+    /// our own KOs step it down; finalized into [`Self::island_waves`] /
     /// [`Self::lair_waves`] when the wave closes.
     pub wave_timeline: FightTimeline,
     /// Greedy strikes tallied per attacking pirate, over the whole run.
@@ -437,11 +486,13 @@ pub struct Vessel {
     /// Wall-clock time we last boarded, from the line's `[HH:MM:SS]` combined
     /// with the most recent `====== Y/M/D ======` date header. For display.
     pub boarded_at: Option<NaiveDateTime>,
-    /// The voyage currently underway aboard this vessel (sail -> port), if any.
-    /// Accumulates per-battle stats; promoted into [`Self::voyages`] at port/divvy.
+    /// The voyage currently underway aboard this vessel (sail -> port), if
+    /// any. Accumulates per-battle stats; promoted into [`Self::voyages`]
+    /// at port/divvy.
     pub current_voyage: Option<Voyage>,
     /// Completed sail->port runs, in order. RAM-only this session — nothing is
-    /// written to disk until the user is prompted to save or discard (deferred).
+    /// written to disk until the user is prompted to save or discard
+    /// (deferred).
     pub voyages: Vec<Voyage>,
 }
 
@@ -459,12 +510,13 @@ impl Vessel {
 pub struct GameState {
     /// Our own pirate name (from `--user`), used to attribute planks to us.
     pub player_name: Option<Arc<str>>,
-    /// True once [`Self::player_name`] has been *confirmed* present in the log via
-    /// a strong, unspoofable signal (a `Game over` winners list, an `X is
-    /// eliminated!`, or an `X issued an order` line). Until then a battle's
-    /// win/loss is indeterminate: our name not appearing among the winners could
-    /// mean we lost, or that the configured name is simply wrong/absent. Chat
-    /// (`X says`) is deliberately excluded — it's forgeable.
+    /// True once [`Self::player_name`] has been *confirmed* present in the log
+    /// via a strong, unspoofable signal (a `Game over` winners list, an `X
+    /// is eliminated!`, or an `X issued an order` line). Until then a
+    /// battle's win/loss is indeterminate: our name not appearing among
+    /// the winners could mean we lost, or that the configured name is
+    /// simply wrong/absent. Chat (`X says`) is deliberately excluded —
+    /// it's forgeable.
     pub self_confirmed: bool,
     /// True once a chat log has been attached via `--chat-log`.
     pub attached: bool,
@@ -474,10 +526,10 @@ pub struct GameState {
     /// The vessel we're aboard right now, if any.
     pub current: Option<Arc<str>>,
 
-    /// Crewmates/hearties currently logged on (global; wiped on relog). Tracked
-    /// from presence lines but not yet surfaced anywhere — kept for a future
-    /// "who's online" view. (No longer feeds the fetch worklist, which is now
-    /// scoped to the aboard/planked sets.)
+    /// Crewmates/hearties currently logged on (global; wiped on relog).
+    /// Tracked from presence lines but not yet surfaced anywhere — kept
+    /// for a future "who's online" view. (No longer feeds the fetch
+    /// worklist, which is now scoped to the aboard/planked sets.)
     #[allow(dead_code)]
     pub online: HashSet<String>,
 
@@ -485,15 +537,16 @@ pub struct GameState {
     /// `====== Y/M/D ======` header, advanced by one day each time the line
     /// clock wraps past midnight without a new header.
     pub current_date: Option<NaiveDate>,
-    /// Time of the previous timestamped line; used to detect midnight rollover.
+    /// Time of the previous timestamped line; used to detect midnight
+    /// rollover.
     last_time: Option<NaiveTime>,
     /// Timestamp of the line currently being processed (date + line time).
     now: Option<NaiveDateTime>,
     /// Monotonic counter handing out [`Vessel::order`] values.
     order_counter: u64,
-    /// Monotonic counter handing out [`Voyage::id`] values. Not reset on relog —
-    /// ids only need to stay unique within the process so the pager's selection
-    /// pin never collides after a `vessels.clear()`.
+    /// Monotonic counter handing out [`Voyage::id`] values. Not reset on relog
+    /// — ids only need to stay unique within the process so the pager's
+    /// selection pin never collides after a `vessels.clear()`.
     next_voyage_id: u64,
     /// Set for the duration of one line when a sea battle just resolved (`Game
     /// over` / disengage). Lets the app freeze the live Damage calculator onto
@@ -505,50 +558,54 @@ pub struct GameState {
     /// [`Self::take_battle_started`].
     battle_just_started: bool,
     /// Set for the duration of one line when a special encounter announced the
-    /// foe's hull type (e.g. the Black Ship herald). Lets the app seed the live
-    /// Damage calculator's foe ship. Reset at the top of each
+    /// foe's hull type (e.g. the Black Ship herald). Lets the app seed the
+    /// live Damage calculator's foe ship. Reset at the top of each
     /// [`Self::process_line`]; consumed by [`Self::take_detected_foe_ship`].
     detected_foe_ship: Option<usize>,
-    /// Set for the duration of one line when we just entered a vampire lair. Lets
-    /// the app jump to the Jobbers page and switch it to the Vampirates voyage
-    /// layout. Reset at the top of each [`Self::process_line`]; consumed by
-    /// [`Self::take_lair_entered`].
+    /// Set for the duration of one line when we just entered a vampire lair.
+    /// Lets the app jump to the Jobbers page and switch it to the
+    /// Vampirates voyage layout. Reset at the top of each
+    /// [`Self::process_line`]; consumed by [`Self::take_lair_entered`].
     lair_just_entered: bool,
-    /// Set to the vessel key for the duration of one line when we just boarded a
-    /// vessel. Lets the app snap the Jobbers/Voyage vessel selector to the ship
-    /// we just stepped onto. Reset at the top of each [`Self::process_line`];
-    /// consumed by [`Self::take_boarded_vessel`].
+    /// Set to the vessel key for the duration of one line when we just boarded
+    /// a vessel. Lets the app snap the Jobbers/Voyage vessel selector to
+    /// the ship we just stepped onto. Reset at the top of each
+    /// [`Self::process_line`]; consumed by [`Self::take_boarded_vessel`].
     boarded_vessel: Option<Arc<str>>,
-    /// Set for the duration of one line when the Cursed Isles tell (the noxious fog)
-    /// first fires on a run. Lets the app jump to the Jobbers page and switch it to
-    /// the Cursed Isles voyage layout — mirrors [`Self::lair_just_entered`]. Reset at
-    /// the top of each [`Self::process_line`]; consumed by
+    /// Set for the duration of one line when the Cursed Isles tell (the
+    /// noxious fog) first fires on a run. Lets the app jump to the Jobbers
+    /// page and switch it to the Cursed Isles voyage layout — mirrors
+    /// [`Self::lair_just_entered`]. Reset at the top of each
+    /// [`Self::process_line`]; consumed by
     /// [`Self::take_cursed_isles_detected`].
     cursed_isles_just_detected: bool,
-    /// Set for the duration of one line when the booty was divided. Lets the app
-    /// freeze the just-divvied run's booty (chest PoE + goods) from the live Profits
-    /// state onto the voyage, so a later pillage overwriting that state doesn't
-    /// blank the Divvy section. Reset at the top of each [`Self::process_line`];
-    /// consumed by [`Self::take_booty_divided`].
+    /// Set for the duration of one line when the booty was divided. Lets the
+    /// app freeze the just-divvied run's booty (chest PoE + goods) from
+    /// the live Profits state onto the voyage, so a later pillage
+    /// overwriting that state doesn't blank the Divvy section. Reset at
+    /// the top of each [`Self::process_line`]; consumed by
+    /// [`Self::take_booty_divided`].
     booty_divided: bool,
-    /// Set for the duration of one line when a grappled sea battle's *first* melee
-    /// elimination landed. Lets the app surface the Sea Battles graph mid-fight
-    /// (lair / island runs already surfaced their layout on the entry tell, so they
-    /// don't use this). Reset at the top of each [`Self::process_line`]; consumed by
+    /// Set for the duration of one line when a grappled sea battle's *first*
+    /// melee elimination landed. Lets the app surface the Sea Battles
+    /// graph mid-fight (lair / island runs already surfaced their layout
+    /// on the entry tell, so they don't use this). Reset at the top of
+    /// each [`Self::process_line`]; consumed by
     /// [`Self::take_battle_first_blood`].
     battle_first_blood: bool,
-    /// Armed by the rum-spice limit tell (`Avast, yer mercenary hirin' is limited by
-    /// the rum spice…`) and consumed by the *next single* `A swabbie has left the
-    /// vessel.` — that departure is really a mercenary shed to spice, not a swabbie.
-    /// Persists across intervening lines (chat, etc.); cleared by any swabbie delta
-    /// (so a bulk board/leave disarms it without a swap) and at battle/relog resets.
+    /// Armed by the rum-spice limit tell (`Avast, yer mercenary hirin' is
+    /// limited by the rum spice…`) and consumed by the *next single* `A
+    /// swabbie has left the vessel.` — that departure is really a
+    /// mercenary shed to spice, not a swabbie. Persists across intervening
+    /// lines (chat, etc.); cleared by any swabbie delta (so a bulk
+    /// board/leave disarms it without a swap) and at battle/relog resets.
     spice_swap_armed: bool,
 
     /// Learned brigand naming vocabulary (see [`crate::cache::NameSegments`]),
-    /// accumulated from brigand-victory rosters and persisted in the cache. Used
-    /// to tell swabbies from mercenaries among the NPCs aboard. Seeded from the
-    /// cache at startup; not reset on relog (the vocabulary is game-wide, not
-    /// session-scoped).
+    /// accumulated from brigand-victory rosters and persisted in the cache.
+    /// Used to tell swabbies from mercenaries among the NPCs aboard.
+    /// Seeded from the cache at startup; not reset on relog (the
+    /// vocabulary is game-wide, not session-scoped).
     pub name_segments: crate::cache::NameSegments,
 }
 
@@ -587,7 +644,7 @@ impl GameState {
         let mut resume = 0u64;
         for (i, &b) in data.iter().enumerate() {
             if b == b'\n' {
-                let line = String::from_utf8_lossy(&data[start..i]);
+                let line = String::from_utf8_lossy(&data[start .. i]);
                 self.process_line(line.trim_end_matches('\r'));
                 start = i + 1;
                 resume = start as u64;
@@ -635,7 +692,8 @@ impl GameState {
     fn advance_clock(&mut self, time: NaiveTime) {
         if let Some(prev) = self.last_time {
             if time < prev {
-                self.current_date = self.current_date.and_then(|d| d.succ_opt());
+                self.current_date =
+                    self.current_date.and_then(|d| d.succ_opt());
             }
         }
         self.last_time = Some(time);
@@ -659,15 +717,16 @@ impl GameState {
         ];
         for marker in GREEDY {
             if let Some(idx) = body.find(marker) {
-                self.on_greedy_strike(&body[..idx]);
+                self.on_greedy_strike(&body[.. idx]);
                 return;
             }
         }
 
-        // Battle start: a fresh battle resets the current-battle greedy tally and
-        // opens a new [`Battle`] record. We capture the enemy vessel name; the
-        // direction (who intercepted whom) isn't tracked. Both "the X" forms end
-        // in `!` (live) or `.` (some variants).
+        // Battle start: a fresh battle resets the current-battle greedy tally
+        // and opens a new [`Battle`] record. We capture the enemy
+        // vessel name; the direction (who intercepted whom) isn't
+        // tracked. Both "the X" forms end in `!` (live) or `.` (some
+        // variants).
         let intercept = body
             .strip_prefix("You intercepted the ")
             .or_else(|| body.strip_prefix("You have been intercepted by the "));
@@ -676,53 +735,66 @@ impl GameState {
             self.on_battle_start(enemy);
             return;
         }
-        // Bare forms without a vessel name (e.g. "You intercepted the Brigands.").
-        if body.starts_with("You intercepted") || body.starts_with("You have been intercepted") {
+        // Bare forms without a vessel name (e.g. "You intercepted the
+        // Brigands.").
+        if body.starts_with("You intercepted")
+            || body.starts_with("You have been intercepted")
+        {
             self.on_battle_start("");
             return;
         }
 
-        // Set-sail order: starts the voyage on its first occurrence (the order also
-        // fires on every subsequent navigation move — those are ignored once a
-        // voyage is underway).
-        if let Some(who) = body.strip_suffix(" issued an order to set the vessel to sail.") {
+        // Set-sail order: starts the voyage on its first occurrence (the order
+        // also fires on every subsequent navigation move — those are
+        // ignored once a voyage is underway).
+        if let Some(who) =
+            body.strip_suffix(" issued an order to set the vessel to sail.")
+        {
             self.confirm_self(who);
             self.on_set_sail();
             return;
         }
         // Put-into-port order: ends the timed sail->port run.
-        if let Some(who) = body.strip_suffix(" issued an order to put into port.") {
+        if let Some(who) =
+            body.strip_suffix(" issued an order to put into port.")
+        {
             self.confirm_self(who);
             self.on_put_into_port();
             return;
         }
         // A grapple begins the boarding melee: "<A> has grappled <B>. A melee
-        // breaks out between the crews!" (logged for both sides; we keep the first).
-        if body.contains(" has grappled ") && body.ends_with("A melee breaks out between the crews!")
+        // breaks out between the crews!" (logged for both sides; we keep the
+        // first).
+        if body.contains(" has grappled ")
+            && body.ends_with("A melee breaks out between the crews!")
         {
             self.on_grapple();
             return;
         }
-        // A disengage ends a battle with no boarding conclusion. Only an explicit
-        // disengage line counts: "<X> issued an order to disengage." (we broke
-        // off) or "<vessel> disengaged from the battle." (the foe did). We do NOT
-        // treat pursuit-ended lines ("Arr, ye can no longer pursue ...: That
-        // vessel has put into port.") as disengages — they fire for stale or
+        // A disengage ends a battle with no boarding conclusion. Only an
+        // explicit disengage line counts: "<X> issued an order to
+        // disengage." (we broke off) or "<vessel> disengaged from the
+        // battle." (the foe did). We do NOT treat pursuit-ended lines
+        // ("Arr, ye can no longer pursue ...: That vessel has put into
+        // port.") as disengages — they fire for stale or
         // cancelled targets (e.g. a brigand-king expedition) and can't be told
-        // apart from our active foe, so they'd wrongly disengage the open fight.
+        // apart from our active foe, so they'd wrongly disengage the open
+        // fight.
         if body.ends_with(" issued an order to disengage.")
             || body.ends_with(" disengaged from the battle.")
         {
             self.on_disengage();
             return;
         }
-        // Per-fight loot: "The victors plundered N pieces of eight and M units of
-        // goods from the defeated vessel." Attaches to the just-resolved battle.
+        // Per-fight loot: "The victors plundered N pieces of eight and M units
+        // of goods from the defeated vessel." Attaches to the
+        // just-resolved battle.
         if let Some(rest) = body.strip_prefix("The victors plundered ") {
             self.on_plunder(rest);
             return;
         }
-        // Our cut: "Ye received N pieces of eight as your initial cut of the booty!"
+        // Our cut: "Ye received N pieces of eight as your initial cut of the
+        // booty!"
         if let Some(rest) = body
             .strip_prefix("Ye received ")
             .and_then(|s| s.strip_suffix(" as your initial cut of the booty!"))
@@ -744,25 +816,32 @@ impl GameState {
             self.categorize_current(BattleCategory::Werewolf);
             return;
         }
-        // The Black Ship (El Pollo Diablo) takes the place of our target — a rare
-        // special encounter heralded right after interception, like the monster
-        // heralds above. Always a Grand Frigate. Matched in full (not a substring)
-        // so a player can't trigger it by parroting the line in chat: a chat body
-        // is prefixed with `<Name> says, "…`, never exactly the system message.
-        if body == "Dark clouds gather as ye bear down upon yer hapless victims, \
-                    and from the miasma emerges the Black Ship to take the place \
-                    of yer target in battle! Arrrrgh! Ye be doomed fer sure!"
+        // The Black Ship (El Pollo Diablo) takes the place of our target — a
+        // rare special encounter heralded right after interception,
+        // like the monster heralds above. Always a Grand Frigate.
+        // Matched in full (not a substring) so a player can't trigger
+        // it by parroting the line in chat: a chat body is prefixed
+        // with `<Name> says, "…`, never exactly the system message.
+        if body
+            == "Dark clouds gather as ye bear down upon yer hapless victims, \
+                and from the miasma emerges the Black Ship to take the place \
+                of yer target in battle! Arrrrgh! Ye be doomed fer sure!"
         {
             self.on_black_ship();
             return;
         }
 
-        // Brigand King — the victory line names the king unambiguously ("<King>'s
-        // ship disappears into the mists."); the reward chest names them too.
-        // Both fire after `Game over`, so they tag the just-resolved battle.
-        if let Some(name) = body.strip_suffix("'s ship disappears into the mists.") {
+        // Brigand King — the victory line names the king unambiguously
+        // ("<King>'s ship disappears into the mists."); the reward
+        // chest names them too. Both fire after `Game over`, so they
+        // tag the just-resolved battle.
+        if let Some(name) =
+            body.strip_suffix("'s ship disappears into the mists.")
+        {
             if BRIGAND_KINGS.contains(&name) {
-                self.categorize_recent(BattleCategory::BrigandKing(name.to_string()));
+                self.categorize_recent(BattleCategory::BrigandKing(
+                    name.to_string(),
+                ));
                 return;
             }
         }
@@ -771,7 +850,9 @@ impl GameState {
             .and_then(|s| s.strip_suffix(" Chest as part of yer reward!"))
         {
             if BRIGAND_KINGS.contains(&name) {
-                self.categorize_recent(BattleCategory::BrigandKing(name.to_string()));
+                self.categorize_recent(BattleCategory::BrigandKing(
+                    name.to_string(),
+                ));
                 return;
             }
         }
@@ -782,7 +863,9 @@ impl GameState {
             return;
         }
         // Atlantis: the monster lands a whole boarding party (3/4/6 dragoons).
-        if body == "Dragoons from the monster took advantage of their proximity to board yer vessel!"
+        if body
+            == "Dragoons from the monster took advantage of their proximity to \
+                board yer vessel!"
         {
             self.on_dragoon_boarding();
             return;
@@ -792,32 +875,44 @@ impl GameState {
             self.on_invaders_repelled();
             return;
         }
-        // FUTURE (anomaly log): "Yer ship has entered a citadel!" arriving while
-        // `dragoons_aboard`/`dragoon_boardings` are non-zero is a noteworthy case
-        // worth recording. No state change today — wire it here when that log lands.
+        // FUTURE (anomaly log): "Yer ship has entered a citadel!" arriving
+        // while `dragoons_aboard`/`dragoon_boardings` are non-zero is a
+        // noteworthy case worth recording. No state change today — wire
+        // it here when that log lands.
 
-        // Cursed Isles: the noxious fog is our (late) tell that this run is a Cursed
-        // Isles voyage. Mark the encounter and fire the one-shot auto-jump the first
-        // time it shows. The cure line ("Another draft from the rum kegs...") and the
-        // CI loot lines are intentionally not parsed.
-        if body == "The crew inhales the noxious fog, and starts to lose fine motor control." {
+        // Cursed Isles: the noxious fog is our (late) tell that this run is a
+        // Cursed Isles voyage. Mark the encounter and fire the one-shot
+        // auto-jump the first time it shows. The cure line ("Another
+        // draft from the rum kegs...") and the CI loot lines are
+        // intentionally not parsed.
+        if body
+            == "The crew inhales the noxious fog, and starts to lose fine \
+                motor control."
+        {
             self.on_cursed_isles_tell();
             return;
         }
-        // Cursed Isles: a raft sinks and dumps zombie boarders onto us (sea phase).
-        if body == "Boarders from the raft clamber onto yer vessel as theirs sinks to the depths." {
+        // Cursed Isles: a raft sinks and dumps zombie boarders onto us (sea
+        // phase).
+        if body
+            == "Boarders from the raft clamber onto yer vessel as theirs sinks \
+                to the depths."
+        {
             self.on_zombie_aboard();
             return;
         }
-        // Cursed Isles: a crewmate turns a boarding zombie to our side (a thrall).
-        if let Some(who) = body.strip_suffix(" has taken control of a zombie.") {
+        // Cursed Isles: a crewmate turns a boarding zombie to our side (a
+        // thrall).
+        if let Some(who) = body.strip_suffix(" has taken control of a zombie.")
+        {
             self.confirm_self(who);
             self.on_thrall_taken(who);
             return;
         }
-        // Cursed Isles: a boarding zombie is driven back off the ship (defeated, not
-        // thralled): "<p> has driven <Adjective> Zombie from the ship!". The trailing
-        // "Zombie" keeps this from matching an ordinary foe driven off in a pillage.
+        // Cursed Isles: a boarding zombie is driven back off the ship
+        // (defeated, not thralled): "<p> has driven <Adjective> Zombie
+        // from the ship!". The trailing "Zombie" keeps this from
+        // matching an ordinary foe driven off in a pillage.
         if let Some(rest) = body.strip_suffix(" from the ship!") {
             if let Some((who, foe)) = rest.split_once(" has driven ") {
                 if foe.ends_with("Zombie") {
@@ -826,10 +921,12 @@ impl GameState {
                     self.on_zombie_driven_off();
                     return;
                 }
-                // Atlantis: a dragoon driven off the ship — one fewer aboard. Gated on
-                // the Atlantis encounter (set by the boarding tells) so an ordinary foe
-                // driven off in a pillage doesn't match. Dragoon names are bare Greek
-                // words, so we can't key off the foe name — context is the tell.
+                // Atlantis: a dragoon driven off the ship — one fewer aboard.
+                // Gated on the Atlantis encounter (set by the
+                // boarding tells) so an ordinary foe driven off
+                // in a pillage doesn't match. Dragoon names are bare Greek
+                // words, so we can't key off the foe name — context is the
+                // tell.
                 if self
                     .current_vessel()
                     .is_some_and(|v| v.encounter == EncounterKind::Atlantis)
@@ -843,29 +940,35 @@ impl GameState {
         }
         // Cursed Isles: we land on the island — the boarding phase ends and the
         // foraging waves begin (wave 1).
-        if body == "Ye land on the island, but an angry mob of its inhabitants stands \
-                    between ye and yer rightful plunderin'!"
+        if body
+            == "Ye land on the island, but an angry mob of its inhabitants \
+                stands between ye and yer rightful plunderin'!"
         {
             self.on_island_land();
             return;
         }
-        // Cursed Isles: an officer recalls the crew aboard — the island phase ends.
-        if body.strip_suffix(" ordered everyone back aboard the ship!").is_some() {
+        // Cursed Isles: an officer recalls the crew aboard — the island phase
+        // ends.
+        if body
+            .strip_suffix(" ordered everyone back aboard the ship!")
+            .is_some()
+        {
             self.on_island_retreat();
             return;
         }
 
-        // Vampirates: we entered a lair (wave 1 begins). Waves run from here (and
-        // the first slap of Mother) through each swordfight conclusion below — the
-        // "rustling in coffins" line is only a "swordfight imminent" herald and does
-        // NOT delimit waves, so it isn't parsed.
+        // Vampirates: we entered a lair (wave 1 begins). Waves run from here
+        // (and the first slap of Mother) through each swordfight
+        // conclusion below — the "rustling in coffins" line is only a
+        // "swordfight imminent" herald and does NOT delimit waves, so
+        // it isn't parsed.
         if body.starts_with("Welcome to the vampire sanctum") {
             self.on_lair_enter();
             return;
         }
         // Vampirates: someone slapping Mother is the wave-1 fight kickoff and a
-        // fallback lair-start signal if we missed the sanctum line (only starts a
-        // lair if we aren't already in one).
+        // fallback lair-start signal if we missed the sanctum line (only starts
+        // a lair if we aren't already in one).
         if body.ends_with(" slaps mother") {
             self.on_lair_slap();
             return;
@@ -877,15 +980,19 @@ impl GameState {
         }
 
         // Battle end: "Game over.  Winners: a, b, Playerone." — if we're in the
-        // winning side, it's an authoritative roster of who's aboard; if the winners
-        // are vampires, we lost the board, which ends a lair.
+        // winning side, it's an authoritative roster of who's aboard; if the
+        // winners are vampires, we lost the board, which ends a lair.
         if let Some(summary) = body.strip_prefix("Game over.") {
             let summary = summary.trim_start();
-            // Cursed Isles winner lists include our "<p>'s Thrall" allies, whose
-            // spaces the sea-battle crew-resync would miscount as swabbies (and
-            // corrupt the crew roster). So on a CI run the island wave engine owns
+            // Cursed Isles winner lists include our "<p>'s Thrall" allies,
+            // whose spaces the sea-battle crew-resync would
+            // miscount as swabbies (and corrupt the crew roster).
+            // So on a CI run the island wave engine owns
             // Game over outright; the pillage/lair handlers are bypassed.
-            if self.current_vessel().is_some_and(|v| v.encounter == EncounterKind::CursedIsles) {
+            if self
+                .current_vessel()
+                .is_some_and(|v| v.encounter == EncounterKind::CursedIsles)
+            {
                 self.on_island_gameover(summary);
             } else {
                 self.on_battle_end(summary); // resync crew roster when we won
@@ -917,12 +1024,14 @@ impl GameState {
         }
         if body == "The booty has been divided!" {
             let now = self.now;
-            // Signal the app to freeze this run's booty from the live Profits state.
+            // Signal the app to freeze this run's booty from the live Profits
+            // state.
             self.booty_divided = true;
             if let Some(v) = self.current_vessel_mut() {
                 v.job_kind = None;
-                // Finalize the run if it wasn't already closed at port (defensive:
-                // some runs end at divvy without a port order we saw).
+                // Finalize the run if it wasn't already closed at port
+                // (defensive: some runs end at divvy without a
+                // port order we saw).
                 if let Some(mut voy) = v.current_voyage.take() {
                     if voy.ported_at.is_none() {
                         voy.ported_at = now;
@@ -933,38 +1042,43 @@ impl GameState {
                     voy.divvied = true;
                     v.voyages.push(voy);
                 } else if let Some(voy) = v.voyages.last_mut() {
-                    // The port order already promoted this run (port precedes the
-                    // divvy in the log); the divvy just confirms it reached a
-                    // booty division.
+                    // The port order already promoted this run (port precedes
+                    // the divvy in the log); the divvy just
+                    // confirms it reached a booty division.
                     voy.divvied = true;
                 }
             }
             return;
         }
 
-        // Rum-spice hiring-limit tell: arms the very next *single* swabbie departure
-        // as a mercenary shed to spice, not a genuine swabbie (see `spice_swap_armed`).
+        // Rum-spice hiring-limit tell: arms the very next *single* swabbie
+        // departure as a mercenary shed to spice, not a genuine swabbie
+        // (see `spice_swap_armed`).
         if body
-            == "Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary."
+            == "Avast, yer mercenary hirin' is limited by the rum spice in yer \
+                hold. Ye need at least 5 spice per mercenary."
         {
             self.spice_swap_armed = true;
-            // Too little rum spice in the hold to sustain the mercenaries: the hold
-            // ran short and mercs are being shed to spice, so this run's rum-spice
-            // consumption delta can no longer be trusted. Poison the voyage — the
-            // flag persists and gates `rum_spice_unreliable`.
+            // Too little rum spice in the hold to sustain the mercenaries: the
+            // hold ran short and mercs are being shed to spice, so
+            // this run's rum-spice consumption delta can no longer
+            // be trusted. Poison the voyage — the flag persists and
+            // gates `rum_spice_unreliable`.
             if let Some(voy) = self.current_voyage_mut() {
                 voy.poisoned = true;
             }
             return;
         }
 
-        // NPC head-count deltas. The log's `… swabbie …` lines fire for mercenaries
-        // too (mercs never get their own board/leave line), so this count lumps both
-        // crew kinds — a won fight later resyncs the tally *and* the merc roster from
-        // the winners roster.
+        // NPC head-count deltas. The log's `… swabbie …` lines fire for
+        // mercenaries too (mercs never get their own board/leave line),
+        // so this count lumps both crew kinds — a won fight later
+        // resyncs the tally *and* the merc roster from the winners
+        // roster.
         if let Some(delta) = parse_swabbie_delta(body) {
-            // Only a *single* departure right after the tell is a depletion swap; a
-            // bulk board/leave (re-staffing) just disarms it.
+            // Only a *single* departure right after the tell is a depletion
+            // swap; a bulk board/leave (re-staffing) just disarms
+            // it.
             let spice_swap = self.spice_swap_armed && delta == -1;
             self.spice_swap_armed = false;
             if let Some(v) = self.current_vessel_mut() {
@@ -975,18 +1089,26 @@ impl GameState {
                 } else {
                     let n = delta.unsigned_abs() as u32;
                     if spice_swap {
-                        // A merc's spice ran out: it departs (logged as a swabbie
-                        // leaving) and a genuine swabbie replaces it via the paired
-                        // come-aboard. Shed one merc; the total dips here and is
-                        // restored by the come, netting -1 merc / +1 genuine swabbie.
+                        // A merc's spice ran out: it departs (logged as a
+                        // swabbie leaving) and a
+                        // genuine swabbie replaces it via the paired
+                        // come-aboard. Shed one merc; the total dips here and
+                        // is restored by the come,
+                        // netting -1 merc / +1 genuine swabbie.
                         shed_mercs(&mut v.mercenaries, 1);
                         v.swabbies = v.swabbies.saturating_sub(1);
                     } else {
-                        // Ordinary departure: genuine swabbies leave first; only once
-                        // they're exhausted do mercs start leaving (the overflow past
+                        // Ordinary departure: genuine swabbies leave first;
+                        // only once they're exhausted
+                        // do mercs start leaving (the overflow past
                         // the genuine-swabbie pool).
-                        let genuine = v.swabbies.saturating_sub(v.mercenaries.len() as u32);
-                        shed_mercs(&mut v.mercenaries, n.saturating_sub(genuine));
+                        let genuine = v
+                            .swabbies
+                            .saturating_sub(v.mercenaries.len() as u32);
+                        shed_mercs(
+                            &mut v.mercenaries,
+                            n.saturating_sub(genuine),
+                        );
                         v.swabbies = v.swabbies.saturating_sub(n);
                     }
                 }
@@ -1017,8 +1139,9 @@ impl GameState {
         }
 
         // A crewmate's client dropped / came back. They stay aboard (and on the
-        // winners roster) while disconnected, but don't fight — tracked so they're
-        // excluded from a battle's crew strength. Players only (NPCs don't drop).
+        // winners roster) while disconnected, but don't fight — tracked so
+        // they're excluded from a battle's crew strength. Players only
+        // (NPCs don't drop).
         if let Some(name) = body.strip_suffix(" has disconnected.") {
             if pirate::is_player_name(name) {
                 if let Some(v) = self.current_vessel_mut() {
@@ -1073,13 +1196,16 @@ impl GameState {
             }
         }
 
-        // Catch-all (runs only for otherwise-unhandled lines, so it can't swallow
-        // a `Game over` etc.): a Brigand King's engagement / flavour chant names
-        // the king. Tag the open battle. Player chatter is skipped so a mention of
-        // a king in chat doesn't mislabel a fight.
+        // Catch-all (runs only for otherwise-unhandled lines, so it can't
+        // swallow a `Game over` etc.): a Brigand King's engagement /
+        // flavour chant names the king. Tag the open battle. Player
+        // chatter is skipped so a mention of a king in chat doesn't
+        // mislabel a fight.
         if !is_chat_line(body) {
             if let Some(king) = find_brigand_king(body) {
-                self.categorize_current(BattleCategory::BrigandKing(king.to_string()));
+                self.categorize_current(BattleCategory::BrigandKing(
+                    king.to_string(),
+                ));
             }
         }
     }
@@ -1152,9 +1278,10 @@ impl GameState {
         }
     }
 
-    /// A new battle began — start a fresh current-battle greedy tally and open a
-    /// new [`Battle`] record on the current voyage (creating the voyage if a fight
-    /// somehow starts before we saw a sail order). `enemy` empty => unknown vessel.
+    /// A new battle began — start a fresh current-battle greedy tally and open
+    /// a new [`Battle`] record on the current voyage (creating the voyage
+    /// if a fight somehow starts before we saw a sail order). `enemy` empty
+    /// => unknown vessel.
     fn on_battle_start(&mut self, enemy: &str) {
         let now = self.now;
         self.battle_just_started = true;
@@ -1162,23 +1289,25 @@ impl GameState {
             v.greedy_current.clear();
         }
         let enemy = (!enemy.is_empty()).then(|| enemy.to_string());
-        // A monkey boat is identified by its (fixed) vessel name — which also tells
-        // us its hull. The name is from the system interception line, so this can't
-        // be spoofed via chat. Also seed the live Damage calculator's foe ship.
+        // A monkey boat is identified by its (fixed) vessel name — which also
+        // tells us its hull. The name is from the system interception
+        // line, so this can't be spoofed via chat. Also seed the live
+        // Damage calculator's foe ship.
         let monkey_ship = enemy.as_deref().and_then(monkey_boat_ship);
         self.detected_foe_ship = monkey_ship;
         if let Some(voy) = self.ensure_voyage() {
-            // A still-open previous battle means we never saw its resolution; keep
-            // it as a dangling record rather than dropping it.
+            // A still-open previous battle means we never saw its resolution;
+            // keep it as a dangling record rather than dropping it.
             if let Some(prev) = voy.current_battle.take() {
                 voy.battles.push(prev);
             }
             let mut battle = Battle {
                 enemy,
                 started_at: now,
-                // Live-tracked fights are recorded (persisted) by default; the Sea
-                // Battles popup's Recorded toggle can still opt an individual fight
-                // out. On save this writes the fight's snapshot when one exists.
+                // Live-tracked fights are recorded (persisted) by default; the
+                // Sea Battles popup's Recorded toggle can still
+                // opt an individual fight out. On save this
+                // writes the fight's snapshot when one exists.
                 recorded: true,
                 ..Battle::default()
             };
@@ -1190,19 +1319,23 @@ impl GameState {
         }
     }
 
-    /// First `set the vessel to sail` order of a run starts the voyage; later move
-    /// orders during the run just backfill a missing sail time (if the voyage was
-    /// lazily created by an early battle).
+    /// First `set the vessel to sail` order of a run starts the voyage; later
+    /// move orders during the run just backfill a missing sail time (if the
+    /// voyage was lazily created by an early battle).
     fn on_set_sail(&mut self) {
         let now = self.now;
-        // A fresh run (no voyage underway yet) wipes any prior run's Cursed Isles
-        // state so the encounter and the fog auto-jump re-arm per run.
-        let fresh = self.current_vessel().is_some_and(|v| v.current_voyage.is_none());
+        // A fresh run (no voyage underway yet) wipes any prior run's Cursed
+        // Isles state so the encounter and the fog auto-jump re-arm per
+        // run.
+        let fresh = self
+            .current_vessel()
+            .is_some_and(|v| v.current_voyage.is_none());
         if fresh {
             self.reset_cursed_isles();
         }
         // Reserve a voyage id before borrowing the vessel, but only when we're
-        // actually about to create a new run (a re-sail just backfills sail time).
+        // actually about to create a new run (a re-sail just backfills sail
+        // time).
         let new_id = fresh.then(|| {
             self.next_voyage_id += 1;
             self.next_voyage_id
@@ -1230,8 +1363,9 @@ impl GameState {
         self.sample_crew();
     }
 
-    /// A `put into port` order ends the timed run: stamp the port time, fold any
-    /// dangling battle in, and promote the voyage into the completed list.
+    /// A `put into port` order ends the timed run: stamp the port time, fold
+    /// any dangling battle in, and promote the voyage into the completed
+    /// list.
     fn on_put_into_port(&mut self) {
         let now = self.now;
         let Some(v) = self.current_vessel_mut() else {
@@ -1251,22 +1385,33 @@ impl GameState {
     }
 
     /// The boarding melee started — record the sea/boarding boundary once, and
-    /// snapshot the crew aboard so a crewmate who leaves mid-melee still counts as
-    /// a boarder (our manpower is "who fought", measured at boarding start).
+    /// snapshot the crew aboard so a crewmate who leaves mid-melee still counts
+    /// as a boarder (our manpower is "who fought", measured at boarding
+    /// start).
     fn on_grapple(&mut self) {
         let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             let players: Vec<String> = v.crewmates.iter().cloned().collect();
             let mercenaries = v.mercenaries.len() as u32;
-            // `v.swabbies` is the raw lumped NPC count; the roster stores genuine
-            // swabbies and mercenaries disjointly, so subtract the known mercs.
+            // `v.swabbies` is the raw lumped NPC count; the roster stores
+            // genuine swabbies and mercenaries disjointly, so
+            // subtract the known mercs.
             let swabbies = v.swabbies.saturating_sub(mercenaries);
-            if let Some(b) = v.current_voyage.as_mut().and_then(|voy| voy.current_battle.as_mut()) {
+            if let Some(b) = v
+                .current_voyage
+                .as_mut()
+                .and_then(|voy| voy.current_battle.as_mut())
+            {
                 if b.grappled_at.is_none() {
                     b.grappled_at = now;
                     // Our side as it stood at boarding start; finalized at
-                    // resolution (resynced roster ∪ this, minus the disconnected).
-                    b.our_team = Some(TeamSide { players, swabbies, mercenaries });
+                    // resolution (resynced roster ∪ this, minus the
+                    // disconnected).
+                    b.our_team = Some(TeamSide {
+                        players,
+                        swabbies,
+                        mercenaries,
+                    });
                 }
             }
         }
@@ -1288,26 +1433,29 @@ impl GameState {
         self.battle_just_resolved |= resolved;
     }
 
-    /// Resolve the open sea battle at `Game over`. Won iff our own name is among
-    /// the winners. The verdict stored here is *provisional*: it's shown as
-    /// [`BattleOutcome::Unknown`] until our identity is confirmed (a strong signal
-    /// — winners list, elimination, order, or chat), at which point every past
-    /// fight is revealed retroactively. With no `--user` name there's nothing to
-    /// confirm against, so it stays Unknown. Skipped inside a vampirate lair, whose
-    /// per-wave swordfights aren't sea battles. Run *after* [`Self::on_battle_end`]
-    /// so the crew snapshot uses the resynced roster.
+    /// Resolve the open sea battle at `Game over`. Won iff our own name is
+    /// among the winners. The verdict stored here is *provisional*: it's
+    /// shown as [`BattleOutcome::Unknown`] until our identity is confirmed
+    /// (a strong signal — winners list, elimination, order, or chat), at
+    /// which point every past fight is revealed retroactively. With no
+    /// `--user` name there's nothing to confirm against, so it stays
+    /// Unknown. Skipped inside a vampirate lair, whose per-wave swordfights
+    /// aren't sea battles. Run *after* [`Self::on_battle_end`] so the crew
+    /// snapshot uses the resynced roster.
     fn on_sea_battle_resolve(&mut self, summary: &str) {
-        // A fight's conclusion closes any pending rum-spice swap window: the tell and
-        // its paired departure are always adjacent, so an arm that survived a whole
-        // battle is stale and must not mis-tag a later swabbie departure.
+        // A fight's conclusion closes any pending rum-spice swap window: the
+        // tell and its paired departure are always adjacent, so an arm
+        // that survived a whole battle is stale and must not mis-tag a
+        // later swabbie departure.
         self.spice_swap_armed = false;
         if self.current_vessel().is_some_and(|v| v.lair_active) {
             return;
         }
         let me = self.player_name.clone();
         let me = me.as_deref();
-        // The winners roster, parsed once. On a win it's our ship; on a loss it's
-        // the foe's crew. On an unknown-identity fight we can't say which.
+        // The winners roster, parsed once. On a win it's our ship; on a loss
+        // it's the foe's crew. On an unknown-identity fight we can't
+        // say which.
         let winners: Vec<String> = summary
             .split_once(':')
             .map(|(_, list)| {
@@ -1329,62 +1477,84 @@ impl GameState {
             self.self_confirmed = true;
         }
         // The *provisional* verdict, computed against the configured name. It's
-        // masked to [`BattleOutcome::Unknown`] at the view/stats/persistence layer
-        // (see [`crate::voyage::effective_outcome`]) until our identity is
-        // confirmed — so a confirmation arriving much later retroactively reveals
-        // every earlier fight. With no configured name there's nothing to confirm,
-        // so it stays genuinely unknown.
+        // masked to [`BattleOutcome::Unknown`] at the view/stats/persistence
+        // layer (see [`crate::voyage::effective_outcome`]) until our
+        // identity is confirmed — so a confirmation arriving much later
+        // retroactively reveals every earlier fight. With no configured
+        // name there's nothing to confirm, so it stays genuinely
+        // unknown.
         let outcome = match me {
             None => BattleOutcome::Unknown,
             Some(_) if in_winners => BattleOutcome::Won,
             Some(_) => BattleOutcome::Lost,
         };
-        // Inputs for our manpower, captured before the mutable voyage borrow below.
-        // `live_crew` is the resynced roster after `on_battle_end` (on a win it's the
-        // winners' players, which catches crew we never saw board); it's unioned
-        // with the battle's grapple-time team (which catches crew who left mid-melee).
-        let live_crew: HashSet<String> =
-            self.current_vessel().map(|v| v.crewmates.clone()).unwrap_or_default();
-        let disconnected: HashSet<String> =
-            self.current_vessel().map(|v| v.disconnected.clone()).unwrap_or_default();
+        // Inputs for our manpower, captured before the mutable voyage borrow
+        // below. `live_crew` is the resynced roster after
+        // `on_battle_end` (on a win it's the winners' players, which
+        // catches crew we never saw board); it's unioned
+        // with the battle's grapple-time team (which catches crew who left
+        // mid-melee).
+        let live_crew: HashSet<String> = self
+            .current_vessel()
+            .map(|v| v.crewmates.clone())
+            .unwrap_or_default();
+        let disconnected: HashSet<String> = self
+            .current_vessel()
+            .map(|v| v.disconnected.clone())
+            .unwrap_or_default();
         let swabbies = self.current_vessel().map(|v| v.swabbies).unwrap_or(0);
-        // Mercenary count for this fight's divvy shares, read from the roster that
-        // `on_battle_end` (run just before us on this same `Game over`) re-truthed from
-        // the winners list on a win. On a loss/disengage our side isn't named, so the
-        // roster is the carried best-effort estimate. See the mercenary roster on
+        // Mercenary count for this fight's divvy shares, read from the roster
+        // that `on_battle_end` (run just before us on this same `Game
+        // over`) re-truthed from the winners list on a win. On a
+        // loss/disengage our side isn't named, so the roster is the
+        // carried best-effort estimate. See the mercenary roster on
         // `Vessel`.
-        let mercenaries = self.current_vessel().map(|v| v.mercenaries.len() as u32).unwrap_or(0);
-        // A king on the winning side means we lost to that king — name the fight.
+        let mercenaries = self
+            .current_vessel()
+            .map(|v| v.mercenaries.len() as u32)
+            .unwrap_or(0);
+        // A king on the winning side means we lost to that king — name the
+        // fight.
         let king = find_brigand_king(summary);
         // PvP on a loss: a winner who's a real player and not ours = an enemy
-        // player. (A win's eliminations already flagged PvP via `on_eliminated`,
-        // since all enemies are eliminated. On an unknown outcome we can't tell
-        // which side the winners are, so we rely solely on melee eliminations.)
+        // player. (A win's eliminations already flagged PvP via
+        // `on_eliminated`, since all enemies are eliminated. On an
+        // unknown outcome we can't tell which side the winners are, so
+        // we rely solely on melee eliminations.)
         let lost_to_players = outcome == BattleOutcome::Lost
             && winners
                 .iter()
                 .any(|n| pirate::is_player_name(n) && !self.is_own_crew(n));
-        // A *pure brigand victory* (we lost, no enemy players, no Brigand King) has
-        // a uniformly `[adjective] [name]` winners roster, so we can learn the
-        // naming vocabulary from it (feeds swabbie-vs-mercenary classification). Our
-        // own wins and PvP losses are skipped — those crews mix mercenaries and
-        // swabbies, so the split is ambiguous. Specials are excluded by `learn_brigand`.
-        if outcome == BattleOutcome::Lost && !lost_to_players && king.is_none() {
+        // A *pure brigand victory* (we lost, no enemy players, no Brigand King)
+        // has a uniformly `[adjective] [name]` winners roster, so we
+        // can learn the naming vocabulary from it (feeds
+        // swabbie-vs-mercenary classification). Our own wins and PvP
+        // losses are skipped — those crews mix mercenaries and
+        // swabbies, so the split is ambiguous. Specials are excluded by
+        // `learn_brigand`.
+        if outcome == BattleOutcome::Lost && !lost_to_players && king.is_none()
+        {
             for w in &winners {
                 self.name_segments.learn_brigand(w);
             }
         }
-        // Split a roster into real players (kept by name) and a bare NPC count. Used
-        // for the enemy side, which we never classify — `mercenaries` stays 0 (their
-        // divvy isn't ours; see the PvP note in the design).
-        let split_side = |names: &[String]| TeamSide {
-            players: names
-                .iter()
-                .filter(|n| pirate::is_player_name(n))
-                .cloned()
-                .collect(),
-            swabbies: names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32,
-            mercenaries: 0,
+        // Split a roster into real players (kept by name) and a bare NPC count.
+        // Used for the enemy side, which we never classify —
+        // `mercenaries` stays 0 (their divvy isn't ours; see the PvP
+        // note in the design).
+        let split_side = |names: &[String]| {
+            TeamSide {
+                players: names
+                    .iter()
+                    .filter(|n| pirate::is_player_name(n))
+                    .cloned()
+                    .collect(),
+                swabbies: names
+                    .iter()
+                    .filter(|n| !pirate::is_player_name(n))
+                    .count() as u32,
+                mercenaries: 0,
+            }
         };
         let now = self.now;
         let mut resolved = false;
@@ -1392,11 +1562,12 @@ impl GameState {
             if let Some(mut b) = voy.current_battle.take() {
                 b.outcome = outcome;
                 b.ended_at = now;
-                // Our manpower = who actually fought: the grapple-time team unioned
-                // with the resynced crew, minus the disconnected (a held-but-idle
-                // melee slot), plus us. A leaver stays counted (captured at grapple);
-                // a never-reconnecting dropout is dropped even if the winners roster
-                // still lists them.
+                // Our manpower = who actually fought: the grapple-time team
+                // unioned with the resynced crew, minus the
+                // disconnected (a held-but-idle melee slot),
+                // plus us. A leaver stays counted (captured at grapple);
+                // a never-reconnecting dropout is dropped even if the winners
+                // roster still lists them.
                 let mut roster: HashSet<String> = live_crew;
                 if let Some(team) = &b.our_team {
                     roster.extend(team.players.iter().cloned());
@@ -1407,12 +1578,13 @@ impl GameState {
                     .collect();
                 let fought = our_players.len() as u32;
                 b.pirates = fought + 1;
-                // `b.swabbies` keeps the total NPC crew (for manpower); the roster
-                // splits it into genuine swabbies and mercenaries, disjointly.
+                // `b.swabbies` keeps the total NPC crew (for manpower); the
+                // roster splits it into genuine swabbies and
+                // mercenaries, disjointly.
                 b.swabbies = swabbies;
                 let genuine_swabbies = swabbies.saturating_sub(mercenaries);
-                // Record our side by name. Include ourselves when our name is known so
-                // the roster is complete.
+                // Record our side by name. Include ourselves when our name is
+                // known so the roster is complete.
                 if let Some(me) = me {
                     if !our_players.iter().any(|n| n.eq_ignore_ascii_case(me)) {
                         our_players.push(me.to_string());
@@ -1423,23 +1595,30 @@ impl GameState {
                     swabbies: genuine_swabbies,
                     mercenaries,
                 });
-                // PvP (its own category) may already be set from the melee; a loss
-                // to a real-player crew flags it too. PvP overrides a king label.
+                // PvP (its own category) may already be set from the melee; a
+                // loss to a real-player crew flags it too. PvP
+                // overrides a king label.
                 if b.category == BattleCategory::Pvp || lost_to_players {
                     b.category = BattleCategory::Pvp;
                 } else if let Some(k) = king {
                     b.category = BattleCategory::BrigandKing(k.to_string());
                 }
-                // The foe's side: on a win, the eliminations that aren't our crew
-                // (all enemies are eliminated, so they're the KOs not in the winners
-                // roster, which is our ship on a win); on a loss, the winners' (enemy)
-                // roster. On an unknown outcome we can't tell, so leave it absent.
+                // The foe's side: on a win, the eliminations that aren't our
+                // crew (all enemies are eliminated, so they're
+                // the KOs not in the winners roster, which is
+                // our ship on a win); on a loss, the winners' (enemy)
+                // roster. On an unknown outcome we can't tell, so leave it
+                // absent.
                 b.their_team = match outcome {
                     BattleOutcome::Won => {
                         let foe: Vec<String> = b
                             .melee_kos
                             .iter()
-                            .filter(|ko| !winners.iter().any(|w| w.eq_ignore_ascii_case(ko)))
+                            .filter(|ko| {
+                                !winners
+                                    .iter()
+                                    .any(|w| w.eq_ignore_ascii_case(ko))
+                            })
                             .cloned()
                             .collect();
                         Some(split_side(&foe))
@@ -1447,19 +1626,28 @@ impl GameState {
                     BattleOutcome::Lost => Some(split_side(&winners)),
                     _ => None,
                 };
-                // Backfill the per-fight advantage timeline. Each event lines up
-                // with `melee_kos` (pushed in lockstep in `on_eliminated`): tag it
-                // `Ours` when the KO'd name is on our finalized roster, else
-                // `Theirs` — outcome-independent, so it's robust on wins, losses,
-                // and unknown fights alike. (Our own swabbie KOs can't be told
-                // from enemy NPCs, so they fall to `Theirs`; best-effort.)
+                // Backfill the per-fight advantage timeline. Each event lines
+                // up with `melee_kos` (pushed in lockstep in
+                // `on_eliminated`): tag it `Ours` when the KO'd
+                // name is on our finalized roster, else
+                // `Theirs` — outcome-independent, so it's robust on wins,
+                // losses, and unknown fights alike. (Our own
+                // swabbie KOs can't be told from enemy NPCs, so
+                // they fall to `Theirs`; best-effort.)
                 let our_lc: HashSet<String> = b
                     .our_team
                     .as_ref()
-                    .map(|t| t.players.iter().map(|n| n.to_ascii_lowercase()).collect())
+                    .map(|t| {
+                        t.players
+                            .iter()
+                            .map(|n| n.to_ascii_lowercase())
+                            .collect()
+                    })
                     .unwrap_or_default();
                 let mut theirs = 0u32;
-                for (ev, ko) in b.timeline.events.iter_mut().zip(b.melee_kos.iter()) {
+                for (ev, ko) in
+                    b.timeline.events.iter_mut().zip(b.melee_kos.iter())
+                {
                     ev.side = if our_lc.contains(&ko.to_ascii_lowercase()) {
                         KoSide::Ours
                     } else {
@@ -1468,13 +1656,16 @@ impl GameState {
                     };
                 }
                 b.timeline.our_start = b.pirates + b.swabbies;
-                // Their starting headcount: on a win all enemies were eliminated,
-                // so it's the enemy-KO count; on a loss it's those plus the enemy
-                // survivors (the winners). Unknown/disengage leaves it `None` (the
+                // Their starting headcount: on a win all enemies were
+                // eliminated, so it's the enemy-KO count; on a
+                // loss it's those plus the enemy survivors (the
+                // winners). Unknown/disengage leaves it `None` (the
                 // graph then plots the net-KO differential).
                 b.timeline.their_start = match outcome {
                     BattleOutcome::Won => Some(theirs),
-                    BattleOutcome::Lost => Some(theirs + split_side(&winners).headcount()),
+                    BattleOutcome::Lost => {
+                        Some(theirs + split_side(&winners).headcount())
+                    }
                     _ => None,
                 };
                 b.timeline.started_at = b.grappled_at;
@@ -1488,8 +1679,9 @@ impl GameState {
     }
 
     /// Attach plundered PoE + goods to the most-recently-resolved battle. The
-    /// plunder line always follows a `Game over`, so `battles.last_mut()` is it.
-    /// PoE is signed by the battle's outcome (negative on a loss — it went to them).
+    /// plunder line always follows a `Game over`, so `battles.last_mut()` is
+    /// it. PoE is signed by the battle's outcome (negative on a loss — it
+    /// went to them).
     fn on_plunder(&mut self, rest: &str) {
         let poe = rest
             .split(" pieces of eight")
@@ -1509,8 +1701,9 @@ impl GameState {
             if let Some(b) = voy.battles.last_mut() {
                 if let Some(poe) = poe {
                     // Signed by the (provisional) outcome: positive on a win,
-                    // negative on a loss. With no candidate identity the direction
-                    // is unknowable, so we keep no signed value.
+                    // negative on a loss. With no candidate identity the
+                    // direction is unknowable, so we keep
+                    // no signed value.
                     b.poe = match b.outcome {
                         BattleOutcome::Won => Some(poe as i64),
                         BattleOutcome::Lost => Some(-(poe as i64)),
@@ -1533,10 +1726,11 @@ impl GameState {
         }
     }
 
-    /// The Black Ship (El Pollo Diablo) replaced our target. Tag the open fight and
-    /// pin its hull to a Grand Frigate; its crew count is left to the usual melee
-    /// elimination tally (so it tracks however the devs staff it). Also flags the
-    /// foe hull for the live Damage calculator via [`Self::take_detected_foe_ship`].
+    /// The Black Ship (El Pollo Diablo) replaced our target. Tag the open fight
+    /// and pin its hull to a Grand Frigate; its crew count is left to the
+    /// usual melee elimination tally (so it tracks however the devs staff
+    /// it). Also flags the foe hull for the live Damage calculator via
+    /// [`Self::take_detected_foe_ship`].
     fn on_black_ship(&mut self) {
         let grand = crate::ships::ship_index("Grand Frigate");
         self.detected_foe_ship = grand;
@@ -1561,7 +1755,11 @@ impl GameState {
     /// signals like the victory/reward lines arrive after `Game over`).
     fn categorize_recent(&mut self, cat: BattleCategory) {
         if let Some(voy) = self.current_voyage_mut() {
-            if let Some(b) = voy.current_battle.as_mut().or_else(|| voy.battles.last_mut()) {
+            if let Some(b) = voy
+                .current_battle
+                .as_mut()
+                .or_else(|| voy.battles.last_mut())
+            {
                 b.category = cat;
             }
         }
@@ -1573,8 +1771,9 @@ impl GameState {
     }
 
     /// Find a current-login voyage across all vessels by its stable
-    /// [`Voyage::id`] — completed runs and the in-progress one alike. Used by the
-    /// Voyage Statistics pager's save/discard, which act on the selected run.
+    /// [`Voyage::id`] — completed runs and the in-progress one alike. Used by
+    /// the Voyage Statistics pager's save/discard, which act on the
+    /// selected run.
     pub fn voyage_by_id_mut(&mut self, id: u64) -> Option<&mut Voyage> {
         self.vessels.values_mut().find_map(|v| {
             v.voyages
@@ -1596,9 +1795,9 @@ impl GameState {
         };
         let pirates = v.crewmates.len() as u32 + 1; // incl. us
         let swabbies = v.swabbies;
-        // Provisional merc count (mercs board invisibly, so this is an estimate until
-        // the next winners-roster ground truth backfills the stretch — see
-        // `on_battle_end`).
+        // Provisional merc count (mercs board invisibly, so this is an estimate
+        // until the next winners-roster ground truth backfills the
+        // stretch — see `on_battle_end`).
         let mercenaries = v.mercenaries.len() as u32;
         if let Some(voy) = v.current_voyage.as_mut() {
             voy.crew_samples.push(CrewSample {
@@ -1610,9 +1809,10 @@ impl GameState {
         }
     }
 
-    /// Ensure the current vessel has an active voyage, creating a job-tagged one if
-    /// needed. `sailed_at` stays `None` for lazily-created voyages (a battle began
-    /// before we saw a sail order); [`Self::on_set_sail`] backfills it.
+    /// Ensure the current vessel has an active voyage, creating a job-tagged
+    /// one if needed. `sailed_at` stays `None` for lazily-created voyages
+    /// (a battle began before we saw a sail order); [`Self::on_set_sail`]
+    /// backfills it.
     fn ensure_voyage(&mut self) -> Option<&mut Voyage> {
         if self.current_vessel()?.current_voyage.is_none() {
             // Reserve the id before the mutable vessel borrow.
@@ -1645,16 +1845,18 @@ impl GameState {
         }
     }
 
-    /// A dragoon was driven off the ship (Atlantis) — one fewer aboard. May take
-    /// [`Vessel::dragoons_aboard`] negative when the dragoon came from a party (see
-    /// that field's doc); that's intended, so this does not saturate at zero.
+    /// A dragoon was driven off the ship (Atlantis) — one fewer aboard. May
+    /// take [`Vessel::dragoons_aboard`] negative when the dragoon came from
+    /// a party (see that field's doc); that's intended, so this does not
+    /// saturate at zero.
     fn on_dragoon_driven_off(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
             v.dragoons_aboard = v.dragoons_aboard.saturating_sub(1);
-            // Once driven-offs exhaust even the *upper* estimate (6 heads per party),
-            // every dragoon is certainly gone. Zero both counters: this self-clears the
-            // fight when there's no explicit "repel all invaders" line, and stops a
-            // stale negative balance from corrupting the next boarding cycle.
+            // Once driven-offs exhaust even the *upper* estimate (6 heads per
+            // party), every dragoon is certainly gone. Zero both
+            // counters: this self-clears the fight when there's no
+            // explicit "repel all invaders" line, and stops a stale
+            // negative balance from corrupting the next boarding cycle.
             if v.dragoons_aboard + 6 * v.dragoon_boardings as i32 <= 0 {
                 v.dragoons_aboard = 0;
                 v.dragoon_boardings = 0;
@@ -1670,8 +1872,9 @@ impl GameState {
         }
     }
 
-    /// The Cursed Isles tell (the noxious fog) fired. Mark the encounter and, the
-    /// first time per run, request the one-shot auto-jump to the Cursed Isles layout.
+    /// The Cursed Isles tell (the noxious fog) fired. Mark the encounter and,
+    /// the first time per run, request the one-shot auto-jump to the Cursed
+    /// Isles layout.
     fn on_cursed_isles_tell(&mut self) {
         let already = self
             .current_vessel()
@@ -1684,8 +1887,8 @@ impl GameState {
         }
     }
 
-    /// A zombie raft boarded us (Cursed Isles sea phase). Also marks the encounter as
-    /// a fallback if we missed the fog tell.
+    /// A zombie raft boarded us (Cursed Isles sea phase). Also marks the
+    /// encounter as a fallback if we missed the fog tell.
     fn on_zombie_aboard(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
             v.encounter = EncounterKind::CursedIsles;
@@ -1693,11 +1896,12 @@ impl GameState {
         }
     }
 
-    /// Record a real-player pirate as aboard from an action that proves their presence
-    /// (enthralling or driving off a boarding zombie) — the same roster signal as a
-    /// "has come aboard" line, useful on a Cursed Isles run where the boarding melees
-    /// may be the first time we see a jobber act. A no-op for NPC names and for us
-    /// (we're never in the crewmate set).
+    /// Record a real-player pirate as aboard from an action that proves their
+    /// presence (enthralling or driving off a boarding zombie) — the same
+    /// roster signal as a "has come aboard" line, useful on a Cursed Isles
+    /// run where the boarding melees may be the first time we see a jobber
+    /// act. A no-op for NPC names and for us (we're never in the crewmate
+    /// set).
     fn note_pirate_aboard(&mut self, who: &str) {
         let me = self.player_name.clone();
         let is_other = pirate::is_player_name(who)
@@ -1711,9 +1915,10 @@ impl GameState {
         self.sample_crew();
     }
 
-    /// A crewmate enthralled a boarding zombie: it leaves the hostile count and joins
-    /// `who`'s thralls (both the live count and the lifetime total). Enthralling proves
-    /// `who` is aboard, so they're folded into the crew roster too.
+    /// A crewmate enthralled a boarding zombie: it leaves the hostile count and
+    /// joins `who`'s thralls (both the live count and the lifetime total).
+    /// Enthralling proves `who` is aboard, so they're folded into the crew
+    /// roster too.
     fn on_thrall_taken(&mut self, who: &str) {
         self.note_pirate_aboard(who);
         if let Some(v) = self.current_vessel_mut() {
@@ -1732,8 +1937,9 @@ impl GameState {
         }
     }
 
-    /// We landed on the island — the raft-boarding phase ends and the foraging waves
-    /// begin at wave 1. Anchors the crew-based wave forecast on the pirates aboard.
+    /// We landed on the island — the raft-boarding phase ends and the foraging
+    /// waves begin at wave 1. Anchors the crew-based wave forecast on the
+    /// pirates aboard.
     fn on_island_land(&mut self) {
         let pirates = self.current_pirates();
         let (lo, hi) = island_wave_band(pirates, 1);
@@ -1749,8 +1955,9 @@ impl GameState {
             v.wave_enemies_hi = hi;
             v.island_left_warn = false;
             v.wave_kind = wave_kind_for(1); // wave 1 is always a Rumble
-            // Open a fresh assault: archive nothing yet, start wave 1's timeline
-            // anchored on our landing manpower (pirates + any thralls we kept).
+            // Open a fresh assault: archive nothing yet, start wave 1's
+            // timeline anchored on our landing manpower (pirates +
+            // any thralls we kept).
             v.island_waves.clear();
             v.wave_timeline = FightTimeline {
                 our_start: pirates + v.thralls_alive.values().sum::<u32>(),
@@ -1760,9 +1967,10 @@ impl GameState {
         }
     }
 
-    /// An island enemy NPC was knocked out: tally it for the wave. (The wave's kind and
-    /// the Vargas boss's presence are both derived from the wave number, not the enemy
-    /// seen — so Vargas just counts as another kill here.)
+    /// An island enemy NPC was knocked out: tally it for the wave. (The wave's
+    /// kind and the Vargas boss's presence are both derived from the wave
+    /// number, not the enemy seen — so Vargas just counts as another kill
+    /// here.)
     fn on_island_enemy_defeated(&mut self) {
         let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
@@ -1771,13 +1979,17 @@ impl GameState {
             }
             v.wave_enemies_observed = v.wave_enemies_observed.saturating_add(1);
             // Their headcount drops → advantage steps up.
-            v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Theirs });
+            v.wave_timeline.events.push(KoEvent {
+                at: now,
+                side: KoSide::Theirs,
+            });
         }
     }
 
-    /// A `Game over` while on the island (Cursed Isles). Mirrors the lair engine: if
-    /// the wave's kills fell short of its projection we left early (flag it); on a win
-    /// advance to the next wave and re-project; on a loss the island phase ends.
+    /// A `Game over` while on the island (Cursed Isles). Mirrors the lair
+    /// engine: if the wave's kills fell short of its projection we left
+    /// early (flag it); on a win advance to the next wave and re-project;
+    /// on a loss the island phase ends.
     fn on_island_gameover(&mut self, summary: &str) {
         let Some((_, list)) = summary.split_once(':') else {
             return;
@@ -1791,15 +2003,18 @@ impl GameState {
             .filter(|s| !s.is_empty())
             .collect();
         let players_won = names.iter().any(|n| pirate::is_player_name(n));
-        // The winning side's real players are an authoritative crew roster (a CI win
-        // lists our crew). Add them as proof of presence — additively, so a KO'd or
-        // late-seen jobber is captured without dropping anyone. Thralls ("<p>'s
-        // Thrall") and named swabbies carry spaces, so `is_player_name` rejects them;
-        // ourselves are excluded (we're never in the crewmate set).
+        // The winning side's real players are an authoritative crew roster (a
+        // CI win lists our crew). Add them as proof of presence —
+        // additively, so a KO'd or late-seen jobber is captured without
+        // dropping anyone. Thralls ("<p>'s Thrall") and named swabbies
+        // carry spaces, so `is_player_name` rejects them; ourselves are
+        // excluded (we're never in the crewmate set).
         let crew_winners: Vec<String> = names
             .iter()
             .filter(|n| pirate::is_player_name(n))
-            .filter(|n| me.as_deref().is_none_or(|me| !n.eq_ignore_ascii_case(me)))
+            .filter(|n| {
+                me.as_deref().is_none_or(|me| !n.eq_ignore_ascii_case(me))
+            })
             .map(|n| n.to_string())
             .collect();
         let now = self.now;
@@ -1835,7 +2050,8 @@ impl GameState {
             v.wave_enemies_hi = hi;
             // Open the next wave's timeline.
             v.wave_timeline = FightTimeline {
-                our_start: v.island_pirates + v.thralls_alive.values().sum::<u32>(),
+                our_start: v.island_pirates
+                    + v.thralls_alive.values().sum::<u32>(),
                 started_at: now,
                 ..FightTimeline::default()
             };
@@ -1849,9 +2065,9 @@ impl GameState {
         }
     }
 
-    /// Reset all Cursed Isles state at the start of a fresh run, so a later run on the
-    /// same vessel doesn't inherit the previous encounter (and the fog tell re-arms
-    /// the auto-jump once per run).
+    /// Reset all Cursed Isles state at the start of a fresh run, so a later run
+    /// on the same vessel doesn't inherit the previous encounter (and the
+    /// fog tell re-arms the auto-jump once per run).
     fn reset_cursed_isles(&mut self) {
         if let Some(v) = self.current_vessel_mut() {
             v.encounter = EncounterKind::None;
@@ -1871,11 +2087,12 @@ impl GameState {
         }
     }
 
-    /// Entered a vampire lair — wave 1 begins with one vampire per pirate aboard.
-    /// Resets the lair counters (a re-entry / new lair starts fresh).
+    /// Entered a vampire lair — wave 1 begins with one vampire per pirate
+    /// aboard. Resets the lair counters (a re-entry / new lair starts
+    /// fresh).
     fn on_lair_enter(&mut self) {
-        // Real pirates aboard = tracked crewmates + ourselves (NPC swabbies don't
-        // count). This is wave 1's vampire count.
+        // Real pirates aboard = tracked crewmates + ourselves (NPC swabbies
+        // don't count). This is wave 1's vampire count.
         let pirates = self
             .current_vessel()
             .map(|v| v.crewmates.len() as u32 + 1)
@@ -1898,13 +2115,13 @@ impl GameState {
                 ..FightTimeline::default()
             };
         }
-        // Surface the Jobbers page in its Vampirates layout for the lair (consumed
-        // once by the app's auto-navigation).
+        // Surface the Jobbers page in its Vampirates layout for the lair
+        // (consumed once by the app's auto-navigation).
         self.lair_just_entered = true;
     }
 
-    /// A `slaps mother` line: start the lair only if we aren't already in one (so
-    /// repeated slaps mid-fight don't reset the counters).
+    /// A `slaps mother` line: start the lair only if we aren't already in one
+    /// (so repeated slaps mid-fight don't reset the counters).
     fn on_lair_slap(&mut self) {
         if !self.current_vessel().is_some_and(|v| v.lair_active) {
             self.on_lair_enter();
@@ -1913,13 +2130,14 @@ impl GameState {
 
     /// A vampire was defeated (only counted while in a lair).
     /// A combatant was knocked out in a melee. In a vampirate lair, NPC names
-    /// count as defeated vampires. In a sea battle we record every KO on the open
-    /// fight (the basis for the foe's headcount) and flag PvP when an eliminated
-    /// real player isn't our own crew.
+    /// count as defeated vampires. In a sea battle we record every KO on the
+    /// open fight (the basis for the foe's headcount) and flag PvP when an
+    /// eliminated real player isn't our own crew.
     fn on_eliminated(&mut self, name: &str) {
-        // Cursed Isles: one of our controlled zombies (a thrall) died — drop its
-        // controller's live count. A thrall is never an enemy, so bail before any
-        // lair / island / sea-battle counting (in any phase).
+        // Cursed Isles: one of our controlled zombies (a thrall) died — drop
+        // its controller's live count. A thrall is never an enemy, so
+        // bail before any lair / island / sea-battle counting (in any
+        // phase).
         if let Some(who) = name.strip_suffix("'s Thrall") {
             let who = who.to_string();
             if let Some(v) = self.current_vessel_mut() {
@@ -1929,9 +2147,10 @@ impl GameState {
             }
             return;
         }
-        // Cursed Isles island wave: count enemy NPC kills (classify the wave and flag
-        // Vargas). A real-player KO is one of our crew (islanders are all NPCs) — it
-        // isn't an enemy, but it does prove that pirate is aboard.
+        // Cursed Isles island wave: count enemy NPC kills (classify the wave
+        // and flag Vargas). A real-player KO is one of our crew
+        // (islanders are all NPCs) — it isn't an enemy, but it does
+        // prove that pirate is aboard.
         if self.current_vessel().is_some_and(|v| v.island_active) {
             self.confirm_self(name);
             if pirate::is_player_name(name) {
@@ -1939,17 +2158,21 @@ impl GameState {
                 // Our headcount drops → advantage steps down on the wave graph.
                 let now = self.now;
                 if let Some(v) = self.current_vessel_mut() {
-                    v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Ours });
+                    v.wave_timeline.events.push(KoEvent {
+                        at: now,
+                        side: KoSide::Ours,
+                    });
                 }
             } else {
                 self.on_island_enemy_defeated();
             }
             return;
         }
-        // Cursed Isles raft phase (pre-landing): a zombie can *challenge* a pirate to
-        // a duel, whose KO we must NOT count as a wave/sea elimination — only the
-        // on-island assault counts. (The island branch above already handled the
-        // landed phase, so reaching here on a CI run means the raft phase.)
+        // Cursed Isles raft phase (pre-landing): a zombie can *challenge* a
+        // pirate to a duel, whose KO we must NOT count as a wave/sea
+        // elimination — only the on-island assault counts. (The island
+        // branch above already handled the landed phase, so reaching
+        // here on a CI run means the raft phase.)
         if self
             .current_vessel()
             .is_some_and(|v| v.encounter == EncounterKind::CursedIsles)
@@ -1957,14 +2180,18 @@ impl GameState {
             self.confirm_self(name);
             return;
         }
-        // Vampirate lairs: tally defeated vampires (NPC names); a real-player KO is
-        // one of our crew falling — record it as a loss on the wave graph.
+        // Vampirate lairs: tally defeated vampires (NPC names); a real-player
+        // KO is one of our crew falling — record it as a loss on the
+        // wave graph.
         if self.current_vessel().is_some_and(|v| v.lair_active) {
             if pirate::is_player_name(name) {
                 self.confirm_self(name);
                 let now = self.now;
                 if let Some(v) = self.current_vessel_mut() {
-                    v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Ours });
+                    v.wave_timeline.events.push(KoEvent {
+                        at: now,
+                        side: KoSide::Ours,
+                    });
                 }
             } else {
                 self.on_vampire_defeated();
@@ -1974,7 +2201,8 @@ impl GameState {
         // Our own elimination is a strong, unspoofable confirmation we're here.
         self.confirm_self(name);
         // Sea battle: record the KO and detect an enemy player.
-        let enemy_player = pirate::is_player_name(name) && !self.is_own_crew(name);
+        let enemy_player =
+            pirate::is_player_name(name) && !self.is_own_crew(name);
         let now = self.now;
         let mut first_blood = false;
         if let Some(voy) = self.current_voyage_mut() {
@@ -1983,14 +2211,19 @@ impl GameState {
                 // Mirror the KO onto the per-fight timeline (same order as
                 // `melee_kos`); the side is provisional and backfilled at
                 // resolution from the rosters.
-                b.timeline.events.push(KoEvent { at: now, side: KoSide::Theirs });
+                b.timeline.events.push(KoEvent {
+                    at: now,
+                    side: KoSide::Theirs,
+                });
                 if enemy_player {
                     // PvP is its own, mutually exclusive category — once set it
                     // overrides any king/monster telltale.
                     b.category = BattleCategory::Pvp;
                 }
-                // First melee KO of a grappled fight surfaces the live advantage graph.
-                first_blood = b.grappled_at.is_some() && b.timeline.events.len() == 1;
+                // First melee KO of a grappled fight surfaces the live
+                // advantage graph.
+                first_blood =
+                    b.grappled_at.is_some() && b.timeline.events.len() == 1;
             }
         }
         if first_blood {
@@ -1998,10 +2231,11 @@ impl GameState {
         }
     }
 
-    /// Confirm our identity if `name` matches our configured pirate name. Called
-    /// only from strong, unspoofable signals (winners list, elimination, order).
-    /// Once confirmed, a battle's win/loss becomes determinate; until then it
-    /// stays [`BattleOutcome::Unknown`]. A no-op when no name is configured.
+    /// Confirm our identity if `name` matches our configured pirate name.
+    /// Called only from strong, unspoofable signals (winners list,
+    /// elimination, order). Once confirmed, a battle's win/loss becomes
+    /// determinate; until then it stays [`BattleOutcome::Unknown`]. A no-op
+    /// when no name is configured.
     fn confirm_self(&mut self, name: &str) {
         if self
             .player_name
@@ -2017,7 +2251,8 @@ impl GameState {
         if self.player_name.as_deref() == Some(name) {
             return true;
         }
-        self.current_vessel().is_some_and(|v| v.crewmates.contains(name))
+        self.current_vessel()
+            .is_some_and(|v| v.crewmates.contains(name))
     }
 
     fn on_vampire_defeated(&mut self) {
@@ -2027,17 +2262,22 @@ impl GameState {
                 v.vampires_defeated = v.vampires_defeated.saturating_add(1);
                 v.wave_observed = v.wave_observed.saturating_add(1);
                 // Their headcount drops → advantage steps up.
-                v.wave_timeline.events.push(KoEvent { at: now, side: KoSide::Theirs });
+                v.wave_timeline.events.push(KoEvent {
+                    at: now,
+                    side: KoSide::Theirs,
+                });
             }
         }
     }
 
-    /// A swordfight concluded (`Game over`) — the boundary between lair waves. While
-    /// in a lair we close out the current wave (flagging if its observed count fell
-    /// outside the projection — i.e. we left the fight), then either:
-    ///   * the winners are all vampires => we lost => the lair ends (first loss), or
-    ///   * the crew won => advance to the next wave, projecting its range from the
-    ///     concluded wave's anchor count (`pirates * growth^(wave-1)`).
+    /// A swordfight concluded (`Game over`) — the boundary between lair waves.
+    /// While in a lair we close out the current wave (flagging if its
+    /// observed count fell outside the projection — i.e. we left the
+    /// fight), then either:
+    ///   * the winners are all vampires => we lost => the lair ends (first
+    ///     loss), or
+    ///   * the crew won => advance to the next wave, projecting its range from
+    ///     the concluded wave's anchor count (`pirates * growth^(wave-1)`).
     fn on_lair_gameover(&mut self, summary: &str) {
         let Some((_, list)) = summary.split_once(':') else {
             return;
@@ -2073,7 +2313,8 @@ impl GameState {
                 return;
             }
             // Crew won: advance to the next wave and project its range.
-            let base = v.lair_pirates as f64 * LAIR_WAVE_GROWTH.powi((v.lair_wave - 1) as i32);
+            let base = v.lair_pirates as f64
+                * LAIR_WAVE_GROWTH.powi((v.lair_wave - 1) as i32);
             v.lair_wave += 1;
             v.wave_observed = 0;
             v.wave_lo = (base * LAIR_WAVE_LO).round() as u32;
@@ -2106,7 +2347,8 @@ impl GameState {
         // mutable vessel access below.
         let me = self.player_name.clone();
         let me = me.as_deref();
-        let player_listed = me.is_some_and(|me| names.iter().any(|n| n.eq_ignore_ascii_case(me)));
+        let player_listed = me
+            .is_some_and(|me| names.iter().any(|n| n.eq_ignore_ascii_case(me)));
         if !player_listed {
             return;
         }
@@ -2121,19 +2363,25 @@ impl GameState {
         // The roster is authoritative for swabbies too: everything that isn't a
         // player name is one. This resyncs the running delta tally, correcting
         // any drift accumulated while the vessel was poisoned.
-        let swabbies = names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32;
-        // ...and for the mercenary roster: the winners list is the only place NPCs are
-        // named, so it's our sole merc/swabbie ground truth. Mercenaries are the
-        // `[name][epithet]` NPCs; everyone else non-player is a genuine swabbie. This
-        // re-truthing corrects any drift (departures, rum-spice swaps) since the last
+        let swabbies =
+            names.iter().filter(|n| !pirate::is_player_name(n)).count() as u32;
+        // ...and for the mercenary roster: the winners list is the only place
+        // NPCs are named, so it's our sole merc/swabbie ground truth.
+        // Mercenaries are the `[name][epithet]` NPCs; everyone else
+        // non-player is a genuine swabbie. This re-truthing corrects
+        // any drift (departures, rum-spice swaps) since the last
         // win. See the merc roster on `Vessel`.
         let mercenaries: BTreeSet<String> = names
             .iter()
             .filter(|n| !pirate::is_player_name(n))
-            // A generic unnamed swabbie ("A swabbie") isn't a real NPC name; the
-            // classifier would default its unknown tokens to Mercenary, so skip it.
+            // A generic unnamed swabbie ("A swabbie") isn't a real NPC name;
+            // the classifier would default its unknown tokens to
+            // Mercenary, so skip it.
             .filter(|n| !n.eq_ignore_ascii_case("A swabbie"))
-            .filter(|n| self.name_segments.classify(n) == Some(crate::cache::NpcKind::Mercenary))
+            .filter(|n| {
+                self.name_segments.classify(n)
+                    == Some(crate::cache::NpcKind::Mercenary)
+            })
             .map(|n| n.to_string())
             .collect();
 
@@ -2141,15 +2389,16 @@ impl GameState {
             v.crewmates = new_crew;
             v.swabbies = swabbies;
             v.mercenaries = mercenaries;
-            // Ground truth: backfill every crew sample since the last checkpoint (or
-            // the voyage start) to this confirmed mercenary count, then advance the
-            // checkpoint. So each inter-win stretch is attributed the count confirmed
-            // at its close — correcting the invisible initial hire and any mid-voyage
-            // hires we couldn't see live.
+            // Ground truth: backfill every crew sample since the last
+            // checkpoint (or the voyage start) to this confirmed
+            // mercenary count, then advance the checkpoint. So each
+            // inter-win stretch is attributed the count confirmed
+            // at its close — correcting the invisible initial hire and any
+            // mid-voyage hires we couldn't see live.
             let confirmed = v.mercenaries.len() as u32;
             if let Some(voy) = v.current_voyage.as_mut() {
                 let from = voy.merc_checkpoint.min(voy.crew_samples.len());
-                for s in &mut voy.crew_samples[from..] {
+                for s in &mut voy.crew_samples[from ..] {
                     s.mercenaries = confirmed;
                 }
                 voy.merc_checkpoint = voy.crew_samples.len();
@@ -2190,20 +2439,22 @@ impl GameState {
         self.current_vessel()?.current_voyage.as_ref()
     }
 
-    /// Pillage PoE over the current pillage — the voyage underway on the current
-    /// vessel, or its most recent completed one. Walked in order over the signed
-    /// per-battle [`Battle::poe`] ledger, so it's immune to the booty chest being
-    /// raided on lost boardings. Returns `(gross_won, stolen, chest)`, where
-    /// `chest` is the retained half kept per win (each contributes `ceil(M/2)` —
-    /// the odd PoE rounds up into the chest, matching the in-game booty) and
-    /// `stolen` is the PoE enemies actually took, **capped by the chest balance at
-    /// the time** (they can't steal from an empty chest). `chest − stolen` is thus
+    /// Pillage PoE over the current pillage — the voyage underway on the
+    /// current vessel, or its most recent completed one. Walked in order
+    /// over the signed per-battle [`Battle::poe`] ledger, so it's immune to
+    /// the booty chest being raided on lost boardings. Returns `(gross_won,
+    /// stolen, chest)`, where `chest` is the retained half kept per win
+    /// (each contributes `ceil(M/2)` — the odd PoE rounds up into the
+    /// chest, matching the in-game booty) and `stolen` is the PoE enemies
+    /// actually took, **capped by the chest balance at the time** (they
+    /// can't steal from an empty chest). `chest − stolen` is thus
     /// always ≥ 0.
     pub fn current_pillage_poe(&self) -> (u64, u64, u64) {
         let Some(v) = self.current_vessel() else {
             return (0, 0, 0);
         };
-        let Some(voy) = v.current_voyage.as_ref().or_else(|| v.voyages.last()) else {
+        let Some(voy) = v.current_voyage.as_ref().or_else(|| v.voyages.last())
+        else {
             return (0, 0, 0);
         };
         let mut gross: u64 = 0;
@@ -2252,29 +2503,31 @@ impl GameState {
         std::mem::take(&mut self.battle_just_started)
     }
 
-    /// Take the foe-hull index detected from a special encounter this line (once
-    /// per detection). The app uses it to seed the live Damage calculator's foe
-    /// ship so live tracking — and the captured snapshot — use the right hull.
+    /// Take the foe-hull index detected from a special encounter this line
+    /// (once per detection). The app uses it to seed the live Damage
+    /// calculator's foe ship so live tracking — and the captured snapshot —
+    /// use the right hull.
     pub fn take_detected_foe_ship(&mut self) -> Option<usize> {
         self.detected_foe_ship.take()
     }
 
     /// Take the "a grappled sea battle's first melee KO landed this line" flag
-    /// (once per fight). The app uses it to surface the Sea Battles graph mid-fight.
+    /// (once per fight). The app uses it to surface the Sea Battles graph
+    /// mid-fight.
     pub fn take_battle_first_blood(&mut self) -> bool {
         std::mem::take(&mut self.battle_first_blood)
     }
 
     /// Take the "we just entered a vampire lair this line" flag (true once per
-    /// lair entry). The app uses it to jump to the Jobbers page and switch it to
-    /// the Vampirates voyage layout.
+    /// lair entry). The app uses it to jump to the Jobbers page and switch it
+    /// to the Vampirates voyage layout.
     pub fn take_lair_entered(&mut self) -> bool {
         std::mem::take(&mut self.lair_just_entered)
     }
 
-    /// Take the "the Cursed Isles tell just fired this line" flag (true once per
-    /// run). The app uses it to jump to the Jobbers page and switch it to the
-    /// Cursed Isles voyage layout.
+    /// Take the "the Cursed Isles tell just fired this line" flag (true once
+    /// per run). The app uses it to jump to the Jobbers page and switch it
+    /// to the Cursed Isles voyage layout.
     pub fn take_cursed_isles_detected(&mut self) -> bool {
         std::mem::take(&mut self.cursed_isles_just_detected)
     }
@@ -2285,14 +2538,14 @@ impl GameState {
         self.boarded_vessel.take()
     }
 
-    /// Whether the booty was divided this line (once per divvy). The app uses it to
-    /// freeze the just-divvied run's booty onto the voyage.
+    /// Whether the booty was divided this line (once per divvy). The app uses
+    /// it to freeze the just-divvied run's booty onto the voyage.
     pub fn take_booty_divided(&mut self) -> bool {
         std::mem::take(&mut self.booty_divided)
     }
 
-    /// The current-pillage run on the current vessel — the current voyage, else the
-    /// most recent one — for writing the divvy booty snapshot. Mirrors
+    /// The current-pillage run on the current vessel — the current voyage, else
+    /// the most recent one — for writing the divvy booty snapshot. Mirrors
     /// [`Self::current_pillage_poe`]'s selection. `None` if we're not aboard a
     /// vessel with any run.
     pub fn current_pillage_voyage_mut(&mut self) -> Option<&mut Voyage> {
@@ -2304,12 +2557,18 @@ impl GameState {
         }
     }
 
-    /// Freeze the live Damage-calculator snapshot + advantage onto the just-resolved
-    /// (last) battle of the current voyage. Called at Game over / disengage when the
-    /// calculator had input, so fights we tracked live land in the history recorded.
-    /// A **disengaged** fight is skipped: there's nothing worth recording beyond the
-    /// disengage itself (who, how long), so we don't pin damage to it.
-    pub fn record_resolved_battle(&mut self, snap: BattleSnapshot, dmg: f64, crew: f64) {
+    /// Freeze the live Damage-calculator snapshot + advantage onto the
+    /// just-resolved (last) battle of the current voyage. Called at Game
+    /// over / disengage when the calculator had input, so fights we tracked
+    /// live land in the history recorded. A **disengaged** fight is
+    /// skipped: there's nothing worth recording beyond the disengage itself
+    /// (who, how long), so we don't pin damage to it.
+    pub fn record_resolved_battle(
+        &mut self,
+        snap: BattleSnapshot,
+        dmg: f64,
+        crew: f64,
+    ) {
         if let Some(voy) = self.current_voyage_mut() {
             if let Some(b) = voy.battles.last_mut() {
                 if b.outcome == BattleOutcome::Disengaged {
@@ -2329,15 +2588,21 @@ impl GameState {
             .unwrap_or(0)
     }
 
-    /// Swabbies (NPC crew, incl. named mercenaries) aboard the current vessel, or 0.
+    /// Swabbies (NPC crew, incl. named mercenaries) aboard the current vessel,
+    /// or 0.
     pub fn current_swabbies(&self) -> u32 {
         self.current_vessel().map(|v| v.swabbies).unwrap_or(0)
     }
 
-    /// The battle at display index `idx` of the displayed voyage on vessel `key`.
-    /// The displayed list is the resolved battles, then the in-progress one (if
-    /// any), so an index one past the resolved set addresses `current_battle`.
-    fn displayed_battle_mut(&mut self, key: &Arc<str>, idx: usize) -> Option<&mut Battle> {
+    /// The battle at display index `idx` of the displayed voyage on vessel
+    /// `key`. The displayed list is the resolved battles, then the
+    /// in-progress one (if any), so an index one past the resolved set
+    /// addresses `current_battle`.
+    fn displayed_battle_mut(
+        &mut self,
+        key: &Arc<str>,
+        idx: usize,
+    ) -> Option<&mut Battle> {
         let v = self.vessels.get_mut(key)?;
         let voy = v.current_voyage.as_mut().or_else(|| v.voyages.last_mut())?;
         let n = voy.battles.len();
@@ -2350,9 +2615,10 @@ impl GameState {
         }
     }
 
-    /// Write a fight's Damage-calculator snapshot + recomputed advantage. Driven
-    /// by the Sea Battles popup on every edit (the calculator is always editable;
-    /// this is independent of whether the fight is recorded).
+    /// Write a fight's Damage-calculator snapshot + recomputed advantage.
+    /// Driven by the Sea Battles popup on every edit (the calculator is
+    /// always editable; this is independent of whether the fight is
+    /// recorded).
     pub fn set_battle_snapshot(
         &mut self,
         key: &Arc<str>,
@@ -2370,7 +2636,12 @@ impl GameState {
 
     /// Set whether a fight is recorded (persisted to disk). Does not touch its
     /// snapshot/advantage — those always exist and display regardless.
-    pub fn set_battle_recorded(&mut self, key: &Arc<str>, idx: usize, recorded: bool) {
+    pub fn set_battle_recorded(
+        &mut self,
+        key: &Arc<str>,
+        idx: usize,
+        recorded: bool,
+    ) {
         if let Some(b) = self.displayed_battle_mut(key, idx) {
             b.recorded = recorded;
         }
@@ -2418,11 +2689,12 @@ impl Default for GameState {
 ///   "N swabbies have come aboard."      -> +N
 ///   "A swabbie has left the vessel."    -> -1
 ///   "N swabbies have left the vessel."  -> -N
-/// Remove `n` mercenaries from the roster. NPC departures are anonymous, so *which*
-/// merc leaves is unknowable — we drop arbitrary (lowest-sorted) names. The roster is
-/// re-truthed from the next winners roster anyway, so only the count matters here.
+/// Remove `n` mercenaries from the roster. NPC departures are anonymous, so
+/// *which* merc leaves is unknowable — we drop arbitrary (lowest-sorted) names.
+/// The roster is re-truthed from the next winners roster anyway, so only the
+/// count matters here.
 fn shed_mercs(mercs: &mut BTreeSet<String>, n: u32) {
-    for _ in 0..n {
+    for _ in 0 .. n {
         let Some(first) = mercs.iter().next().cloned() else {
             break;
         };
@@ -2452,9 +2724,9 @@ fn parse_swabbie_delta(body: &str) -> Option<i64> {
 }
 
 /// The eight Brigand Kings (full in-game names). Each king's chants, victory
-/// line, reward chest, and winners-list entry all carry the full name, so we key
-/// categorization off the name rather than per-king chant text — robust across
-/// every king without a brittle chant table. (Roster from yppedia.)
+/// line, reward chest, and winners-list entry all carry the full name, so we
+/// key categorization off the name rather than per-king chant text — robust
+/// across every king without a brittle chant table. (Roster from yppedia.)
 const BRIGAND_KINGS: &[&str] = &[
     "Admiral Finius",
     "Azarbad the Great",
@@ -2471,16 +2743,20 @@ fn find_brigand_king(text: &str) -> Option<&'static str> {
     BRIGAND_KINGS.iter().copied().find(|k| text.contains(k))
 }
 
-/// Monkey-boat vessels and the hull each one sails, per yppedia. A monkey boat is
-/// identified by its (fixed) vessel name in the interception line, which maps to a
-/// known ship type — there are exactly twelve, one per non-niche hull.
+/// Monkey-boat vessels and the hull each one sails, per yppedia. A monkey boat
+/// is identified by its (fixed) vessel name in the interception line, which
+/// maps to a known ship type — there are exactly twelve, one per non-niche
+/// hull.
 const MONKEY_BOATS: &[(&str, &str)] = &[
     ("Petulant Kumquat", "Sloop"),
     ("Itinerant Pomegranate", "Cutter"),
     ("Resplendent Peach", "Dhow"),
     ("Succulent Pear", "Baghlah"),
     ("Appealing Orange", "Longship"),
-    ("Adventurous Huckleberry", "Merchant Brig"),
+    (
+        "Adventurous Huckleberry",
+        "Merchant Brig",
+    ),
     ("Scrumptious Strawberry", "Junk"),
     ("Dogged Rhubarb", "War Brig"),
     ("Overbearing Pineapple", "Xebec"),
@@ -2490,8 +2766,8 @@ const MONKEY_BOATS: &[(&str, &str)] = &[
 ];
 
 /// The [`crate::ships::SHIPS`] index of the monkey boat with this exact vessel
-/// name, if `name` is one. The name comes from the (system) interception line, so
-/// it can't be spoofed via chat.
+/// name, if `name` is one. The name comes from the (system) interception line,
+/// so it can't be spoofed via chat.
 fn monkey_boat_ship(name: &str) -> Option<usize> {
     MONKEY_BOATS
         .iter()
@@ -2500,9 +2776,9 @@ fn monkey_boat_ship(name: &str) -> Option<usize> {
 }
 
 /// Whether a line is player chatter (so king names mentioned in chat don't
-/// mislabel a fight). Player speech reaches us over several channels, each tagged
-/// by a verb token on its first line: `says,` / `tells ye,` / `shouts,` /
-/// `broadcasts,` and the `<scope> chats,` family — `chats,` (crew), plus
+/// mislabel a fight). Player speech reaches us over several channels, each
+/// tagged by a verb token on its first line: `says,` / `tells ye,` / `shouts,`
+/// / `broadcasts,` and the `<scope> chats,` family — `chats,` (crew), plus
 /// `officer chats,`, `flag officer chats,`, `global chats,`, `trade chats,` and
 /// `battle chats,`. The bare ` chats,` substring matches every member of that
 /// family regardless of scope prefix, so we don't enumerate them.
@@ -2510,10 +2786,11 @@ fn monkey_boat_ship(name: &str) -> Option<usize> {
 /// A quoted message can span several log lines (e.g. a multi-line trade-chat
 /// listing): only the first line carries the verb token and only the last ends
 /// in the closing `"`. The verb tokens above catch every first line, and the
-/// `ends_with('"')` arm catches the last; the king chants this guards against are
-/// single system lines ending in `!`/`.`, so neither arm false-positives on them.
-/// Residual gap: a *middle* continuation line carries neither marker — accepted,
-/// as it would only matter if such a line contained an exact Brigand King name.
+/// `ends_with('"')` arm catches the last; the king chants this guards against
+/// are single system lines ending in `!`/`.`, so neither arm false-positives on
+/// them. Residual gap: a *middle* continuation line carries neither marker —
+/// accepted, as it would only matter if such a line contained an exact Brigand
+/// King name.
 fn is_chat_line(body: &str) -> bool {
     body.ends_with('"')
         || body.contains(" says,")
@@ -2544,8 +2821,8 @@ fn parse_num_commas(s: &str) -> Option<u64> {
 fn parse_line(line: &str) -> Option<(NaiveTime, &str)> {
     let rest = line.strip_prefix('[')?;
     let end = rest.find(']')?;
-    let time = NaiveTime::parse_from_str(&rest[..end], "%H:%M:%S").ok()?;
-    Some((time, rest[end + 1..].trim_start()))
+    let time = NaiveTime::parse_from_str(&rest[.. end], "%H:%M:%S").ok()?;
+    Some((time, rest[end + 1 ..].trim_start()))
 }
 
 /// Parse the date out of a `====== YYYY/MM/DD ======` header line.
@@ -2558,14 +2835,15 @@ fn parse_date_header(line: &str) -> Option<NaiveDate> {
 // Streaming tailer
 // ---------------------------------------------------------------------------
 
-/// Spawn a background thread that tails `path` from `start_offset`, sending each
-/// complete (newline-terminated) line over `tx`. Lines are decoded lossily and
-/// stripped of trailing CR/LF. A trailing incomplete line is buffered until its
-/// newline arrives. Stops when the receiver is dropped.
+/// Spawn a background thread that tails `path` from `start_offset`, sending
+/// each complete (newline-terminated) line over `tx`. Lines are decoded lossily
+/// and stripped of trailing CR/LF. A trailing incomplete line is buffered until
+/// its newline arrives. Stops when the receiver is dropped.
 ///
-/// This is a detached **std** thread, not a Tokio blocking task: a blocking task
-/// looping forever would make the runtime's shutdown (on `main` returning) hang
-/// waiting for it. A plain thread is simply abandoned when the process exits.
+/// This is a detached **std** thread, not a Tokio blocking task: a blocking
+/// task looping forever would make the runtime's shutdown (on `main` returning)
+/// hang waiting for it. A plain thread is simply abandoned when the process
+/// exits.
 pub fn spawn_tailer(
     path: std::path::PathBuf,
     start_offset: u64,
@@ -2593,15 +2871,20 @@ pub fn spawn_tailer(
             if offset < len {
                 if file.seek(SeekFrom::Start(offset)).is_ok() {
                     let mut buf = Vec::new();
-                    if let Ok(n) = file.take(len - offset).read_to_end(&mut buf) {
+                    if let Ok(n) = file.take(len - offset).read_to_end(&mut buf)
+                    {
                         offset += n as u64;
                         leftover.extend_from_slice(&buf);
 
                         // Emit every complete line; keep the remainder.
-                        while let Some(pos) = leftover.iter().position(|&b| b == b'\n') {
-                            let line_bytes: Vec<u8> = leftover.drain(..=pos).collect();
+                        while let Some(pos) =
+                            leftover.iter().position(|&b| b == b'\n')
+                        {
+                            let line_bytes: Vec<u8> =
+                                leftover.drain(..= pos).collect();
                             let line = String::from_utf8_lossy(&line_bytes);
-                            let line = line.trim_end_matches(['\n', '\r']).to_string();
+                            let line =
+                                line.trim_end_matches(['\n', '\r']).to_string();
                             if tx.send(line).is_err() {
                                 return; // receiver gone
                             }
@@ -2644,7 +2927,11 @@ mod tests {
 
     #[test]
     fn parses_single_difficulty() {
-        let JobKind::Pillaging { lower, upper, .. } = pillage("Pillaging, Average Barbarians")
+        let JobKind::Pillaging {
+            lower,
+            upper,
+            ..
+        } = pillage("Pillaging, Average Barbarians")
         else {
             panic!("expected pillaging");
         };
@@ -2655,8 +2942,12 @@ mod tests {
     #[test]
     fn parses_very_hard_and_all_targets() {
         let JobKind::Pillaging {
-            upper, targets, ..
-        } = pillage("Pillaging, Easy to Very Hard Pirates and Brigands and Barbarians")
+            upper,
+            targets,
+            ..
+        } = pillage(
+            "Pillaging, Easy to Very Hard Pirates and Brigands and Barbarians",
+        )
         else {
             panic!("expected pillaging");
         };
@@ -2667,17 +2958,26 @@ mod tests {
     #[test]
     fn parses_other_job_kinds() {
         assert_eq!(pillage("Evading"), JobKind::Evading);
-        assert_eq!(pillage("Swabbie Ship Transporting"), JobKind::SwabbieTransport);
-        assert_eq!(pillage("Attacking a Flotilla"), JobKind::AttackingFlotilla);
+        assert_eq!(
+            pillage("Swabbie Ship Transporting"),
+            JobKind::SwabbieTransport
+        );
+        assert_eq!(
+            pillage("Attacking a Flotilla"),
+            JobKind::AttackingFlotilla
+        );
         // The per-league figure is discarded — we don't track leagues.
         assert_eq!(
-            pillage("Trading, offering an average of 10 pieces of eight per league"),
+            pillage(
+                "Trading, offering an average of 10 pieces of eight per league"
+            ),
             JobKind::Trading
         );
         assert_eq!(
             pillage("Exploring the Sucker-bearing Destroyer of the Briny Deep"),
             JobKind::Exploring {
-                monster: "Sucker-bearing Destroyer of the Briny Deep".to_string()
+                monster: "Sucker-bearing Destroyer of the Briny Deep"
+                    .to_string()
             }
         );
     }
@@ -2687,20 +2987,29 @@ mod tests {
         let mut gs = GameState::new();
         gs.process_line("[14:55:00] Going aboard the Test Vessel...");
         gs.process_line("[14:56:16] Matetwo has come aboard.");
-        gs.process_line("[14:56:24] This vessel is now Pillaging, Average to Hard Barbarians.");
         gs.process_line(
-            "[14:56:27] Matethree delivers an overwhelming barrage against Hunched Alice, \
-             causing some treasure to fall from their grip!",
+            "[14:56:24] This vessel is now Pillaging, Average to Hard \
+             Barbarians.",
         );
         gs.process_line(
-            "[14:56:28] Matethree executes a masterful strike against Demented Carlos, \
-             who drops some treasure in surprise!",
+            "[14:56:27] Matethree delivers an overwhelming barrage against \
+             Hunched Alice, causing some treasure to fall from their grip!",
+        );
+        gs.process_line(
+            "[14:56:28] Matethree executes a masterful strike against \
+             Demented Carlos, who drops some treasure in surprise!",
         );
 
-        assert_eq!(gs.current.as_deref(), Some("Test Vessel"));
+        assert_eq!(
+            gs.current.as_deref(),
+            Some("Test Vessel")
+        );
         let v = gs.current_vessel().unwrap();
         assert!(v.crewmates.contains("Matetwo"));
-        assert_eq!(v.greedy_by_pirate.get("Matethree"), Some(&2));
+        assert_eq!(
+            v.greedy_by_pirate.get("Matethree"),
+            Some(&2)
+        );
         assert!(v.job_kind.is_some());
         assert!(!v.poisoned);
     }
@@ -2722,9 +3031,15 @@ mod tests {
         // `voyages` when the division lands — the flag must reach it there.
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
-        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[01:00:06] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[01:29:00] Playerone issued an order to put into port.");
+        gs.process_line(
+            "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:29:00] Playerone issued an order to put into port.",
+        );
         gs.process_line("[01:30:00] The booty has been divided!");
         {
             let v = &gs.vessels["Abyssal Grunion"];
@@ -2733,7 +3048,10 @@ mod tests {
         }
         // The divvy also signals the app (once) to freeze the run's booty.
         assert!(gs.take_booty_divided());
-        assert!(!gs.take_booty_divided(), "the signal is one-shot");
+        assert!(
+            !gs.take_booty_divided(),
+            "the signal is one-shot"
+        );
     }
 
     #[test]
@@ -2742,8 +3060,12 @@ mod tests {
         // flags the current voyage.
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Sugared Bass...");
-        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[01:00:06] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[01:30:00] The booty has been divided!");
         let v = &gs.vessels["Sugared Bass"];
         assert!(v.voyages.last().unwrap().divvied);
@@ -2753,7 +3075,9 @@ mod tests {
     fn clean_run_then_leave_is_not_poisoned() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
-        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line(
+            "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
         gs.process_line("[01:30:00] The booty has been divided!");
         gs.process_line("[01:31:00] Ye have left 'Some Crew'.");
         let v = &gs.vessels["Abyssal Grunion"];
@@ -2765,10 +3089,15 @@ mod tests {
     fn re_boarding_keeps_poison() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Enchanting Pike...");
-        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
+        gs.process_line(
+            "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
         gs.process_line("[01:05:00] Ye have left 'Crew'."); // poisoned
         gs.process_line("[01:10:00] Going aboard the Enchanting Pike..."); // return
-        assert_eq!(gs.current.as_deref(), Some("Enchanting Pike"));
+        assert_eq!(
+            gs.current.as_deref(),
+            Some("Enchanting Pike")
+        );
         assert!(gs.current_vessel().unwrap().poisoned);
     }
 
@@ -2777,16 +3106,23 @@ mod tests {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
         gs.process_line("[01:00:05] This vessel is now Atlantis.");
-        gs.process_line("[01:01:00] Ye hear a splash, and the sound of foreign footsteps.");
-        gs.process_line("[01:01:30] Ye hear a splash, and the sound of foreign footsteps.");
         gs.process_line(
-            "[01:02:00] Dragoons from the monster took advantage of their proximity to board yer vessel!",
+            "[01:01:00] Ye hear a splash, and the sound of foreign footsteps.",
+        );
+        gs.process_line(
+            "[01:01:30] Ye hear a splash, and the sound of foreign footsteps.",
+        );
+        gs.process_line(
+            "[01:02:00] Dragoons from the monster took advantage of their \
+             proximity to board yer vessel!",
         );
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.dragoons_aboard, 2);
         assert_eq!(v.dragoon_boardings, 1);
 
-        gs.process_line("[01:03:00] Arr! Yer crew has managed to repel all invaders!");
+        gs.process_line(
+            "[01:03:00] Arr! Yer crew has managed to repel all invaders!",
+        );
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.dragoons_aboard, 0);
         assert_eq!(v.dragoon_boardings, 0);
@@ -2796,31 +3132,48 @@ mod tests {
     fn dragoon_driven_off_decrements_and_can_go_negative() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
-        // A boarding party lands — heads unknown, so only the boardings counter moves.
+        // A boarding party lands — heads unknown, so only the boardings counter
+        // moves.
         gs.process_line(
-            "[01:01:00] Dragoons from the monster took advantage of their proximity to board yer vessel!",
+            "[01:01:00] Dragoons from the monster took advantage of their \
+             proximity to board yer vessel!",
         );
-        // Two of that party are driven off. No lone splashes fed `dragoons_aboard`, so it
-        // goes negative — party heads cleared beyond the lone ones (that's the signal).
-        gs.process_line("[01:01:10] Playerone has driven Bellator from the ship!");
-        gs.process_line("[01:01:20] Playertwo has driven Athanatoi from the ship!");
+        // Two of that party are driven off. No lone splashes fed
+        // `dragoons_aboard`, so it goes negative — party heads cleared
+        // beyond the lone ones (that's the signal).
+        gs.process_line(
+            "[01:01:10] Playerone has driven Bellator from the ship!",
+        );
+        gs.process_line(
+            "[01:01:20] Playertwo has driven Athanatoi from the ship!",
+        );
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.dragoon_boardings, 1);
         assert_eq!(v.dragoons_aboard, -2);
 
         // A repel clears everything back to zero.
-        gs.process_line("[01:02:00] Arr! Yer crew has managed to repel all invaders!");
-        assert_eq!(gs.current_vessel().unwrap().dragoons_aboard, 0);
+        gs.process_line(
+            "[01:02:00] Arr! Yer crew has managed to repel all invaders!",
+        );
+        assert_eq!(
+            gs.current_vessel().unwrap().dragoons_aboard,
+            0
+        );
     }
 
     #[test]
     fn driven_off_outside_atlantis_leaves_dragoons_untouched() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
-        // No dragoon tells → not an Atlantis encounter. An ordinary foe driven off in a
-        // pillage must not decrement the dragoon counter.
-        gs.process_line("[01:01:00] Playerone has driven Jack Irascible from the ship!");
-        assert_eq!(gs.current_vessel().unwrap().dragoons_aboard, 0);
+        // No dragoon tells → not an Atlantis encounter. An ordinary foe driven
+        // off in a pillage must not decrement the dragoon counter.
+        gs.process_line(
+            "[01:01:00] Playerone has driven Jack Irascible from the ship!",
+        );
+        assert_eq!(
+            gs.current_vessel().unwrap().dragoons_aboard,
+            0
+        );
     }
 
     #[test]
@@ -2828,13 +3181,16 @@ mod tests {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Abyssal Grunion...");
         gs.process_line(
-            "[01:01:00] Dragoons from the monster took advantage of their proximity to board yer vessel!",
+            "[01:01:00] Dragoons from the monster took advantage of their \
+             proximity to board yer vessel!",
         );
-        // Drive off six — the most a single party could hold. Only on the sixth does the
-        // upper estimate (−6 + 6·1) reach zero, self-clearing both counters without a
-        // "repel all invaders" line.
-        for i in 0..6 {
-            gs.process_line(&format!("[01:01:1{i}] Playerone has driven Bellator from the ship!"));
+        // Drive off six — the most a single party could hold. Only on the sixth
+        // does the upper estimate (−6 + 6·1) reach zero, self-clearing
+        // both counters without a "repel all invaders" line.
+        for i in 0 .. 6 {
+            gs.process_line(&format!(
+                "[01:01:1{i}] Playerone has driven Bellator from the ship!"
+            ));
             let v = gs.current_vessel().unwrap();
             if i < 5 {
                 assert_eq!(v.dragoons_aboard, -(i as i32 + 1));
@@ -2850,11 +3206,18 @@ mod tests {
     fn attributes_planks_to_us() {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
-        gs.process_line("[01:00:00] Going aboard the Captiviating Mummichog...");
+        gs.process_line(
+            "[01:00:00] Going aboard the Captiviating Mummichog...",
+        );
         gs.process_line("[01:01:00] Matefour has come aboard.");
-        gs.process_line("[01:02:00] Playerone forced Matefour to walk the plank.");
+        gs.process_line(
+            "[01:02:00] Playerone forced Matefour to walk the plank.",
+        );
         let v = gs.current_vessel().unwrap();
-        assert_eq!(v.planked_by_us, BTreeSet::from(["Matefour".to_string()]));
+        assert_eq!(
+            v.planked_by_us,
+            BTreeSet::from(["Matefour".to_string()])
+        );
         assert!(!v.crewmates.contains("Matefour"));
     }
 
@@ -2868,10 +3231,14 @@ mod tests {
         assert!(gs.vessels.is_empty());
         assert!(gs.current.is_none());
         assert!(gs.online.is_empty());
-        assert_eq!(gs.player_name.as_deref(), Some("Playerone")); // config survives
+        assert_eq!(
+            gs.player_name.as_deref(),
+            Some("Playerone")
+        ); // config survives
     }
 
-    /// Dev tool: ingest a real log via `YPP_LOG=/path cargo test -- --ignored --nocapture`.
+    /// Dev tool: ingest a real log via `YPP_LOG=/path cargo test -- --ignored
+    /// --nocapture`.
     #[test]
     #[ignore]
     fn ingest_real_log() {
@@ -2881,7 +3248,9 @@ mod tests {
         };
         let data = std::fs::read(&path).expect("read log");
         let mut gs = GameState::new();
-        gs.player_name = std::env::var("YPP_USER").ok().map(|u| Arc::from(u.as_str()));
+        gs.player_name = std::env::var("YPP_USER")
+            .ok()
+            .map(|u| Arc::from(u.as_str()));
         gs.process_existing(&data);
 
         eprintln!("vessels seen: {}", gs.vessels.len());
@@ -2890,9 +3259,13 @@ mod tests {
         for n in &names {
             let v = &gs.vessels[*n];
             eprintln!(
-                "  {:<28} job={:<48} greedy={:<4} crew={:<3} planked_by_us={} {}",
+                "  {:<28} job={:<48} greedy={:<4} crew={:<3} planked_by_us={} \
+                 {}",
                 n,
-                v.job_kind.as_ref().map(|j| j.to_string()).unwrap_or_default(),
+                v.job_kind
+                    .as_ref()
+                    .map(|j| j.to_string())
+                    .unwrap_or_default(),
                 v.total_greedy(),
                 v.crewmates.len(),
                 v.planked_by_us.len(),
@@ -2939,7 +3312,10 @@ mod tests {
             .and_hms_opt(0, 0, 5)
             .unwrap();
         assert_eq!(v.boarded_at, Some(expected));
-        assert_eq!(gs.current_date, NaiveDate::from_ymd_opt(2026, 6, 17));
+        assert_eq!(
+            gs.current_date,
+            NaiveDate::from_ymd_opt(2026, 6, 17)
+        );
     }
 
     #[test]
@@ -2978,7 +3354,8 @@ mod tests {
         assert_eq!(gs.current_vessel().unwrap().swabbies, 2);
         gs.process_line("[01:00:04] A swabbie has left the vessel.");
         assert_eq!(gs.current_vessel().unwrap().swabbies, 1);
-        // Underflow (poison-induced over-counting of departures) saturates at 0.
+        // Underflow (poison-induced over-counting of departures) saturates at
+        // 0.
         gs.process_line("[01:00:05] 5 swabbies have left the vessel.");
         assert_eq!(gs.current_vessel().unwrap().swabbies, 0);
     }
@@ -2992,7 +3369,8 @@ mod tests {
         gs.process_line("[01:00:01] A swabbie has come aboard.");
         // Winners roster: 1 player (us) + 3 swabbies (named + generic).
         gs.process_line(
-            "[01:30:00] Game over.  Winners: Playerone, Tony Ironsides, Master Hogan, A swabbie.",
+            "[01:30:00] Game over.  Winners: Playerone, Tony Ironsides, \
+             Master Hogan, A swabbie.",
         );
         assert_eq!(gs.current_vessel().unwrap().swabbies, 3);
     }
@@ -3003,20 +3381,31 @@ mod tests {
         gs.process_line("[01:00:00] Going aboard the War Carp...");
         gs.process_line("[01:00:05] You intercepted the Brigands.");
         gs.process_line(
-            "[01:00:06] Mateone delivers an overwhelming barrage against X, who drops treasure!",
+            "[01:00:06] Mateone delivers an overwhelming barrage against X, \
+             who drops treasure!",
         );
         gs.process_line(
-            "[01:00:07] Mateone executes a masterful strike against Y, who drops treasure!",
+            "[01:00:07] Mateone executes a masterful strike against Y, who \
+             drops treasure!",
         );
         gs.process_line("[01:05:00] Game over.  Winner: Playerone.");
         // Second battle: current tally resets, but Mateone's run total carries.
-        gs.process_line("[01:10:00] You have been intercepted by the Barbarians.");
         gs.process_line(
-            "[01:10:06] Mateone performs a powerful attack against Z, who drops treasure!",
+            "[01:10:00] You have been intercepted by the Barbarians.",
+        );
+        gs.process_line(
+            "[01:10:06] Mateone performs a powerful attack against Z, who \
+             drops treasure!",
         );
         let v = gs.current_vessel().unwrap();
-        assert_eq!(v.greedy_by_pirate.get("Mateone"), Some(&3)); // total
-        assert_eq!(v.greedy_current.get("Mateone"), Some(&1)); // current battle
+        assert_eq!(
+            v.greedy_by_pirate.get("Mateone"),
+            Some(&3)
+        ); // total
+        assert_eq!(
+            v.greedy_current.get("Mateone"),
+            Some(&1)
+        ); // current battle
     }
 
     #[test]
@@ -3025,7 +3414,10 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the Royal Roughy...");
         gs.process_line("[01:00:01] Mateseven has come aboard.");
-        gs.process_line("[01:30:00] Game over.  Winners: Mateone, Playerone, Matesix, A swabbie.");
+        gs.process_line(
+            "[01:30:00] Game over.  Winners: Mateone, Playerone, Matesix, A \
+             swabbie.",
+        );
         let v = gs.current_vessel().unwrap();
         // Crew replaced with the winning side (minus us and the swabbie).
         assert!(v.crewmates.contains("Mateone"));
@@ -3041,7 +3433,9 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the Royal Roughy...");
         gs.process_line("[01:00:01] Mateseven has come aboard.");
-        gs.process_line("[01:30:00] Game over.  Winners: Master Hogan, Brigand Bob.");
+        gs.process_line(
+            "[01:30:00] Game over.  Winners: Master Hogan, Brigand Bob.",
+        );
         let v = gs.current_vessel().unwrap();
         assert!(v.crewmates.contains("Mateseven")); // untouched — we weren't listed
     }
@@ -3053,7 +3447,8 @@ mod tests {
         gs.process_line("[01:00:00] Going aboard the Thin Tigerfish...");
         gs.process_line("[01:00:01] Matetwo has come aboard.");
         gs.process_line("[01:00:02] Matethree has come aboard.");
-        // Enter the lair: wave 1's vampires = pirates aboard (Playerone + 2 = 3).
+        // Enter the lair: wave 1's vampires = pirates aboard (Playerone + 2 =
+        // 3).
         gs.process_line("[01:01:00] Welcome to the vampire sanctum. ");
         {
             let v = gs.current_vessel().unwrap();
@@ -3061,13 +3456,14 @@ mod tests {
             assert_eq!(v.lair_wave, 1);
             assert_eq!(v.lair_pirates, 3);
         }
-        // Wave 1: 3 vampires defeated (NPCs have a space); a crew KO must not count.
+        // Wave 1: 3 vampires defeated (NPCs have a space); a crew KO must not
+        // count.
         gs.process_line("[01:01:10] Stygian Lilith is eliminated!");
         gs.process_line("[01:01:11] Matethree is eliminated!"); // crew KO — ignored
         gs.process_line("[01:01:12] Immortal Schreck is eliminated!");
         gs.process_line("[01:01:13] Craving Silvia is eliminated!");
-        // Wave 1's swordfight concludes with a crew win -> advance to wave 2. Wave 1
-        // hit its target (3 = pirates), so no warning yet.
+        // Wave 1's swordfight concludes with a crew win -> advance to wave 2.
+        // Wave 1 hit its target (3 = pirates), so no warning yet.
         gs.process_line("[01:02:00] Game over.  Winners: Playerone, Matetwo.");
         {
             let v = gs.current_vessel().unwrap();
@@ -3075,10 +3471,14 @@ mod tests {
             assert_eq!(v.vampires_defeated, 3);
             assert!(!v.lair_warn);
         }
-        // Wave 2 should hold ~4 vampires, but we leave the fight and see only 1...
+        // Wave 2 should hold ~4 vampires, but we leave the fight and see only
+        // 1...
         gs.process_line("[01:02:10] Sunless Collins is eliminated!");
-        // ...then lose the next swordfight (winners all vampires), ending the lair.
-        gs.process_line("[01:03:00] Game over.  Winners: Revenant Drac, Gloaming Lucy.");
+        // ...then lose the next swordfight (winners all vampires), ending the
+        // lair.
+        gs.process_line(
+            "[01:03:00] Game over.  Winners: Revenant Drac, Gloaming Lucy.",
+        );
         let v = gs.current_vessel().unwrap();
         assert!(!v.lair_active);
         assert_eq!(v.lair_wave, 2);
@@ -3090,15 +3490,21 @@ mod tests {
     fn cursed_isles_tell_marks_encounter_and_fires_jump_once() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
-        // The noxious fog is the tell: it marks the encounter and requests the jump.
+        // The noxious fog is the tell: it marks the encounter and requests the
+        // jump.
         gs.process_line(
-            "[01:00:10] The crew inhales the noxious fog, and starts to lose fine motor control.",
+            "[01:00:10] The crew inhales the noxious fog, and starts to lose \
+             fine motor control.",
         );
         assert!(gs.take_cursed_isles_detected());
-        assert_eq!(gs.current_vessel().unwrap().encounter, EncounterKind::CursedIsles);
+        assert_eq!(
+            gs.current_vessel().unwrap().encounter,
+            EncounterKind::CursedIsles
+        );
         // A second fog line must not re-fire the jump (already a known CI run).
         gs.process_line(
-            "[01:00:20] The crew inhales the noxious fog, and starts to lose fine motor control.",
+            "[01:00:20] The crew inhales the noxious fog, and starts to lose \
+             fine motor control.",
         );
         assert!(!gs.take_cursed_isles_detected());
     }
@@ -3109,35 +3515,57 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
         // Four rafts board us with zombies.
-        for _ in 0..4 {
+        for _ in 0 .. 4 {
             gs.process_line(
-                "[01:00:01] Boarders from the raft clamber onto yer vessel as theirs sinks to the depths.",
+                "[01:00:01] Boarders from the raft clamber onto yer vessel as \
+                 theirs sinks to the depths.",
             );
         }
-        assert_eq!(gs.current_vessel().unwrap().zombies_aboard, 4);
+        assert_eq!(
+            gs.current_vessel().unwrap().zombies_aboard,
+            4
+        );
         // Two are enthralled (leave the hostile count, join their controllers).
         gs.process_line("[01:00:02] Playerone has taken control of a zombie.");
         gs.process_line("[01:00:03] Matetwo has taken control of a zombie.");
         {
             let v = gs.current_vessel().unwrap();
             assert_eq!(v.zombies_aboard, 2);
-            assert_eq!(v.thralls_alive.get("Playerone"), Some(&1));
-            assert_eq!(v.thralls_total.get("Playerone"), Some(&1));
+            assert_eq!(
+                v.thralls_alive.get("Playerone"),
+                Some(&1)
+            );
+            assert_eq!(
+                v.thralls_total.get("Playerone"),
+                Some(&1)
+            );
             assert_eq!(v.thralls_alive.get("Matetwo"), Some(&1));
-            // Enthralling proves a pirate is aboard: Matetwo joins the crew, but we
-            // (Playerone) are never in the crewmate set.
+            // Enthralling proves a pirate is aboard: Matetwo joins the crew,
+            // but we (Playerone) are never in the crewmate set.
             assert!(v.crewmates.contains("Matetwo"));
             assert!(!v.crewmates.contains("Playerone"));
         }
         // One zombie is driven back off the ship.
-        gs.process_line("[01:00:04] Playerone has driven Controlled Zombie from the ship!");
-        assert_eq!(gs.current_vessel().unwrap().zombies_aboard, 1);
-        // Playerone's thrall dies: the live count drops, the lifetime total holds.
+        gs.process_line(
+            "[01:00:04] Playerone has driven Controlled Zombie from the ship!",
+        );
+        assert_eq!(
+            gs.current_vessel().unwrap().zombies_aboard,
+            1
+        );
+        // Playerone's thrall dies: the live count drops, the lifetime total
+        // holds.
         gs.process_line("[01:00:05] Playerone's Thrall is eliminated!");
         {
             let v = gs.current_vessel().unwrap();
-            assert_eq!(v.thralls_alive.get("Playerone"), Some(&0));
-            assert_eq!(v.thralls_total.get("Playerone"), Some(&1));
+            assert_eq!(
+                v.thralls_alive.get("Playerone"),
+                Some(&0)
+            );
+            assert_eq!(
+                v.thralls_total.get("Playerone"),
+                Some(&1)
+            );
         }
     }
 
@@ -3149,13 +3577,14 @@ mod tests {
         gs.process_line("[01:00:01] Matetwo has come aboard.");
         gs.process_line("[01:00:02] Matethree has come aboard.");
         gs.process_line(
-            "[01:00:03] The crew inhales the noxious fog, and starts to lose fine motor control.",
+            "[01:00:03] The crew inhales the noxious fog, and starts to lose \
+             fine motor control.",
         );
         let _ = gs.take_cursed_isles_detected();
         // Land on the island: wave 1 opens, anchored on the pirates aboard (3).
         gs.process_line(
-            "[01:05:00] Ye land on the island, but an angry mob of its inhabitants stands \
-             between ye and yer rightful plunderin'!",
+            "[01:05:00] Ye land on the island, but an angry mob of its \
+             inhabitants stands between ye and yer rightful plunderin'!",
         );
         {
             let v = gs.current_vessel().unwrap();
@@ -3164,9 +3593,10 @@ mod tests {
             assert_eq!(v.island_pirates, 3);
             assert_eq!(v.wave_kind, WaveKind::Rumble); // wave 1 is always a Rumble
         }
-        // Wave 1 is a rumble (zombies). A crew KO and a thrall KO are NOT enemies; the
-        // four zombies meet the projected band, so no "left early" flag is raised.
-        // `Matefive` is seen only via this KO — it proves they're aboard.
+        // Wave 1 is a rumble (zombies). A crew KO and a thrall KO are NOT
+        // enemies; the four zombies meet the projected band, so no
+        // "left early" flag is raised. `Matefive` is seen only via this
+        // KO — it proves they're aboard.
         gs.process_line("[01:05:10] Servile Zombie is eliminated!");
         gs.process_line("[01:05:11] Matefive is eliminated!"); // crew KO -> proof of presence
         gs.process_line("[01:05:12] Playerone's Thrall is eliminated!"); // thrall
@@ -3179,12 +3609,14 @@ mod tests {
             assert_eq!(v.wave_kind, WaveKind::Rumble);
             assert!(v.crewmates.contains("Matefive")); // KO proved them aboard
         }
-        // Clearing wave 1 advances to wave 2. The winners list is an authoritative
-        // roster: `Matefour` (seen only here) joins the crew, while our thralls
-        // ("<p>'s Thrall", which contain spaces) must NOT be miscounted as swabbies —
-        // the sea-battle crew-resync is bypassed on a CI run.
+        // Clearing wave 1 advances to wave 2. The winners list is an
+        // authoritative roster: `Matefour` (seen only here) joins the
+        // crew, while our thralls ("<p>'s Thrall", which contain
+        // spaces) must NOT be miscounted as swabbies — the sea-battle
+        // crew-resync is bypassed on a CI run.
         gs.process_line(
-            "[01:06:00] Game over.  Winners: Playerone, Matetwo, Matefour, Playerone's Thrall.",
+            "[01:06:00] Game over.  Winners: Playerone, Matetwo, Matefour, \
+             Playerone's Thrall.",
         );
         {
             let v = gs.current_vessel().unwrap();
@@ -3196,8 +3628,9 @@ mod tests {
             assert!(v.crewmates.contains("Matefour")); // winners list proved them aboard
             assert!(!v.crewmates.contains("Playerone's Thrall"));
         }
-        // Wave 2 is a swordfight (cultists / homunculi), and we under-count it (we
-        // leave early): only 2 kills against a projected band that floors higher.
+        // Wave 2 is a swordfight (cultists / homunculi), and we under-count it
+        // (we leave early): only 2 kills against a projected band that
+        // floors higher.
         gs.process_line("[01:06:10] Berserk Cultist is eliminated!");
         gs.process_line("[01:06:11] Foaming Homunculus is eliminated!");
         {
@@ -3239,19 +3672,31 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
-        gs.process_line("[01:00:01] Playerone issued an order to set the vessel to sail.");
         gs.process_line(
-            "[01:00:02] The crew inhales the noxious fog, and starts to lose fine motor control.",
+            "[01:00:01] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:00:02] The crew inhales the noxious fog, and starts to lose \
+             fine motor control.",
         );
         let _ = gs.take_cursed_isles_detected();
         gs.process_line(
-            "[01:00:03] Boarders from the raft clamber onto yer vessel as theirs sinks to the depths.",
+            "[01:00:03] Boarders from the raft clamber onto yer vessel as \
+             theirs sinks to the depths.",
         );
-        assert_eq!(gs.current_vessel().unwrap().zombies_aboard, 1);
-        // End the run and start a fresh one: the CI state clears so a later pillage on
-        // this vessel isn't treated as Cursed Isles (and the fog re-arms the jump).
-        gs.process_line("[01:10:00] Playerone issued an order to put into port.");
-        gs.process_line("[02:00:00] Playerone issued an order to set the vessel to sail.");
+        assert_eq!(
+            gs.current_vessel().unwrap().zombies_aboard,
+            1
+        );
+        // End the run and start a fresh one: the CI state clears so a later
+        // pillage on this vessel isn't treated as Cursed Isles (and the
+        // fog re-arms the jump).
+        gs.process_line(
+            "[01:10:00] Playerone issued an order to put into port.",
+        );
+        gs.process_line(
+            "[02:00:00] Playerone issued an order to set the vessel to sail.",
+        );
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.encounter, EncounterKind::None);
         assert_eq!(v.zombies_aboard, 0);
@@ -3265,11 +3710,12 @@ mod tests {
         gs.process_line("[01:00:01] Matetwo has come aboard.");
         gs.process_line("[01:00:02] Matethree has come aboard.");
         gs.process_line(
-            "[01:05:00] Ye land on the island, but an angry mob of its inhabitants stands \
-             between ye and yer rightful plunderin'!",
+            "[01:05:00] Ye land on the island, but an angry mob of its \
+             inhabitants stands between ye and yer rightful plunderin'!",
         );
-        // Wave 1: three enemy KOs (advantage steps up) interleaved with one crew KO
-        // (steps down). A thrall death is excluded from the curve entirely.
+        // Wave 1: three enemy KOs (advantage steps up) interleaved with one
+        // crew KO (steps down). A thrall death is excluded from the
+        // curve entirely.
         gs.process_line("[01:05:10] Servile Zombie is eliminated!");
         gs.process_line("[01:05:20] Cursed Zombie is eliminated!");
         gs.process_line("[01:05:30] Matethree is eliminated!"); // our crew falls
@@ -3281,16 +3727,19 @@ mod tests {
         let w = &v.island_waves[0];
         assert_eq!(w.wave, 1);
         assert_eq!(w.kind, WaveKind::Rumble);
-        // our_start = pirates at landing (3); their_start = enemies seen this wave (3).
+        // our_start = pirates at landing (3); their_start = enemies seen this
+        // wave (3).
         assert_eq!(w.timeline.our_start, 3);
         assert_eq!(w.timeline.their_start, Some(3));
-        let sides: Vec<KoSide> = w.timeline.events.iter().map(|e| e.side).collect();
+        let sides: Vec<KoSide> =
+            w.timeline.events.iter().map(|e| e.side).collect();
         assert_eq!(
             sides,
             vec![KoSide::Theirs, KoSide::Theirs, KoSide::Ours, KoSide::Theirs]
         );
         // base = our_start − their_start = 0; curve steps +1,+1,−1,+1.
-        let series = w.timeline.advantage_series(crate::voyage::AxisMode::Event);
+        let series =
+            w.timeline.advantage_series(crate::voyage::AxisMode::Event);
         let vals: Vec<i32> = series.iter().map(|&(_, v)| v).collect();
         assert_eq!(vals, vec![0, 1, 2, 1, 2]);
     }
@@ -3302,10 +3751,15 @@ mod tests {
         gs.process_line("====== 2026/05/14 ======");
         gs.process_line("[02:00:00] Going aboard the War Carp...");
         gs.process_line("[02:00:01] Matetwo has come aboard.");
-        gs.process_line("[02:00:05] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[02:01:00] You have been intercepted by the Modest Sild!");
         gs.process_line(
-            "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out between the crews!",
+            "[02:00:05] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[02:01:00] You have been intercepted by the Modest Sild!",
+        );
+        gs.process_line(
+            "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out \
+             between the crews!",
         );
         // Eliminations in order: enemy, our crewmate, enemy.
         gs.process_line("[02:02:10] Brawny Brigand is eliminated!");
@@ -3314,10 +3768,16 @@ mod tests {
         gs.process_line("[02:03:00] Game over.  Winners: Playerone, Matetwo.");
         let v = gs.current_vessel().unwrap();
         let b = v.current_voyage.as_ref().unwrap().battles.last().unwrap();
-        // Sides backfilled from our roster: enemy NPCs Theirs, our Matetwo Ours.
-        let sides: Vec<KoSide> = b.timeline.events.iter().map(|e| e.side).collect();
-        assert_eq!(sides, vec![KoSide::Theirs, KoSide::Ours, KoSide::Theirs]);
-        // We won, so every enemy was eliminated → their_start is the enemy-KO count.
+        // Sides backfilled from our roster: enemy NPCs Theirs, our Matetwo
+        // Ours.
+        let sides: Vec<KoSide> =
+            b.timeline.events.iter().map(|e| e.side).collect();
+        assert_eq!(
+            sides,
+            vec![KoSide::Theirs, KoSide::Ours, KoSide::Theirs]
+        );
+        // We won, so every enemy was eliminated → their_start is the enemy-KO
+        // count.
         assert_eq!(b.timeline.their_start, Some(2));
         // Time axis: events at +10/+20/+30s from the grapple.
         let series = b.timeline.advantage_series(crate::voyage::AxisMode::Time);
@@ -3331,12 +3791,18 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("====== 2026/05/14 ======");
         gs.process_line("[02:00:00] Going aboard the War Carp...");
-        gs.process_line("[02:00:05] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[02:01:00] You have been intercepted by the Modest Sild!");
         gs.process_line(
-            "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out between the crews!",
+            "[02:00:05] Playerone issued an order to set the vessel to sail.",
         );
-        // The first melee KO of the grappled fight surfaces the sea-battle graph.
+        gs.process_line(
+            "[02:01:00] You have been intercepted by the Modest Sild!",
+        );
+        gs.process_line(
+            "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out \
+             between the crews!",
+        );
+        // The first melee KO of the grappled fight surfaces the sea-battle
+        // graph.
         gs.process_line("[02:02:10] Brawny Brigand is eliminated!");
         assert!(gs.take_battle_first_blood());
         // A later KO must not re-fire (one jump per fight).
@@ -3350,22 +3816,31 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the Cursed Tuna...");
         gs.process_line(
-            "[01:00:03] The crew inhales the noxious fog, and starts to lose fine motor control.",
+            "[01:00:03] The crew inhales the noxious fog, and starts to lose \
+             fine motor control.",
         );
         let _ = gs.take_cursed_isles_detected();
-        // A challenging-zombie duel KO during the raft phase is NOT an island enemy:
-        // it isn't recorded onto any timeline and doesn't fire the sea-battle jump
-        // (which is reserved for grappled pillage fights).
+        // A challenging-zombie duel KO during the raft phase is NOT an island
+        // enemy: it isn't recorded onto any timeline and doesn't fire
+        // the sea-battle jump (which is reserved for grappled pillage
+        // fights).
         gs.process_line("[01:01:00] Challenging Zombie is eliminated!");
         assert!(!gs.take_battle_first_blood());
-        assert_eq!(gs.current_vessel().unwrap().wave_timeline.events.len(), 0);
-        // After landing, island eliminations ARE counted onto the wave timeline.
+        assert_eq!(
+            gs.current_vessel().unwrap().wave_timeline.events.len(),
+            0
+        );
+        // After landing, island eliminations ARE counted onto the wave
+        // timeline.
         gs.process_line(
-            "[01:05:00] Ye land on the island, but an angry mob of its inhabitants stands \
-             between ye and yer rightful plunderin'!",
+            "[01:05:00] Ye land on the island, but an angry mob of its \
+             inhabitants stands between ye and yer rightful plunderin'!",
         );
         gs.process_line("[01:05:10] Servile Zombie is eliminated!");
-        assert_eq!(gs.current_vessel().unwrap().wave_timeline.events.len(), 1);
+        assert_eq!(
+            gs.current_vessel().unwrap().wave_timeline.events.len(),
+            1
+        );
         // The island assault never fires the sea-battle jump.
         assert!(!gs.take_battle_first_blood());
     }
@@ -3380,7 +3855,10 @@ mod tests {
         gs.process_line("[04:00:00] Going aboard the First Fish...");
         let order = gs.vessels_by_recency();
         let order: Vec<&str> = order.iter().map(|a| a.as_ref()).collect();
-        assert_eq!(order, vec!["First Fish", "Third Fish", "Second Fish"]);
+        assert_eq!(
+            order,
+            vec!["First Fish", "Third Fish", "Second Fish"]
+        );
     }
 
     #[test]
@@ -3389,20 +3867,38 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("====== 2026/05/14 ======");
         gs.process_line("[02:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[02:00:05] This vessel is now Pillaging, Average to Hard Barbarians.");
-        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[02:00:05] This vessel is now Pillaging, Average to Hard \
+             Barbarians.",
+        );
+        gs.process_line(
+            "[02:00:10] Playerone issued an order to set the vessel to sail.",
+        );
         // A later move order must NOT start a second voyage.
-        gs.process_line("[02:05:00] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[02:06:06] You have been intercepted by the Modest Sild!");
         gs.process_line(
-            "[02:09:51] Modest Sild has grappled Test Vessel. A melee breaks out between the crews!",
+            "[02:05:00] Playerone issued an order to set the vessel to sail.",
         );
-        gs.process_line("[02:14:43] Game over.  Winners: Matetwo, Playerone, A swabbie.");
         gs.process_line(
-            "[02:15:02] The victors plundered 7,756 pieces of eight and 9 units of goods from the defeated vessel.",
+            "[02:06:06] You have been intercepted by the Modest Sild!",
         );
-        gs.process_line("[02:15:02] Ye received 576 pieces of eight as your initial cut of the booty!");
-        gs.process_line("[02:20:00] Playerone issued an order to put into port.");
+        gs.process_line(
+            "[02:09:51] Modest Sild has grappled Test Vessel. A melee \
+             breaks out between the crews!",
+        );
+        gs.process_line(
+            "[02:14:43] Game over.  Winners: Matetwo, Playerone, A swabbie.",
+        );
+        gs.process_line(
+            "[02:15:02] The victors plundered 7,756 pieces of eight and 9 \
+             units of goods from the defeated vessel.",
+        );
+        gs.process_line(
+            "[02:15:02] Ye received 576 pieces of eight as your initial cut \
+             of the booty!",
+        );
+        gs.process_line(
+            "[02:20:00] Playerone issued an order to put into port.",
+        );
 
         let v = &gs.vessels["Test Vessel"];
         assert!(v.current_voyage.is_none()); // promoted to completed at port
@@ -3429,19 +3925,35 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("====== 2026/05/14 ======");
         gs.process_line("[02:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[02:00:05] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
-        let live_id = gs.vessels["Test Vessel"].current_voyage.as_ref().unwrap().id;
-        assert_ne!(live_id, 0, "a real voyage gets a nonzero id");
+        gs.process_line(
+            "[02:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[02:00:10] Playerone issued an order to set the vessel to sail.",
+        );
+        let live_id = gs.vessels["Test Vessel"]
+            .current_voyage
+            .as_ref()
+            .unwrap()
+            .id;
+        assert_ne!(
+            live_id, 0,
+            "a real voyage gets a nonzero id"
+        );
 
-        // The id survives promotion from `current_voyage` into `voyages` at port.
-        gs.process_line("[02:20:00] Playerone issued an order to put into port.");
+        // The id survives promotion from `current_voyage` into `voyages` at
+        // port.
+        gs.process_line(
+            "[02:20:00] Playerone issued an order to put into port.",
+        );
         let v = &gs.vessels["Test Vessel"];
         assert!(v.current_voyage.is_none());
         assert_eq!(v.voyages[0].id, live_id);
 
         // A second run on the same vessel gets a fresh, distinct id.
-        gs.process_line("[02:30:00] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[02:30:00] Playerone issued an order to set the vessel to sail.",
+        );
         let second_id = gs.vessels["Test Vessel"]
             .current_voyage
             .as_ref()
@@ -3455,26 +3967,36 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[02:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[02:00:05] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[02:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[02:00:10] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[02:00:20] Mateleaver has come aboard.");
         gs.process_line("[02:00:21] Matedrop has come aboard.");
         gs.process_line("[02:00:22] Matefighter has come aboard.");
         gs.process_line("[02:01:00] You intercepted the Modest Sild!");
         gs.process_line(
-            "[02:02:00] Test Vessel has grappled Modest Sild. A melee breaks out between the crews!",
+            "[02:02:00] Test Vessel has grappled Modest Sild. A melee \
+             breaks out between the crews!",
         );
-        // Matedrop's client drops and never returns; Mateleaver bails mid-melee.
+        // Matedrop's client drops and never returns; Mateleaver bails
+        // mid-melee.
         gs.process_line("[02:02:05] Matedrop has disconnected.");
         gs.process_line("[02:02:30] Mateleaver has left the vessel.");
         gs.process_line("[02:03:00] Grim Bart is eliminated!");
-        // We win. Matedrop is still rostered (a disconnect isn't a departure), so
-        // he's in the winners; Mateleaver isn't (he left).
-        gs.process_line("[02:04:00] Game over.  Winners: Playerone, Matefighter, Matedrop, A swabbie.");
+        // We win. Matedrop is still rostered (a disconnect isn't a departure),
+        // so he's in the winners; Mateleaver isn't (he left).
+        gs.process_line(
+            "[02:04:00] Game over.  Winners: Playerone, Matefighter, \
+             Matedrop, A swabbie.",
+        );
         let b = gs.current_voyage().unwrap().battles.last().unwrap();
         assert_eq!(b.outcome, BattleOutcome::Won);
-        // Fought = Mateleaver (left, but fought) + Matefighter + us = 3. Matedrop is
-        // excluded — disconnected and never reconnected, even though he's a winner.
+        // Fought = Mateleaver (left, but fought) + Matefighter + us = 3.
+        // Matedrop is excluded — disconnected and never reconnected,
+        // even though he's a winner.
         assert_eq!(b.pirates, 3);
         assert_eq!(b.swabbies, 1);
     }
@@ -3484,11 +4006,14 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[02:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[02:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[02:00:10] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[02:00:20] Matedrop has come aboard.");
         gs.process_line("[02:01:00] You intercepted the Modest Sild!");
         gs.process_line(
-            "[02:02:00] Modest Sild has grappled Test Vessel. A melee breaks out between the crews!",
+            "[02:02:00] Modest Sild has grappled Test Vessel. A melee \
+             breaks out between the crews!",
         );
         gs.process_line("[02:02:05] Matedrop has disconnected.");
         gs.process_line("[02:02:10] Matedrop has reconnected.");
@@ -3503,10 +4028,13 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[03:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[03:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[03:00:10] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[03:01:00] You intercepted the Bloody Nightmare!");
         gs.process_line(
-            "[03:02:00] Test Vessel has grappled Bloody Nightmare. A melee breaks out between the crews!",
+            "[03:02:00] Test Vessel has grappled Bloody Nightmare. A \
+             melee breaks out between the crews!",
         );
         gs.process_line("[03:02:30] Enemyone is eliminated!"); // single-word, not our crew
         gs.process_line("[03:02:40] Sea Lawyer is eliminated!"); // NPC mercenary (has a space)
@@ -3521,13 +4049,21 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[04:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[04:00:10] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[04:01:00] You have been intercepted by the Bloody Nightmare!");
         gs.process_line(
-            "[04:02:00] Bloody Nightmare has grappled Test Vessel. A melee breaks out between the crews!",
+            "[04:00:10] Playerone issued an order to set the vessel to sail.",
         );
-        // We lose with no enemy KO'd — only the winners list reveals the foe players.
-        gs.process_line("[04:04:00] Game over.  Winners: Enemyone, Enemytwo, Deck Swab.");
+        gs.process_line(
+            "[04:01:00] You have been intercepted by the Bloody Nightmare!",
+        );
+        gs.process_line(
+            "[04:02:00] Bloody Nightmare has grappled Test Vessel. A \
+             melee breaks out between the crews!",
+        );
+        // We lose with no enemy KO'd — only the winners list reveals the foe
+        // players.
+        gs.process_line(
+            "[04:04:00] Game over.  Winners: Enemyone, Enemytwo, Deck Swab.",
+        );
         let b = gs.current_voyage().unwrap().battles.last().unwrap();
         assert_eq!(b.outcome, BattleOutcome::Lost);
         assert_eq!(b.category, BattleCategory::Pvp);
@@ -3538,12 +4074,21 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[00:20:00] Going aboard the Boring Gar...");
-        gs.process_line("[00:20:05] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[00:20:49] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[00:20:49] You have been intercepted by the Boring Gar!");
-        gs.process_line("[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.");
         gs.process_line(
-            "[00:33:11] The victors plundered 27,460 pieces of eight and 350 units of goods from the defeated vessel.",
+            "[00:20:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[00:20:49] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[00:20:49] You have been intercepted by the Boring Gar!",
+        );
+        gs.process_line(
+            "[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.",
+        );
+        gs.process_line(
+            "[00:33:11] The victors plundered 27,460 pieces of eight and 350 \
+             units of goods from the defeated vessel.",
         );
         let voy = gs.current_voyage().unwrap();
         let b = voy.battles.last().unwrap();
@@ -3560,28 +4105,45 @@ mod tests {
         // A bare fight with no confirming signal yet (no order/elimination,
         // and we're not among the winners).
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[01:01:00] You have been intercepted by the Boring Gar!");
-        gs.process_line("[01:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.");
+        gs.process_line(
+            "[01:01:00] You have been intercepted by the Boring Gar!",
+        );
+        gs.process_line(
+            "[01:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.",
+        );
         assert!(!gs.self_confirmed);
         let raw = gs.current_voyage().unwrap().battles.last().unwrap().outcome;
         assert_eq!(raw, BattleOutcome::Lost); // provisional verdict, stored
-        assert_eq!(effective_outcome(raw, gs.self_confirmed), BattleOutcome::Unknown);
+        assert_eq!(
+            effective_outcome(raw, gs.self_confirmed),
+            BattleOutcome::Unknown
+        );
         // A game-generated order line much later confirms us — the earlier
         // fight is revealed.
-        gs.process_line("[01:05:00] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[01:05:00] Playerone issued an order to set the vessel to sail.",
+        );
         assert!(gs.self_confirmed);
         let raw = gs.current_voyage().unwrap().battles.last().unwrap().outcome;
-        assert_eq!(effective_outcome(raw, gs.self_confirmed), BattleOutcome::Lost);
+        assert_eq!(
+            effective_outcome(raw, gs.self_confirmed),
+            BattleOutcome::Lost
+        );
     }
 
     #[test]
     fn no_configured_name_is_always_unknown() {
         let mut gs = GameState::new(); // no player_name
         gs.process_line("[02:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[02:01:00] You have been intercepted by the Boring Gar!");
-        gs.process_line("[02:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.");
         gs.process_line(
-            "[02:04:11] The victors plundered 9,000 pieces of eight and 3 units of goods from the defeated vessel.",
+            "[02:01:00] You have been intercepted by the Boring Gar!",
+        );
+        gs.process_line(
+            "[02:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.",
+        );
+        gs.process_line(
+            "[02:04:11] The victors plundered 9,000 pieces of eight and 3 \
+             units of goods from the defeated vessel.",
         );
         assert!(!gs.self_confirmed);
         let b = gs.current_voyage().unwrap().battles.last().unwrap();
@@ -3594,88 +4156,132 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[23:27:00] Going aboard the Sea Lord...");
-        gs.process_line("[23:27:01] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[23:27:02] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[23:27:23] You have been intercepted by the Lucky Mackerel!");
-        gs.process_line("[23:28:00] Lucky Mackerel disengaged from the battle.");
+        gs.process_line(
+            "[23:27:01] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[23:27:02] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[23:27:23] You have been intercepted by the Lucky Mackerel!",
+        );
+        gs.process_line(
+            "[23:28:00] Lucky Mackerel disengaged from the battle.",
+        );
         let voy = gs.current_voyage().unwrap();
         assert_eq!(voy.battles.len(), 1);
-        assert_eq!(voy.battles[0].outcome, BattleOutcome::Disengaged);
+        assert_eq!(
+            voy.battles[0].outcome,
+            BattleOutcome::Disengaged
+        );
         assert!(voy.battles[0].grappled_at.is_none()); // never boarded
         assert!(voy.current_battle.is_none());
     }
 
     #[test]
     fn stale_pursuit_ended_line_does_not_disengage_active_fight() {
-        // A cancelled/expired pursuit ("Arr, ye can no longer pursue ...") names a
-        // different vessel than the one we're fighting. It must NOT end the open
-        // battle, which then goes on to a clean boarding win.
+        // A cancelled/expired pursuit ("Arr, ye can no longer pursue ...")
+        // names a different vessel than the one we're fighting. It must
+        // NOT end the open battle, which then goes on to a clean
+        // boarding win.
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[02:33:00] Going aboard the Test Vessel...");
-        gs.process_line("[02:33:01] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[02:33:02] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[02:33:01] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[02:33:02] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[02:33:23] You intercepted the Hot Barbel!");
         // Stale pursuit of an unrelated target ends — must be ignored.
         gs.process_line(
-            "[02:33:33] Arr, ye can no longer pursue the Thieving Stickleback: That vessel has put into port.",
+            "[02:33:33] Arr, ye can no longer pursue the Thieving \
+             Stickleback: That vessel has put into port.",
         );
         gs.process_line(
-            "[02:39:29] Test Vessel has grappled Hot Barbel. A melee breaks out between the crews!",
+            "[02:39:29] Test Vessel has grappled Hot Barbel. A melee \
+             breaks out between the crews!",
         );
         gs.process_line("[02:42:43] Game over.  Winners: Playerone, Mashtag.");
         gs.process_line(
-            "[02:42:58] The victors plundered 3,207 pieces of eight and 15 units of goods from the defeated vessel.",
+            "[02:42:58] The victors plundered 3,207 pieces of eight and 15 \
+             units of goods from the defeated vessel.",
         );
         let voy = gs.current_voyage().unwrap();
         assert_eq!(voy.battles.len(), 1);
-        assert_eq!(voy.battles[0].outcome, BattleOutcome::Won);
+        assert_eq!(
+            voy.battles[0].outcome,
+            BattleOutcome::Won
+        );
         assert_eq!(voy.battles[0].poe, Some(3_207));
         assert!(voy.battles[0].grappled_at.is_some());
         // The chest keeps the rounded-up half of the win.
-        assert_eq!(gs.current_pillage_poe(), (3_207, 0, 1_604));
+        assert_eq!(
+            gs.current_pillage_poe(),
+            (3_207, 0, 1_604)
+        );
     }
 
     #[test]
     fn theft_is_capped_by_the_chest_balance() {
-        // Enemies can't plunder more PoE than the chest holds at the time. Here a
-        // loss comes first (empty chest → nothing to steal), then a win, then a
-        // loss that "plunders" far more than the chest's worth — capped to it.
+        // Enemies can't plunder more PoE than the chest holds at the time. Here
+        // a loss comes first (empty chest → nothing to steal), then a
+        // win, then a loss that "plunders" far more than the chest's
+        // worth — capped to it.
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[00:00:00] Going aboard the Brave Marlin...");
-        gs.process_line("[00:00:01] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[00:00:02] Playerone issued an order to set the vessel to sail.");
-        // Lose with an empty chest — they can't take 9,000 from nothing.
-        gs.process_line("[00:01:00] You have been intercepted by the Brigand One!");
         gs.process_line(
-            "[00:01:30] Brigand One has grappled Brave Marlin. A melee breaks out between the crews!",
+            "[00:00:01] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[00:00:02] Playerone issued an order to set the vessel to sail.",
+        );
+        // Lose with an empty chest — they can't take 9,000 from nothing.
+        gs.process_line(
+            "[00:01:00] You have been intercepted by the Brigand One!",
+        );
+        gs.process_line(
+            "[00:01:30] Brigand One has grappled Brave Marlin. A melee breaks \
+             out between the crews!",
         );
         gs.process_line("[00:01:40] Game over.  Winners: Raider Onecrew.");
         gs.process_line(
-            "[00:01:41] The victors plundered 9,000 pieces of eight and no goods from the defeated vessel.",
+            "[00:01:41] The victors plundered 9,000 pieces of eight and no \
+             goods from the defeated vessel.",
         );
         // Win: chest gets ceil(2000/2) = 1,000.
         gs.process_line("[00:02:00] You intercepted the Brigand Two!");
         gs.process_line(
-            "[00:02:30] Brave Marlin has grappled Brigand Two. A melee breaks out between the crews!",
+            "[00:02:30] Brave Marlin has grappled Brigand Two. A melee breaks \
+             out between the crews!",
         );
         gs.process_line("[00:02:40] Game over.  Winners: Playerone.");
         gs.process_line(
-            "[00:02:41] The victors plundered 2,000 pieces of eight and no goods from the defeated vessel.",
+            "[00:02:41] The victors plundered 2,000 pieces of eight and no \
+             goods from the defeated vessel.",
         );
         // Lose again: they "plunder" 5,000, but the chest only holds 1,000.
-        gs.process_line("[00:03:00] You have been intercepted by the Brigand Three!");
         gs.process_line(
-            "[00:03:30] Brigand Three has grappled Brave Marlin. A melee breaks out between the crews!",
+            "[00:03:00] You have been intercepted by the Brigand Three!",
+        );
+        gs.process_line(
+            "[00:03:30] Brigand Three has grappled Brave Marlin. A melee \
+             breaks out between the crews!",
         );
         gs.process_line("[00:03:40] Game over.  Winners: Raider Twocrew.");
         gs.process_line(
-            "[00:03:41] The victors plundered 5,000 pieces of eight and no goods from the defeated vessel.",
+            "[00:03:41] The victors plundered 5,000 pieces of eight and no \
+             goods from the defeated vessel.",
         );
-        // gross 2000, chest 1000, stolen capped at 1000 (the empty-chest loss took
-        // 0, the over-cap loss took only the 1000 on hand). Net chest = 0.
-        assert_eq!(gs.current_pillage_poe(), (2_000, 1_000, 1_000));
+        // gross 2000, chest 1000, stolen capped at 1000 (the empty-chest loss
+        // took 0, the over-cap loss took only the 1000 on hand). Net
+        // chest = 0.
+        assert_eq!(
+            gs.current_pillage_poe(),
+            (2_000, 1_000, 1_000)
+        );
     }
 
     #[test]
@@ -3683,26 +4289,42 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[00:20:00] Going aboard the War Frigate...");
-        gs.process_line("[00:20:01] This vessel is now Pillaging, Hard Barbarians.");
-        gs.process_line("[00:20:02] Playerone issued an order to set the vessel to sail.");
-        // Lose to the Boring Gar...
-        gs.process_line("[00:20:49] You have been intercepted by the Boring Gar!");
-        gs.process_line("[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.");
         gs.process_line(
-            "[00:33:11] The victors plundered 27,460 pieces of eight and no goods from the defeated vessel.",
+            "[00:20:01] This vessel is now Pillaging, Hard Barbarians.",
+        );
+        gs.process_line(
+            "[00:20:02] Playerone issued an order to set the vessel to sail.",
+        );
+        // Lose to the Boring Gar...
+        gs.process_line(
+            "[00:20:49] You have been intercepted by the Boring Gar!",
+        );
+        gs.process_line(
+            "[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.",
+        );
+        gs.process_line(
+            "[00:33:11] The victors plundered 27,460 pieces of eight and no \
+             goods from the defeated vessel.",
         );
         // ...then immediately re-engage the same vessel and win.
         gs.process_line("[00:33:25] You intercepted the Boring Gar!");
         gs.process_line("[00:44:00] Game over.  Winners: Playerone.");
         gs.process_line(
-            "[00:44:01] The victors plundered 5,000 pieces of eight and 2 units of goods from the defeated vessel.",
+            "[00:44:01] The victors plundered 5,000 pieces of eight and 2 \
+             units of goods from the defeated vessel.",
         );
         let voy = gs.current_voyage().unwrap();
         assert_eq!(voy.battles.len(), 2); // both kept (no confirm-window data loss)
-        assert_eq!(voy.battles[0].outcome, BattleOutcome::Lost);
+        assert_eq!(
+            voy.battles[0].outcome,
+            BattleOutcome::Lost
+        );
         assert_eq!(voy.battles[0].poe, Some(-27_460));
         assert_eq!(voy.battles[0].goods, Some(0));
-        assert_eq!(voy.battles[1].outcome, BattleOutcome::Won);
+        assert_eq!(
+            voy.battles[1].outcome,
+            BattleOutcome::Won
+        );
         assert_eq!(voy.battles[1].poe, Some(5_000));
     }
 
@@ -3711,21 +4333,34 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the War Frigate...");
-        gs.process_line("[01:00:01] This vessel is now Pillaging, Hard Barbarians.");
-        gs.process_line("[01:00:02] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[01:00:01] This vessel is now Pillaging, Hard Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:02] Playerone issued an order to set the vessel to sail.",
+        );
         // An ordinary fight -> generic Brigand.
         gs.process_line("[01:00:10] You intercepted the Fat Mackerel!");
         gs.process_line("[01:02:00] Game over.  Winners: Playerone.");
-        // A king fight: engagement chant tags it, victory line confirms the name.
-        gs.process_line("[01:03:00] You have been intercepted by the Simple Ling!");
+        // A king fight: engagement chant tags it, victory line confirms the
+        // name.
         gs.process_line(
-            "[01:03:01] Brace yourself! Vargas the Mad and his barbaric horde are looking for a rumble!",
+            "[01:03:00] You have been intercepted by the Simple Ling!",
+        );
+        gs.process_line(
+            "[01:03:01] Brace yourself! Vargas the Mad and his barbaric horde \
+             are looking for a rumble!",
         );
         gs.process_line("[01:08:00] Game over.  Winners: Playerone.");
-        gs.process_line("[01:08:01] Vargas the Mad's ship disappears into the mists.");
+        gs.process_line(
+            "[01:08:01] Vargas the Mad's ship disappears into the mists.",
+        );
 
         let voy = gs.current_voyage().unwrap();
-        assert_eq!(voy.battles[0].category, BattleCategory::Brigand);
+        assert_eq!(
+            voy.battles[0].category,
+            BattleCategory::Brigand
+        );
         assert_eq!(
             voy.battles[1].category,
             BattleCategory::BrigandKing("Vargas the Mad".to_string())
@@ -3737,50 +4372,75 @@ mod tests {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
         gs.process_line("[01:00:00] Going aboard the War Frigate...");
-        gs.process_line("[01:00:01] This vessel is now Pillaging, Hard Barbarians.");
-        gs.process_line("[01:00:02] Playerone issued an order to set the vessel to sail.");
-        gs.process_line("[01:00:10] You intercepted the Bloodstained Tigerfish!");
         gs.process_line(
-            "[01:00:11] Avast! Yer blood runs cold beneath a gathering gloom and the air is a-flutter with leathern wings! Guard yer throat, a Vampirate vessel closes in!",
+            "[01:00:01] This vessel is now Pillaging, Hard Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:02] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:00:10] You intercepted the Bloodstained Tigerfish!",
+        );
+        gs.process_line(
+            "[01:00:11] Avast! Yer blood runs cold beneath a gathering gloom \
+             and the air is a-flutter with leathern wings! Guard yer throat, \
+             a Vampirate vessel closes in!",
         );
         gs.process_line("[01:02:00] Game over.  Winners: Playerone.");
         gs.process_line("[01:03:00] You intercepted the Snarling Pike!");
         gs.process_line(
-            "[01:03:01] Unearthly howling echos o'er the waves, moonlight glints off curving fangs and hungry eyes watch ye from the dark! Beware! Werewolves have caught yer scent!",
+            "[01:03:01] Unearthly howling echos o'er the waves, moonlight \
+             glints off curving fangs and hungry eyes watch ye from the dark! \
+             Beware! Werewolves have caught yer scent!",
         );
         gs.process_line("[01:05:00] Game over.  Winners: Playerone.");
 
         let voy = gs.current_voyage().unwrap();
-        assert_eq!(voy.battles[0].category, BattleCategory::Vampirate);
-        assert_eq!(voy.battles[1].category, BattleCategory::Werewolf);
+        assert_eq!(
+            voy.battles[0].category,
+            BattleCategory::Vampirate
+        );
+        assert_eq!(
+            voy.battles[1].category,
+            BattleCategory::Werewolf
+        );
     }
 
-    // ---- Mercenary roster + divvy shares -------------------------------------
+    // ---- Mercenary roster + divvy shares
+    // -------------------------------------
 
     #[test]
     fn won_roster_splits_mercenaries_from_swabbies() {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
-        // Vocabulary so the classifier knows the swabbie names; a merc's epithet is in
-        // neither set, so `[name] [epithet]` falls through to Mercenary.
+        // Vocabulary so the classifier knows the swabbie names; a merc's
+        // epithet is in neither set, so `[name] [epithet]` falls
+        // through to Mercenary.
         gs.name_segments.learn_brigand("Gentle Gayle");
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[01:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:10] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[01:01:00] You intercepted the Modest Sild!");
         gs.process_line(
-            "[01:02:00] Test Vessel has grappled Modest Sild. A melee breaks out between the crews!",
+            "[01:02:00] Test Vessel has grappled Modest Sild. A melee \
+             breaks out between the crews!",
         );
-        // Winners = us + one mercenary + two swabbies (one named, one generic). The
-        // generic "A swabbie" never actually appears in a real Game Over roster
-        // (production swabbies are always named), but we handle it defensively: its
-        // unknown tokens would otherwise default to Mercenary in the classifier.
+        // Winners = us + one mercenary + two swabbies (one named, one generic).
+        // The generic "A swabbie" never actually appears in a real Game
+        // Over roster (production swabbies are always named), but we
+        // handle it defensively: its unknown tokens would otherwise
+        // default to Mercenary in the classifier.
         gs.process_line(
-            "[01:04:00] Game over.  Winners: Playerone, Luka Merciless, Gentle Gayle, A swabbie.",
+            "[01:04:00] Game over.  Winners: Playerone, Luka Merciless, \
+             Gentle Gayle, A swabbie.",
         );
         let v = gs.current_vessel().unwrap();
-        // Vessel keeps the raw lumped NPC tally (all three non-players); the merc
-        // roster names just the one `[name][epithet]`.
+        // Vessel keeps the raw lumped NPC tally (all three non-players); the
+        // merc roster names just the one `[name][epithet]`.
         assert_eq!(v.swabbies, 3);
         assert_eq!(v.mercenaries.len(), 1);
         assert!(v.mercenaries.contains("Luka Merciless"));
@@ -3790,14 +4450,15 @@ mod tests {
         let b = v.current_voyage.as_ref().unwrap().battles.last().unwrap();
         assert_eq!(b.outcome, BattleOutcome::Won);
         assert_eq!(b.pirates, 1); // just us
-        // Flat `b.swabbies` is the total NPC crew (for manpower); the roster splits it
-        // into disjoint genuine swabbies vs mercenaries.
+        // Flat `b.swabbies` is the total NPC crew (for manpower); the roster
+        // splits it into disjoint genuine swabbies vs mercenaries.
         assert_eq!(b.swabbies, 3);
         let team = b.our_team.as_ref().unwrap();
         assert_eq!(team.swabbies, 2); // genuine swabbies only (Gentle Gayle + A swabbie)
         assert_eq!(team.mercenaries, 1);
         assert_eq!(team.headcount(), 4); // 1 pirate + 2 swabbies + 1 merc
-        // Divvy shares: us (1 pirate) + 1 merc; the two genuine swabbies earn none.
+        // Divvy shares: us (1 pirate) + 1 merc; the two genuine swabbies earn
+        // none.
         assert_eq!(team.shares(), 2);
     }
 
@@ -3811,9 +4472,11 @@ mod tests {
             v.mercenaries.insert("Luka Merciless".to_string());
             v.mercenaries.insert("Bree Steeljaw".to_string());
         }
-        // The tell arms the swap; the paired single leave/come shift -1 merc / +1 swabbie.
+        // The tell arms the swap; the paired single leave/come shift -1 merc /
+        // +1 swabbie.
         gs.process_line(
-            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary.",
+            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum \
+             spice in yer hold. Ye need at least 5 spice per mercenary.",
         );
         gs.process_line("[01:00:11] A swabbie has left the vessel.");
         gs.process_line("[01:00:11] A swabbie has come aboard.");
@@ -3826,14 +4489,28 @@ mod tests {
     fn rum_spice_limit_poisons_voyage() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[01:00:01] This vessel is now Pillaging, Average Barbarians.");
-        gs.process_line("[01:00:02] Playerone issued an order to set the vessel to sail.");
-        let poisoned =
-            |gs: &GameState| gs.current_vessel().unwrap().current_voyage.as_ref().unwrap().poisoned;
-        assert!(!poisoned(&gs), "a fresh run isn't poisoned");
+        gs.process_line(
+            "[01:00:01] This vessel is now Pillaging, Average Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:02] Playerone issued an order to set the vessel to sail.",
+        );
+        let poisoned = |gs: &GameState| {
+            gs.current_vessel()
+                .unwrap()
+                .current_voyage
+                .as_ref()
+                .unwrap()
+                .poisoned
+        };
+        assert!(
+            !poisoned(&gs),
+            "a fresh run isn't poisoned"
+        );
         // The hold ran too low on rum spice to sustain the mercenaries.
         gs.process_line(
-            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary.",
+            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum \
+             spice in yer hold. Ye need at least 5 spice per mercenary.",
         );
         assert!(
             poisoned(&gs),
@@ -3858,7 +4535,8 @@ mod tests {
             assert_eq!(v.swabbies, 3);
             assert_eq!(v.mercenaries.len(), 2);
         }
-        // Next 2 leave: only 1 genuine swabbie remains, so the overflow sheds 1 merc.
+        // Next 2 leave: only 1 genuine swabbie remains, so the overflow sheds 1
+        // merc.
         gs.process_line("[01:00:20] 2 swabbies have left the vessel.");
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.swabbies, 1);
@@ -3876,17 +4554,20 @@ mod tests {
             v.mercenaries.insert("Bree Steeljaw".to_string());
         }
         gs.process_line(
-            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum spice in yer hold. Ye need at least 5 spice per mercenary.",
+            "[01:00:10] Avast, yer mercenary hirin' is limited by the rum \
+             spice in yer hold. Ye need at least 5 spice per mercenary.",
         );
-        // A bulk board is re-staffing, not a swap: it disarms without shedding a merc.
+        // A bulk board is re-staffing, not a swap: it disarms without shedding
+        // a merc.
         gs.process_line("[01:00:11] 5 swabbies have come aboard.");
         {
             let v = gs.current_vessel().unwrap();
             assert_eq!(v.swabbies, 10);
             assert_eq!(v.mercenaries.len(), 2);
         }
-        // Proof the arm was consumed: a later single leave is now an ordinary swabbie
-        // departure (genuine pool has room), so no merc is shed.
+        // Proof the arm was consumed: a later single leave is now an ordinary
+        // swabbie departure (genuine pool has room), so no merc is
+        // shed.
         gs.process_line("[01:00:20] A swabbie has left the vessel.");
         let v = gs.current_vessel().unwrap();
         assert_eq!(v.swabbies, 9);
@@ -3899,26 +4580,47 @@ mod tests {
         gs.player_name = Some(Arc::from("Playerone"));
         gs.name_segments.learn_brigand("Gentle Gayle");
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
-        gs.process_line("[01:00:05] This vessel is now Pillaging, Average Barbarians.");
-        // Sail samples the crew (mercs unknown -> 0); a swabbie delta samples again.
-        gs.process_line("[01:00:10] Playerone issued an order to set the vessel to sail.");
+        gs.process_line(
+            "[01:00:05] This vessel is now Pillaging, Average Barbarians.",
+        );
+        // Sail samples the crew (mercs unknown -> 0); a swabbie delta samples
+        // again.
+        gs.process_line(
+            "[01:00:10] Playerone issued an order to set the vessel to sail.",
+        );
         gs.process_line("[01:00:20] 3 swabbies have come aboard.");
         {
-            let voy = gs.current_vessel().unwrap().current_voyage.as_ref().unwrap();
+            let voy = gs
+                .current_vessel()
+                .unwrap()
+                .current_voyage
+                .as_ref()
+                .unwrap();
             assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 0));
             assert_eq!(voy.merc_checkpoint, 0); // no ground truth yet
         }
         gs.process_line("[01:01:00] You intercepted the Modest Sild!");
         gs.process_line(
-            "[01:02:00] Test Vessel has grappled Modest Sild. A melee breaks out between the crews!",
+            "[01:02:00] Test Vessel has grappled Modest Sild. A melee \
+             breaks out between the crews!",
         );
-        // The win reveals one mercenary — every sample so far is backfilled to it.
+        // The win reveals one mercenary — every sample so far is backfilled to
+        // it.
         gs.process_line(
-            "[01:04:00] Game over.  Winners: Playerone, Luka Merciless, Gentle Gayle, A swabbie.",
+            "[01:04:00] Game over.  Winners: Playerone, Luka Merciless, \
+             Gentle Gayle, A swabbie.",
         );
-        let voy = gs.current_vessel().unwrap().current_voyage.as_ref().unwrap();
+        let voy = gs
+            .current_vessel()
+            .unwrap()
+            .current_voyage
+            .as_ref()
+            .unwrap();
         assert!(!voy.crew_samples.is_empty());
         assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 1));
-        assert_eq!(voy.merc_checkpoint, voy.crew_samples.len());
+        assert_eq!(
+            voy.merc_checkpoint,
+            voy.crew_samples.len()
+        );
     }
 }

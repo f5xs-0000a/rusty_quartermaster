@@ -1,12 +1,38 @@
-use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table, Wrap};
+use ratatui::{
+    prelude::*,
+    widgets::{
+        Block,
+        Borders,
+        Cell,
+        Clear,
+        Padding,
+        Paragraph,
+        Row,
+        Table,
+        Wrap,
+    },
+};
 
-use crate::app::{self, SharedState};
-use crate::clickmap::{ClickRegion, ClickTarget};
-use crate::utils::{offset_title, offset_title_width};
 use super::{
-    is_place_field, BreakdownRow, Focus, InventoryRow, PopupKind, ProfitsApp, FIRST_COL,
-    P_BOOTY_CHEST, P_CO_RATE, P_DONATION, P_RESTOCK_PLACE, P_RESTOCK_RATE, P_SELL_PLACE, P_STOCKING,
+    BreakdownRow,
+    FIRST_COL,
+    Focus,
+    InventoryRow,
+    P_BOOTY_CHEST,
+    P_CO_RATE,
+    P_DONATION,
+    P_RESTOCK_PLACE,
+    P_RESTOCK_RATE,
+    P_SELL_PLACE,
+    P_STOCKING,
+    PopupKind,
+    ProfitsApp,
+    is_place_field,
+};
+use crate::{
+    app::{self, SharedState},
+    clickmap::{ClickRegion, ClickTarget},
+    utils::{offset_title, offset_title_width},
 };
 
 // Inventory numeric column widths (the Item column flexes).
@@ -29,13 +55,18 @@ pub fn render(
     let item_width = app
         .rows
         .iter()
-        .map(|r| app::commod_name(shared.commodities, r.commod_id).chars().count())
+        .map(|r| {
+            app::commod_name(shared.commodities, r.commod_id)
+                .chars()
+                .count()
+        })
         .max()
         .unwrap_or(0)
         .max("Item".len()) as u16;
 
-    // The Sell/Buy Price columns are only shown when prices are entered manually
-    // (Market unavailable). Otherwise the table is the four base columns.
+    // The Sell/Buy Price columns are only shown when prices are entered
+    // manually (Market unavailable). Otherwise the table is the four
+    // base columns.
     let show_prices = !shared.market_supported;
     let (price_w, gaps) = if show_prices {
         (SELL_W + BUY_W, 5)
@@ -43,8 +74,14 @@ pub fn render(
         (0, 3)
     };
     // inter-column gaps + 2 borders + 2 horizontal padding.
-    let table_width =
-        item_width + RESTOCK_W + STOCK_W + BOOTY_W + price_w + gaps * COL_GAP + 2 + 2;
+    let table_width = item_width
+        + RESTOCK_W
+        + STOCK_W
+        + BOOTY_W
+        + price_w
+        + gaps * COL_GAP
+        + 2
+        + 2;
 
     // Label column shared by the Parameters and Hold Stats tables.
     let label_width = app
@@ -78,8 +115,8 @@ pub fn render(
     let stats_h = 2 + 2; // 2 rows + borders
     let search_h = 2 + 2; // input + suggestion + borders
 
-    // Inventory is the topmost widget and takes the Fill slot so it scrolls; the
-    // others stack below it at fixed heights, with the tooltip last.
+    // Inventory is the topmost widget and takes the Fill slot so it scrolls;
+    // the others stack below it at fixed heights, with the tooltip last.
     let vchunks = Layout::vertical([
         Constraint::Fill(1), // inventory
         Constraint::Length(search_h),
@@ -89,15 +126,35 @@ pub fn render(
     ])
     .split(col);
 
-    render_inventory(frame, vchunks[0], app, shared, focused, item_width, regions);
-    render_search(frame, vchunks[1], app, shared, focused, regions);
-    render_hold_stats(frame, vchunks[2], app, shared, label_width);
-    render_parameters(frame, vchunks[3], app, shared, focused, label_width, regions);
+    render_inventory(
+        frame, vchunks[0], app, shared, focused, item_width, regions,
+    );
+    render_search(
+        frame, vchunks[1], app, shared, focused, regions,
+    );
+    render_hold_stats(
+        frame,
+        vchunks[2],
+        app,
+        shared,
+        label_width,
+    );
+    render_parameters(
+        frame,
+        vchunks[3],
+        app,
+        shared,
+        focused,
+        label_width,
+        regions,
+    );
 
     // -- Tooltip (focus-bound) --------------------------------------------
     if let Some(text) = build_tooltip(app, shared) {
         frame.render_widget(
-            Paragraph::new(text).wrap(Wrap { trim: true }),
+            Paragraph::new(text).wrap(Wrap {
+                trim: true,
+            }),
             vchunks[4],
         );
     }
@@ -107,7 +164,14 @@ pub fn render(
     let show_co = app.show_co_rate;
     let show_donation = app.show_donation;
     if let Some(ref popup) = app.popup {
-        render_popup(frame, popup, breakdown_cursor, show_co, show_donation, regions);
+        render_popup(
+            frame,
+            popup,
+            breakdown_cursor,
+            show_co,
+            show_donation,
+            regions,
+        );
     }
 }
 
@@ -144,7 +208,10 @@ fn render_parameters(
         .split(rows[pos]);
 
         frame.render_widget(
-            Paragraph::new(Span::styled(field.label, Style::default().bold())),
+            Paragraph::new(Span::styled(
+                field.label,
+                Style::default().bold(),
+            )),
             cols[0],
         );
 
@@ -156,32 +223,49 @@ fn render_parameters(
         };
 
         if is_place_field(i) {
-            render_island_field(frame, field, cols[2], is_focused, value_style, shared);
+            render_island_field(
+                frame,
+                field,
+                cols[2],
+                is_focused,
+                value_style,
+                shared,
+            );
         } else if i == P_BOOTY_CHEST && field.value.is_empty() {
             // Booty Chest: when blank, show the auto-deduced value as a dim
             // placeholder. The calc uses it unless the user types an override.
             let deduced = app.deduced_chest(shared).to_string();
             let ph_style = if is_focused {
-                Style::default().fg(Color::DarkGray).bg(Color::White).italic()
+                Style::default()
+                    .fg(Color::DarkGray)
+                    .bg(Color::White)
+                    .italic()
             } else {
                 Style::default().fg(Color::DarkGray).italic()
             };
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(deduced, ph_style)).right_aligned()),
+                Paragraph::new(
+                    Line::from(Span::styled(deduced, ph_style)).right_aligned(),
+                ),
                 cols[2],
             );
             if is_focused {
-                frame.set_cursor_position((cols[2].x + cols[2].width, cols[2].y));
+                frame.set_cursor_position((
+                    cols[2].x + cols[2].width,
+                    cols[2].y,
+                ));
             }
         } else {
-            let value = Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
-                .style(value_style);
+            let value = Paragraph::new(
+                Line::from(Span::raw(&field.value)).right_aligned(),
+            )
+            .style(value_style);
             frame.render_widget(value, cols[2]);
 
             if is_focused {
                 let cx = cols[2].x + cols[2].width
                     - (field.value.chars().count()
-                        - field.value[..field.cursor].chars().count())
+                        - field.value[.. field.cursor].chars().count())
                         as u16;
                 frame.set_cursor_position((cx, cols[2].y));
             }
@@ -202,7 +286,13 @@ fn render_parameters(
         Style::default().bold()
     };
     frame.render_widget(
-        Paragraph::new(Line::from(Span::styled("Calculate Profits!", button_style)).centered()),
+        Paragraph::new(
+            Line::from(Span::styled(
+                "Calculate Profits!",
+                button_style,
+            ))
+            .centered(),
+        ),
         button_area,
     );
     regions.push(ClickRegion {
@@ -225,16 +315,35 @@ fn render_hold_stats(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).split(inner);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
+        .split(inner);
 
     let restock_alcohol = compute_alcohol(app, shared, |r| &r.restock);
     let hold_alcohol = compute_alcohol(app, shared, |r| &r.stock);
 
-    render_stat_row(frame, rows[0], label_width, "Restock Alcohol", restock_alcohol);
-    render_stat_row(frame, rows[1], label_width, "Ship Hold Alcohol", hold_alcohol);
+    render_stat_row(
+        frame,
+        rows[0],
+        label_width,
+        "Restock Alcohol",
+        restock_alcohol,
+    );
+    render_stat_row(
+        frame,
+        rows[1],
+        label_width,
+        "Ship Hold Alcohol",
+        hold_alcohol,
+    );
 }
 
-fn render_stat_row(frame: &mut Frame, area: Rect, label_width: u16, label: &str, value: u64) {
+fn render_stat_row(
+    frame: &mut Frame,
+    area: Rect,
+    label_width: u16,
+    label: &str,
+    value: u64,
+) {
     let cols = Layout::horizontal([
         Constraint::Length(label_width),
         Constraint::Length(1),
@@ -242,7 +351,10 @@ fn render_stat_row(frame: &mut Frame, area: Rect, label_width: u16, label: &str,
     ])
     .split(area);
     frame.render_widget(
-        Paragraph::new(Span::styled(label, Style::default().bold())),
+        Paragraph::new(Span::styled(
+            label,
+            Style::default().bold(),
+        )),
         cols[0],
     );
     frame.render_widget(
@@ -277,7 +389,8 @@ fn render_inventory(
         .rows
         .iter()
         .map(|r| {
-            let name = app::commod_name(shared.commodities, r.commod_id).to_owned();
+            let name =
+                app::commod_name(shared.commodities, r.commod_id).to_owned();
             let mut cells = vec![
                 Cell::new(name),
                 Cell::new(Line::from(r.restock.clone()).right_aligned()),
@@ -285,8 +398,12 @@ fn render_inventory(
                 Cell::new(Line::from(r.booty.clone()).right_aligned()),
             ];
             if show_prices {
-                cells.push(Cell::new(Line::from(r.sell.clone()).right_aligned()));
-                cells.push(Cell::new(Line::from(r.buy.clone()).right_aligned()));
+                cells.push(Cell::new(
+                    Line::from(r.sell.clone()).right_aligned(),
+                ));
+                cells.push(Cell::new(
+                    Line::from(r.buy.clone()).right_aligned(),
+                ));
             }
             Row::new(cells)
         })
@@ -323,7 +440,8 @@ fn render_inventory(
     frame.render_stateful_widget(table, area, &mut app.table_state);
 
     // Register click regions for the name + editable cells. The Sell/Buy
-    // columns are only present (and clickable) when prices are entered manually.
+    // columns are only present (and clickable) when prices are entered
+    // manually.
     let inner_x = area.x + 2; // border + padding
     let inner_y = area.y + 1; // top border
     let data_start_y = inner_y + 2; // header row + bottom_margin
@@ -335,28 +453,52 @@ fn render_inventory(
     let mut col_xs = vec![inner_x];
     let mut col_ws = vec![item_width];
     let mut x = inner_x + item_width + COL_GAP;
-    let mut push_col = |xs: &mut Vec<u16>, ws: &mut Vec<u16>, x: &mut u16, w: u16| {
-        xs.push(*x);
-        ws.push(w);
-        *x += w + COL_GAP;
-    };
-    push_col(&mut col_xs, &mut col_ws, &mut x, RESTOCK_W);
-    push_col(&mut col_xs, &mut col_ws, &mut x, STOCK_W);
-    push_col(&mut col_xs, &mut col_ws, &mut x, BOOTY_W);
+    let mut push_col =
+        |xs: &mut Vec<u16>, ws: &mut Vec<u16>, x: &mut u16, w: u16| {
+            xs.push(*x);
+            ws.push(w);
+            *x += w + COL_GAP;
+        };
+    push_col(
+        &mut col_xs,
+        &mut col_ws,
+        &mut x,
+        RESTOCK_W,
+    );
+    push_col(
+        &mut col_xs,
+        &mut col_ws,
+        &mut x,
+        STOCK_W,
+    );
+    push_col(
+        &mut col_xs,
+        &mut col_ws,
+        &mut x,
+        BOOTY_W,
+    );
     if show_prices {
         push_col(&mut col_xs, &mut col_ws, &mut x, SELL_W);
         push_col(&mut col_xs, &mut col_ws, &mut x, BUY_W);
     }
     let ncols = col_xs.len();
-    for vis_row in 0..visible_rows as usize {
+    for vis_row in 0 .. visible_rows as usize {
         let data_row = scroll_offset + vis_row;
         if data_row >= app.rows.len() {
             break;
         }
-        for c in 0..ncols {
+        for c in 0 .. ncols {
             regions.push(ClickRegion {
-                rect: Rect::new(col_xs[c], data_start_y + vis_row as u16, col_ws[c], 1),
-                target: ClickTarget::ProfitsTableCell { row: data_row, col: c },
+                rect: Rect::new(
+                    col_xs[c],
+                    data_start_y + vis_row as u16,
+                    col_ws[c],
+                    1,
+                ),
+                target: ClickTarget::ProfitsTableCell {
+                    row: data_row,
+                    col: c,
+                },
             });
         }
     }
@@ -396,7 +538,10 @@ fn render_search(
     .split(rows[0]);
 
     frame.render_widget(
-        Paragraph::new(Span::styled(label, Style::default().bold())),
+        Paragraph::new(Span::styled(
+            label,
+            Style::default().bold(),
+        )),
         input_cols[0],
     );
     // The input box fills the rest of the row, so the highlight spans the full
@@ -407,7 +552,8 @@ fn render_search(
     );
 
     if focused && app.focus == Focus::Input {
-        let cursor_x = input_cols[1].x + app.input[..app.cursor].chars().count() as u16;
+        let cursor_x =
+            input_cols[1].x + app.input[.. app.cursor].chars().count() as u16;
         frame.set_cursor_position((cursor_x, input_cols[1].y));
     }
 
@@ -437,7 +583,11 @@ fn render_island_field(
         };
         frame.render_widget(
             Paragraph::new(
-                Line::from(Span::styled("Query Market first", btn_style)).right_aligned(),
+                Line::from(Span::styled(
+                    "Query Market first",
+                    btn_style,
+                ))
+                .right_aligned(),
             ),
             area,
         );
@@ -454,7 +604,10 @@ fn render_island_field(
             Style::default().fg(Color::DarkGray).italic()
         };
         frame.render_widget(
-            Paragraph::new(Line::from(Span::styled("Ocean-wide", ph_style)).right_aligned()),
+            Paragraph::new(
+                Line::from(Span::styled("Ocean-wide", ph_style))
+                    .right_aligned(),
+            ),
             area,
         );
         if is_focused {
@@ -464,17 +617,23 @@ fn render_island_field(
     }
 
     let value =
-        Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned()).style(value_style);
+        Paragraph::new(Line::from(Span::raw(&field.value)).right_aligned())
+            .style(value_style);
     frame.render_widget(value, area);
     if is_focused {
         let cx = area.x + area.width
-            - (field.value.chars().count() - field.value[..field.cursor].chars().count()) as u16;
+            - (field.value.chars().count()
+                - field.value[.. field.cursor].chars().count())
+                as u16;
         frame.set_cursor_position((cx, area.y));
     }
 }
 
 /// Input-bound commodity suggestion shown under the Search box.
-fn build_suggestion_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Line<'a>> {
+fn build_suggestion_line<'a>(
+    app: &'a ProfitsApp,
+    shared: &'a SharedState,
+) -> Option<Line<'a>> {
     let suggestion = app.suggest(shared.commodities);
     let query_lower = app.input.trim().to_lowercase();
     match suggestion {
@@ -484,9 +643,18 @@ fn build_suggestion_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Op
                 None
             } else {
                 Some(Line::from(vec![
-                    Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
-                    Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
-                    Span::styled("\"? Press enter if yes.", Style::default().fg(Color::DarkGray)),
+                    Span::styled(
+                        "Did you mean \"",
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        name,
+                        Style::default().bold().italic().fg(Color::DarkGray),
+                    ),
+                    Span::styled(
+                        "\"? Press enter if yes.",
+                        Style::default().fg(Color::DarkGray),
+                    ),
                 ]))
             }
         }
@@ -498,7 +666,10 @@ fn build_suggestion_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Op
                     query.as_str(),
                     Style::default().bold().italic().fg(Color::Red),
                 ),
-                Span::styled("\" found", Style::default().fg(Color::Red)),
+                Span::styled(
+                    "\" found",
+                    Style::default().fg(Color::Red),
+                ),
             ]))
         }
     }
@@ -508,18 +679,27 @@ fn build_suggestion_line<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Op
 /// an exact island/archipelago, suggests a fuzzy match, or flags an unknown
 /// name. `verb` is the action word in the archipelago note ("restocking" or
 /// "selling"). Returns owned text so it outlives the borrowed `value`.
-fn place_hint(value: &str, verb: &str, shared: &SharedState) -> Option<Text<'static>> {
+fn place_hint(
+    value: &str,
+    verb: &str,
+    shared: &SharedState,
+) -> Option<Text<'static>> {
     let query = value.trim();
     if query.is_empty() {
         return Some(Text::from(Line::from(Span::styled(
-            "Leave blank for ocean-wide pricing, or name an island or archipelago.".to_owned(),
+            "Leave blank for ocean-wide pricing, or name an island or \
+             archipelago."
+                .to_owned(),
             Style::default().fg(Color::DarkGray),
         ))));
     }
     // "Did you mean "<name>" (<kind>)? Press enter to accept." in muted text.
     let did_you_mean = |name: &str, kind: &'static str| {
         Some(Text::from(Line::from(vec![
-            Span::styled("Did you mean \"", Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                "Did you mean \"",
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(
                 name.to_owned(),
                 Style::default().bold().italic().fg(Color::DarkGray),
@@ -530,22 +710,43 @@ fn place_hint(value: &str, verb: &str, shared: &SharedState) -> Option<Text<'sta
             ),
         ])))
     };
-    match app::resolve_restock_scope(value, shared.available_islands, shared.ocean_geo) {
+    match app::resolve_restock_scope(
+        value,
+        shared.available_islands,
+        shared.ocean_geo,
+    ) {
         // Exact island typed — nothing to suggest.
-        app::RestockScope::Island(name) if name.eq_ignore_ascii_case(query) => None,
+        app::RestockScope::Island(name) if name.eq_ignore_ascii_case(query) => {
+            None
+        }
         app::RestockScope::Island(name) => did_you_mean(&name, "island"),
         // Exact archipelago — confirm it fans out across its islands.
-        app::RestockScope::Archipelago { name, islands } if name.eq_ignore_ascii_case(query) => {
+        app::RestockScope::Archipelago {
+            name,
+            islands,
+        } if name.eq_ignore_ascii_case(query) => {
             Some(Text::from(Line::from(vec![
-                Span::styled("Archipelago \"", Style::default().fg(Color::DarkGray)),
-                Span::styled(name, Style::default().bold().italic().fg(Color::DarkGray)),
                 Span::styled(
-                    format!("\" — {verb} across {} islands.", islands.len()),
+                    "Archipelago \"",
+                    Style::default().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    name,
+                    Style::default().bold().italic().fg(Color::DarkGray),
+                ),
+                Span::styled(
+                    format!(
+                        "\" — {verb} across {} islands.",
+                        islands.len()
+                    ),
                     Style::default().fg(Color::DarkGray),
                 ),
             ])))
         }
-        app::RestockScope::Archipelago { name, .. } => did_you_mean(&name, "archipelago"),
+        app::RestockScope::Archipelago {
+            name,
+            ..
+        } => did_you_mean(&name, "archipelago"),
         app::RestockScope::OceanWide | app::RestockScope::Unknown => {
             Some(Text::from(Line::from(Span::styled(
                 "No matching island or archipelago".to_owned(),
@@ -557,7 +758,10 @@ fn place_hint(value: &str, verb: &str, shared: &SharedState) -> Option<Text<'sta
 
 /// Focus-bound context help (plus loading/error status) shown on the bottom
 /// line(s). The inventory table returns a two-line, per-column hint.
-fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Text<'a>> {
+fn build_tooltip<'a>(
+    app: &'a ProfitsApp,
+    shared: &'a SharedState,
+) -> Option<Text<'a>> {
     if shared.loading {
         return Some(Text::from(Line::from(Span::styled(
             "Fetching prices from market...",
@@ -572,45 +776,75 @@ fn build_tooltip<'a>(app: &'a ProfitsApp, shared: &'a SharedState) -> Option<Tex
         ))));
     }
 
-    let muted = |s: String| Span::styled(s, Style::default().fg(Color::DarkGray));
-    let hint = |text: &'static str| Some(Text::from(Line::from(muted(text.to_owned()))));
+    let muted =
+        |s: String| Span::styled(s, Style::default().fg(Color::DarkGray));
+    let hint = |text: &'static str| {
+        Some(Text::from(Line::from(muted(
+            text.to_owned(),
+        ))))
+    };
 
     match app.focus {
         Focus::Panel(P_RESTOCK_PLACE) if shared.cached_offers.is_empty() => {
             hint("Press Enter to find islands")
         }
         Focus::Panel(P_RESTOCK_PLACE) => {
-            place_hint(&app.panel[P_RESTOCK_PLACE].value, "restocking", shared)
+            place_hint(
+                &app.panel[P_RESTOCK_PLACE].value,
+                "restocking",
+                shared,
+            )
         }
         Focus::Panel(P_SELL_PLACE) if shared.cached_offers.is_empty() => {
             hint("Query the market first to pick where to sell.")
         }
-        Focus::Panel(P_SELL_PLACE) => place_hint(&app.panel[P_SELL_PLACE].value, "selling", shared),
-        Focus::Panel(P_BOOTY_CHEST) => {
-            hint("Auto: each fight's retained half, less stolen. Type to override.")
+        Focus::Panel(P_SELL_PLACE) => {
+            place_hint(
+                &app.panel[P_SELL_PLACE].value,
+                "selling",
+                shared,
+            )
         }
-        Focus::Panel(P_CO_RATE) => hint("Share of total gained the commanding officer keeps."),
-        Focus::Panel(P_DONATION) => hint("Share of total gained donated to the crew."),
+        Focus::Panel(P_BOOTY_CHEST) => {
+            hint(
+                "Auto: each fight's retained half, less stolen. Type to \
+                 override.",
+            )
+        }
+        Focus::Panel(P_CO_RATE) => {
+            hint("Share of total gained the commanding officer keeps.")
+        }
+        Focus::Panel(P_DONATION) => {
+            hint("Share of total gained donated to the crew.")
+        }
         Focus::Panel(P_RESTOCK_RATE) => {
             hint("Skimmed from the crew's cut for restocking (not the chest).")
         }
         Focus::Panel(P_STOCKING) => {
-            hint("PoE spent stocking up before the voyage; recouped at the divvy.")
+            hint(
+                "PoE spent stocking up before the voyage; recouped at the \
+                 divvy.",
+            )
         }
         Focus::Input => hint("Type a commodity and press Enter to add it."),
         Focus::Table => {
             // Per-column action for the selected inventory cell.
-            let action = match app.table_state.selected_column().unwrap_or(FIRST_COL) {
-                1 => "set how many units to restock to",
-                2 => "set how many units are in the hold",
-                3 => "set how many units are in the booty",
-                4 => "set the shoppe sell price",
-                5 => "set the shoppe buy price",
-                _ => "set the value",
-            };
+            let action =
+                match app.table_state.selected_column().unwrap_or(FIRST_COL) {
+                    1 => "set how many units to restock to",
+                    2 => "set how many units are in the hold",
+                    3 => "set how many units are in the booty",
+                    4 => "set the shoppe sell price",
+                    5 => "set the shoppe buy price",
+                    _ => "set the value",
+                };
             Some(Text::from(vec![
-                Line::from(muted(format!("Type digits to {action}"))),
-                Line::from(muted("Press Delete to remove commodity".to_owned())),
+                Line::from(muted(format!(
+                    "Type digits to {action}"
+                ))),
+                Line::from(muted(
+                    "Press Delete to remove commodity".to_owned(),
+                )),
             ]))
         }
         Focus::Button => hint("Press Enter to calculate profits."),
@@ -667,7 +901,9 @@ fn render_popup(
     let area = frame.area();
 
     match popup {
-        PopupKind::ReQueryConfirm { yes_focused } => {
+        PopupKind::ReQueryConfirm {
+            yes_focused,
+        } => {
             let w: u16 = 40;
             let h: u16 = 6;
             let x = area.width.saturating_sub(w) / 2;
@@ -690,7 +926,10 @@ fn render_popup(
             ])
             .split(inner);
 
-            frame.render_widget(Paragraph::new("Re-query Market?"), rows[0]);
+            frame.render_widget(
+                Paragraph::new("Re-query Market?"),
+                rows[0],
+            );
             frame.render_widget(
                 Paragraph::new(Span::styled(
                     "This may take some time.",
@@ -714,7 +953,10 @@ fn render_popup(
                 Span::raw("  "),
                 Span::styled(" Yes ", yes_style),
             ]);
-            frame.render_widget(Paragraph::new(buttons).centered(), rows[3]);
+            frame.render_widget(
+                Paragraph::new(buttons).centered(),
+                rows[3],
+            );
 
             // Register popup button regions (split button row in half)
             let half = rows[3].width / 2;
@@ -723,7 +965,12 @@ fn render_popup(
                 target: ClickTarget::ProfitsPopupNo,
             });
             regions.push(ClickRegion {
-                rect: Rect::new(rows[3].x + half, rows[3].y, rows[3].width - half, 1),
+                rect: Rect::new(
+                    rows[3].x + half,
+                    rows[3].y,
+                    rows[3].width - half,
+                    1,
+                ),
                 target: ClickTarget::ProfitsPopupYes,
             });
         }
@@ -756,7 +1003,10 @@ fn render_popup(
 
             let prompt = Line::from(vec![
                 Span::raw("Delete row \""),
-                Span::styled(name.as_str(), Style::default().bold().italic()),
+                Span::styled(
+                    name.as_str(),
+                    Style::default().bold().italic(),
+                ),
                 Span::raw("\"?"),
             ]);
             frame.render_widget(Paragraph::new(prompt), rows[0]);
@@ -776,7 +1026,10 @@ fn render_popup(
                 Span::raw("  "),
                 Span::styled(" Yes ", yes_style),
             ]);
-            frame.render_widget(Paragraph::new(buttons).centered(), rows[2]);
+            frame.render_widget(
+                Paragraph::new(buttons).centered(),
+                rows[2],
+            );
 
             let half = rows[2].width / 2;
             regions.push(ClickRegion {
@@ -784,7 +1037,12 @@ fn render_popup(
                 target: ClickTarget::ProfitsPopupNo,
             });
             regions.push(ClickRegion {
-                rect: Rect::new(rows[2].x + half, rows[2].y, rows[2].width - half, 1),
+                rect: Rect::new(
+                    rows[2].x + half,
+                    rows[2].y,
+                    rows[2].width - half,
+                    1,
+                ),
                 target: ClickTarget::ProfitsPopupYes,
             });
         }
@@ -793,7 +1051,8 @@ fn render_popup(
             ocean_wide_focused,
         } => {
             let max_shown = 5;
-            let shown: Vec<&str> = missing.iter().take(max_shown).map(|s| s.as_str()).collect();
+            let shown: Vec<&str> =
+                missing.iter().take(max_shown).map(|s| s.as_str()).collect();
             let extra = missing.len().saturating_sub(max_shown);
 
             let list_lines = shown.len() + if 0 < extra { 1 } else { 0 };
@@ -813,7 +1072,7 @@ fn render_popup(
 
             let mut constraints: Vec<Constraint> = Vec::new();
             constraints.push(Constraint::Length(1)); // header
-            for _ in 0..list_lines {
+            for _ in 0 .. list_lines {
                 constraints.push(Constraint::Length(1));
             }
             constraints.push(Constraint::Length(1)); // blank
@@ -860,7 +1119,10 @@ fn render_popup(
                 Span::styled(" Ocean-wide ", ocean_style),
             ]);
             let btn_row = rows[rows.len() - 1];
-            frame.render_widget(Paragraph::new(buttons).centered(), btn_row);
+            frame.render_widget(
+                Paragraph::new(buttons).centered(),
+                btn_row,
+            );
 
             let half = btn_row.width / 2;
             regions.push(ClickRegion {
@@ -868,20 +1130,33 @@ fn render_popup(
                 target: ClickTarget::ProfitsPopupNo,
             });
             regions.push(ClickRegion {
-                rect: Rect::new(btn_row.x + half, btn_row.y, btn_row.width - half, 1),
+                rect: Rect::new(
+                    btn_row.x + half,
+                    btn_row.y,
+                    btn_row.width - half,
+                    1,
+                ),
                 target: ClickTarget::ProfitsPopupYes,
             });
         }
-        PopupKind::PriceBlock { need_buy, need_sell } => {
+        PopupKind::PriceBlock {
+            need_buy,
+            need_sell,
+        } => {
             const CAP: usize = 6; // per-section list cap before "...and N more"
 
             let mut lines: Vec<Line> = vec![Line::from(
                 "Enter the missing prices before calculating:",
             )];
 
-            let mut section = |lines: &mut Vec<Line>, title: &'static str, items: &[String]| {
+            let mut section = |lines: &mut Vec<Line>,
+                               title: &'static str,
+                               items: &[String]| {
                 lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(title, Style::default().bold())));
+                lines.push(Line::from(Span::styled(
+                    title,
+                    Style::default().bold(),
+                )));
                 for name in items.iter().take(CAP) {
                     lines.push(Line::from(Span::styled(
                         format!("  \u{2022} {name}"),
@@ -897,13 +1172,22 @@ fn render_popup(
                 }
             };
             if !need_buy.is_empty() {
-                section(&mut lines, "Need a Buy Price (to restock):", need_buy);
+                section(
+                    &mut lines,
+                    "Need a Buy Price (to restock):",
+                    need_buy,
+                );
             }
             if !need_sell.is_empty() {
-                section(&mut lines, "Need a Sell Price (for excess):", need_sell);
+                section(
+                    &mut lines,
+                    "Need a Sell Price (for excess):",
+                    need_sell,
+                );
             }
 
-            let content_w = lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
+            let content_w =
+                lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
             let w: u16 = (content_w + 4)
                 .max(offset_title_width("Prices needed"))
                 .max(30);
@@ -930,10 +1214,13 @@ fn render_popup(
                 frame.render_widget(Paragraph::new(line), rows[i]);
             }
 
-            let ok_style = Style::default().bg(Color::White).fg(Color::Black).bold();
+            let ok_style =
+                Style::default().bg(Color::White).fg(Color::Black).bold();
             let btn_row = rows[rows.len() - 1];
             frame.render_widget(
-                Paragraph::new(Line::from(Span::styled(" Ok ", ok_style)).centered()),
+                Paragraph::new(
+                    Line::from(Span::styled(" Ok ", ok_style)).centered(),
+                ),
                 btn_row,
             );
             regions.push(ClickRegion {
@@ -947,9 +1234,10 @@ fn render_popup(
             // pillage" ever shows a "-" (a loss).
             let valstr = |r: &BreakdownRow| -> String { r.value.to_string() };
 
-            // Lay out one line per breakdown row, plus a blank separator after any
-            // row flagged `gap_after`. `placed` maps each layout slot to its
-            // breakdown index (or None for a separator).
+            // Lay out one line per breakdown row, plus a blank separator after
+            // any row flagged `gap_after`. `placed` maps each
+            // layout slot to its breakdown index (or None for a
+            // separator).
             let mut placed: Vec<Option<usize>> = Vec::new();
             for (i, r) in bd.iter().enumerate() {
                 placed.push(Some(i));
@@ -968,7 +1256,8 @@ fn render_popup(
             let w: u16 = (max_content as u16 + 4)
                 .max(24)
                 .max(offset_title_width("Profit Breakdown"));
-            // Reserve enough lines for the tallest tooltip once wrapped to width.
+            // Reserve enough lines for the tallest tooltip once wrapped to
+            // width.
             let inner_w = w.saturating_sub(4) as usize; // − borders − padding
             let desc_lines = bd
                 .iter()
@@ -976,7 +1265,8 @@ fn render_popup(
                 .max()
                 .unwrap_or(1)
                 .max(1);
-            // rows/separators + blank + wrapped description + Ok button + 2 borders
+            // rows/separators + blank + wrapped description + Ok button + 2
+            // borders
             let h: u16 = placed.len() as u16 + 1 + desc_lines + 1 + 2;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
@@ -1003,8 +1293,14 @@ fn render_popup(
                 let Some(i) = *place else { continue }; // blank separator
                 let r = &bd[i];
                 let v = valstr(r);
-                let pad = avail.saturating_sub(r.label.len()).saturating_sub(v.len());
-                let line = format!("{}{:>w$}", r.label, v, w = pad + v.len());
+                let pad =
+                    avail.saturating_sub(r.label.len()).saturating_sub(v.len());
+                let line = format!(
+                    "{}{:>w$}",
+                    r.label,
+                    v,
+                    w = pad + v.len()
+                );
 
                 // Headlines (Total gained, Add to Booty) are bold; any negative
                 // value (only Total gained can be) is red — a loss.
@@ -1023,9 +1319,13 @@ fn render_popup(
                         style = style.fg(Color::Black);
                     }
                 }
-                frame.render_widget(Paragraph::new(Span::styled(line, style)), layout[slot]);
+                frame.render_widget(
+                    Paragraph::new(Span::styled(line, style)),
+                    layout[slot],
+                );
 
-                // Hover region: moving the mouse over a row parks the cursor there.
+                // Hover region: moving the mouse over a row parks the cursor
+                // there.
                 regions.push(ClickRegion {
                     rect: layout[slot],
                     target: ClickTarget::ProfitsBreakdownRow(i),
@@ -1040,14 +1340,20 @@ fn render_popup(
                     desc,
                     Style::default().fg(Color::DarkGray).italic(),
                 ))
-                .wrap(Wrap { trim: true }),
+                .wrap(Wrap {
+                    trim: true,
+                }),
                 layout[layout.len() - 2],
             );
 
-            let ok_style = Style::default().bg(Color::White).fg(Color::Black).bold();
+            let ok_style =
+                Style::default().bg(Color::White).fg(Color::Black).bold();
             let ok_btn = Line::from(Span::styled(" Ok ", ok_style));
             let ok_row = layout[layout.len() - 1];
-            frame.render_widget(Paragraph::new(ok_btn).centered(), ok_row);
+            frame.render_widget(
+                Paragraph::new(ok_btn).centered(),
+                ok_row,
+            );
 
             regions.push(ClickRegion {
                 rect: ok_row,

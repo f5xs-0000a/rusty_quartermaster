@@ -13,8 +13,7 @@
 //! The grouping and ordering themselves live in the embedded bare cache
 //! (`data/bare_cache.json`, see [`crate::bare`]); this module just indexes it.
 
-use std::collections::HashMap;
-use std::sync::LazyLock;
+use std::{collections::HashMap, sync::LazyLock};
 
 use crate::bare::BARE;
 
@@ -32,15 +31,19 @@ static INDEX: LazyLock<HashMap<String, usize>> = LazyLock::new(|| {
 });
 
 /// Lowercased name → its group label.
-static GROUP_OF: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
-    let mut map = HashMap::new();
-    for group in &BARE.goods {
-        for name in &group.commodities {
-            map.insert(name.to_lowercase(), group.group.as_str());
+static GROUP_OF: LazyLock<HashMap<String, &'static str>> =
+    LazyLock::new(|| {
+        let mut map = HashMap::new();
+        for group in &BARE.goods {
+            for name in &group.commodities {
+                map.insert(
+                    name.to_lowercase(),
+                    group.group.as_str(),
+                );
+            }
         }
-    }
-    map
-});
+        map
+    });
 
 /// Canonical position of a commodity, or `None` if it isn't in our list.
 pub fn order_index(name: &str) -> Option<usize> {
@@ -55,7 +58,10 @@ pub fn group_of(name: &str) -> Option<&'static str> {
 /// Sort key for canonical ordering: known commodities by position, unknown ones
 /// last (then alphabetically, for a stable order among unknowns).
 pub fn sort_key(name: &str) -> (usize, String) {
-    (order_index(name).unwrap_or(usize::MAX), name.to_lowercase())
+    (
+        order_index(name).unwrap_or(usize::MAX),
+        name.to_lowercase(),
+    )
 }
 
 /// Potency weight of an alcoholic commodity (the in-game "units of alcohol" a

@@ -1,20 +1,31 @@
-use std::collections::HashMap;
-use std::fmt;
-use std::str::FromStr;
+use std::{collections::HashMap, fmt, str::FromStr};
 
 use chrono::{DateTime, Utc};
 use ratatui::style::{Modifier, Style};
 use scraper::{ElementRef, Html, Selector};
 use serde::{Deserialize, Serialize};
 
-use crate::ocean::Ocean;
-use crate::ratelimit::{throttled, Service};
+use crate::{
+    ocean::Ocean,
+    ratelimit::{Service, throttled},
+};
 
 // ---------------------------------------------------------------------------
 // Enums
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
 #[repr(u8)]
 pub enum Standing {
     Able = 0,
@@ -28,7 +39,18 @@ pub enum Standing {
     Ultimate = 8,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
 #[repr(u8)]
 pub enum Experience {
     Novice = 0,
@@ -47,7 +69,18 @@ pub enum Experience {
     Transcendent = 13,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    Serialize,
+    Deserialize,
+)]
 #[repr(u8)]
 pub enum Fame {
     Aspiring = 0,
@@ -107,8 +140,8 @@ pub enum SkillCategory {
 }
 
 /// A pirate's rank within their crew, ordered most → least senior. `Other`
-/// preserves anything yoweb shows that we don't recognise (so styling falls back
-/// to plain rather than dropping the text).
+/// preserves anything yoweb shows that we don't recognise (so styling falls
+/// back to plain rather than dropping the text).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CrewRank {
     Captain,
@@ -121,8 +154,8 @@ pub enum CrewRank {
     Other(String),
 }
 
-/// A pirate's title within their flag. Gendered pairs (King/Queen, …) collapse to
-/// one tier; `Other` keeps anything unrecognised.
+/// A pirate's title within their flag. Gendered pairs (King/Queen, …) collapse
+/// to one tier; `Other` keeps anything unrecognised.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum FlagTitle {
     /// King / Queen.
@@ -141,6 +174,7 @@ pub enum FlagTitle {
 
 impl FromStr for Standing {
     type Err = String;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Able" => Ok(Self::Able),
@@ -159,6 +193,7 @@ impl FromStr for Standing {
 
 impl FromStr for Experience {
     type Err = String;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Novice" => Ok(Self::Novice),
@@ -182,6 +217,7 @@ impl FromStr for Experience {
 
 impl FromStr for Fame {
     type Err = String;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Aspiring" => Ok(Self::Aspiring),
@@ -200,6 +236,7 @@ impl FromStr for Fame {
 
 impl FromStr for Skill {
     type Err = String;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Sailing" => Ok(Self::Sailing),
@@ -231,13 +268,18 @@ impl FromStr for Skill {
 
 impl FromStr for ReputationType {
     type Err = String;
+
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "Conqueror" => Ok(Self::Conqueror),
             "Explorer" => Ok(Self::Explorer),
             "Patron" => Ok(Self::Patron),
             "Magnate" => Ok(Self::Magnate),
-            _ => Err(format!("unknown reputation type: {s:?}")),
+            _ => {
+                Err(format!(
+                    "unknown reputation type: {s:?}"
+                ))
+            }
         }
     }
 }
@@ -295,12 +337,14 @@ impl Skill {
     pub fn category(&self) -> SkillCategory {
         use Skill::*;
         match self {
-            Sailing | Rigging | Carpentry | Patching | Bilging | Gunning | TreasureHaul
-            | Navigating | BattleNavigation | Swordfighting | Rumble => SkillCategory::Piracy,
-            Drinking | Spades | Hearts | TreasureDrop | Poker => SkillCategory::Carousing,
-            Distilling | Alchemistry | Shipwrightery | Blacksmithing | Foraging | Weaving => {
-                SkillCategory::Crafting
+            Sailing | Rigging | Carpentry | Patching | Bilging | Gunning
+            | TreasureHaul | Navigating | BattleNavigation | Swordfighting
+            | Rumble => SkillCategory::Piracy,
+            Drinking | Spades | Hearts | TreasureDrop | Poker => {
+                SkillCategory::Carousing
             }
+            Distilling | Alchemistry | Shipwrightery | Blacksmithing
+            | Foraging | Weaving => SkillCategory::Crafting,
         }
     }
 
@@ -334,9 +378,10 @@ impl Skill {
         }
     }
 
-    /// A single-letter marker for the skill, used by merged Top Jobbers columns to
-    /// flag which of the column's puzzles a jobber is strongest at (e.g. `C` for
-    /// Carpentry, `P` for Patching, `S` for Sailing, `R` for Rigging).
+    /// A single-letter marker for the skill, used by merged Top Jobbers columns
+    /// to flag which of the column's puzzles a jobber is strongest at (e.g.
+    /// `C` for Carpentry, `P` for Patching, `S` for Sailing, `R` for
+    /// Rigging).
     pub fn marker(&self) -> char {
         self.short_label().chars().next().unwrap_or('?')
     }
@@ -362,16 +407,20 @@ impl CrewRank {
     /// Emphasis for the rank label, scaling with seniority.
     pub fn style(&self) -> Style {
         match self {
-            Self::Captain => Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
+            Self::Captain => {
+                Style::default().add_modifier(
+                    Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED,
+                )
+            }
             Self::SeniorOfficer => {
                 Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC)
             }
             Self::FleetOfficer => Style::default().add_modifier(Modifier::BOLD),
             Self::Officer => Style::default().add_modifier(Modifier::ITALIC),
-            Self::JobbingPirate | Self::CabinPerson | Self::Pirate | Self::Other(_) => {
-                Style::default()
-            }
+            Self::JobbingPirate
+            | Self::CabinPerson
+            | Self::Pirate
+            | Self::Other(_) => Style::default(),
         }
     }
 }
@@ -393,9 +442,14 @@ impl FlagTitle {
     /// Emphasis for the title label, scaling with rank.
     pub fn style(&self) -> Style {
         match self {
-            Self::Royalty => Style::default()
-                .add_modifier(Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED),
-            Self::Noble => Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC),
+            Self::Royalty => {
+                Style::default().add_modifier(
+                    Modifier::BOLD | Modifier::ITALIC | Modifier::UNDERLINED,
+                )
+            }
+            Self::Noble => {
+                Style::default().add_modifier(Modifier::BOLD | Modifier::ITALIC)
+            }
             Self::Titled => Style::default().add_modifier(Modifier::BOLD),
             Self::Member | Self::Other(_) => Style::default(),
         }
@@ -512,8 +566,8 @@ impl Trophies {
 }
 
 /// A cached pirate plus when each part was last fetched from yoweb. Basic info
-/// (the pirate page: crew, flag, skills, reputation) and the trophy list live on
-/// separate yoweb pages, so they age independently and carry separate
+/// (the pirate page: crew, flag, skills, reputation) and the trophy list live
+/// on separate yoweb pages, so they age independently and carry separate
 /// timestamps — letting callers decide how stale each may be before refetching.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CachedPirate {
@@ -528,9 +582,9 @@ pub struct CachedPirate {
     pub trophies_fetched_at: DateTime<Utc>,
 }
 
-/// Which yoweb pages a (re)fetch should pull. The basic page and the trophy page
-/// age independently, so a refetch driven by staleness only pulls the part(s)
-/// that actually expired; a forced refresh pulls both.
+/// Which yoweb pages a (re)fetch should pull. The basic page and the trophy
+/// page age independently, so a refetch driven by staleness only pulls the
+/// part(s) that actually expired; a forced refresh pulls both.
 #[derive(Debug, Clone, Copy)]
 pub struct FetchPlan {
     pub basic: bool,
@@ -541,7 +595,8 @@ pub struct FetchPlan {
 pub enum PirateUpdate {
     /// The pages we pulled, each with the instant it was fetched. A part is
     /// `None` when it wasn't in the plan (or, for trophies, when only that part
-    /// failed while the basic page succeeded — it stays stale for a later retry).
+    /// failed while the basic page succeeded — it stays stale for a later
+    /// retry).
     Refreshed {
         basic: Option<(BasicInfo, DateTime<Utc>)>,
         trophies: Option<(Trophies, DateTime<Utc>)>,
@@ -591,18 +646,20 @@ pub fn is_player_name(name: &str) -> bool {
     if parts.len() > 2 {
         return false;
     }
-    parts
-        .iter()
-        .all(|part| !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase()))
+    parts.iter().all(|part| {
+        !part.is_empty() && part.chars().all(|c| c.is_ascii_lowercase())
+    })
 }
 
 /// Whether `name` is one of the special characters (Brigand Kings, "Mother o'
 /// Nyght", ...) in [`SPECIAL_NAMES`], matched case-insensitively against the
-/// *whole* name. Callers use this to exclude specials as atomic units rather than
-/// breaking them into name segments (their words overlap ordinary ones).
+/// *whole* name. Callers use this to exclude specials as atomic units rather
+/// than breaking them into name segments (their words overlap ordinary ones).
 pub fn is_special_name(name: &str) -> bool {
     let trimmed = name.trim();
-    SPECIAL_NAMES.iter().any(|s| trimmed.eq_ignore_ascii_case(s))
+    SPECIAL_NAMES
+        .iter()
+        .any(|s| trimmed.eq_ignore_ascii_case(s))
 }
 
 /// Normalize a pirate name for use in yoweb URLs.
@@ -626,7 +683,9 @@ pub fn normalize_name(input: &str) -> Result<String, String> {
 
     // Validate against the player-name pattern.
     if !is_player_name(trimmed) {
-        return Err(format!("invalid pirate name: {trimmed:?}"));
+        return Err(format!(
+            "invalid pirate name: {trimmed:?}"
+        ));
     }
 
     let lower = trimmed.to_ascii_lowercase();
@@ -687,13 +746,17 @@ pub async fn fetch_pirate_update(
         match fetch_trophy_page(client, &yoweb_base, &encoded).await {
             Ok(t) => trophies = Some((t, Utc::now())),
             // If the basic page already came back fresh, keep it and let the
-            // trophies stay stale for a later retry; otherwise it's a plain error.
+            // trophies stay stale for a later retry; otherwise it's a plain
+            // error.
             Err(e) if basic.is_none() => return PirateUpdate::Error(e),
             Err(_) => {}
         }
     }
 
-    PirateUpdate::Refreshed { basic, trophies }
+    PirateUpdate::Refreshed {
+        basic,
+        trophies,
+    }
 }
 
 /// Outcome of fetching just the basic pirate page.
@@ -713,16 +776,31 @@ async fn fetch_basic_page(
     encoded: &str,
 ) -> BasicOutcome {
     let url = format!("{yoweb_base}/pirate.wm?target={encoded}");
-    let resp = match throttled(Service::PuzzlePirates, || client.get(&url).send()).await {
+    let resp = match throttled(Service::PuzzlePirates, || {
+        client.get(&url).send()
+    })
+    .await
+    {
         Ok(r) => r,
-        Err(e) => return BasicOutcome::Error(format!("failed to fetch pirate page: {e}")),
+        Err(e) => {
+            return BasicOutcome::Error(format!(
+                "failed to fetch pirate page: {e}"
+            ));
+        }
     };
     if !resp.status().is_success() {
-        return BasicOutcome::Error(format!("pirate page returned HTTP {}", resp.status()));
+        return BasicOutcome::Error(format!(
+            "pirate page returned HTTP {}",
+            resp.status()
+        ));
     }
     let html = match resp.text().await {
         Ok(t) => t,
-        Err(e) => return BasicOutcome::Error(format!("failed to read pirate page: {e}")),
+        Err(e) => {
+            return BasicOutcome::Error(format!(
+                "failed to read pirate page: {e}"
+            ));
+        }
     };
     let info = parse_pirate_page(&html);
     if info.name.is_empty() {
@@ -741,11 +819,16 @@ async fn fetch_trophy_page(
     encoded: &str,
 ) -> Result<Trophies, String> {
     let url = format!("{yoweb_base}/trophy/?pirate={encoded}&classic=$classic");
-    let resp = throttled(Service::PuzzlePirates, || client.get(&url).send())
-        .await
-        .map_err(|e| format!("failed to fetch trophy page: {e}"))?;
+    let resp = throttled(Service::PuzzlePirates, || {
+        client.get(&url).send()
+    })
+    .await
+    .map_err(|e| format!("failed to fetch trophy page: {e}"))?;
     if !resp.status().is_success() {
-        return Err(format!("trophy page returned HTTP {}", resp.status()));
+        return Err(format!(
+            "trophy page returned HTTP {}",
+            resp.status()
+        ));
     }
     let html = resp
         .text()
@@ -764,9 +847,11 @@ fn parse_pirate_page(html: &str) -> BasicInfo {
     let document = Html::parse_document(html);
 
     let name = parse_name(&document);
-    let (crew_rank, crew_role, crew_name) = parse_affiliation(&document, "crew-");
+    let (crew_rank, crew_role, crew_name) =
+        parse_affiliation(&document, "crew-");
     // A flag has only a title + name (no middle role); ignore any stray role.
-    let (flag_rank, _flag_role, flag_name) = parse_affiliation(&document, "flag-");
+    let (flag_rank, _flag_role, flag_name) =
+        parse_affiliation(&document, "flag-");
     let reputation = parse_reputation(&document);
     let skills = parse_skills(&document);
 
@@ -797,7 +882,10 @@ fn parse_name(document: &Html) -> String {
 /// `<a>` link (inside the last `<b>`) is the crew/flag name. A `<b>` *between*
 /// them is a duty role: three bolds → the middle one is the role; two bolds →
 /// no role. Returns `(rank, role, name)`; role is `None` when absent.
-fn parse_affiliation(document: &Html, prefix: &str) -> (String, Option<String>, String) {
+fn parse_affiliation(
+    document: &Html,
+    prefix: &str,
+) -> (String, Option<String>, String) {
     let img_sel = Selector::parse("img").unwrap();
 
     for img in document.select(&img_sel) {
@@ -815,11 +903,12 @@ fn parse_affiliation(document: &Html, prefix: &str) -> (String, Option<String>, 
         let bolds = extract_bold_texts(&tr_html);
         let rank = bolds.first().cloned().unwrap_or_default();
         let name = extract_link_in_bold(&tr_html);
-        // The role is a bold between the rank and the crew/flag name. The name link
-        // may or may not itself be bold, so the run count alone is ambiguous: pick
-        // the first bold after the rank that isn't the name. That captures both
-        // `[rank, role, name]` and `[rank, role]` (name not bold), while
-        // `[rank, name]` (no role) correctly yields none.
+        // The role is a bold between the rank and the crew/flag name. The name
+        // link may or may not itself be bold, so the run count alone is
+        // ambiguous: pick the first bold after the rank that isn't the
+        // name. That captures both `[rank, role, name]` and `[rank,
+        // role]` (name not bold), while `[rank, name]` (no role)
+        // correctly yields none.
         let role = bolds
             .iter()
             .skip(1)
@@ -967,9 +1056,9 @@ fn parse_skills(document: &Html) -> HashMap<Skill, SkillRecord> {
 fn parse_skill_record(td_html: &str) -> Option<SkillRecord> {
     let font_marker = r#"<font size="-1">"#;
     let start = td_html.find(font_marker)? + font_marker.len();
-    let end = start + td_html[start..].find("</font>")?;
+    let end = start + td_html[start ..].find("</font>")?;
 
-    let raw = &td_html[start..end];
+    let raw = &td_html[start .. end];
     let text = strip_tags(raw);
     let text = text.trim();
 
@@ -990,9 +1079,9 @@ fn parse_skill_record(td_html: &str) -> Option<SkillRecord> {
 fn parse_archipelago_standing(td_html: &str) -> Option<Standing> {
     let marker = r#"<font size="-2">"#;
     let start = td_html.find(marker)? + marker.len();
-    let end = start + td_html[start..].find("</font>")?;
+    let end = start + td_html[start ..].find("</font>")?;
 
-    let raw = &td_html[start..end];
+    let raw = &td_html[start .. end];
     let text = strip_tags(raw).trim().to_string();
 
     let text = text
@@ -1019,8 +1108,10 @@ fn parse_archipelago_standing(td_html: &str) -> Option<Standing> {
 fn parse_trophy_page(html: &str) -> Vec<TrophySection> {
     let document = Html::parse_document(html);
     let grid_sel = Selector::parse(r#"table[cellspacing="10"]"#).unwrap();
-    let font_sel = Selector::parse(r##"font[size="+1"][color="#0052b5"]"##).unwrap();
-    let td_sel = Selector::parse(r#"td[align="center"][valign="top"]"#).unwrap();
+    let font_sel =
+        Selector::parse(r##"font[size="+1"][color="#0052b5"]"##).unwrap();
+    let td_sel =
+        Selector::parse(r#"td[align="center"][valign="top"]"#).unwrap();
     let b_sel = Selector::parse("b").unwrap();
 
     let mut sections = Vec::new();
@@ -1051,7 +1142,10 @@ fn parse_trophy_page(html: &str) -> Vec<TrophySection> {
         }
 
         if !trophies.is_empty() {
-            sections.push(TrophySection { category, trophies });
+            sections.push(TrophySection {
+                category,
+                trophies,
+            });
         }
     }
 
@@ -1066,7 +1160,10 @@ fn find_ancestor_td<'a>(el: &ElementRef<'a>) -> Option<ElementRef<'a>> {
     find_ancestor_tag(el, "td")
 }
 
-fn find_ancestor_tag<'a>(el: &ElementRef<'a>, tag: &str) -> Option<ElementRef<'a>> {
+fn find_ancestor_tag<'a>(
+    el: &ElementRef<'a>,
+    tag: &str,
+) -> Option<ElementRef<'a>> {
     let mut node = el.parent()?;
     loop {
         if let Some(element) = ElementRef::wrap(node) {
@@ -1078,18 +1175,18 @@ fn find_ancestor_tag<'a>(el: &ElementRef<'a>, tag: &str) -> Option<ElementRef<'a
     }
 }
 
-/// Collect the text of each `<b>…</b>` run in order, tags stripped. Used to read
-/// an affiliation row's rank / role / name bolds positionally.
+/// Collect the text of each `<b>…</b>` run in order, tags stripped. Used to
+/// read an affiliation row's rank / role / name bolds positionally.
 fn extract_bold_texts(html: &str) -> Vec<String> {
     let mut out = Vec::new();
     let mut from = 0;
-    while let Some(rel) = html[from..].find("<b>") {
+    while let Some(rel) = html[from ..].find("<b>") {
         let start = from + rel + 3;
-        let Some(rel_end) = html[start..].find("</b>") else {
+        let Some(rel_end) = html[start ..].find("</b>") else {
             break;
         };
         let end = start + rel_end;
-        out.push(strip_tags(&html[start..end]).trim().to_string());
+        out.push(strip_tags(&html[start .. end]).trim().to_string());
         from = end + 4;
     }
     out
@@ -1098,12 +1195,13 @@ fn extract_bold_texts(html: &str) -> Vec<String> {
 fn extract_link_in_bold(html: &str) -> String {
     let mut result = String::new();
     let mut search_from = 0;
-    while let Some(a_start) = html[search_from..].find("<a ") {
+    while let Some(a_start) = html[search_from ..].find("<a ") {
         let abs_start = search_from + a_start;
-        if let Some(tag_end) = html[abs_start..].find('>') {
+        if let Some(tag_end) = html[abs_start ..].find('>') {
             let text_start = abs_start + tag_end + 1;
-            if let Some(a_end) = html[text_start..].find("</a>") {
-                result = html[text_start..text_start + a_end].trim().to_string();
+            if let Some(a_end) = html[text_start ..].find("</a>") {
+                result =
+                    html[text_start .. text_start + a_end].trim().to_string();
                 search_from = text_start + a_end + 4;
             } else {
                 break;
@@ -1165,17 +1263,35 @@ mod tests {
 
     #[test]
     fn normalize_capitalizes_and_validates() {
-        assert_eq!(normalize_name("playerONE").unwrap(), "Playerone");
-        assert_eq!(normalize_name("mary-jane").unwrap(), "Mary-Jane");
-        assert_eq!(normalize_name("Mother o' Nyght").unwrap(), "Mother o' Nyght");
+        assert_eq!(
+            normalize_name("playerONE").unwrap(),
+            "Playerone"
+        );
+        assert_eq!(
+            normalize_name("mary-jane").unwrap(),
+            "Mary-Jane"
+        );
+        assert_eq!(
+            normalize_name("Mother o' Nyght").unwrap(),
+            "Mother o' Nyght"
+        );
         assert!(normalize_name("Tony Ironsides").is_err());
     }
 
     #[test]
     fn crew_rank_classifies_known_and_unknown() {
-        assert_eq!(CrewRank::from_str("Captain"), CrewRank::Captain);
-        assert_eq!(CrewRank::from_str("Senior Officer"), CrewRank::SeniorOfficer);
-        assert_eq!(CrewRank::from_str(" Pirate "), CrewRank::Pirate);
+        assert_eq!(
+            CrewRank::from_str("Captain"),
+            CrewRank::Captain
+        );
+        assert_eq!(
+            CrewRank::from_str("Senior Officer"),
+            CrewRank::SeniorOfficer
+        );
+        assert_eq!(
+            CrewRank::from_str(" Pirate "),
+            CrewRank::Pirate
+        );
         assert_eq!(
             CrewRank::from_str("Deckhand"),
             CrewRank::Other("Deckhand".to_owned())
@@ -1184,11 +1300,26 @@ mod tests {
 
     #[test]
     fn flag_title_collapses_gendered_pairs() {
-        assert_eq!(FlagTitle::from_str("King"), FlagTitle::Royalty);
-        assert_eq!(FlagTitle::from_str("Queen"), FlagTitle::Royalty);
-        assert_eq!(FlagTitle::from_str("Prince"), FlagTitle::Noble);
-        assert_eq!(FlagTitle::from_str("Lady"), FlagTitle::Titled);
-        assert_eq!(FlagTitle::from_str("Member"), FlagTitle::Member);
+        assert_eq!(
+            FlagTitle::from_str("King"),
+            FlagTitle::Royalty
+        );
+        assert_eq!(
+            FlagTitle::from_str("Queen"),
+            FlagTitle::Royalty
+        );
+        assert_eq!(
+            FlagTitle::from_str("Prince"),
+            FlagTitle::Noble
+        );
+        assert_eq!(
+            FlagTitle::from_str("Lady"),
+            FlagTitle::Titled
+        );
+        assert_eq!(
+            FlagTitle::from_str("Member"),
+            FlagTitle::Member
+        );
         assert_eq!(
             FlagTitle::from_str("Founder"),
             FlagTitle::Other("Founder".to_owned())
@@ -1197,9 +1328,18 @@ mod tests {
 
     #[test]
     fn skill_category_groups_all_skills() {
-        assert_eq!(Skill::Gunning.category(), SkillCategory::Piracy);
-        assert_eq!(Skill::Poker.category(), SkillCategory::Carousing);
-        assert_eq!(Skill::Blacksmithing.category(), SkillCategory::Crafting);
+        assert_eq!(
+            Skill::Gunning.category(),
+            SkillCategory::Piracy
+        );
+        assert_eq!(
+            Skill::Poker.category(),
+            SkillCategory::Carousing
+        );
+        assert_eq!(
+            Skill::Blacksmithing.category(),
+            SkillCategory::Crafting
+        );
     }
 
     #[test]
@@ -1217,7 +1357,10 @@ mod tests {
 
         let crew = info.crew().expect("has a crew");
         assert_eq!(crew.rank, CrewRank::Captain);
-        assert_eq!(crew.role.as_deref(), Some("Fleet Officer"));
+        assert_eq!(
+            crew.role.as_deref(),
+            Some("Fleet Officer")
+        );
         assert_eq!(crew.name, "Some Crew");
         // No flag name → no flag.
         assert!(info.flag().is_none());
@@ -1229,7 +1372,8 @@ mod tests {
 
     // The affiliation rows below mirror the real `pirate.wm` markup (verified
     // against saved sample pages): rank, optional duty role, and the crew/flag
-    // name as a link, all inside `<b>` runs within the row's `<font size="-1">`.
+    // name as a link, all inside `<b>` runs within the row's `<font
+    // size="-1">`.
 
     #[test]
     fn parse_affiliation_extracts_rank_role_and_crew() {
@@ -1263,9 +1407,10 @@ mod tests {
 
     #[test]
     fn parse_affiliation_role_when_crew_name_link_not_bold() {
-        // Same as the role case but the crew-name link is NOT wrapped in <b>, so
-        // the row has only two bold runs — the run count alone can't tell role
-        // from name. The non-rank, non-name bold is still the role.
+        // Same as the role case but the crew-name link is NOT wrapped in <b>,
+        // so the row has only two bold runs — the run count alone can't
+        // tell role from name. The non-rank, non-name bold is still the
+        // role.
         let html = r#"<table><tr valign="middle">
             <td><img src="files/crew-fleet_officer.png"></td>
             <td><font size="-1"><b>Fleet Officer</b> and <b>Strategist</b> of the crew

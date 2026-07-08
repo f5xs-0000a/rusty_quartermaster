@@ -1,5 +1,4 @@
-use std::fmt;
-use std::str::FromStr;
+use std::{fmt, str::FromStr};
 
 // ---------------------------------------------------------------------------
 // Ocean (server)
@@ -20,6 +19,15 @@ pub enum Ocean {
 }
 
 impl Ocean {
+    /// The defunct ocean names we recognise only to give a helpful error.
+    const DEFUNCT: [&'static str; 6] = [
+        "sage",
+        "hunter",
+        "malachite",
+        "viridian",
+        "midnight",
+        "cobalt",
+    ];
     /// All live oceans, in canonical order (Market ones first).
     pub const LIVE: [Ocean; 7] = [
         Ocean::Emerald,
@@ -30,10 +38,6 @@ impl Ocean {
         Ocean::Jade,
         Ocean::Ice,
     ];
-
-    /// The defunct ocean names we recognise only to give a helpful error.
-    const DEFUNCT: [&'static str; 6] =
-        ["sage", "hunter", "malachite", "viridian", "midnight", "cobalt"];
 
     /// Display name, e.g. `"Emerald"`.
     pub fn name(self) -> &'static str {
@@ -63,12 +67,18 @@ impl Ocean {
 
     /// Base URL for this ocean's yoweb (pirate stats) pages.
     pub fn yoweb_base(self) -> String {
-        format!("https://{}.puzzlepirates.com/yoweb", self.subdomain())
+        format!(
+            "https://{}.puzzlepirates.com/yoweb",
+            self.subdomain()
+        )
     }
 
     /// Whether the Market market API serves prices for this ocean.
     pub fn market_supported(self) -> bool {
-        matches!(self, Ocean::Emerald | Ocean::Meridian | Ocean::Cerulean)
+        matches!(
+            self,
+            Ocean::Emerald | Ocean::Meridian | Ocean::Cerulean
+        )
     }
 }
 
@@ -110,10 +120,22 @@ mod tests {
 
     #[test]
     fn from_str_is_case_insensitive() {
-        assert_eq!("emerald".parse::<Ocean>().unwrap(), Ocean::Emerald);
-        assert_eq!("EMERALD".parse::<Ocean>().unwrap(), Ocean::Emerald);
-        assert_eq!("  Ice  ".parse::<Ocean>().unwrap(), Ocean::Ice);
-        assert_eq!("MeRiDiAn".parse::<Ocean>().unwrap(), Ocean::Meridian);
+        assert_eq!(
+            "emerald".parse::<Ocean>().unwrap(),
+            Ocean::Emerald
+        );
+        assert_eq!(
+            "EMERALD".parse::<Ocean>().unwrap(),
+            Ocean::Emerald
+        );
+        assert_eq!(
+            "  Ice  ".parse::<Ocean>().unwrap(),
+            Ocean::Ice
+        );
+        assert_eq!(
+            "MeRiDiAn".parse::<Ocean>().unwrap(),
+            Ocean::Meridian
+        );
     }
 
     #[test]
@@ -135,7 +157,11 @@ mod tests {
                 ocean,
                 Ocean::Emerald | Ocean::Meridian | Ocean::Cerulean
             );
-            assert_eq!(ocean.market_supported(), expected, "{ocean}");
+            assert_eq!(
+                ocean.market_supported(),
+                expected,
+                "{ocean}"
+            );
         }
     }
 

@@ -16,17 +16,27 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
-use crate::ships::SHIPS;
-use crate::voyage::stats::{AlcoholUse, ConsumptionStats};
-use crate::voyage::{
-    effective_outcome, Battle, BattleCategory, BattleOutcome, BattleSnapshot, FightTimeline,
-    KoEvent, KoSide, TeamSide, Voyage,
+use crate::{
+    ships::SHIPS,
+    voyage::{
+        Battle,
+        BattleCategory,
+        BattleOutcome,
+        BattleSnapshot,
+        FightTimeline,
+        KoEvent,
+        KoSide,
+        TeamSide,
+        Voyage,
+        effective_outcome,
+        stats::{AlcoholUse, ConsumptionStats},
+    },
 };
 
-/// A persisted Damage-calculator snapshot for a recorded fight. Ships are stored
-/// by name (robust to `SHIPS` reordering). Our own hull is *not* stored here — it's
-/// the same for every fight of a voyage, so it's derived from the voyage's
-/// `ship_type` on load (see [`SavedBattle::to_battle`]).
+/// A persisted Damage-calculator snapshot for a recorded fight. Ships are
+/// stored by name (robust to `SHIPS` reordering). Our own hull is *not* stored
+/// here — it's the same for every fight of a voyage, so it's derived from the
+/// voyage's `ship_type` on load (see [`SavedBattle::to_battle`]).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedSnapshot {
     #[serde(default)]
@@ -37,15 +47,16 @@ pub struct SavedSnapshot {
     /// Hits the *foe* took: `[shots, rocks]`.
     #[serde(default)]
     pub foe_hits: [u32; 2],
-    /// Times rammed — a single shared count (a ram damages both ships; a head-on
-    /// counts twice for a different-size-class foe).
+    /// Times rammed — a single shared count (a ram damages both ships; a
+    /// head-on counts twice for a different-size-class foe).
     #[serde(default)]
     pub rams: u32,
     #[serde(default)]
     pub our_pirates: u32,
 }
 
-/// One side of a persisted melee — real players by name + disjoint NPC-crew counts.
+/// One side of a persisted melee — real players by name + disjoint NPC-crew
+/// counts.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedTeam {
     #[serde(default)]
@@ -54,17 +65,18 @@ pub struct SavedTeam {
     /// mercenaries`.
     #[serde(default)]
     pub swabbies: u32,
-    /// Mercenaries — a distinct crew kind, disjoint with `swabbies`. Persisted so the
-    /// "Value per share" metric keeps its exact shares split after a reload. Legacy
-    /// files (pre-field) and the enemy side default to `0`, folding those bodies into
-    /// `swabbies` and yielding pirates-only shares.
+    /// Mercenaries — a distinct crew kind, disjoint with `swabbies`. Persisted
+    /// so the "Value per share" metric keeps its exact shares split after
+    /// a reload. Legacy files (pre-field) and the enemy side default to
+    /// `0`, folding those bodies into `swabbies` and yielding pirates-only
+    /// shares.
     #[serde(default)]
     pub mercenaries: u32,
 }
 
 /// One persisted elimination on the per-fight advantage timeline. The KO'd name
-/// is intentionally dropped (the graph never lists eliminations); only its timing
-/// and side are kept.
+/// is intentionally dropped (the graph never lists eliminations); only its
+/// timing and side are kept.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedKo {
     /// Seconds from the fight start (`None` if the clock was unknown).
@@ -78,11 +90,12 @@ pub struct SavedKo {
 /// One persisted sea battle (enough to rebuild the loot/timing histograms).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedBattle {
-    /// "won" / "lost" / "disengaged" / "ongoing" / "unknown" (the last when our
-    /// identity wasn't confirmed, so win/loss couldn't be determined).
+    /// "won" / "lost" / "disengaged" / "ongoing" / "unknown" (the last when
+    /// our identity wasn't confirmed, so win/loss couldn't be determined).
     #[serde(default)]
     pub outcome: String,
-    /// Enemy category: "Brigands", "King: <name>", "Vampirates", "Players" (PvP).
+    /// Enemy category: "Brigands", "King: <name>", "Vampirates", "Players"
+    /// (PvP).
     #[serde(default)]
     pub category: String,
     /// The foe's known hull type (special encounters announce it; otherwise
@@ -114,21 +127,23 @@ pub struct SavedBattle {
     /// identities are intentionally not stored.
     #[serde(default)]
     pub our_team: Option<SavedTeam>,
-    /// The foe's side, when the melee resolved it. `None` for a disengage or an
-    /// unknown-identity fight.
+    /// The foe's side, when the melee resolved it. `None` for a disengage or
+    /// an unknown-identity fight.
     #[serde(default)]
     pub their_team: Option<SavedTeam>,
     /// The Damage-calculator snapshot, written only for recorded fights — its
-    /// presence *is* the "recorded" flag (damage advantage is derived from it, not
-    /// stored). Absent for unrecorded fights and older history.
+    /// presence *is* the "recorded" flag (damage advantage is derived from it,
+    /// not stored). Absent for unrecorded fights and older history.
     #[serde(default)]
     pub snapshot: Option<SavedSnapshot>,
     /// The side-tagged elimination timeline for the per-fight advantage graph.
-    /// Always persisted (independent of `recorded`); empty when the fight logged
-    /// no melee KOs, or for older history. See [`SavedBattle::to_timeline`].
+    /// Always persisted (independent of `recorded`); empty when the fight
+    /// logged no melee KOs, or for older history. See
+    /// [`SavedBattle::to_timeline`].
     #[serde(default)]
     pub timeline: Vec<SavedKo>,
-    /// Our / their starting headcounts for the advantage graph's absolute baseline.
+    /// Our / their starting headcounts for the advantage graph's absolute
+    /// baseline.
     #[serde(default)]
     pub our_start: u32,
     #[serde(default)]
@@ -136,19 +151,26 @@ pub struct SavedBattle {
 }
 
 impl SavedBattle {
-    /// Rebuild the in-RAM [`FightTimeline`] from the persisted form. Timestamps are
-    /// synthesized from the stored second-offsets (origin at the Unix epoch) so the
-    /// graph's wall-clock axis works; the absolute clock is irrelevant — only the
-    /// gaps between KOs matter.
+    /// Rebuild the in-RAM [`FightTimeline`] from the persisted form. Timestamps
+    /// are synthesized from the stored second-offsets (origin at the Unix
+    /// epoch) so the graph's wall-clock axis works; the absolute clock is
+    /// irrelevant — only the gaps between KOs matter.
     pub fn to_timeline(&self) -> FightTimeline {
-        let from_secs =
-            |s: i64| chrono::DateTime::from_timestamp(s, 0).map(|d| d.naive_utc());
+        let from_secs = |s: i64| {
+            chrono::DateTime::from_timestamp(s, 0).map(|d| d.naive_utc())
+        };
         let events = self
             .timeline
             .iter()
-            .map(|k| KoEvent {
-                at: k.secs.and_then(from_secs),
-                side: if k.side == "us" { KoSide::Ours } else { KoSide::Theirs },
+            .map(|k| {
+                KoEvent {
+                    at: k.secs.and_then(from_secs),
+                    side: if k.side == "us" {
+                        KoSide::Ours
+                    } else {
+                        KoSide::Theirs
+                    },
+                }
             })
             .collect();
         FightTimeline {
@@ -182,9 +204,9 @@ pub struct SavedConsumption {
     pub rum_spice: u64,
 }
 
-/// One good won over a voyage, taken from the Profits "Booty" column (Stock/Hold
-/// and Restock excluded). A plain quantity by commodity name — no market value is
-/// stored (prices are volatile and gone on reload).
+/// One good won over a voyage, taken from the Profits "Booty" column
+/// (Stock/Hold and Restock excluded). A plain quantity by commodity name — no
+/// market value is stored (prices are volatile and gone on reload).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedBootyGood {
     #[serde(default)]
@@ -193,9 +215,9 @@ pub struct SavedBootyGood {
     pub quantity: u64,
 }
 
-/// The per-voyage booty figures snapshotted from the Profits page at save time —
-/// the input side of the two `SavedVoyage` booty fields. Assembled by the app,
-/// which owns the live Profits state.
+/// The per-voyage booty figures snapshotted from the Profits page at save time
+/// — the input side of the two `SavedVoyage` booty fields. Assembled by the
+/// app, which owns the live Profits state.
 #[derive(Default)]
 pub struct BootySnapshot {
     /// PoE in the booty chest: the user-entered "Booty Chest" figure if given,
@@ -213,20 +235,20 @@ pub struct SavedVoyage {
     pub ended_at: String,
     #[serde(default)]
     pub vessel: Option<String>,
-    /// The vessel's ship type (hull) name, taken from the jobbers ship picker at
-    /// save time. `None` if no ship was assigned. Stored by name, robust to
-    /// `SHIPS` reordering.
+    /// The vessel's ship type (hull) name, taken from the jobbers ship picker
+    /// at save time. `None` if no ship was assigned. Stored by name,
+    /// robust to `SHIPS` reordering.
     #[serde(default)]
     pub ship_type: Option<String>,
     #[serde(default)]
     pub duration_secs: Option<i64>,
-    /// The voyage's data has gaps (we left mid-run, or the hold ran too low on rum
-    /// spice). Gates `rum_spice_unreliable` on reload. Older files default to
-    /// `false`.
+    /// The voyage's data has gaps (we left mid-run, or the hold ran too low on
+    /// rum spice). Gates `rum_spice_unreliable` on reload. Older files
+    /// default to `false`.
     #[serde(default)]
     pub poisoned: bool,
-    /// The run reached a booty division. Gates the Divvy section (goods + booty
-    /// PoE) in Voyage Statistics. Older files default to `false`.
+    /// The run reached a booty division. Gates the Divvy section (goods +
+    /// booty PoE) in Voyage Statistics. Older files default to `false`.
     #[serde(default)]
     pub divvied: bool,
     /// Time-weighted average crew over the run.
@@ -235,23 +257,25 @@ pub struct SavedVoyage {
     /// Time-weighted average total NPC crew (swabbies + mercenaries).
     #[serde(default)]
     pub avg_swabbies: Option<f64>,
-    /// Time-weighted average mercenaries — the rum-spice-per-mercenary denominator.
-    /// Legacy files default to `None` (no per-merc figure for old history).
+    /// Time-weighted average mercenaries — the rum-spice-per-mercenary
+    /// denominator. Legacy files default to `None` (no per-merc figure for
+    /// old history).
     #[serde(default)]
     pub avg_mercenaries: Option<f64>,
     /// Consumables used over the run, or `None` when not recorded. See
     /// [`SavedConsumption`].
     #[serde(default)]
     pub consumption: Option<SavedConsumption>,
-    /// PoE remaining in the booty chest — the user-entered "Booty Chest" figure if
-    /// given, else the auto-deduced net chest. `None` for older history or when it
-    /// wasn't recorded.
+    /// PoE remaining in the booty chest — the user-entered "Booty Chest"
+    /// figure if given, else the auto-deduced net chest. `None` for older
+    /// history or when it wasn't recorded.
     #[serde(default)]
     pub booty_chest: Option<u64>,
-    /// Goods won this voyage, from the Profits "Booty" column only. One entry per
-    /// commodity with a non-zero booty quantity; empty for older history or a
-    /// blank Booty column. Per-voyage — the log can't attribute goods to
-    /// individual battles (that split is shown only in-game).
+    /// Goods won this voyage, from the Profits "Booty" column only. One entry
+    /// per commodity with a non-zero booty quantity; empty for older
+    /// history or a blank Booty column. Per-voyage — the log can't
+    /// attribute goods to individual battles (that split is shown only
+    /// in-game).
     #[serde(default)]
     pub booty_goods: Vec<SavedBootyGood>,
     #[serde(default)]
@@ -289,7 +313,8 @@ fn category_str(c: &BattleCategory) -> String {
     }
 }
 
-/// Persisted form of one melee side. Swabbie identities are dropped (count only).
+/// Persisted form of one melee side. Swabbie identities are dropped (count
+/// only).
 fn saved_team(t: &TeamSide) -> SavedTeam {
     SavedTeam {
         players: t.players.clone(),
@@ -300,10 +325,10 @@ fn saved_team(t: &TeamSide) -> SavedTeam {
 
 /// Snapshot a completed voyage into its persisted form. Aggregates (duration,
 /// average crew) are computed now, while the run is finalized. `consumption` is
-/// snapshotted from the live Profits state by the caller (the delta is gone once
-/// the hold is restocked); the booty (chest + goods) was already frozen onto the
-/// voyage at its divvy. `self_confirmed` masks unconfirmed win/loss verdicts (and
-/// their PoE sign) to "unknown" — see [`effective_outcome`].
+/// snapshotted from the live Profits state by the caller (the delta is gone
+/// once the hold is restocked); the booty (chest + goods) was already frozen
+/// onto the voyage at its divvy. `self_confirmed` masks unconfirmed win/loss
+/// verdicts (and their PoE sign) to "unknown" — see [`effective_outcome`].
 pub fn from_voyage(
     v: &Voyage,
     vessel: Option<&str>,
@@ -311,7 +336,8 @@ pub fn from_voyage(
     consumption: Option<&ConsumptionStats>,
     self_confirmed: bool,
 ) -> SavedVoyage {
-    // Resolve a `SHIPS` index to its name, decoupling the file from index churn.
+    // Resolve a `SHIPS` index to its name, decoupling the file from index
+    // churn.
     let ship_name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string());
     SavedVoyage {
         ended_at: v.ported_at.map(|t| t.to_string()).unwrap_or_default(),
@@ -323,20 +349,24 @@ pub fn from_voyage(
         avg_pirates: v.avg_pirates(),
         avg_swabbies: v.avg_swabbies(),
         avg_mercenaries: v.avg_mercenaries(),
-        consumption: consumption.map(|c| SavedConsumption {
-            cannonballs: c.balls,
-            swill: c.alcohol.swill,
-            grog: c.alcohol.grog,
-            fine_rum: c.alcohol.fine_rum,
-            rum_spice: c.rum_spice,
+        consumption: consumption.map(|c| {
+            SavedConsumption {
+                cannonballs: c.balls,
+                swill: c.alcohol.swill,
+                grog: c.alcohol.grog,
+                fine_rum: c.alcohol.fine_rum,
+                rum_spice: c.rum_spice,
+            }
         }),
         booty_chest: v.booty_chest,
         booty_goods: v
             .booty_goods
             .iter()
-            .map(|(commodity, quantity)| SavedBootyGood {
-                commodity: commodity.clone(),
-                quantity: *quantity,
+            .map(|(commodity, quantity)| {
+                SavedBootyGood {
+                    commodity: commodity.clone(),
+                    quantity: *quantity,
+                }
             })
             .collect(),
         battles: v
@@ -345,24 +375,29 @@ pub fn from_voyage(
             .map(|b| {
                 let outcome = effective_outcome(b.outcome, self_confirmed);
                 // A masked (unknown) verdict can't carry a signed PoE.
-                let poe = matches!(outcome, BattleOutcome::Won | BattleOutcome::Lost)
-                    .then_some(b.poe)
-                    .flatten();
+                let poe = matches!(
+                    outcome,
+                    BattleOutcome::Won | BattleOutcome::Lost
+                )
+                .then_some(b.poe)
+                .flatten();
                 SavedBattle {
                     outcome: outcome_str(outcome).to_string(),
                     category: category_str(&b.category),
                     // Persist the known foe hull regardless of `recorded`: the
                     // game-announced type, else the ship type set in the Damage
-                    // calculator. Lightweight metadata (the full snapshot below is
-                    // still gated on `recorded`), so the Ship Winrate history keeps
+                    // calculator. Lightweight metadata (the full snapshot below
+                    // is still gated on `recorded`), so the
+                    // Ship Winrate history keeps
                     // this matchup even for unrecorded saved fights.
                     foe_ship: b
                         .foe_ship
                         .or_else(|| b.snapshot.map(|s| s.foe_ship))
                         .and_then(ship_name),
                     // The enemy vessel's proper name persists regardless of
-                    // `recorded` (log-derived metadata), so saved history keeps the
-                    // named foe in the Sea Battles popup rather than "Unknown vessel".
+                    // `recorded` (log-derived metadata), so saved history keeps
+                    // the named foe in the Sea Battles
+                    // popup rather than "Unknown vessel".
                     enemy: b.enemy.clone(),
                     poe,
                     goods: b.goods,
@@ -373,32 +408,37 @@ pub fn from_voyage(
                     boarding_secs: b.boarding_secs(),
                     our_team: b.our_team.as_ref().map(saved_team),
                     their_team: b.their_team.as_ref().map(saved_team),
-                    // The calculator snapshot is written only for recorded fights —
-                    // that's what "recording" means, and its presence is what marks
-                    // the fight recorded on reload. Advantage is derived from it.
+                    // The calculator snapshot is written only for recorded
+                    // fights — that's what "recording"
+                    // means, and its presence is what marks
+                    // the fight recorded on reload. Advantage is derived from
+                    // it.
                     snapshot: if b.recorded {
                         b.snapshot.map(saved_snapshot)
                     } else {
                         None
                     },
-                    // The advantage timeline persists regardless of `recorded` (it's
-                    // log-derived, not calculator state). Event seconds are offsets
+                    // The advantage timeline persists regardless of `recorded`
+                    // (it's log-derived, not calculator
+                    // state). Event seconds are offsets
                     // from the fight start.
                     timeline: b
                         .timeline
                         .events
                         .iter()
-                        .map(|e| SavedKo {
-                            secs: b
-                                .timeline
-                                .started_at
-                                .zip(e.at)
-                                .map(|(s, a)| (a - s).num_seconds()),
-                            side: match e.side {
-                                KoSide::Ours => "us",
-                                KoSide::Theirs => "them",
+                        .map(|e| {
+                            SavedKo {
+                                secs: b
+                                    .timeline
+                                    .started_at
+                                    .zip(e.at)
+                                    .map(|(s, a)| (a - s).num_seconds()),
+                                side: match e.side {
+                                    KoSide::Ours => "us",
+                                    KoSide::Theirs => "them",
+                                }
+                                .to_string(),
                             }
-                            .to_string(),
                         })
                         .collect(),
                     our_start: b.timeline.our_start,
@@ -412,9 +452,14 @@ pub fn from_voyage(
 /// Convert an in-RAM [`crate::voyage::BattleSnapshot`] to its persisted form,
 /// resolving ship indices to names.
 fn saved_snapshot(s: crate::voyage::BattleSnapshot) -> SavedSnapshot {
-    let name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string()).unwrap_or_default();
-    // `our_ship` is intentionally not persisted — it's derived from the voyage hull
-    // on load. Only the foe hull (which varies per fight) is stored.
+    let name = |i: usize| {
+        SHIPS
+            .get(i)
+            .map(|sh| sh.name.to_string())
+            .unwrap_or_default()
+    };
+    // `our_ship` is intentionally not persisted — it's derived from the voyage
+    // hull on load. Only the foe hull (which varies per fight) is stored.
     SavedSnapshot {
         foe_ship: name(s.foe_ship),
         our_hits: s.our_hits,
@@ -464,10 +509,12 @@ fn category_from_str(s: &str) -> BattleCategory {
         "Black Ship" => BattleCategory::BlackShip,
         "Monkey Boat" => BattleCategory::MonkeyBoat,
         "Players" => BattleCategory::Pvp,
-        other => match other.strip_prefix("King: ") {
-            Some(name) => BattleCategory::BrigandKing(name.to_string()),
-            None => BattleCategory::Brigand,
-        },
+        other => {
+            match other.strip_prefix("King: ") {
+                Some(name) => BattleCategory::BrigandKing(name.to_string()),
+                None => BattleCategory::Brigand,
+            }
+        }
     }
 }
 
@@ -476,8 +523,9 @@ impl SavedTeam {
         TeamSide {
             players: self.players.clone(),
             swabbies: self.swabbies,
-            // Restored from disk; `0` for legacy files (pre-field) or the enemy side,
-            // which falls back to counting only pirates as divvy shares.
+            // Restored from disk; `0` for legacy files (pre-field) or the enemy
+            // side, which falls back to counting only pirates as
+            // divvy shares.
             mercenaries: self.mercenaries,
         }
     }
@@ -505,11 +553,12 @@ fn epoch() -> Option<chrono::NaiveDateTime> {
 }
 
 impl SavedBattle {
-    /// Rebuild an in-RAM [`Battle`] for a read-only history page. Timestamps are
-    /// synthesized so `sea_secs`/`boarding_secs`/`total_secs` reproduce the stored
-    /// durations; `advantage_*` stay `None` (derived from the snapshot in the UI).
-    /// `our_ship` is the voyage's hull index (all fights share it) used to rebuild
-    /// the snapshot's own-ship, which isn't persisted per-fight.
+    /// Rebuild an in-RAM [`Battle`] for a read-only history page. Timestamps
+    /// are synthesized so `sea_secs`/`boarding_secs`/`total_secs` reproduce
+    /// the stored durations; `advantage_*` stay `None` (derived from the
+    /// snapshot in the UI). `our_ship` is the voyage's hull index (all
+    /// fights share it) used to rebuild the snapshot's own-ship, which
+    /// isn't persisted per-fight.
     fn to_battle(&self, our_ship: usize) -> Battle {
         let base = epoch();
         let after = |secs: Option<i64>| {
@@ -544,9 +593,9 @@ impl SavedBattle {
 
 impl SavedConsumption {
     /// Rebuild [`ConsumptionStats`] from the frozen counts plus the voyage's
-    /// persisted averages/duration — the live inventory delta is long gone, so we
-    /// reuse the stored figures rather than recompute. Mirrors the rate math in
-    /// [`crate::voyage::stats::consumption_stats`].
+    /// persisted averages/duration — the live inventory delta is long gone, so
+    /// we reuse the stored figures rather than recompute. Mirrors the rate
+    /// math in [`crate::voyage::stats::consumption_stats`].
     pub fn to_stats(&self, voyage: &Voyage) -> ConsumptionStats {
         let alcohol = AlcoholUse {
             swill: self.swill,
@@ -571,10 +620,12 @@ impl SavedConsumption {
         let rum_spice_per_mercenary = per(self.rum_spice, avg_mercenaries);
         ConsumptionStats {
             balls: self.cannonballs,
-            balls_per_battle: (battles > 0).then(|| self.cannonballs as f64 / battles as f64),
+            balls_per_battle: (battles > 0)
+                .then(|| self.cannonballs as f64 / battles as f64),
             alcohol,
             alcohol_per_crew,
-            alcohol_per_crew_per_min: alcohol_per_crew.and_then(|a| minutes.map(|m| a / m)),
+            alcohol_per_crew_per_min: alcohol_per_crew
+                .and_then(|a| minutes.map(|m| a / m)),
             rum_spice: self.rum_spice,
             rum_spice_per_mercenary,
             rum_spice_per_mercenary_per_min: rum_spice_per_mercenary
@@ -590,17 +641,20 @@ impl SavedConsumption {
 
 impl SavedVoyage {
     /// Reconstruct an in-RAM [`Voyage`] from its persisted form for a read-only
-    /// history page. `saved` is set (never re-offered) and `avg_override` carries
-    /// the persisted crew averages, since the raw samples weren't stored.
+    /// history page. `saved` is set (never re-offered) and `avg_override`
+    /// carries the persisted crew averages, since the raw samples weren't
+    /// stored.
     pub fn to_voyage(&self) -> Voyage {
         let base = epoch();
         let ported = self
             .duration_secs
             .zip(base)
             .map(|(s, b)| b + chrono::Duration::seconds(s));
-        // Our hull is voyage-wide; each fight's snapshot derives its own-ship from it
-        // (unknown/legacy hull falls back to the first ship, matching the old default).
-        let our_ship = self.ship_type.as_deref().and_then(ship_index).unwrap_or(0);
+        // Our hull is voyage-wide; each fight's snapshot derives its own-ship
+        // from it (unknown/legacy hull falls back to the first ship,
+        // matching the old default).
+        let our_ship =
+            self.ship_type.as_deref().and_then(ship_index).unwrap_or(0);
         Voyage {
             id: 0,
             saved_to: None,
@@ -608,7 +662,11 @@ impl SavedVoyage {
             sailed_at: base,
             ported_at: ported,
             current_battle: None,
-            battles: self.battles.iter().map(|b| b.to_battle(our_ship)).collect(),
+            battles: self
+                .battles
+                .iter()
+                .map(|b| b.to_battle(our_ship))
+                .collect(),
             crew_samples: Vec::new(),
             merc_checkpoint: 0,
             poisoned: self.poisoned,
@@ -620,7 +678,11 @@ impl SavedVoyage {
                 .map(|g| (g.commodity.clone(), g.quantity))
                 .collect(),
             saved: true,
-            avg_override: Some((self.avg_pirates, self.avg_swabbies, self.avg_mercenaries)),
+            avg_override: Some((
+                self.avg_pirates,
+                self.avg_swabbies,
+                self.avg_mercenaries,
+            )),
         }
     }
 }
@@ -634,9 +696,18 @@ mod tests {
     fn timeline_round_trips_through_saved_battle() {
         let sb = SavedBattle {
             timeline: vec![
-                SavedKo { secs: Some(0), side: "them".into() },
-                SavedKo { secs: Some(12), side: "us".into() },
-                SavedKo { secs: Some(20), side: "them".into() },
+                SavedKo {
+                    secs: Some(0),
+                    side: "them".into(),
+                },
+                SavedKo {
+                    secs: Some(12),
+                    side: "us".into(),
+                },
+                SavedKo {
+                    secs: Some(20),
+                    side: "them".into(),
+                },
             ],
             our_start: 6,
             their_start: Some(5),
@@ -646,7 +717,10 @@ mod tests {
         assert_eq!(tl.our_start, 6);
         assert_eq!(tl.their_start, Some(5));
         let sides: Vec<KoSide> = tl.events.iter().map(|e| e.side).collect();
-        assert_eq!(sides, vec![KoSide::Theirs, KoSide::Ours, KoSide::Theirs]);
+        assert_eq!(
+            sides,
+            vec![KoSide::Theirs, KoSide::Ours, KoSide::Theirs]
+        );
         // The wall-clock axis reconstructs from the stored second-offsets (the
         // leading point is the fight start at 0).
         let xs: Vec<f64> = tl
@@ -659,18 +733,25 @@ mod tests {
 
     #[test]
     fn enemy_vessel_name_round_trips() {
-        // The enemy vessel's proper name survives save -> load, so a reloaded fight
-        // shows the named foe rather than "Unknown vessel". A legacy file without the
-        // field defaults to `None`.
+        // The enemy vessel's proper name survives save -> load, so a reloaded
+        // fight shows the named foe rather than "Unknown vessel". A
+        // legacy file without the field defaults to `None`.
         let sb = SavedBattle {
             enemy: Some("Some Enemy Vessel".into()),
             ..SavedBattle::default()
         };
         let json = serde_json::to_string(&sb).unwrap();
         let back: SavedBattle = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.enemy.as_deref(), Some("Some Enemy Vessel"));
-        // The reconstructed in-RAM battle carries the name through to the UI row.
-        assert_eq!(back.to_battle(0).enemy.as_deref(), Some("Some Enemy Vessel"));
+        assert_eq!(
+            back.enemy.as_deref(),
+            Some("Some Enemy Vessel")
+        );
+        // The reconstructed in-RAM battle carries the name through to the UI
+        // row.
+        assert_eq!(
+            back.to_battle(0).enemy.as_deref(),
+            Some("Some Enemy Vessel")
+        );
 
         let legacy: SavedBattle = serde_json::from_str("{}").unwrap();
         assert_eq!(legacy.enemy, None);
@@ -678,11 +759,11 @@ mod tests {
 
     #[test]
     fn team_split_round_trips_and_legacy_defaults() {
-        // A recorded roster carries genuine swabbies and mercenaries as *disjoint*
-        // counts; the split survives save -> load.
+        // A recorded roster carries genuine swabbies and mercenaries as
+        // *disjoint* counts; the split survives save -> load.
         let team = TeamSide {
             players: vec!["Playerone".into()],
-            swabbies: 4,   // genuine swabbies
+            swabbies: 4,    // genuine swabbies
             mercenaries: 2, // distinct crew kind
         };
         let saved = saved_team(&team);
@@ -694,11 +775,12 @@ mod tests {
         assert_eq!(back.shares(), 1 + 2); // players + mercenaries (swabbies earn none)
         assert_eq!(back.headcount(), 1 + 4 + 2); // players + swabbies + mercenaries
 
-        // A legacy file predates the merc field: `mercenaries` defaults to 0, so those
-        // bodies stay folded in `swabbies` — headcount is intact, shares fall back to
-        // pirates-only.
+        // A legacy file predates the merc field: `mercenaries` defaults to 0,
+        // so those bodies stay folded in `swabbies` — headcount is
+        // intact, shares fall back to pirates-only.
         let legacy: SavedTeam =
-            serde_json::from_str(r#"{"players":["Playerone"],"swabbies":6}"#).unwrap();
+            serde_json::from_str(r#"{"players":["Playerone"],"swabbies":6}"#)
+                .unwrap();
         assert_eq!(legacy.mercenaries, 0);
         let lt = legacy.to_team();
         assert_eq!(lt.shares(), 1); // pirates only
@@ -707,21 +789,30 @@ mod tests {
 
     #[test]
     fn poison_flag_round_trips_and_flags_rum_spice() {
-        // A run poisoned live (e.g. by the rum-spice hiring-limit tell) persists the
-        // flag, and a reloaded poisoned run reports its rum-spice figure as unreliable
-        // even without a lost battle.
+        // A run poisoned live (e.g. by the rum-spice hiring-limit tell)
+        // persists the flag, and a reloaded poisoned run reports its
+        // rum-spice figure as unreliable even without a lost battle.
         let sv = SavedVoyage {
             duration_secs: Some(3600),
             avg_pirates: Some(5.0),
             avg_swabbies: Some(3.0),
             avg_mercenaries: Some(2.0),
             poisoned: true,
-            consumption: Some(SavedConsumption { rum_spice: 40, ..SavedConsumption::default() }),
-            battles: vec![SavedBattle { outcome: "won".into(), ..SavedBattle::default() }],
+            consumption: Some(SavedConsumption {
+                rum_spice: 40,
+                ..SavedConsumption::default()
+            }),
+            battles: vec![SavedBattle {
+                outcome: "won".into(),
+                ..SavedBattle::default()
+            }],
             ..SavedVoyage::default()
         };
         let voy = sv.to_voyage();
-        assert!(voy.poisoned, "the poison flag survives save -> load");
+        assert!(
+            voy.poisoned,
+            "the poison flag survives save -> load"
+        );
         let cs = sv.consumption.as_ref().unwrap().to_stats(&voy);
         assert!(
             cs.rum_spice_unreliable,
@@ -731,9 +822,10 @@ mod tests {
 
     #[test]
     fn booty_snapshot_round_trips() {
-        // The booty chest PoE and the per-commodity goods (Booty column only) are
-        // written by `from_voyage` and survive a JSON round-trip. An older file with
-        // neither field defaults to `None` chest and no goods.
+        // The booty chest PoE and the per-commodity goods (Booty column only)
+        // are written by `from_voyage` and survive a JSON round-trip.
+        // An older file with neither field defaults to `None` chest and
+        // no goods.
         let mut v = Voyage::default();
         v.sailed_at = epoch();
         v.ported_at = epoch().map(|b| b + chrono::Duration::seconds(600));
@@ -741,7 +833,13 @@ mod tests {
         // Booty is frozen onto the voyage (at its divvy) before it's persisted.
         v.booty_chest = Some(4200);
         v.booty_goods = vec![("Iron".into(), 30), ("Hemp".into(), 12)];
-        let saved = from_voyage(&v, Some("Test Vessel"), None, None, true);
+        let saved = from_voyage(
+            &v,
+            Some("Test Vessel"),
+            None,
+            None,
+            true,
+        );
         assert!(saved.divvied);
         assert_eq!(saved.booty_chest, Some(4200));
         assert_eq!(saved.booty_goods.len(), 2);
@@ -755,12 +853,16 @@ mod tests {
         assert_eq!(back.booty_goods.len(), 2);
         assert_eq!(back.booty_goods[1].commodity, "Hemp");
         assert_eq!(back.booty_goods[1].quantity, 12);
-        // Reconstruction restores the divvy flag and booty onto the in-RAM voyage
-        // (the Divvy section reads them straight off the voyage).
+        // Reconstruction restores the divvy flag and booty onto the in-RAM
+        // voyage (the Divvy section reads them straight off the
+        // voyage).
         let rv = back.to_voyage();
         assert!(rv.divvied);
         assert_eq!(rv.booty_chest, Some(4200));
-        assert_eq!(rv.booty_goods, vec![("Iron".into(), 30), ("Hemp".into(), 12)]);
+        assert_eq!(
+            rv.booty_goods,
+            vec![("Iron".into(), 30), ("Hemp".into(), 12)]
+        );
 
         // Legacy file: fields absent -> not divvied, chest None, goods empty.
         let legacy: SavedVoyage = serde_json::from_str("{}").unwrap();
@@ -771,9 +873,13 @@ mod tests {
 
     #[test]
     fn snapshot_presence_marks_recorded() {
-        // `recorded` is no longer persisted — a stored snapshot *is* the record, so a
-        // battle with a snapshot reconstructs as recorded and one without does not.
-        let with = SavedBattle { snapshot: Some(SavedSnapshot::default()), ..SavedBattle::default() };
+        // `recorded` is no longer persisted — a stored snapshot *is* the
+        // record, so a battle with a snapshot reconstructs as recorded
+        // and one without does not.
+        let with = SavedBattle {
+            snapshot: Some(SavedSnapshot::default()),
+            ..SavedBattle::default()
+        };
         assert!(with.to_battle(0).recorded);
         let without = SavedBattle::default();
         assert!(!without.to_battle(0).recorded);
@@ -819,17 +925,25 @@ mod tests {
         };
 
         let voy = sv.to_voyage();
-        assert!(voy.saved, "reconstructed runs are never re-offered for saving");
+        assert!(
+            voy.saved,
+            "reconstructed runs are never re-offered for saving"
+        );
         assert_eq!(voy.battles.len(), 2);
         // Per-fight durations reconstruct from the stored second-offsets.
         assert_eq!(voy.battles[0].total_secs(), Some(300));
         assert_eq!(voy.battles[0].sea_secs(), Some(120));
-        assert_eq!(voy.battles[0].boarding_secs(), Some(180)); // 300 − 120
-        // Crew averages ride in via the override — the raw samples weren't persisted.
+        assert_eq!(
+            voy.battles[0].boarding_secs(),
+            Some(180)
+        ); // 300 − 120
+        // Crew averages ride in via the override — the raw samples weren't
+        // persisted.
         assert_eq!(voy.avg_pirates(), Some(5.0));
         assert_eq!(voy.avg_swabbies(), Some(3.0));
 
-        // With `confirmed = true` (a saved verdict is final) the win/loss pass through.
+        // With `confirmed = true` (a saved verdict is final) the win/loss pass
+        // through.
         let bs = crate::voyage::stats::battle_stats(&voy, true);
         assert_eq!((bs.wins, bs.losses), (1, 1));
         assert_eq!(bs.poe_won_total, 8000);
@@ -845,7 +959,8 @@ mod tests {
 
     #[test]
     fn snapshot_our_ship_derives_from_voyage_hull() {
-        // `our_ship` isn't stored per-snapshot; it's rebuilt from the voyage's hull.
+        // `our_ship` isn't stored per-snapshot; it's rebuilt from the voyage's
+        // hull.
         let junk = ship_index("Junk").unwrap();
         let sv = SavedVoyage {
             ship_type: Some("Junk".into()),
@@ -861,10 +976,17 @@ mod tests {
         };
         let voy = sv.to_voyage();
         let snap = voy.battles[0].snapshot.expect("snapshot present");
-        assert_eq!(snap.our_ship, junk, "own hull comes from the voyage ship_type");
-        assert_eq!(snap.foe_ship, ship_index("Sloop").unwrap());
+        assert_eq!(
+            snap.our_ship, junk,
+            "own hull comes from the voyage ship_type"
+        );
+        assert_eq!(
+            snap.foe_ship,
+            ship_index("Sloop").unwrap()
+        );
 
-        // An unknown/absent hull falls back to the first ship (index 0), as before.
+        // An unknown/absent hull falls back to the first ship (index 0), as
+        // before.
         let sv0 = SavedVoyage {
             ship_type: None,
             battles: vec![SavedBattle {
@@ -873,7 +995,10 @@ mod tests {
             }],
             ..SavedVoyage::default()
         };
-        assert_eq!(sv0.to_voyage().battles[0].snapshot.unwrap().our_ship, 0);
+        assert_eq!(
+            sv0.to_voyage().battles[0].snapshot.unwrap().our_ship,
+            0
+        );
     }
 }
 
@@ -885,7 +1010,10 @@ pub fn load(path: &Path) -> SavedVoyages {
     };
     match serde_json::from_str(&data) {
         Ok(v) => {
-            eprintln!("Loaded voyage history from {}", path.display());
+            eprintln!(
+                "Loaded voyage history from {}",
+                path.display()
+            );
             v
         }
         Err(e) => {

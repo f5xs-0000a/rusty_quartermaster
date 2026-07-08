@@ -4,10 +4,12 @@ pub mod ui;
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::widgets::TableState;
 
-use crate::aliases;
-use crate::api::Commodity;
-use crate::app::{self, FetchPurpose, InputResult, SharedState};
-use crate::utils::{text_similarity, parse_rate, FieldKind, PromptField};
+use crate::{
+    aliases,
+    api::Commodity,
+    app::{self, FetchPurpose, InputResult, SharedState},
+    utils::{FieldKind, PromptField, parse_rate, text_similarity},
+};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -55,14 +57,15 @@ pub struct ProfitResult {
     pub gross_plundered: u64,
     /// Skimmed off the top for restocking (`gross * restocking_rate`).
     pub restock_reserve: u64,
-    /// The crew's immediate cuts, paid out during the run (the post-reserve half).
+    /// The crew's immediate cuts, paid out during the run (the post-reserve
+    /// half).
     pub immediate_cuts: u64,
     /// The other half, retained in the booty chest (gross, before theft).
     pub chest_gross: u64,
     /// PoE enemies stole from us on lost boardings (ledger sum of losses).
     pub stolen: u64,
-    /// Net booty chest actually used: deduced (`chest_gross - stolen`) unless the
-    /// user overrode the Booty Chest field.
+    /// Net booty chest actually used: deduced (`chest_gross - stolen`) unless
+    /// the user overrode the Booty Chest field.
     pub chest_net: u64,
     /// PoE from selling excess goods at market.
     pub goods_value: u64,
@@ -75,12 +78,13 @@ pub struct ProfitResult {
     /// The whole pillage's net profit and the authoritative base for the cuts.
     /// Can be negative on a loss.
     pub total_gained: i64,
-    /// Realized C.O. cut — `total_gained × rate`, capped by the goods cash on hand
-    /// (proportionally with the crew donation).
+    /// Realized C.O. cut — `total_gained × rate`, capped by the goods cash on
+    /// hand (proportionally with the crew donation).
     pub co_cut: u64,
     /// Realized crew donation — same basis and cap as the C.O. cut.
     pub crew_donation: u64,
-    /// Leftover goods cash dropped into the booty chest for the share-divvy (≥0).
+    /// Leftover goods cash dropped into the booty chest for the share-divvy
+    /// (≥0).
     pub add_to_booty: u64,
 }
 
@@ -100,15 +104,21 @@ pub struct BreakdownRow {
 
 impl ProfitResult {
     /// The breakdown rows, top to bottom — the single source of truth shared by
-    /// the popup renderer and the tooltip cursor. The C.O. cut and crew donation
-    /// rows are shown only when their CLI flags are enabled.
-    pub fn breakdown(&self, show_co: bool, show_donation: bool) -> Vec<BreakdownRow> {
-        let row = |label: &'static str, desc: &'static str, value: i64| BreakdownRow {
-            label,
-            desc,
-            value,
-            gap_after: false,
-            headline: false,
+    /// the popup renderer and the tooltip cursor. The C.O. cut and crew
+    /// donation rows are shown only when their CLI flags are enabled.
+    pub fn breakdown(
+        &self,
+        show_co: bool,
+        show_donation: bool,
+    ) -> Vec<BreakdownRow> {
+        let row = |label: &'static str, desc: &'static str, value: i64| {
+            BreakdownRow {
+                label,
+                desc,
+                value,
+                gap_after: false,
+                headline: false,
+            }
         };
         let mut rows = vec![
             row(
@@ -140,7 +150,8 @@ impl ProfitResult {
                 gap_after: true,
                 ..row(
                     "Booty chest (net)",
-                    "Retained chest minus theft — divvied to the crew by shares.",
+                    "Retained chest minus theft — divvied to the crew by \
+                     shares.",
                     self.chest_net as i64,
                 )
             },
@@ -156,7 +167,8 @@ impl ProfitResult {
             ),
             row(
                 "Pre-voyage Stocking",
-                "What you spent stocking up before the voyage; recouped from goods.",
+                "What you spent stocking up before the voyage; recouped from \
+                 goods.",
                 self.stocking as i64,
             ),
             BreakdownRow {
@@ -170,20 +182,22 @@ impl ProfitResult {
             },
         ];
 
-        // Cuts — each shown only when its CLI flag enabled it. The last shown one
-        // carries the separator before the Add-to-X pair.
+        // Cuts — each shown only when its CLI flag enabled it. The last shown
+        // one carries the separator before the Add-to-X pair.
         let mut cuts = Vec::new();
         if show_co {
             cuts.push(row(
                 "C. Officer Cut",
-                "Your share of total gained, realized from (capped by) the goods cash.",
+                "Your share of total gained, realized from (capped by) the \
+                 goods cash.",
                 self.co_cut as i64,
             ));
         }
         if show_donation {
             cuts.push(row(
                 "Crew Donation",
-                "The crew's share of total gained, realized from the goods cash.",
+                "The crew's share of total gained, realized from the goods \
+                 cash.",
                 self.crew_donation as i64,
             ));
         }
@@ -192,12 +206,14 @@ impl ProfitResult {
         }
         rows.extend(cuts);
 
-        // The two "how much to put where" outputs, grouped together — both bold.
+        // The two "how much to put where" outputs, grouped together — both
+        // bold.
         rows.push(BreakdownRow {
             headline: true,
             ..row(
                 "Add to Restocking (Hold)",
-                "Restock beyond the reserve; from goods, then your pocket on a loss.",
+                "Restock beyond the reserve; from goods, then your pocket on \
+                 a loss.",
                 self.add_to_restocking as i64,
             )
         });
@@ -214,13 +230,25 @@ impl ProfitResult {
 }
 
 pub enum PopupKind {
-    ReQueryConfirm { yes_focused: bool },
-    DeleteConfirm { row_idx: usize, name: String, yes_focused: bool },
-    RestockWarning { missing: Vec<String>, ocean_wide_focused: bool },
+    ReQueryConfirm {
+        yes_focused: bool,
+    },
+    DeleteConfirm {
+        row_idx: usize,
+        name: String,
+        yes_focused: bool,
+    },
+    RestockWarning {
+        missing: Vec<String>,
+        ocean_wide_focused: bool,
+    },
     /// Offline calc is blocked: these goods are missing a manually-entered
-    /// price. `need_buy` need a Buy Price (they require restocking); `need_sell`
-    /// need a Sell Price (they have excess to sell).
-    PriceBlock { need_buy: Vec<String>, need_sell: Vec<String> },
+    /// price. `need_buy` need a Buy Price (they require restocking);
+    /// `need_sell` need a Sell Price (they have excess to sell).
+    PriceBlock {
+        need_buy: Vec<String>,
+        need_sell: Vec<String>,
+    },
     ProfitResult(ProfitResult),
 }
 
@@ -229,8 +257,8 @@ pub struct InventoryRow {
     pub restock: String,
     pub stock: String,
     pub booty: String,
-    /// Manual prices used when Market is unavailable. `sell` is what you sell
-    /// excess goods for; `buy` is what you pay to restock.
+    /// Manual prices used when Market is unavailable. `sell` is what you
+    /// sell excess goods for; `buy` is what you pay to restock.
     pub sell: String,
     pub buy: String,
 }
@@ -284,11 +312,13 @@ pub struct ProfitsApp {
     pub calc_error: Option<String>,
     pub fetch_purpose: FetchPurpose,
     /// CLI-revealed parameter rows (otherwise hidden from the panel). When
-    /// hidden, the corresponding deduction is treated as zero in the breakdown.
+    /// hidden, the corresponding deduction is treated as zero in the
+    /// breakdown.
     pub show_co_rate: bool,
     pub show_donation: bool,
-    /// Selected row in the Profit Breakdown popup, into [`ProfitResult::breakdown`]
-    /// — drives the per-row tooltip. Moved by arrows or mouse hover.
+    /// Selected row in the Profit Breakdown popup, into
+    /// [`ProfitResult::breakdown`] — drives the per-row tooltip. Moved by
+    /// arrows or mouse hover.
     pub breakdown_cursor: usize,
 }
 
@@ -305,9 +335,15 @@ impl ProfitsApp {
                 PromptField::new("Selling Place", FieldKind::Text),
                 PromptField::new("Booty Chest", FieldKind::PositiveInt),
                 PromptField::new("C.O. Rate", FieldKind::Rate),
-                PromptField::new("Crew Donation Share Rate", FieldKind::Rate),
+                PromptField::new(
+                    "Crew Donation Share Rate",
+                    FieldKind::Rate,
+                ),
                 PromptField::new("Restocking Rate", FieldKind::Rate),
-                PromptField::new("Pre-voyage Stocking", FieldKind::PositiveInt),
+                PromptField::new(
+                    "Pre-voyage Stocking",
+                    FieldKind::PositiveInt,
+                ),
             ],
             submit_failed: None,
             popup: None,
@@ -322,15 +358,17 @@ impl ProfitsApp {
     // -- visible parameter rows --
 
     /// Panel indices that are actually shown (and thus navigable), in order.
-    /// The Restocking/Selling Place rows only matter with Market pricing; the
-    /// C.O. Rate and Crew Donation rows are revealed by CLI flags.
+    /// The Restocking/Selling Place rows only matter with Market pricing;
+    /// the C.O. Rate and Crew Donation rows are revealed by CLI flags.
     pub fn visible_panels(&self, market_supported: bool) -> Vec<usize> {
-        (0..PANEL_COUNT)
-            .filter(|&i| match i {
-                P_RESTOCK_PLACE | P_SELL_PLACE => market_supported,
-                P_CO_RATE => self.show_co_rate,
-                P_DONATION => self.show_donation,
-                _ => true,
+        (0 .. PANEL_COUNT)
+            .filter(|&i| {
+                match i {
+                    P_RESTOCK_PLACE | P_SELL_PLACE => market_supported,
+                    P_CO_RATE => self.show_co_rate,
+                    P_DONATION => self.show_donation,
+                    _ => true,
+                }
             })
             .collect()
     }
@@ -343,8 +381,14 @@ impl ProfitsApp {
         self.visible_panels(market).last().copied()
     }
 
-    /// Step to the previous/next visible panel from `idx`, or `None` at the end.
-    fn step_visible_panel(&self, idx: usize, forward: bool, market: bool) -> Option<usize> {
+    /// Step to the previous/next visible panel from `idx`, or `None` at the
+    /// end.
+    fn step_visible_panel(
+        &self,
+        idx: usize,
+        forward: bool,
+        market: bool,
+    ) -> Option<usize> {
         let vis = self.visible_panels(market);
         let pos = vis.iter().position(|&i| i == idx)?;
         if forward {
@@ -425,10 +469,15 @@ impl ProfitsApp {
                 if !self.rows.iter().any(|r| r.commod_id == id) {
                     // Keep rows in canonical (in-game) commodity order.
                     let key = |cid: u64| {
-                        crate::commodities::sort_key(app::commod_name(commodities, cid))
+                        crate::commodities::sort_key(app::commod_name(
+                            commodities,
+                            cid,
+                        ))
                     };
                     let new_key = key(id);
-                    let pos = self.rows.partition_point(|r| key(r.commod_id) < new_key);
+                    let pos = self
+                        .rows
+                        .partition_point(|r| key(r.commod_id) < new_key);
                     self.rows.insert(pos, InventoryRow::new(id));
                     changed = true;
                 }
@@ -491,7 +540,7 @@ impl ProfitsApp {
         if self.cursor == 0 {
             return;
         }
-        let prev = self.input[..self.cursor]
+        let prev = self.input[.. self.cursor]
             .char_indices()
             .next_back()
             .map(|(i, _)| i)
@@ -514,7 +563,7 @@ impl ProfitsApp {
         if self.cursor == 0 {
             return;
         }
-        self.cursor = self.input[..self.cursor]
+        self.cursor = self.input[.. self.cursor]
             .char_indices()
             .next_back()
             .map(|(i, _)| i)
@@ -523,7 +572,7 @@ impl ProfitsApp {
 
     pub fn input_move_right(&mut self) {
         if self.cursor < self.input.len() {
-            self.cursor += self.input[self.cursor..]
+            self.cursor += self.input[self.cursor ..]
                 .chars()
                 .next()
                 .map_or(0, |c| c.len_utf8());
@@ -593,9 +642,14 @@ impl ProfitsApp {
 
     // -- calculation --
 
-    /// Goods that need restocking but have no sell supply anywhere in the restock
-    /// scope (`islands`) — a single island, or every island in an archipelago.
-    pub fn missing_restock_in_scope(&self, islands: &[String], shared: &SharedState) -> Vec<String> {
+    /// Goods that need restocking but have no sell supply anywhere in the
+    /// restock scope (`islands`) — a single island, or every island in an
+    /// archipelago.
+    pub fn missing_restock_in_scope(
+        &self,
+        islands: &[String],
+        shared: &SharedState,
+    ) -> Vec<String> {
         let mut missing = Vec::new();
         for row in &self.rows {
             let name = app::commod_name(shared.commodities, row.commod_id);
@@ -607,14 +661,14 @@ impl ProfitsApp {
                 continue;
             }
 
-            let has_supply = shared
-                .cached_offers
-                .get(name)
-                .is_some_and(|cached| {
+            let has_supply =
+                shared.cached_offers.get(name).is_some_and(|cached| {
                     cached.offers.iter().any(|o| {
                         0 < o.sellprice
                             && 0 < o.sellqty
-                            && islands.iter().any(|i| o.islandname.eq_ignore_ascii_case(i))
+                            && islands
+                                .iter()
+                                .any(|i| o.islandname.eq_ignore_ascii_case(i))
                     })
                 });
             if !has_supply {
@@ -627,7 +681,10 @@ impl ProfitsApp {
     /// Offline price check: every row that needs to buy (restock) must have a
     /// Buy Price, and every row with excess to sell must have a Sell Price.
     /// Returns the goods missing each, so the calc can be blocked until filled.
-    pub fn missing_prices(&self, shared: &SharedState) -> (Vec<String>, Vec<String>) {
+    pub fn missing_prices(
+        &self,
+        shared: &SharedState,
+    ) -> (Vec<String>, Vec<String>) {
         let mut need_buy = Vec::new();
         let mut need_sell = Vec::new();
         for row in &self.rows {
@@ -675,8 +732,8 @@ impl ProfitsApp {
         self.focus = Focus::Popup;
     }
 
-    /// Number of rows in the open Profit Breakdown popup (0 if it isn't showing).
-    /// Used to clamp the tooltip cursor.
+    /// Number of rows in the open Profit Breakdown popup (0 if it isn't
+    /// showing). Used to clamp the tooltip cursor.
     fn breakdown_row_count(&self) -> usize {
         match &self.popup {
             Some(PopupKind::ProfitResult(r)) => {
@@ -696,9 +753,10 @@ impl ProfitsApp {
         // islands, or `None` for ocean-wide (blank or unrecognized).
         let restock_islands = scope.island_filter();
 
-        // The Selling Place is the mirror of the Restocking Place: it constrains
-        // where we offload the surplus (the buy offers we sell *into*). Blank =
-        // ocean-wide, i.e. the market's single best price anywhere.
+        // The Selling Place is the mirror of the Restocking Place: it
+        // constrains where we offload the surplus (the buy offers we
+        // sell *into*). Blank = ocean-wide, i.e. the market's single
+        // best price anywhere.
         let sell_scope = app::resolve_restock_scope(
             &self.panel[P_SELL_PLACE].value,
             shared.available_islands,
@@ -734,14 +792,16 @@ impl ProfitsApp {
             let offers = &cached.offers;
 
             if restock < booty + stock {
-                // Goods Value: sell excess at the best buy prices on the selling
-                // place (ocean-wide when it's blank).
+                // Goods Value: sell excess at the best buy prices on the
+                // selling place (ocean-wide when it's blank).
                 let mut buy_offers: Vec<_> = offers
                     .iter()
                     .filter(|o| 0 < o.buyprice && 0 < o.buyqty)
                     .filter(|o| {
                         sell_islands.map_or(true, |islands| {
-                            islands.iter().any(|i| o.islandname.eq_ignore_ascii_case(i))
+                            islands
+                                .iter()
+                                .any(|i| o.islandname.eq_ignore_ascii_case(i))
                         })
                     })
                     .collect();
@@ -764,7 +824,9 @@ impl ProfitsApp {
                     .filter(|o| 0 < o.sellprice && 0 < o.sellqty)
                     .filter(|o| {
                         restock_islands.map_or(true, |islands| {
-                            islands.iter().any(|i| o.islandname.eq_ignore_ascii_case(i))
+                            islands
+                                .iter()
+                                .any(|i| o.islandname.eq_ignore_ascii_case(i))
                         })
                     })
                     .collect();
@@ -788,14 +850,22 @@ impl ProfitsApp {
         // accumulate truncation error.
         //
         // A hidden parameter row means that deduction doesn't apply.
-        let co_rate = if self.show_co_rate { parse_rate(&self.panel[P_CO_RATE]) } else { 0.0 };
-        let donation_rate =
-            if self.show_donation { parse_rate(&self.panel[P_DONATION]) } else { 0.0 };
+        let co_rate = if self.show_co_rate {
+            parse_rate(&self.panel[P_CO_RATE])
+        } else {
+            0.0
+        };
+        let donation_rate = if self.show_donation {
+            parse_rate(&self.panel[P_DONATION])
+        } else {
+            0.0
+        };
 
         // Chest figures deduced from the battle ledger and the restocking rate.
         let cb = self.chest_components(shared);
 
-        // The Booty Chest field overrides the deduced net; blank uses the deduced.
+        // The Booty Chest field overrides the deduced net; blank uses the
+        // deduced.
         let chest_net = {
             let s = self.panel[P_BOOTY_CHEST].value.trim();
             if s.is_empty() {
@@ -807,16 +877,18 @@ impl ProfitsApp {
 
         let stocking = self.panel[P_STOCKING].value.parse::<u64>().unwrap_or(0);
 
-        // Restocking is paid from the reserve first; the overflow is funded by the
-        // goods cash (and the officer's pocket if it falls short).
+        // Restocking is paid from the reserve first; the overflow is funded by
+        // the goods cash (and the officer's pocket if it falls short).
         let add_to_restocking = (restock_value as f64 - cb.reserve).max(0.0);
 
         // The whole pillage's net profit (the authoritative base for the cuts).
-        // = net booty + goods + reserve + pocketed − stocking − restocking, which
-        // reduces to gross − stolen + goods − stocking − restocking.
-        let total_gained = chest_net + goods_value as f64 + cb.reserve + cb.immediate_cuts
-            - stocking as f64
-            - restock_value as f64;
+        // = net booty + goods + reserve + pocketed − stocking − restocking,
+        // which reduces to gross − stolen + goods − stocking −
+        // restocking.
+        let total_gained =
+            chest_net + goods_value as f64 + cb.reserve + cb.immediate_cuts
+                - stocking as f64
+                - restock_value as f64;
 
         // Authoritative cuts (none on a loss).
         let base = total_gained.max(0.0);
@@ -824,13 +896,19 @@ impl ProfitsApp {
         let crew_auth = base * donation_rate;
         let cuts_auth = co_auth + crew_auth;
 
-        // The cuts (and anything added to booty) are realized from the goods cash
-        // left after restocking and recouping stocking — never from the chest.
-        let available = (goods_value as f64 - add_to_restocking - stocking as f64).max(0.0);
+        // The cuts (and anything added to booty) are realized from the goods
+        // cash left after restocking and recouping stocking — never
+        // from the chest.
+        let available =
+            (goods_value as f64 - add_to_restocking - stocking as f64).max(0.0);
         let (co_cut, crew_donation, add_to_booty) = if cuts_auth <= 0.0 {
             (0.0, 0.0, available)
         } else if cuts_auth <= available {
-            (co_auth, crew_auth, available - cuts_auth)
+            (
+                co_auth,
+                crew_auth,
+                available - cuts_auth,
+            )
         } else {
             // Not enough goods cash to fund both cuts — scale them down
             // proportionally; nothing is left to add to the booty.
@@ -864,11 +942,13 @@ impl ProfitsApp {
     fn chest_components(&self, shared: &SharedState) -> ChestBreakdown {
         let restocking_rate = parse_rate(&self.panel[P_RESTOCK_RATE]);
         // The chest keeps the full retained half of every fight (the ledger
-        // already sums each fight's half, rounding the odd PoE up into the chest).
-        // The restocking skim comes off the *other* half — the crew's cut — not
-        // the chest, so the chest is independent of the restocking rate.
+        // already sums each fight's half, rounding the odd PoE up into the
+        // chest). The restocking skim comes off the *other* half — the
+        // crew's cut — not the chest, so the chest is independent of
+        // the restocking rate.
         let chest_gross = shared.pillage_chest as f64;
-        let immediate_half = (shared.pillage_gross as f64 - chest_gross).max(0.0);
+        let immediate_half =
+            (shared.pillage_gross as f64 - chest_gross).max(0.0);
         let reserve = immediate_half * restocking_rate;
         let immediate_cuts = immediate_half - reserve;
         let chest_net = (chest_gross - shared.pillage_stolen as f64).max(0.0);
@@ -880,33 +960,36 @@ impl ProfitsApp {
         }
     }
 
-    /// The auto-deduced net booty chest, used as the Booty Chest field's default
-    /// when the user leaves it blank. Floored to favor the C.O.
+    /// The auto-deduced net booty chest, used as the Booty Chest field's
+    /// default when the user leaves it blank. Floored to favor the C.O.
     pub fn deduced_chest(&self, shared: &SharedState) -> u64 {
         self.chest_components(shared).chest_net.floor() as u64
     }
 
-    /// The PoE in the booty chest to record with a saved voyage: the user-entered
-    /// "Booty Chest" figure if given, else the auto-deduced net chest. Mirrors the
-    /// `chest_net` resolution in [`Self::calculate_profits`].
+    /// The PoE in the booty chest to record with a saved voyage: the
+    /// user-entered "Booty Chest" figure if given, else the auto-deduced
+    /// net chest. Mirrors the `chest_net` resolution in
+    /// [`Self::calculate_profits`].
     pub fn recorded_chest(&self, shared: &SharedState) -> u64 {
         let s = self.panel[P_BOOTY_CHEST].value.trim();
         if s.is_empty() {
             self.deduced_chest(shared)
         } else {
-            s.parse::<u64>().unwrap_or_else(|_| self.deduced_chest(shared))
+            s.parse::<u64>()
+                .unwrap_or_else(|_| self.deduced_chest(shared))
         }
     }
 
-    /// The goods won this voyage: each commodity with a non-zero **Booty**-column
-    /// quantity, as `(commodity id, quantity)`. Stock/Hold and Restock are
-    /// excluded — only the Booty column. The caller resolves ids to names for
-    /// persistence.
+    /// The goods won this voyage: each commodity with a non-zero
+    /// **Booty**-column quantity, as `(commodity id, quantity)`. Stock/Hold
+    /// and Restock are excluded — only the Booty column. The caller
+    /// resolves ids to names for persistence.
     pub fn booty_goods(&self) -> Vec<(u64, u64)> {
         self.rows
             .iter()
             .filter_map(|r| {
-                let qty = r.booty.trim().parse::<u64>().ok().filter(|&q| q > 0)?;
+                let qty =
+                    r.booty.trim().parse::<u64>().ok().filter(|&q| q > 0)?;
                 Some((r.commod_id, qty))
             })
             .collect()
@@ -914,7 +997,11 @@ impl ProfitsApp {
 
     // -- key handling --
 
-    pub fn handle_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
+    pub fn handle_key(
+        &mut self,
+        key: KeyEvent,
+        shared: &SharedState,
+    ) -> InputResult {
         if key.code == KeyCode::Esc {
             return self.handle_esc(shared);
         }
@@ -934,18 +1021,26 @@ impl ProfitsApp {
         }
 
         match self.popup {
-            Some(PopupKind::ReQueryConfirm { .. }) => {
+            Some(PopupKind::ReQueryConfirm {
+                ..
+            }) => {
                 self.calculate_or_warn(shared);
             }
-            Some(PopupKind::DeleteConfirm { .. }) => {
+            Some(PopupKind::DeleteConfirm {
+                ..
+            }) => {
                 self.popup = None;
                 self.focus = Focus::Table;
             }
-            Some(PopupKind::RestockWarning { .. }) => {
+            Some(PopupKind::RestockWarning {
+                ..
+            }) => {
                 self.popup = None;
                 self.focus = Focus::Panel(0);
             }
-            Some(PopupKind::PriceBlock { .. }) => self.dismiss_ok_popup(),
+            Some(PopupKind::PriceBlock {
+                ..
+            }) => self.dismiss_ok_popup(),
             _ => {
                 self.popup = None;
                 self.focus = Focus::Input;
@@ -958,8 +1053,10 @@ impl ProfitsApp {
     /// PriceBlock the user needs to fill prices, so land back in the inventory
     /// table; otherwise return to the search box.
     pub fn dismiss_ok_popup(&mut self) {
-        let to_table =
-            matches!(self.popup, Some(PopupKind::PriceBlock { .. })) && !self.rows.is_empty();
+        let to_table = matches!(
+            self.popup,
+            Some(PopupKind::PriceBlock { .. })
+        ) && !self.rows.is_empty();
         self.popup = None;
         if to_table {
             self.focus_table_top();
@@ -968,7 +1065,11 @@ impl ProfitsApp {
         }
     }
 
-    fn handle_input_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
+    fn handle_input_key(
+        &mut self,
+        key: KeyEvent,
+        shared: &SharedState,
+    ) -> InputResult {
         match key.code {
             KeyCode::Enter => {
                 if self.submit(shared.commodities) {
@@ -982,15 +1083,18 @@ impl ProfitsApp {
             KeyCode::Home => self.cursor = 0,
             KeyCode::End => self.cursor = self.input.len(),
             KeyCode::Up => {
-                // The inventory table sits directly above the search box; ↑ from
-                // here climbs into it (or to the top bar when empty).
+                // The inventory table sits directly above the search box; ↑
+                // from here climbs into it (or to the top bar
+                // when empty).
                 if self.rows.is_empty() {
                     return InputResult::Exit;
                 }
                 self.focus_table_bottom();
             }
             KeyCode::Down => {
-                if let Some(i) = self.first_visible_panel(shared.market_supported) {
+                if let Some(i) =
+                    self.first_visible_panel(shared.market_supported)
+                {
                     self.focus_panel(i);
                 }
             }
@@ -1000,11 +1104,15 @@ impl ProfitsApp {
         InputResult::Consumed
     }
 
-    fn handle_table_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
+    fn handle_table_key(
+        &mut self,
+        key: KeyEvent,
+        shared: &SharedState,
+    ) -> InputResult {
         match key.code {
             KeyCode::Up => {
-                // The inventory table is the topmost widget; ↑ from the first row
-                // returns to the top bar.
+                // The inventory table is the topmost widget; ↑ from the first
+                // row returns to the top bar.
                 if self.table_state.selected() == Some(0) {
                     return InputResult::Exit;
                 }
@@ -1022,12 +1130,17 @@ impl ProfitsApp {
                 let last = self.last_editable_col(shared.market_supported);
                 self.table_right(last);
             }
-            KeyCode::Char(d) if d.is_ascii_digit() => self.table_insert_digit(d),
+            KeyCode::Char(d) if d.is_ascii_digit() => {
+                self.table_insert_digit(d)
+            }
             KeyCode::Backspace => self.table_delete_digit(),
             KeyCode::Delete => {
                 if let Some(row) = self.table_state.selected() {
-                    let name =
-                        app::commod_name(shared.commodities, self.rows[row].commod_id).to_owned();
+                    let name = app::commod_name(
+                        shared.commodities,
+                        self.rows[row].commod_id,
+                    )
+                    .to_owned();
                     self.popup = Some(PopupKind::DeleteConfirm {
                         row_idx: row,
                         name,
@@ -1050,9 +1163,11 @@ impl ProfitsApp {
             shared.available_islands,
             shared.ocean_geo,
         ) {
-            app::RestockScope::Island(name) | app::RestockScope::Archipelago { name, .. } => {
-                Some(name)
-            }
+            app::RestockScope::Island(name)
+            | app::RestockScope::Archipelago {
+                name,
+                ..
+            } => Some(name),
             app::RestockScope::OceanWide | app::RestockScope::Unknown => None,
         };
         if let Some(name) = canonical {
@@ -1072,13 +1187,15 @@ impl ProfitsApp {
                 if shared.cached_offers.is_empty() {
                     self.calc_error = None;
                     if self.rows.is_empty() {
-                        self.calc_error = Some("Add commodities first".to_owned());
+                        self.calc_error =
+                            Some("Add commodities first".to_owned());
                     } else {
                         self.fetch_purpose = FetchPurpose::Islands;
                         return InputResult::StartFetch(FetchPurpose::Islands);
                     }
                 } else {
-                    // Snap the field to the canonical island or archipelago name.
+                    // Snap the field to the canonical island or archipelago
+                    // name.
                     self.canonicalize_place(P_RESTOCK_PLACE, shared);
                     self.focus = Focus::Panel(P_SELL_PLACE);
                 }
@@ -1090,21 +1207,30 @@ impl ProfitsApp {
                 self.focus = Focus::Panel(P_BOOTY_CHEST);
             }
             KeyCode::Up => {
-                match self.step_visible_panel(idx, false, shared.market_supported) {
+                match self.step_visible_panel(
+                    idx,
+                    false,
+                    shared.market_supported,
+                ) {
                     Some(prev) => self.focus = Focus::Panel(prev),
                     // Above the first parameter sits the Search box.
                     None => self.focus_input(),
                 }
             }
             KeyCode::Down => {
-                match self.step_visible_panel(idx, true, shared.market_supported) {
+                match self.step_visible_panel(
+                    idx,
+                    true,
+                    shared.market_supported,
+                ) {
                     Some(next) => self.focus = Focus::Panel(next),
                     None => self.focus = Focus::Button,
                 }
             }
             KeyCode::Left => {
-                // The place fields are buttons until the market is queried; only
-                // move the text cursor once they accept input.
+                // The place fields are buttons until the market is queried;
+                // only move the text cursor once they accept
+                // input.
                 if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
                     self.panel[idx].move_left();
                 }
@@ -1142,7 +1268,10 @@ impl ProfitsApp {
         InputResult::Consumed
     }
 
-    pub fn handle_button_activate(&mut self, shared: &SharedState) -> InputResult {
+    pub fn handle_button_activate(
+        &mut self,
+        shared: &SharedState,
+    ) -> InputResult {
         self.calc_error = None;
         if self.rows.is_empty() {
             self.calc_error = Some("Add commodities first".to_owned());
@@ -1154,7 +1283,10 @@ impl ProfitsApp {
             // Block the calc if any required price is missing.
             let (need_buy, need_sell) = self.missing_prices(shared);
             if !need_buy.is_empty() || !need_sell.is_empty() {
-                self.popup = Some(PopupKind::PriceBlock { need_buy, need_sell });
+                self.popup = Some(PopupKind::PriceBlock {
+                    need_buy,
+                    need_sell,
+                });
                 self.focus = Focus::Popup;
                 return InputResult::Consumed;
             }
@@ -1164,34 +1296,50 @@ impl ProfitsApp {
             return InputResult::Consumed;
         }
 
-        let unknown_place = [P_RESTOCK_PLACE, P_SELL_PLACE].into_iter().find(|&i| {
-            matches!(
-                app::resolve_restock_scope(
-                    &self.panel[i].value,
-                    shared.available_islands,
-                    shared.ocean_geo,
-                ),
-                app::RestockScope::Unknown
-            )
-        });
+        let unknown_place =
+            [P_RESTOCK_PLACE, P_SELL_PLACE].into_iter().find(|&i| {
+                matches!(
+                    app::resolve_restock_scope(
+                        &self.panel[i].value,
+                        shared.available_islands,
+                        shared.ocean_geo,
+                    ),
+                    app::RestockScope::Unknown
+                )
+            });
         if let Some(i) = unknown_place {
-            let which = if i == P_RESTOCK_PLACE { "restocking" } else { "selling" };
-            self.calc_error = Some(format!("Unknown {which} island or archipelago"));
+            let which = if i == P_RESTOCK_PLACE {
+                "restocking"
+            } else {
+                "selling"
+            };
+            self.calc_error = Some(format!(
+                "Unknown {which} island or archipelago"
+            ));
         } else if shared.cached_offers.is_empty() {
             self.fetch_purpose = FetchPurpose::Profits;
             return InputResult::StartFetch(FetchPurpose::Profits);
         } else {
-            self.popup = Some(PopupKind::ReQueryConfirm { yes_focused: false });
+            self.popup = Some(PopupKind::ReQueryConfirm {
+                yes_focused: false,
+            });
             self.focus = Focus::Popup;
         }
         InputResult::Consumed
     }
 
     /// Handle a mouse click on a popup button. `yes_side` is true for
-    /// Yes / Ocean-wide (the right button), false for No / Change Island (left).
-    pub fn handle_popup_click(&mut self, yes_side: bool, shared: &SharedState) -> InputResult {
+    /// Yes / Ocean-wide (the right button), false for No / Change Island
+    /// (left).
+    pub fn handle_popup_click(
+        &mut self,
+        yes_side: bool,
+        shared: &SharedState,
+    ) -> InputResult {
         match self.popup {
-            Some(PopupKind::ReQueryConfirm { .. }) => {
+            Some(PopupKind::ReQueryConfirm {
+                ..
+            }) => {
                 if yes_side {
                     self.popup = None;
                     self.focus = Focus::Button;
@@ -1200,7 +1348,10 @@ impl ProfitsApp {
                 }
                 self.calculate_or_warn(shared);
             }
-            Some(PopupKind::DeleteConfirm { row_idx, .. }) => {
+            Some(PopupKind::DeleteConfirm {
+                row_idx,
+                ..
+            }) => {
                 if yes_side {
                     self.rows.remove(row_idx);
                     self.popup = None;
@@ -1221,7 +1372,9 @@ impl ProfitsApp {
                 self.popup = None;
                 self.focus = Focus::Table;
             }
-            Some(PopupKind::RestockWarning { .. }) => {
+            Some(PopupKind::RestockWarning {
+                ..
+            }) => {
                 if yes_side {
                     self.panel[0].value.clear();
                     self.panel[0].cursor = 0;
@@ -1237,19 +1390,27 @@ impl ProfitsApp {
                 self.focus = Focus::Input;
             }
             // PriceBlock has a single "Ok" button handled via ProfitsPopupOk.
-            Some(PopupKind::PriceBlock { .. }) => {}
+            Some(PopupKind::PriceBlock {
+                ..
+            }) => {}
             None => {}
         }
         InputResult::Consumed
     }
 
-    fn handle_button_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
+    fn handle_button_key(
+        &mut self,
+        key: KeyEvent,
+        shared: &SharedState,
+    ) -> InputResult {
         match key.code {
             KeyCode::Enter => {
                 return self.handle_button_activate(shared);
             }
             KeyCode::Up => {
-                if let Some(i) = self.last_visible_panel(shared.market_supported) {
+                if let Some(i) =
+                    self.last_visible_panel(shared.market_supported)
+                {
                     self.focus = Focus::Panel(i);
                 }
             }
@@ -1259,82 +1420,106 @@ impl ProfitsApp {
         InputResult::Consumed
     }
 
-    fn handle_popup_key(&mut self, key: KeyEvent, shared: &SharedState) -> InputResult {
+    fn handle_popup_key(
+        &mut self,
+        key: KeyEvent,
+        shared: &SharedState,
+    ) -> InputResult {
         match self.popup {
             Some(PopupKind::ReQueryConfirm {
                 ref mut yes_focused,
-            }) => match key.code {
-                KeyCode::Left | KeyCode::Right => *yes_focused = !*yes_focused,
-                KeyCode::Enter => {
-                    if *yes_focused {
-                        self.popup = None;
-                        self.focus = Focus::Button;
-                        self.fetch_purpose = FetchPurpose::Profits;
-                        return InputResult::StartFetch(FetchPurpose::Profits);
+            }) => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        *yes_focused = !*yes_focused
                     }
-                    self.calculate_or_warn(shared);
+                    KeyCode::Enter => {
+                        if *yes_focused {
+                            self.popup = None;
+                            self.focus = Focus::Button;
+                            self.fetch_purpose = FetchPurpose::Profits;
+                            return InputResult::StartFetch(
+                                FetchPurpose::Profits,
+                            );
+                        }
+                        self.calculate_or_warn(shared);
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Some(PopupKind::DeleteConfirm {
                 row_idx,
                 name: _,
                 ref mut yes_focused,
-            }) => match key.code {
-                KeyCode::Left | KeyCode::Right => *yes_focused = !*yes_focused,
-                KeyCode::Enter => {
-                    if *yes_focused {
-                        self.rows.remove(row_idx);
-                        self.popup = None;
-                        if self.rows.is_empty() {
-                            self.focus_input();
-                        } else {
-                            self.focus = Focus::Table;
-                            let new_sel = if row_idx < self.rows.len() {
-                                row_idx
-                            } else {
-                                self.rows.len() - 1
-                            };
-                            self.table_state.select(Some(new_sel));
-                            self.table_state.select_column(Some(FIRST_COL));
-                        }
-                        return InputResult::RebuildIslands;
+            }) => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        *yes_focused = !*yes_focused
                     }
-                    self.popup = None;
-                    self.focus = Focus::Table;
+                    KeyCode::Enter => {
+                        if *yes_focused {
+                            self.rows.remove(row_idx);
+                            self.popup = None;
+                            if self.rows.is_empty() {
+                                self.focus_input();
+                            } else {
+                                self.focus = Focus::Table;
+                                let new_sel = if row_idx < self.rows.len() {
+                                    row_idx
+                                } else {
+                                    self.rows.len() - 1
+                                };
+                                self.table_state.select(Some(new_sel));
+                                self.table_state.select_column(Some(FIRST_COL));
+                            }
+                            return InputResult::RebuildIslands;
+                        }
+                        self.popup = None;
+                        self.focus = Focus::Table;
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
+            }
             Some(PopupKind::RestockWarning {
                 missing: _,
                 ref mut ocean_wide_focused,
-            }) => match key.code {
-                KeyCode::Left | KeyCode::Right => *ocean_wide_focused = !*ocean_wide_focused,
-                KeyCode::Enter => {
-                    if *ocean_wide_focused {
-                        self.panel[0].value.clear();
-                        self.panel[0].cursor = 0;
-                        let profit = self.calculate_profits(shared);
-                        self.open_profit_result(profit);
-                    } else {
-                        self.popup = None;
-                        self.focus = Focus::Panel(0);
+            }) => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        *ocean_wide_focused = !*ocean_wide_focused
                     }
+                    KeyCode::Enter => {
+                        if *ocean_wide_focused {
+                            self.panel[0].value.clear();
+                            self.panel[0].cursor = 0;
+                            let profit = self.calculate_profits(shared);
+                            self.open_profit_result(profit);
+                        } else {
+                            self.popup = None;
+                            self.focus = Focus::Panel(0);
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
-            Some(PopupKind::ProfitResult(_)) => match key.code {
-                KeyCode::Up => {
-                    self.breakdown_cursor = self.breakdown_cursor.saturating_sub(1);
+            }
+            Some(PopupKind::ProfitResult(_)) => {
+                match key.code {
+                    KeyCode::Up => {
+                        self.breakdown_cursor =
+                            self.breakdown_cursor.saturating_sub(1);
+                    }
+                    KeyCode::Down => {
+                        let last = self.breakdown_row_count().saturating_sub(1);
+                        self.breakdown_cursor =
+                            (self.breakdown_cursor + 1).min(last);
+                    }
+                    KeyCode::Enter => self.dismiss_ok_popup(),
+                    _ => {}
                 }
-                KeyCode::Down => {
-                    let last = self.breakdown_row_count().saturating_sub(1);
-                    self.breakdown_cursor = (self.breakdown_cursor + 1).min(last);
-                }
-                KeyCode::Enter => self.dismiss_ok_popup(),
-                _ => {}
-            },
-            Some(PopupKind::PriceBlock { .. }) => {
+            }
+            Some(PopupKind::PriceBlock {
+                ..
+            }) => {
                 if key.code == KeyCode::Enter {
                     self.dismiss_ok_popup();
                 }
@@ -1347,8 +1532,9 @@ impl ProfitsApp {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::collections::HashMap;
+
+    use super::*;
 
     #[test]
     fn recorded_chest_prefers_field_then_deduces() {
@@ -1367,7 +1553,8 @@ mod tests {
             pillage_chest: 5_000,
         };
         let mut app = ProfitsApp::new();
-        // Blank Booty Chest field -> auto-deduced net chest = retained − stolen.
+        // Blank Booty Chest field -> auto-deduced net chest = retained −
+        // stolen.
         assert_eq!(app.recorded_chest(&shared), 4_200);
         // A user-entered figure wins over the deduction.
         app.panel[P_BOOTY_CHEST].value = "1234".into();

@@ -14,10 +14,12 @@
 //! Intervals default to 1s (Market) and 60s (puzzlepirates) but can be
 //! overridden once at startup via [`configure`] (wired to CLI flags).
 
-use std::collections::HashMap;
-use std::future::Future;
-use std::sync::OnceLock;
-use std::time::{Duration, Instant};
+use std::{
+    collections::HashMap,
+    future::Future,
+    sync::OnceLock,
+    time::{Duration, Instant},
+};
 
 use tokio::sync::Mutex;
 
@@ -34,7 +36,8 @@ impl Service {
     /// Minimum spacing between requests to this service. Uses the value set by
     /// [`configure`] when present, otherwise the built-in default.
     fn interval(self) -> Duration {
-        if let Some(secs) = INTERVALS.get().and_then(|m| m.get(&self).copied()) {
+        if let Some(secs) = INTERVALS.get().and_then(|m| m.get(&self).copied())
+        {
             return Duration::from_secs(secs);
         }
         self.default_interval()
@@ -57,7 +60,10 @@ static INTERVALS: OnceLock<HashMap<Service, u64>> = OnceLock::new();
 pub fn configure(market_secs: u64, puzzle_pirates_secs: u64) {
     let mut map = HashMap::new();
     map.insert(Service::Market, market_secs);
-    map.insert(Service::PuzzlePirates, puzzle_pirates_secs);
+    map.insert(
+        Service::PuzzlePirates,
+        puzzle_pirates_secs,
+    );
     let _ = INTERVALS.set(map);
 }
 
@@ -88,7 +94,9 @@ where
     F: FnOnce() -> Fut,
     Fut: Future<Output = T>,
 {
-    let gate = gates().get(&service).expect("gate registered for every service");
+    let gate = gates()
+        .get(&service)
+        .expect("gate registered for every service");
     let mut last = gate.last_response_start.lock().await;
 
     if let Some(prev) = *last {

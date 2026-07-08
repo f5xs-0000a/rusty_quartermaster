@@ -1,13 +1,10 @@
 pub mod ui;
 
-use std::path::PathBuf;
-use std::process::Command;
+use std::{path::PathBuf, process::Command};
 
 use crossterm::event::{KeyCode, KeyEvent};
 
-use crate::app::InputResult;
-use crate::clickmap::ClickTarget;
-use crate::ships::SHIPS;
+use crate::{app::InputResult, clickmap::ClickTarget, ships::SHIPS};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -27,9 +24,9 @@ pub struct ShipSelectPopup {
 pub const ROW_SHIP: usize = 0;
 pub const ROW_SHOTS: usize = 1;
 pub const ROW_ROCKS: usize = 2;
-/// Times Rammed — a single shared counter (a ram damages *both* ships), rendered
-/// in the merged single-cell layout. A head-on collision is entered here too,
-/// counted twice when the two hulls are different size classes.
+/// Times Rammed — a single shared counter (a ram damages *both* ships),
+/// rendered in the merged single-cell layout. A head-on collision is entered
+/// here too, counted twice when the two hulls are different size classes.
 pub const ROW_RAMS: usize = 3;
 pub const ROW_GAP: usize = 4;
 pub const ROW_SHOTS_LEFT: usize = 5;
@@ -40,8 +37,8 @@ pub const ROW_MANPOWER: usize = 7;
 pub const ROW_COUNT: usize = 8;
 const LAST_INTERACTIVE_ROW: usize = 3;
 
-/// Labels for the center column. Times Rammed and Manpower Advantage are rendered
-/// separately (they use the merged single-cell layout).
+/// Labels for the center column. Times Rammed and Manpower Advantage are
+/// rendered separately (they use the merged single-cell layout).
 pub const CENTER_LABELS: &[&str] = &[
     "Ship",
     "Shots Taken",
@@ -97,16 +94,30 @@ impl DamageApp {
 
     // -- damage calculation --
 
-    /// Total raw damage taken by `side` from shots + rocks + rams. A ram (`self.rams`
-    /// is a single shared count) damages both ships by the *other* hull's ram value —
-    /// head-ons are entered here too, counted twice for a different-size-class foe.
+    /// Total raw damage taken by `side` from shots + rocks + rams. A ram
+    /// (`self.rams` is a single shared count) damages both ships by the
+    /// *other* hull's ram value — head-ons are entered here too, counted
+    /// twice for a different-size-class foe.
     fn total_damage(&self, side: Side) -> u64 {
         let (values, own_ship, other_ship) = match side {
-            Side::Left => (&self.left, &SHIPS[self.left_ship], &SHIPS[self.right_ship]),
-            Side::Right => (&self.right, &SHIPS[self.right_ship], &SHIPS[self.left_ship]),
+            Side::Left => {
+                (
+                    &self.left,
+                    &SHIPS[self.left_ship],
+                    &SHIPS[self.right_ship],
+                )
+            }
+            Side::Right => {
+                (
+                    &self.right,
+                    &SHIPS[self.right_ship],
+                    &SHIPS[self.left_ship],
+                )
+            }
         };
 
-        let shot_dmg = values[0] as u64 * other_ship.cannon_size.damage() as u64;
+        let shot_dmg =
+            values[0] as u64 * other_ship.cannon_size.damage() as u64;
         // A rock/edge hit is 3 swordfight blocks = 1/12 of the ship's own rest
         // (morale) bar — so it scales per hull, not a flat constant.
         let rock_dmg = values[1] as u64 * (own_ship.morale_hp as u64 / 12);
@@ -124,7 +135,8 @@ impl DamageApp {
 
         let total = self.total_damage(side);
 
-        let morale_pct = (total * 100 / own_ship.morale_hp as u64).min(100) as u32;
+        let morale_pct =
+            (total * 100 / own_ship.morale_hp as u64).min(100) as u32;
         let hull_pct = (total * 100 / own_ship.hull_hp as u64).min(100) as u32;
 
         (morale_pct, hull_pct)
@@ -132,8 +144,8 @@ impl DamageApp {
 
     // -- Ship-advantage metrics (Left = our ship, Right = the foe) --
 
-    /// A ship's combat advantage from its morale damage: 1.0 (100%) when healthy,
-    /// 0.5 (50%) when fully morale-damaged, linear in between.
+    /// A ship's combat advantage from its morale damage: 1.0 (100%) when
+    /// healthy, 0.5 (50%) when fully morale-damaged, linear in between.
     pub fn ship_advantage(&self, side: Side) -> f64 {
         let morale_pct = self.calculate_damage(side).0;
         1.0 - morale_pct as f64 / 200.0
@@ -151,18 +163,22 @@ impl DamageApp {
             - theirs as f64 * self.ship_advantage(Side::Right)
     }
 
-    /// [`Self::crew_advantage`] against the Right ship type's pirate capacity — the
-    /// estimate used when the real foe headcount isn't known.
+    /// [`Self::crew_advantage`] against the Right ship type's pirate capacity —
+    /// the estimate used when the real foe headcount isn't known.
     pub fn advantage_crew(&self, our_pirates: u32) -> f64 {
-        self.crew_advantage(our_pirates, SHIPS[self.right_ship].max_pirates as u32)
+        self.crew_advantage(
+            our_pirates,
+            SHIPS[self.right_ship].max_pirates as u32,
+        )
     }
 
-    /// The Manpower Advantage range `(min, max)` — our crew-weighted strength minus
-    /// the foe's, evaluated at the extremes of both hulls' inferred crew ranges
-    /// (see [`crew_range`]). Both ship-advantage weights are positive, so advantage
-    /// rises with our count and falls with theirs: the corners are (our low vs their
-    /// high) and (our high vs their low). Neither side uses live crew — the whole
-    /// range is inferred from the two selected ship types.
+    /// The Manpower Advantage range `(min, max)` — our crew-weighted strength
+    /// minus the foe's, evaluated at the extremes of both hulls' inferred
+    /// crew ranges (see [`crew_range`]). Both ship-advantage weights are
+    /// positive, so advantage rises with our count and falls with theirs:
+    /// the corners are (our low vs their high) and (our high vs their low).
+    /// Neither side uses live crew — the whole range is inferred from the
+    /// two selected ship types.
     pub fn manpower_advantage(&self) -> (f64, f64) {
         let (our_lo, our_hi) = crew_range(self.left_ship);
         let (foe_lo, foe_hi) = crew_range(self.right_ship);
@@ -184,8 +200,9 @@ impl DamageApp {
         }
     }
 
-    /// Build a (non-interactive) calculator from a recorded snapshot, so the Sea
-    /// Battles popup can reuse the damage/advantage math to render it read-only.
+    /// Build a (non-interactive) calculator from a recorded snapshot, so the
+    /// Sea Battles popup can reuse the damage/advantage math to render it
+    /// read-only.
     pub fn from_snapshot(s: &crate::voyage::BattleSnapshot) -> Self {
         let mut app = Self::new();
         app.left_ship = s.our_ship;
@@ -196,7 +213,8 @@ impl DamageApp {
         app
     }
 
-    /// Whether any hits have been entered (so we only snapshot a fight we tracked).
+    /// Whether any hits have been entered (so we only snapshot a fight we
+    /// tracked).
     pub fn has_input(&self) -> bool {
         self.rams > 0 || self.left.iter().chain(&self.right).any(|&n| n > 0)
     }
@@ -219,8 +237,18 @@ impl DamageApp {
     /// already entered. Each saturates at 0 once that threshold is reached.
     pub fn shots_left(&self, side: Side) -> (u32, u32) {
         let (own_ship, other_ship) = match side {
-            Side::Left => (&SHIPS[self.left_ship], &SHIPS[self.right_ship]),
-            Side::Right => (&SHIPS[self.right_ship], &SHIPS[self.left_ship]),
+            Side::Left => {
+                (
+                    &SHIPS[self.left_ship],
+                    &SHIPS[self.right_ship],
+                )
+            }
+            Side::Right => {
+                (
+                    &SHIPS[self.right_ship],
+                    &SHIPS[self.left_ship],
+                )
+            }
         };
 
         let cannon_dmg = other_ship.cannon_size.damage() as u64;
@@ -229,7 +257,10 @@ impl DamageApp {
         let to_morale = (own_ship.morale_hp as u64).saturating_sub(total);
         let to_hull = (own_ship.hull_hp as u64).saturating_sub(total);
 
-        (to_morale.div_ceil(cannon_dmg) as u32, to_hull.div_ceil(cannon_dmg) as u32)
+        (
+            to_morale.div_ceil(cannon_dmg) as u32,
+            to_hull.div_ceil(cannon_dmg) as u32,
+        )
     }
 
     fn values_mut(&mut self, side: Side) -> &mut [u32; 2] {
@@ -266,7 +297,8 @@ impl DamageApp {
             path.clone()
         } else {
             let name = SHIPS[idx].name.to_lowercase().replace(' ', "_");
-            let path = std::env::temp_dir().join(format!("ratatui-ship-{}.png", name));
+            let path =
+                std::env::temp_dir().join(format!("ratatui-ship-{}.png", name));
             if std::fs::write(&path, SHIPS[idx].image_data).is_err() {
                 return;
             }
@@ -320,7 +352,8 @@ impl DamageApp {
                 }
             }
             KeyCode::Left => {
-                if self.focus_side == Side::Right && self.focus_row != ROW_RAMS {
+                if self.focus_side == Side::Right && self.focus_row != ROW_RAMS
+                {
                     self.focus_side = Side::Left;
                 }
             }
@@ -419,7 +452,8 @@ impl DamageApp {
                 }
                 self.popup = None;
                 // Changing ship invalidates the tallies — offer to reset (Yes
-                // default). Skip the confirm entirely when nothing's been tallied.
+                // default). Skip the confirm entirely when nothing's been
+                // tallied.
                 if !self.counts_are_default() {
                     self.reset_prompt = Some(true);
                 }
@@ -438,14 +472,21 @@ impl DamageApp {
 /// (index 0), where the lone human displaces a swabbie slot.
 fn swabbie_count(ship_idx: usize) -> u32 {
     let cap = SHIPS[ship_idx].max_mercenaries as u32;
-    if ship_idx == 0 { cap.saturating_sub(1) } else { cap }
+    if ship_idx == 0 {
+        cap.saturating_sub(1)
+    } else {
+        cap
+    }
 }
 
 /// Inferred crew range `(low, high)` aboard a hull for the Manpower Advantage:
-/// `swabbie_count + 1` (the lone human plus a full swabbie complement) up to the
-/// hull's pirate capacity. `high >= low` for every ship in [`SHIPS`].
+/// `swabbie_count + 1` (the lone human plus a full swabbie complement) up to
+/// the hull's pirate capacity. `high >= low` for every ship in [`SHIPS`].
 fn crew_range(ship_idx: usize) -> (u32, u32) {
-    (swabbie_count(ship_idx) + 1, SHIPS[ship_idx].max_pirates as u32)
+    (
+        swabbie_count(ship_idx) + 1,
+        SHIPS[ship_idx].max_pirates as u32,
+    )
 }
 
 /// Apply a Damage-calculator click `target` to `app`, returning true iff it was
@@ -453,26 +494,38 @@ fn crew_range(ship_idx: usize) -> (u32, u32) {
 /// page's click arms but owns no global focus — used by the Sea Battles editor.
 pub fn apply_click(app: &mut DamageApp, target: &ClickTarget) -> bool {
     match *target {
-        ClickTarget::DamageCell { row, side } => {
+        ClickTarget::DamageCell {
+            row,
+            side,
+        } => {
             app.popup = None;
             if row == ROW_SHIP {
                 let current = match side {
                     Side::Left => app.left_ship,
                     Side::Right => app.right_ship,
                 };
-                app.popup = Some(ShipSelectPopup { side, selected: current });
+                app.popup = Some(ShipSelectPopup {
+                    side,
+                    selected: current,
+                });
             } else {
                 app.focus_row = row;
                 app.focus_side = side;
             }
         }
-        ClickTarget::DamageIncrement { row, side } => {
+        ClickTarget::DamageIncrement {
+            row,
+            side,
+        } => {
             app.popup = None;
             app.focus_row = row;
             app.focus_side = side;
             app.increment();
         }
-        ClickTarget::DamageDecrement { row, side } => {
+        ClickTarget::DamageDecrement {
+            row,
+            side,
+        } => {
             app.popup = None;
             app.focus_row = row;
             app.focus_side = side;
@@ -580,19 +633,25 @@ mod tests {
         // Cutter (idx 1): swabbie_count = max_mercenaries(10), so [11, 12].
         assert_eq!(crew_range(1), (11, 12));
         // Every hull yields a non-empty range (high >= low).
-        for i in 0..SHIPS.len() {
+        for i in 0 .. SHIPS.len() {
             let (lo, hi) = crew_range(i);
-            assert!(lo <= hi, "inverted range for ship {}", SHIPS[i].name);
+            assert!(
+                lo <= hi,
+                "inverted range for ship {}",
+                SHIPS[i].name
+            );
         }
     }
 
     #[test]
     fn manpower_advantage_range_over_both_crews() {
-        // Our Sloop [6, 7] vs foe Cutter [11, 12], no damage: both advantages 1.0.
+        // Our Sloop [6, 7] vs foe Cutter [11, 12], no damage: both advantages
+        // 1.0.
         let mut app = DamageApp::new();
         app.right_ship = 1; // Cutter
         let (min, max) = app.manpower_advantage();
-        // max = our_high(7) - foe_low(11) = -4; min = our_low(6) - foe_high(12) = -6.
+        // max = our_high(7) - foe_low(11) = -4; min = our_low(6) - foe_high(12)
+        // = -6.
         assert!((min - (-6.0)).abs() < 1e-9);
         assert!((max - (-4.0)).abs() < 1e-9);
         assert!(min <= max);
@@ -614,8 +673,9 @@ mod tests {
 
     #[test]
     fn ram_is_shared_and_hits_both_ships() {
-        // Sloop vs Sloop: `rams` is a single shared count, and each side takes the
-        // *other* hull's ram (480). One ram -> 480 = 8% of 5760 morale, both sides.
+        // Sloop vs Sloop: `rams` is a single shared count, and each side takes
+        // the *other* hull's ram (480). One ram -> 480 = 8% of 5760
+        // morale, both sides.
         let mut app = DamageApp::new();
         app.rams = 1;
         assert!(app.has_input());
@@ -628,8 +688,9 @@ mod tests {
 
     #[test]
     fn rock_damage_scales_with_own_morale_bar() {
-        // A rock/edge hit is 1/12 of the ship's own rest bar. Sloop: 5760/12 = 480,
-        // i.e. 8% of morale — no longer a flat constant shared by every hull.
+        // A rock/edge hit is 1/12 of the ship's own rest bar. Sloop: 5760/12 =
+        // 480, i.e. 8% of morale — no longer a flat constant shared by
+        // every hull.
         let mut app = DamageApp::new();
         app.left[1] = 1; // one rock banged
         assert_eq!(app.calculate_damage(Side::Left).0, 8);
@@ -638,16 +699,33 @@ mod tests {
     #[test]
     fn corrected_ship_stats() {
         use crate::ships::{SHIPS, ship_index};
-        // Junk <-> Merchant Brig were transposed (morale/hull/ram); Xebec <-> War
-        // Galleon had their HP transposed. Lock in the yppedia-correct values.
+        // Junk <-> Merchant Brig were transposed (morale/hull/ram); Xebec <->
+        // War Galleon had their HP transposed. Lock in the
+        // yppedia-correct values.
         let junk = &SHIPS[ship_index("Junk").unwrap()];
-        assert_eq!((junk.morale_hp, junk.hull_hp, junk.ram_damage), (14400, 24000, 1440));
+        assert_eq!(
+            (
+                junk.morale_hp,
+                junk.hull_hp,
+                junk.ram_damage
+            ),
+            (14400, 24000, 1440)
+        );
         let mb = &SHIPS[ship_index("Merchant Brig").unwrap()];
-        assert_eq!((mb.morale_hp, mb.hull_hp, mb.ram_damage), (11520, 19200, 960));
+        assert_eq!(
+            (mb.morale_hp, mb.hull_hp, mb.ram_damage),
+            (11520, 19200, 960)
+        );
         let xebec = &SHIPS[ship_index("Xebec").unwrap()];
-        assert_eq!((xebec.morale_hp, xebec.hull_hp), (20160, 33600));
+        assert_eq!(
+            (xebec.morale_hp, xebec.hull_hp),
+            (20160, 33600)
+        );
         let wg = &SHIPS[ship_index("War Galleon").unwrap()];
-        assert_eq!((wg.morale_hp, wg.hull_hp), (14400, 24000));
+        assert_eq!(
+            (wg.morale_hp, wg.hull_hp),
+            (14400, 24000)
+        );
     }
 
     #[test]

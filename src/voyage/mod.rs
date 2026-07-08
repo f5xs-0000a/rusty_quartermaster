@@ -1,8 +1,8 @@
 //! Voyage statistics — the per-pillage record of a single sail->port run.
 //!
-//! This module owns the in-RAM data model ([`Voyage`], [`Battle`], and friends);
-//! the chat-log state machine in [`crate::chatlog`] builds these as it parses,
-//! and the submodules turn them into numbers, pixels, and JSON:
+//! This module owns the in-RAM data model ([`Voyage`], [`Battle`], and
+//! friends); the chat-log state machine in [`crate::chatlog`] builds these as
+//! it parses, and the submodules turn them into numbers, pixels, and JSON:
 //! - [`stats`] — derived statistics (consumption, win-rate, box plots).
 //! - [`ui`] — the Voyage Statistics page rendering and input handling.
 //! - [`persistence`] — the RAM->disk path (`voyages.json`).
@@ -29,15 +29,17 @@ pub enum BattleOutcome {
     Ongoing,
     /// We won the boarding (our own name was among the `Game over` winners).
     Won,
-    /// We lost (our name not among the winners) — the plundered PoE went to them.
+    /// We lost (our name not among the winners) — the plundered PoE went to
+    /// them.
     Lost,
-    /// Ended without a boarding conclusion: someone disengaged, the enemy ported,
-    /// or we shook the pursuit.
+    /// Ended without a boarding conclusion: someone disengaged, the enemy
+    /// ported, or we shook the pursuit.
     Disengaged,
     /// The fight reached a `Game over`, but we can't tell win from loss because
     /// our own identity is unconfirmed — no `--user` name, or a name that never
-    /// actually appeared in the log (so a "loss" might be an undetected win). The
-    /// PoE sign is therefore unknowable; [`Battle::poe`] is left `None`.
+    /// actually appeared in the log (so a "loss" might be an undetected win).
+    /// The PoE sign is therefore unknowable; [`Battle::poe`] is left
+    /// `None`.
     Unknown,
 }
 
@@ -50,61 +52,66 @@ pub enum BattleOutcome {
 pub enum BattleCategory {
     #[default]
     Brigand,
-    /// A named Brigand King / royalty (e.g. "Vargas the Mad", "Admiral Finius").
+    /// A named Brigand King / royalty (e.g. "Vargas the Mad", "Admiral
+    /// Finius").
     BrigandKing(String),
     Vampirate,
     Skelly,
     Werewolf,
     Zombie,
-    /// The Black Ship (El Pollo Diablo) — a rare special encounter that takes the
-    /// place of our target. Always a Grand Frigate.
+    /// The Black Ship (El Pollo Diablo) — a rare special encounter that takes
+    /// the place of our target. Always a Grand Frigate.
     BlackShip,
-    /// A monkey boat — a special encounter whose vessel name identifies its hull
-    /// (see [`crate::chatlog`]'s monkey-boat table). The hull is on [`Battle::foe_ship`].
+    /// A monkey boat — a special encounter whose vessel name identifies its
+    /// hull (see [`crate::chatlog`]'s monkey-boat table). The hull is on
+    /// [`Battle::foe_ship`].
     MonkeyBoat,
     /// Player-vs-player: the foe fielded at least one real player. Its own
-    /// category, mutually exclusive with the rest — once a fight is PvP it stays
-    /// PvP regardless of any king/monster telltale.
+    /// category, mutually exclusive with the rest — once a fight is PvP it
+    /// stays PvP regardless of any king/monster telltale.
     Pvp,
 }
 
-/// One side of a boarding melee — the players on it (by name) and a bare swabbie
-/// (NPC) count. Swabbie *identities* are intentionally dropped: we only persist
-/// who the real players were and how many swabbies fought beside them.
+/// One side of a boarding melee — the players on it (by name) and a bare
+/// swabbie (NPC) count. Swabbie *identities* are intentionally dropped: we only
+/// persist who the real players were and how many swabbies fought beside them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TeamSide {
     /// Real-player names on this side.
     pub players: Vec<String>,
-    /// Genuine **swabbies** on this side — the NPC crew that take only a pre-divvy
-    /// skim, *excluding* mercenaries (a distinct crew kind, counted in
-    /// [`Self::mercenaries`]). The two are disjoint: total NPC crew = `swabbies +
-    /// mercenaries`. (The log's raw count lines lump the two; the split is resolved
-    /// from a winners-roster ground truth — see the mercenary roster on `Vessel`.)
+    /// Genuine **swabbies** on this side — the NPC crew that take only a
+    /// pre-divvy skim, *excluding* mercenaries (a distinct crew kind,
+    /// counted in [`Self::mercenaries`]). The two are disjoint: total NPC
+    /// crew = `swabbies + mercenaries`. (The log's raw count lines lump
+    /// the two; the split is resolved from a winners-roster ground truth —
+    /// see the mercenary roster on `Vessel`.)
     pub swabbies: u32,
-    /// **Mercenaries** on this side — the NPCs with the `[name] [epithet]` convention,
-    /// distinct from and disjoint with [`Self::swabbies`]. Our side only, and only as
-    /// accurate as the last winners-roster ground truth; `0` on the enemy side (never
-    /// classified). Mercs take a full divvy share, swabbies none — so this is the merc
-    /// half of a fight's [`Self::shares`].
+    /// **Mercenaries** on this side — the NPCs with the `[name] [epithet]`
+    /// convention, distinct from and disjoint with [`Self::swabbies`]. Our
+    /// side only, and only as accurate as the last winners-roster ground
+    /// truth; `0` on the enemy side (never classified). Mercs take a full
+    /// divvy share, swabbies none — so this is the merc half of a fight's
+    /// [`Self::shares`].
     pub mercenaries: u32,
 }
 
 impl TeamSide {
-    /// Total headcount on this side (players + all NPC crew, swabbies + mercenaries).
+    /// Total headcount on this side (players + all NPC crew, swabbies +
+    /// mercenaries).
     pub fn headcount(&self) -> u32 {
         self.players.len() as u32 + self.swabbies + self.mercenaries
     }
 
-    /// Divvy shares on this side: every real pirate and every mercenary earns one
-    /// full share; free swabbies earn none (they're paid off the top). Drives the
-    /// "Value per Share" metric.
+    /// Divvy shares on this side: every real pirate and every mercenary earns
+    /// one full share; free swabbies earn none (they're paid off the top).
+    /// Drives the "Value per Share" metric.
     pub fn shares(&self) -> u32 {
         self.players.len() as u32 + self.mercenaries
     }
 }
 
-/// A snapshot of the Damage Calculator's state, captured the instant the boarding
-/// melee begins (the grapple). By then the naval phase is over, so the
+/// A snapshot of the Damage Calculator's state, captured the instant the
+/// boarding melee begins (the grapple). By then the naval phase is over, so the
 /// accumulated ship damage is final for the fight. Drives the Sea Battles
 /// per-battle widget and the advantage metrics. Ship indices are into
 /// [`crate::ships::SHIPS`] (Left = our vessel, Right = the foe).
@@ -120,33 +127,35 @@ pub struct BattleSnapshot {
     pub foe_hits: [u32; 2],
     /// Times rammed — a single shared count (a ram damages both ships).
     pub rams: u32,
-    /// Our full crew aboard at capture — real pirates + swabbies/named mercenaries
-    /// (the manpower used for the crew advantage). Named `our_pirates` for history.
+    /// Our full crew aboard at capture — real pirates + swabbies/named
+    /// mercenaries (the manpower used for the crew advantage). Named
+    /// `our_pirates` for history.
     pub our_pirates: u32,
 }
 
-/// One sea engagement, from interception to its resolution. Both the naval phase
-/// (interception -> grapple) and the boarding melee (grapple -> `Game over`) are
-/// timed; either may be absent (e.g. a disengage before grappling).
+/// One sea engagement, from interception to its resolution. Both the naval
+/// phase (interception -> grapple) and the boarding melee (grapple -> `Game
+/// over`) are timed; either may be absent (e.g. a disengage before grappling).
 #[derive(Clone, Debug, Default)]
 pub struct Battle {
     /// Enemy vessel name from the interception line (`None` if unparsed).
     pub enemy: Option<String>,
     /// Interception time — the engagement start.
     pub started_at: Option<NaiveDateTime>,
-    /// Grapple time — the sea phase ends and the boarding melee begins. `None` if
-    /// the fight never reached a boarding.
+    /// Grapple time — the sea phase ends and the boarding melee begins. `None`
+    /// if the fight never reached a boarding.
     pub grappled_at: Option<NaiveDateTime>,
     /// Resolution time (`Game over`, disengage, or enemy ported).
     pub ended_at: Option<NaiveDateTime>,
     /// Outcome from our perspective.
     pub outcome: BattleOutcome,
-    /// Gross PoE the victors plundered, signed by the (provisional) [`Self::outcome`]:
-    /// positive when we won, negative when we lost (the PoE was taken from us).
-    /// `None` only when there's no configured identity at all (direction
-    /// unknowable). When the outcome is provisional-but-unconfirmed the sign is
-    /// still stored, but the view layer presents it as absent until identity is
-    /// confirmed (mirrors [`effective_outcome`]).
+    /// Gross PoE the victors plundered, signed by the (provisional)
+    /// [`Self::outcome`]: positive when we won, negative when we lost (the
+    /// PoE was taken from us). `None` only when there's no configured
+    /// identity at all (direction unknowable). When the outcome is
+    /// provisional-but-unconfirmed the sign is still stored, but the view
+    /// layer presents it as absent until identity is confirmed (mirrors
+    /// [`effective_outcome`]).
     pub poe: Option<i64>,
     /// Units of goods in the plunder (a bare count — the log never itemizes).
     pub goods: Option<u32>,
@@ -154,33 +163,36 @@ pub struct Battle {
     pub my_cut: Option<u64>,
     /// Pirates aboard our vessel at resolution (real players incl. us).
     pub pirates: u32,
-    /// Total NPC crew aboard at resolution — swabbies **and** mercenaries, the raw
-    /// combined count that drives manpower/strength (both kinds fight). The genuine
-    /// swabbie-vs-mercenary split is kept separately in [`Self::our_team`]. Named
-    /// `swabbies` for history.
+    /// Total NPC crew aboard at resolution — swabbies **and** mercenaries, the
+    /// raw combined count that drives manpower/strength (both kinds
+    /// fight). The genuine swabbie-vs-mercenary split is kept separately
+    /// in [`Self::our_team`]. Named `swabbies` for history.
     pub swabbies: u32,
     /// What we were fighting (best-effort; defaults to generic Brigand).
     pub category: BattleCategory,
-    /// Damage advantage (ours − theirs) snapshotted from the Damage calculator at
-    /// the grapple (melee start): `[-0.5, +0.5]`. `None` if no damage was tracked.
+    /// Damage advantage (ours − theirs) snapshotted from the Damage calculator
+    /// at the grapple (melee start): `[-0.5, +0.5]`. `None` if no damage
+    /// was tracked.
     pub advantage_dmg: Option<f64>,
-    /// Headcount advantage snapshotted at the grapple (our pirates × our advantage
-    /// − enemy complement × their advantage). `None` if no damage was tracked.
+    /// Headcount advantage snapshotted at the grapple (our pirates × our
+    /// advantage − enemy complement × their advantage). `None` if no
+    /// damage was tracked.
     pub advantage_crew: Option<f64>,
     /// The Damage-calculator state for this fight (auto-frozen from the live
-    /// calculator at resolution, and editable afterward in the Sea Battles popup).
-    /// `None` until anything is captured/entered. Always shown/editable — its
-    /// presence does NOT mean "recorded".
+    /// calculator at resolution, and editable afterward in the Sea Battles
+    /// popup). `None` until anything is captured/entered. Always
+    /// shown/editable — its presence does NOT mean "recorded".
     pub snapshot: Option<BattleSnapshot>,
-    /// Whether this fight is **recorded** — i.e. written to the voyage history on
-    /// disk. Independent of [`Self::snapshot`]: the calculator/strength/advantage
-    /// always display; this flag only governs persistence. Live-tracked fights are
-    /// created with this set (see `on_interception`); the Sea Battles popup can opt
+    /// Whether this fight is **recorded** — i.e. written to the voyage history
+    /// on disk. Independent of [`Self::snapshot`]: the
+    /// calculator/strength/advantage always display; this flag only
+    /// governs persistence. Live-tracked fights are created with this set
+    /// (see `on_interception`); the Sea Battles popup can opt
     /// an individual fight out. `Battle::default()` itself leaves it `false`.
     pub recorded: bool,
-    /// Names knocked out during this fight's melee (`<Name> is eliminated!`, both
-    /// sides), accumulated while the fight is open and cleared once resolved. The
-    /// basis for [`Self::their_team`].
+    /// Names knocked out during this fight's melee (`<Name> is eliminated!`,
+    /// both sides), accumulated while the fight is open and cleared once
+    /// resolved. The basis for [`Self::their_team`].
     pub melee_kos: Vec<String>,
     /// Ordered, side-tagged elimination timeline driving the per-fight
     /// advantage-over-time graph. Built in lockstep with [`Self::melee_kos`]
@@ -188,22 +200,24 @@ pub struct Battle {
     /// [`FightTimeline`].
     pub timeline: FightTimeline,
     /// Our side of the boarding melee — players (by name) + swabbie count.
-    /// Captured at the grapple (so a crewmate who leaves mid-melee still counts)
-    /// and finalized at resolution (unioned with the winners-resynced roster, the
-    /// disconnected subtracted). `None` until grappled.
+    /// Captured at the grapple (so a crewmate who leaves mid-melee still
+    /// counts) and finalized at resolution (unioned with the
+    /// winners-resynced roster, the disconnected subtracted). `None` until
+    /// grappled.
     pub our_team: Option<TeamSide>,
-    /// The foe's side — players (by name) + swabbie count, computed at resolution
-    /// from the melee: on a win, the eliminations that aren't our crew (all
-    /// enemies are eliminated); on a loss, the winners' (enemy) roster. `None`
-    /// when no melee resolved it (a disengage, or an unknown-identity fight where
-    /// we can't tell which side the winners are) — the UI then falls back to the
-    /// ship-type estimate.
+    /// The foe's side — players (by name) + swabbie count, computed at
+    /// resolution from the melee: on a win, the eliminations that aren't
+    /// our crew (all enemies are eliminated); on a loss, the winners'
+    /// (enemy) roster. `None` when no melee resolved it (a disengage, or
+    /// an unknown-identity fight where we can't tell which side the
+    /// winners are) — the UI then falls back to the ship-type estimate.
     pub their_team: Option<TeamSide>,
-    /// The foe's *known* hull type, as a [`crate::ships::SHIPS`] index, when we can
-    /// determine it from the encounter itself (special encounters like the Black
-    /// Ship and Monkey Boats announce their hull). Seeds the Damage calculator's
-    /// foe ship; `None` when the hull is unknown and left to the user. Distinct
-    /// from a [`BattleSnapshot::foe_ship`], which is whatever the user last set.
+    /// The foe's *known* hull type, as a [`crate::ships::SHIPS`] index, when
+    /// we can determine it from the encounter itself (special encounters
+    /// like the Black Ship and Monkey Boats announce their hull). Seeds
+    /// the Damage calculator's foe ship; `None` when the hull is unknown
+    /// and left to the user. Distinct from a [`BattleSnapshot::foe_ship`],
+    /// which is whatever the user last set.
     pub foe_ship: Option<usize>,
 }
 
@@ -219,10 +233,12 @@ impl Battle {
     pub fn sea_secs(&self) -> Option<i64> {
         secs_between(self.started_at, self.grappled_at)
     }
+
     /// Boarding-melee duration (grapple -> resolution), in seconds.
     pub fn boarding_secs(&self) -> Option<i64> {
         secs_between(self.grappled_at, self.ended_at)
     }
+
     /// Whole-engagement duration (interception -> resolution), in seconds.
     pub fn total_secs(&self) -> Option<i64> {
         secs_between(self.started_at, self.ended_at)
@@ -245,9 +261,11 @@ pub enum KoSide {
 #[derive(Clone, Copy, Debug)]
 pub struct KoEvent {
     /// Log timestamp of the `... is eliminated!` line (`None` if the clock was
-    /// unknown at the time — the curve then falls back to event-index spacing).
+    /// unknown at the time — the curve then falls back to event-index
+    /// spacing).
     pub at: Option<NaiveDateTime>,
-    /// Which side the casualty was on (backfilled at resolution for sea battles).
+    /// Which side the casualty was on (backfilled at resolution for sea
+    /// battles).
     pub side: KoSide,
 }
 
@@ -285,13 +303,14 @@ pub struct FightTimeline {
 impl FightTimeline {
     /// The signed advantage (`our_alive − their_alive`) sampled at the fight
     /// start and after each elimination, as `(x, advantage)` points. With
-    /// [`Self::their_start`] known the curve is the absolute headcount gap; while
-    /// it is `None` the baseline is zero and the curve is the net-KO differential
-    /// (`theirsKO − oursKO`) — identical shape, only vertically offset.
+    /// [`Self::their_start`] known the curve is the absolute headcount gap;
+    /// while it is `None` the baseline is zero and the curve is the net-KO
+    /// differential (`theirsKO − oursKO`) — identical shape, only
+    /// vertically offset.
     ///
     /// `x` is seconds-from-start under [`AxisMode::Time`] (falling back to the
-    /// event index when a timestamp is missing) or the 1-based event index under
-    /// [`AxisMode::Event`].
+    /// event index when a timestamp is missing) or the 1-based event index
+    /// under [`AxisMode::Event`].
     pub fn advantage_series(&self, axis: AxisMode) -> Vec<(f64, i32)> {
         let base = match self.their_start {
             Some(theirs) => self.our_start as i32 - theirs as i32,
@@ -306,11 +325,12 @@ impl FightTimeline {
                 KoSide::Theirs => 1,
             };
             let x = match axis {
-                AxisMode::Time => self
-                    .started_at
-                    .zip(ev.at)
-                    .map(|(s, a)| (a - s).num_seconds() as f64)
-                    .unwrap_or((i + 1) as f64),
+                AxisMode::Time => {
+                    self.started_at
+                        .zip(ev.at)
+                        .map(|(s, a)| (a - s).num_seconds() as f64)
+                        .unwrap_or((i + 1) as f64)
+                }
                 AxisMode::Event => (i + 1) as f64,
             };
             out.push((x, adv));
@@ -318,14 +338,15 @@ impl FightTimeline {
         out
     }
 
-    /// Like [`Self::advantage_series`], but each side's headcount is scaled by its
-    /// ship's morale-advantage weight (`w_ours`, `w_theirs`, each in `0.5..=1.0`
-    /// from [`crate::damage::DamageApp::ship_advantage`]). The signed value is then
-    /// `our_alive × w_ours − their_alive × w_theirs`: each of our KOs steps down by
-    /// `w_ours`, each of theirs steps up by `w_theirs`. With both weights `1.0` this
-    /// reproduces [`Self::advantage_series`] in floating point. Used by the Sea
-    /// Battles chart (which has a Damage calculator to weigh by); the wave charts
-    /// pass `1.0`/`1.0` (no ship morale).
+    /// Like [`Self::advantage_series`], but each side's headcount is scaled by
+    /// its ship's morale-advantage weight (`w_ours`, `w_theirs`, each in
+    /// `0.5..=1.0` from [`crate::damage::DamageApp::ship_advantage`]). The
+    /// signed value is then `our_alive × w_ours − their_alive × w_theirs`:
+    /// each of our KOs steps down by `w_ours`, each of theirs steps up by
+    /// `w_theirs`. With both weights `1.0` this reproduces
+    /// [`Self::advantage_series`] in floating point. Used by the Sea
+    /// Battles chart (which has a Damage calculator to weigh by); the wave
+    /// charts pass `1.0`/`1.0` (no ship morale).
     pub fn advantage_series_weighted(
         &self,
         axis: AxisMode,
@@ -333,7 +354,9 @@ impl FightTimeline {
         w_theirs: f64,
     ) -> Vec<(f64, f64)> {
         let base = match self.their_start {
-            Some(theirs) => self.our_start as f64 * w_ours - theirs as f64 * w_theirs,
+            Some(theirs) => {
+                self.our_start as f64 * w_ours - theirs as f64 * w_theirs
+            }
             None => 0.0,
         };
         let mut adv = base;
@@ -345,11 +368,12 @@ impl FightTimeline {
                 KoSide::Theirs => w_theirs,
             };
             let x = match axis {
-                AxisMode::Time => self
-                    .started_at
-                    .zip(ev.at)
-                    .map(|(s, a)| (a - s).num_seconds() as f64)
-                    .unwrap_or((i + 1) as f64),
+                AxisMode::Time => {
+                    self.started_at
+                        .zip(ev.at)
+                        .map(|(s, a)| (a - s).num_seconds() as f64)
+                        .unwrap_or((i + 1) as f64)
+                }
                 AxisMode::Event => (i + 1) as f64,
             };
             out.push((x, adv));
@@ -367,10 +391,10 @@ pub struct CrewSample {
     pub pirates: u32,
     /// Total NPC crew aboard (swabbies + mercenaries) — the manpower count.
     pub swabbies: u32,
-    /// Mercenaries aboard. Best-effort while sampled live (mercs board invisibly);
-    /// retroactively corrected to each winners-roster ground truth (see
-    /// [`Voyage::merc_checkpoint`]). Drives the time-weighted average mercenaries the
-    /// rum-spice-per-mercenary stat divides by.
+    /// Mercenaries aboard. Best-effort while sampled live (mercs board
+    /// invisibly); retroactively corrected to each winners-roster ground
+    /// truth (see [`Voyage::merc_checkpoint`]). Drives the time-weighted
+    /// average mercenaries the rum-spice-per-mercenary stat divides by.
     pub mercenaries: u32,
 }
 
@@ -379,21 +403,24 @@ pub struct CrewSample {
 /// stats; we keep the declaration in force when we set sail as the headline.
 #[derive(Clone, Debug, Default)]
 pub struct Voyage {
-    /// Session-stable identifier, assigned from a [`crate::chatlog::GameState`]
-    /// counter when the voyage is first created. Lets the Voyage Statistics pager
-    /// pin a selection across promotion (`current_voyage` -> `voyages`) and new
-    /// runs starting. Runtime-only; not persisted (`0` for a default/test voyage).
+    /// Session-stable identifier, assigned from a
+    /// [`crate::chatlog::GameState`] counter when the voyage is first
+    /// created. Lets the Voyage Statistics pager pin a selection across
+    /// promotion (`current_voyage` -> `voyages`) and new runs starting.
+    /// Runtime-only; not persisted (`0` for a default/test voyage).
     pub id: u64,
-    /// If this voyage was persisted to history this run, the index it occupies in
-    /// [`crate::voyage::persistence::SavedVoyages::voyages`]. The pager keeps
-    /// showing this live (read-write) page and hides its on-disk read-only twin,
-    /// so a just-saved run isn't listed twice. `None` until saved. Runtime-only.
+    /// If this voyage was persisted to history this run, the index it occupies
+    /// in [`crate::voyage::persistence::SavedVoyages::voyages`]. The pager
+    /// keeps showing this live (read-write) page and hides its on-disk
+    /// read-only twin, so a just-saved run isn't listed twice. `None`
+    /// until saved. Runtime-only.
     pub saved_to: Option<usize>,
     /// Job kind in force when we set sail.
     pub job_kind: Option<JobKind>,
     /// When we set sail (first `set the vessel to sail` order of the run).
     pub sailed_at: Option<NaiveDateTime>,
-    /// When we put into port — the end of the timed run. `None` while still out.
+    /// When we put into port — the end of the timed run. `None` while still
+    /// out.
     pub ported_at: Option<NaiveDateTime>,
     /// The battle currently in progress, if any.
     pub current_battle: Option<Battle>,
@@ -403,34 +430,39 @@ pub struct Voyage {
     /// Drives the time-weighted average used for per-crew consumption stats.
     pub crew_samples: Vec<CrewSample>,
     /// Index into [`Self::crew_samples`] marking the start of the current
-    /// not-yet-ground-truthed stretch. On each winners-roster ground truth (a won
-    /// fight) every sample from here to the end is backfilled to the confirmed
-    /// mercenary count and this advances to the end — so each inter-win stretch gets
-    /// the count confirmed at its close. Runtime-only.
+    /// not-yet-ground-truthed stretch. On each winners-roster ground truth (a
+    /// won fight) every sample from here to the end is backfilled to the
+    /// confirmed mercenary count and this advances to the end — so each
+    /// inter-win stretch gets the count confirmed at its close.
+    /// Runtime-only.
     pub merc_checkpoint: usize,
     /// This voyage's data has gaps and shouldn't be fully trusted: set when we
-    /// leave the vessel mid-run (before booty is divided) or when the hold runs
-    /// too low on rum spice (the mercenary-hiring-limit tell). Gates
+    /// leave the vessel mid-run (before booty is divided) or when the hold
+    /// runs too low on rum spice (the mercenary-hiring-limit tell). Gates
     /// `rum_spice_unreliable`; persisted with the voyage.
     pub poisoned: bool,
-    /// The run reached a booty division (`The booty has been divided!`). Only then
-    /// are the goods-pillaged / booty-chest figures meaningful, so the Divvy
-    /// section shows only for a divvied run. Persisted with the voyage.
+    /// The run reached a booty division (`The booty has been divided!`). Only
+    /// then are the goods-pillaged / booty-chest figures meaningful, so
+    /// the Divvy section shows only for a divvied run. Persisted with the
+    /// voyage.
     pub divvied: bool,
-    /// PoE left in the booty chest, frozen from the live Profits state at the divvy
-    /// (the app fills it on the `booty_divided` signal). `None` until divvied — or
-    /// for a run whose booty was never recorded. Persisted with the voyage.
+    /// PoE left in the booty chest, frozen from the live Profits state at the
+    /// divvy (the app fills it on the `booty_divided` signal). `None`
+    /// until divvied — or for a run whose booty was never recorded.
+    /// Persisted with the voyage.
     pub booty_chest: Option<u64>,
-    /// Goods won this run — `(commodity, quantity)`, from the Profits Booty column —
-    /// frozen at the divvy alongside [`Self::booty_chest`]. Persisted with the voyage.
+    /// Goods won this run — `(commodity, quantity)`, from the Profits Booty
+    /// column — frozen at the divvy alongside [`Self::booty_chest`].
+    /// Persisted with the voyage.
     pub booty_goods: Vec<(String, u64)>,
     /// Runtime-only: the user has saved or dismissed this run via the
     /// save/discard prompt, so it shouldn't be offered again. Not persisted.
     pub saved: bool,
-    /// Precomputed time-weighted average crew for a voyage **reconstructed from
-    /// disk**, where the raw [`Self::crew_samples`] no longer exist (only the
-    /// averages were persisted). `(pirates, swabbies, mercenaries)`, each optional.
-    /// `None` for a live voyage, which derives its averages from `crew_samples`. See
+    /// Precomputed time-weighted average crew for a voyage **reconstructed
+    /// from disk**, where the raw [`Self::crew_samples`] no longer exist
+    /// (only the averages were persisted). `(pirates, swabbies,
+    /// mercenaries)`, each optional. `None` for a live voyage, which
+    /// derives its averages from `crew_samples`. See
     /// [`crate::voyage::persistence::SavedVoyage::to_voyage`].
     pub avg_override: Option<(Option<f64>, Option<f64>, Option<f64>)>,
 }
@@ -458,11 +490,8 @@ impl Voyage {
             // Sample `i`'s value holds from its time (or `start` for the first)
             // until the next sample's time (or `end` for the last), clamped.
             let seg_start = if i == 0 { start } else { s.at.max(start) };
-            let seg_end = self
-                .crew_samples
-                .get(i + 1)
-                .map_or(end, |n| n.at)
-                .min(end);
+            let seg_end =
+                self.crew_samples.get(i + 1).map_or(end, |n| n.at).min(end);
             let dur = (seg_end - seg_start).num_seconds();
             if dur > 0 {
                 area += field(s) as f64 * dur as f64;
@@ -476,7 +505,7 @@ impl Voyage {
     /// [`Self::avg_override`]); a live voyage computes it from `crew_samples`.
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_pirates(&self) -> Option<f64> {
-        if let Some((p, _, _)) = self.avg_override {
+        if let Some((p, ..)) = self.avg_override {
             return p;
         }
         self.avg_crew(|s| s.pirates)
@@ -492,8 +521,8 @@ impl Voyage {
         self.avg_crew(|s| s.swabbies)
     }
 
-    /// Time-weighted average mercenaries aboard over the run — the denominator for
-    /// the rum-spice-per-mercenary stat. See [`Self::avg_pirates`].
+    /// Time-weighted average mercenaries aboard over the run — the denominator
+    /// for the rum-spice-per-mercenary stat. See [`Self::avg_pirates`].
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_mercenaries(&self) -> Option<f64> {
         if let Some((_, _, m)) = self.avg_override {
@@ -505,29 +534,39 @@ impl Voyage {
 
 /// The outcome to *show* for a battle, given whether our identity is confirmed.
 ///
-/// A [`Battle::outcome`] of `Won`/`Lost` is only *provisional* — computed against
-/// the configured pirate name. Until that name is confirmed present in the log
-/// (`self_confirmed`), a win/loss can't be trusted (a "loss" might be an
-/// undetected win under a wrong name), so it's masked to [`BattleOutcome::Unknown`].
-/// `Ongoing`/`Disengaged`/`Unknown` don't depend on our identity and pass through.
-/// Because the mask keys off the *current* confirmation flag, a signal that
-/// confirms us late retroactively reveals every earlier fight.
-pub fn effective_outcome(raw: BattleOutcome, self_confirmed: bool) -> BattleOutcome {
+/// A [`Battle::outcome`] of `Won`/`Lost` is only *provisional* — computed
+/// against the configured pirate name. Until that name is confirmed present in
+/// the log (`self_confirmed`), a win/loss can't be trusted (a "loss" might be
+/// an undetected win under a wrong name), so it's masked to
+/// [`BattleOutcome::Unknown`]. `Ongoing`/`Disengaged`/`Unknown` don't depend on
+/// our identity and pass through. Because the mask keys off the *current*
+/// confirmation flag, a signal that confirms us late retroactively reveals
+/// every earlier fight.
+pub fn effective_outcome(
+    raw: BattleOutcome,
+    self_confirmed: bool,
+) -> BattleOutcome {
     match raw {
-        BattleOutcome::Won | BattleOutcome::Lost if !self_confirmed => BattleOutcome::Unknown,
+        BattleOutcome::Won | BattleOutcome::Lost if !self_confirmed => {
+            BattleOutcome::Unknown
+        }
         other => other,
     }
 }
 
 /// Seconds between two optional timestamps, or `None` if either is missing.
-fn secs_between(a: Option<NaiveDateTime>, b: Option<NaiveDateTime>) -> Option<i64> {
+fn secs_between(
+    a: Option<NaiveDateTime>,
+    b: Option<NaiveDateTime>,
+) -> Option<i64> {
     Some((b? - a?).num_seconds())
 }
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use chrono::NaiveDate;
+
+    use super::*;
 
     fn dt(h: u32, m: u32, s: u32) -> NaiveDateTime {
         NaiveDate::from_ymd_opt(2026, 6, 1)
@@ -540,9 +579,18 @@ mod tests {
     fn advantage_series_steps_and_axes() {
         let tl = FightTimeline {
             events: vec![
-                KoEvent { at: Some(dt(1, 0, 10)), side: KoSide::Theirs },
-                KoEvent { at: Some(dt(1, 0, 20)), side: KoSide::Theirs },
-                KoEvent { at: Some(dt(1, 0, 35)), side: KoSide::Ours },
+                KoEvent {
+                    at: Some(dt(1, 0, 10)),
+                    side: KoSide::Theirs,
+                },
+                KoEvent {
+                    at: Some(dt(1, 0, 20)),
+                    side: KoSide::Theirs,
+                },
+                KoEvent {
+                    at: Some(dt(1, 0, 35)),
+                    side: KoSide::Ours,
+                },
             ],
             our_start: 5,
             their_start: Some(4),
@@ -554,7 +602,8 @@ mod tests {
             tl.advantage_series(AxisMode::Event),
             vec![(0.0, 1), (1.0, 2), (2.0, 3), (3.0, 2)]
         );
-        // Time axis: x = seconds from start; identical advantage values (same shape).
+        // Time axis: x = seconds from start; identical advantage values (same
+        // shape).
         let ti = tl.advantage_series(AxisMode::Time);
         let xs: Vec<f64> = ti.iter().map(|&(x, _)| x).collect();
         let vs: Vec<i32> = ti.iter().map(|&(_, v)| v).collect();
@@ -566,9 +615,18 @@ mod tests {
     fn advantage_series_unknown_their_start_uses_net_differential() {
         let tl = FightTimeline {
             events: vec![
-                KoEvent { at: None, side: KoSide::Ours },
-                KoEvent { at: None, side: KoSide::Theirs },
-                KoEvent { at: None, side: KoSide::Theirs },
+                KoEvent {
+                    at: None,
+                    side: KoSide::Ours,
+                },
+                KoEvent {
+                    at: None,
+                    side: KoSide::Theirs,
+                },
+                KoEvent {
+                    at: None,
+                    side: KoSide::Theirs,
+                },
             ],
             our_start: 5,
             their_start: None, // unknown → baseline 0, net-KO differential
@@ -587,8 +645,14 @@ mod tests {
     fn weighted_series_scales_each_side() {
         let tl = FightTimeline {
             events: vec![
-                KoEvent { at: None, side: KoSide::Theirs },
-                KoEvent { at: None, side: KoSide::Ours },
+                KoEvent {
+                    at: None,
+                    side: KoSide::Theirs,
+                },
+                KoEvent {
+                    at: None,
+                    side: KoSide::Ours,
+                },
             ],
             our_start: 5,
             their_start: Some(4),
@@ -596,7 +660,8 @@ mod tests {
             ended_at: None,
         };
         // Ours full strength (1.0), theirs at 0.75 (morale-hurt).
-        // base = 5*1.0 - 4*0.75 = 2.0; +theirs KO (+0.75) = 2.75; +ours KO (-1.0) = 1.75.
+        // base = 5*1.0 - 4*0.75 = 2.0; +theirs KO (+0.75) = 2.75; +ours KO
+        // (-1.0) = 1.75.
         let vs: Vec<f64> = tl
             .advantage_series_weighted(AxisMode::Event, 1.0, 0.75)
             .iter()

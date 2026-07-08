@@ -1,15 +1,17 @@
 //! The bare (default) cache: hard-coded reference data baked into the binary.
 //!
 //! Everything the app needs to bootstrap *before* it has ever talked to
-//! Market or yoweb lives here, embedded at compile time via [`include_str!`]:
+//! Market or yoweb lives here, embedded at compile time via
+//! [`include_str!`]:
 //!
 //! - **goods** — the canonical commodity grouping and ordering (our source of
 //!   truth for display order; ids come from Market at runtime),
 //! - **adjectives** / **swabbie names** — the seed NPC name vocabulary used to
-//!   tell a swabbie (`[adjective] [name]`) from a mercenary (`[name] [epithet]`),
+//!   tell a swabbie (`[adjective] [name]`) from a mercenary (`[name]
+//!   [epithet]`),
 //! - **oceans → archipelagos → islands** — the geography (currently only
-//!   Emerald and Meridian are filled in; the rest are placeholders to be crawled
-//!   from yppedia later).
+//!   Emerald and Meridian are filled in; the rest are placeholders to be
+//!   crawled from yppedia later).
 //!
 //! This is the starting point for anything we persist: a first run with no
 //! `cache.json` seeds itself from here (see [`crate::cache::load`]).
@@ -86,21 +88,28 @@ pub struct BareCache {
 }
 
 impl BareCache {
-    /// Look up an ocean's geography by (case-insensitive) name, e.g. `"Emerald"`.
+    /// Look up an ocean's geography by (case-insensitive) name, e.g.
+    /// `"Emerald"`.
     pub fn ocean(&self, name: &str) -> Option<&Ocean> {
-        self.oceans.iter().find(|o| o.name.eq_ignore_ascii_case(name))
+        self.oceans
+            .iter()
+            .find(|o| o.name.eq_ignore_ascii_case(name))
     }
 }
 
 // The pretty source (`data/bare_cache.json`) is minified at build time by
 // `build.rs`; we embed the compact copy it drops in `OUT_DIR`, not the source.
-const BARE_JSON: &str = include_str!(concat!(env!("OUT_DIR"), "/bare_cache.min.json"));
+const BARE_JSON: &str = include_str!(concat!(
+    env!("OUT_DIR"),
+    "/bare_cache.min.json"
+));
 
 /// The embedded bare cache, parsed once on first access. A malformed
 /// `bare_cache.json` is a build-time authoring error, so we panic loudly rather
 /// than limp along with empty data.
 pub static BARE: LazyLock<BareCache> = LazyLock::new(|| {
-    serde_json::from_str(BARE_JSON).expect("embedded bare_cache.json is malformed")
+    serde_json::from_str(BARE_JSON)
+        .expect("embedded bare_cache.json is malformed")
 });
 
 #[cfg(test)]
@@ -110,11 +119,24 @@ mod tests {
     #[test]
     fn bare_cache_parses_and_is_populated() {
         let bare = &*BARE;
-        assert!(!bare.goods.is_empty(), "goods must be seeded");
-        assert!(!bare.adjectives.is_empty(), "adjectives must be seeded");
-        assert!(!bare.swabbie_names.is_empty(), "swabbie names must be seeded");
-        // All seven live oceans are present, even if some carry no archipelagos yet.
-        assert_eq!(bare.oceans.len(), crate::ocean::Ocean::LIVE.len());
+        assert!(
+            !bare.goods.is_empty(),
+            "goods must be seeded"
+        );
+        assert!(
+            !bare.adjectives.is_empty(),
+            "adjectives must be seeded"
+        );
+        assert!(
+            !bare.swabbie_names.is_empty(),
+            "swabbie names must be seeded"
+        );
+        // All seven live oceans are present, even if some carry no archipelagos
+        // yet.
+        assert_eq!(
+            bare.oceans.len(),
+            crate::ocean::Ocean::LIVE.len()
+        );
     }
 
     #[test]
@@ -140,8 +162,11 @@ mod tests {
     fn at_most_one_capital_per_archipelago() {
         for ocean in &BARE.oceans {
             for arch in &ocean.archipelagos {
-                let capitals =
-                    arch.islands.iter().filter(|i| i.status == Status::Capital).count();
+                let capitals = arch
+                    .islands
+                    .iter()
+                    .filter(|i| i.status == Status::Capital)
+                    .count();
                 assert!(
                     capitals <= 1,
                     "{}/{} has {capitals} capitals",

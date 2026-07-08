@@ -1,22 +1,40 @@
 use std::collections::HashMap;
 
-use crossterm::event::{KeyCode, KeyEvent, MouseButton, MouseEvent, MouseEventKind};
-use ratatui::prelude::*;
-use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
-
-use crate::aliases;
-use crate::api::{CachedOffers, Commodity, fetch_offers_for};
-use crate::bare;
-use crate::ocean::Ocean;
-use crate::chatlog::GameState;
-use crate::clickmap::{self, ClickRegion, ClickTarget};
-use crate::damage::DamageApp;
-use crate::jobbers::{
-    self, JobberFocus, JobberPane, JobbersUi, PirateCache, PiratePopup, SkillDistPopup, TrophyPopup,
-    VoyageType, VOYAGE_TYPES,
+use crossterm::event::{
+    KeyCode,
+    KeyEvent,
+    MouseButton,
+    MouseEvent,
+    MouseEventKind,
 };
-use crate::profits::ProfitsApp;
-use crate::utils::text_similarity;
+use ratatui::{
+    prelude::*,
+    widgets::{Block, Borders, Paragraph, Wrap},
+};
+
+use crate::{
+    aliases,
+    api::{CachedOffers, Commodity, fetch_offers_for},
+    bare,
+    chatlog::GameState,
+    clickmap::{self, ClickRegion, ClickTarget},
+    damage::DamageApp,
+    jobbers::{
+        self,
+        JobberFocus,
+        JobberPane,
+        JobbersUi,
+        PirateCache,
+        PiratePopup,
+        SkillDistPopup,
+        TrophyPopup,
+        VOYAGE_TYPES,
+        VoyageType,
+    },
+    ocean::Ocean,
+    profits::ProfitsApp,
+    utils::text_similarity,
+};
 
 // ---------------------------------------------------------------------------
 // App routing
@@ -45,8 +63,13 @@ impl AppId {
     }
 }
 
-pub const APP_LIST: &[AppId] =
-    &[AppId::Profits, AppId::Damage, AppId::Chatlog, AppId::Voyage, AppId::Exit];
+pub const APP_LIST: &[AppId] = &[
+    AppId::Profits,
+    AppId::Damage,
+    AppId::Chatlog,
+    AppId::Voyage,
+    AppId::Exit,
+];
 
 /// Index of the Exit app in `APP_LIST` (where the universal Esc lands).
 fn exit_index() -> usize {
@@ -104,26 +127,29 @@ pub struct SharedState<'a> {
     pub commodities: &'a [Commodity],
     pub cached_offers: &'a HashMap<String, CachedOffers>,
     pub available_islands: &'a [String],
-    /// The selected ocean's geography (archipelago → island membership) from the
-    /// baked-in [bare cache](crate::bare), used to resolve a Restocking-field
-    /// query that names an archipelago rather than a single island. `None` when
-    /// no ocean is selected or it isn't present in the bare cache.
+    /// The selected ocean's geography (archipelago → island membership) from
+    /// the baked-in [bare cache](crate::bare), used to resolve a
+    /// Restocking-field query that names an archipelago rather than a
+    /// single island. `None` when no ocean is selected or it isn't present
+    /// in the bare cache.
     pub ocean_geo: Option<&'static bare::Ocean>,
     pub loading: bool,
-    /// Whether the selected ocean has Market market data (profit calc works).
+    /// Whether the selected ocean has Market market data (profit calc
+    /// works).
     pub market_supported: bool,
     /// Gross PoE plundered, PoE stolen from us, and the retained booty chest
-    /// (per-fight halves) over the current pillage, from the battle ledger. Drive
-    /// the auto-deduced booty-chest figure on the Profits page. See
+    /// (per-fight halves) over the current pillage, from the battle ledger.
+    /// Drive the auto-deduced booty-chest figure on the Profits page. See
     /// [`crate::chatlog::GameState::current_pillage_poe`].
     pub pillage_gross: u64,
     pub pillage_stolen: u64,
     pub pillage_chest: u64,
 }
 
-/// Bundle of inputs for [`AppShell::assemble_voyage_view`] — the resolved voyage
-/// plus its pager framing and sourcing flags. Grouped into one struct so the live
-/// and historical builders share one assembly path without a 12-argument call.
+/// Bundle of inputs for [`AppShell::assemble_voyage_view`] — the resolved
+/// voyage plus its pager framing and sourcing flags. Grouped into one struct so
+/// the live and historical builders share one assembly path without a
+/// 12-argument call.
 struct AssembleView<'a> {
     vessel_name: Option<String>,
     ship_type: Option<String>,
@@ -144,11 +170,18 @@ struct AssembleView<'a> {
 // ---------------------------------------------------------------------------
 
 /// The voyage's clock span for the Voyage Statistics header: the start date and
-/// time, then the end time, e.g. `"2026-07-05 15:09 to 17:32"`. The date is shown
-/// once on the start (a run rarely crosses midnight; if it does, only the start
-/// date is labelled).
-fn voyage_period(start: chrono::NaiveDateTime, end: chrono::NaiveDateTime) -> String {
-    format!("{} to {}", start.format("%Y-%m-%d %H:%M"), end.format("%H:%M"))
+/// time, then the end time, e.g. `"2026-07-05 15:09 to 17:32"`. The date is
+/// shown once on the start (a run rarely crosses midnight; if it does, only the
+/// start date is labelled).
+fn voyage_period(
+    start: chrono::NaiveDateTime,
+    end: chrono::NaiveDateTime,
+) -> String {
+    format!(
+        "{} to {}",
+        start.format("%Y-%m-%d %H:%M"),
+        end.format("%H:%M")
+    )
 }
 
 pub fn commod_name<'a>(commodities: &'a [Commodity], id: u64) -> &'a str {
@@ -159,7 +192,10 @@ pub fn commod_name<'a>(commodities: &'a [Commodity], id: u64) -> &'a str {
         .unwrap_or("???")
 }
 
-pub fn suggest_island<'a>(query: &str, available_islands: &'a [String]) -> Option<&'a str> {
+pub fn suggest_island<'a>(
+    query: &str,
+    available_islands: &'a [String],
+) -> Option<&'a str> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return None;
@@ -213,18 +249,26 @@ pub fn suggest_island<'a>(query: &str, available_islands: &'a [String]) -> Optio
     None
 }
 
-/// Match `query` to one of an ocean's archipelagos by exact name, unique prefix,
-/// then a strict Jaro-Winkler (≥0.85 — stricter than [`suggest_island`] so an
-/// archipelago never gets fuzzily "stolen" out from under an island the user
-/// actually meant). No alias table: archipelago names are few and distinctive.
-pub fn suggest_archipelago<'a>(query: &str, ocean: &'a bare::Ocean) -> Option<&'a bare::Archipelago> {
+/// Match `query` to one of an ocean's archipelagos by exact name, unique
+/// prefix, then a strict Jaro-Winkler (≥0.85 — stricter than [`suggest_island`]
+/// so an archipelago never gets fuzzily "stolen" out from under an island the
+/// user actually meant). No alias table: archipelago names are few and
+/// distinctive.
+pub fn suggest_archipelago<'a>(
+    query: &str,
+    ocean: &'a bare::Ocean,
+) -> Option<&'a bare::Archipelago> {
     let query = query.trim().to_lowercase();
     if query.is_empty() {
         return None;
     }
 
     // Exact match
-    if let Some(arch) = ocean.archipelagos.iter().find(|a| a.name.eq_ignore_ascii_case(&query)) {
+    if let Some(arch) = ocean
+        .archipelagos
+        .iter()
+        .find(|a| a.name.eq_ignore_ascii_case(&query))
+    {
         return Some(arch);
     }
 
@@ -262,12 +306,16 @@ pub fn suggest_archipelago<'a>(query: &str, ocean: &'a bare::Ocean) -> Option<&'
 /// What the Restocking field resolves to. The field accepts either a single
 /// island *or* a whole archipelago; a blank field prices ocean-wide.
 pub enum RestockScope {
-    /// Blank field — no location filter; restock at the cheapest offers ocean-wide.
+    /// Blank field — no location filter; restock at the cheapest offers
+    /// ocean-wide.
     OceanWide,
     /// One island: restock offers must be on this island.
     Island(String),
     /// A whole archipelago: restock offers may be on any of its islands.
-    Archipelago { name: String, islands: Vec<String> },
+    Archipelago {
+        name: String,
+        islands: Vec<String>,
+    },
     /// Non-blank text that matched neither an island nor an archipelago.
     Unknown,
 }
@@ -279,7 +327,10 @@ impl RestockScope {
     pub fn island_filter(&self) -> Option<&[String]> {
         match self {
             RestockScope::Island(name) => Some(std::slice::from_ref(name)),
-            RestockScope::Archipelago { islands, .. } => Some(islands),
+            RestockScope::Archipelago {
+                islands,
+                ..
+            } => Some(islands),
             RestockScope::OceanWide | RestockScope::Unknown => None,
         }
     }
@@ -331,14 +382,18 @@ pub fn rebuild_island_list(
     islands
 }
 
-/// The Exit app: a single centered prompt. Pressing Enter or Esc while it is the
-/// open app quits the program.
+/// The Exit app: a single centered prompt. Pressing Enter or Esc while it is
+/// the open app quits the program.
 fn render_exit(frame: &mut Frame, area: Rect) {
     let bold = |s: &'static str| Span::styled(s, Style::default().bold());
 
     // Footer/credits pinned to the bottom, with one blank line below it.
     let footer = vec![
-        Line::from(vec![bold("Rusty Quartermaster"), Span::raw(" by "), bold("F5XS")]),
+        Line::from(vec![
+            bold("Rusty Quartermaster"),
+            Span::raw(" by "),
+            bold("F5XS"),
+        ]),
         Line::from(""),
         Line::from(vec![
             bold("Puzzle Pirates"),
@@ -358,8 +413,9 @@ fn render_exit(frame: &mut Frame, area: Rect) {
         ]),
     ];
 
-    // Vertically center the prompt; let the footer sit at the bottom. The footer
-    // block is generously sized so the long disclaimer line can wrap.
+    // Vertically center the prompt; let the footer sit at the bottom. The
+    // footer block is generously sized so the long disclaimer line can
+    // wrap.
     let rows = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(1),
@@ -379,7 +435,9 @@ fn render_exit(frame: &mut Frame, area: Rect) {
     );
 
     frame.render_widget(
-        Paragraph::new(footer).centered().wrap(Wrap { trim: true }),
+        Paragraph::new(footer).centered().wrap(Wrap {
+            trim: true,
+        }),
         rows[3],
     );
 }
@@ -444,12 +502,13 @@ impl AppShell {
     /// *and* the selected ocean has Market data. If either is false we never
     /// hit Market.
     fn market_ok(&self) -> bool {
-        self.query_market && self.ocean.is_some_and(Ocean::market_supported)
+        self.query_market
+            && self.ocean.is_some_and(Ocean::market_supported)
     }
 
-    /// The selected ocean's geography from the baked-in [bare cache](crate::bare),
-    /// if any. Feeds [`SharedState::ocean_geo`] so archipelago restock filtering
-    /// can resolve names.
+    /// The selected ocean's geography from the baked-in [bare
+    /// cache](crate::bare), if any. Feeds [`SharedState::ocean_geo`] so
+    /// archipelago restock filtering can resolve names.
     pub fn ocean_geo(&self) -> Option<&'static bare::Ocean> {
         self.ocean.and_then(|o| bare::BARE.ocean(o.name()))
     }
@@ -461,7 +520,8 @@ impl AppShell {
             .iter()
             .map(|r| commod_name(&self.commodities, r.commod_id).to_owned())
             .collect();
-        self.available_islands = rebuild_island_list(&self.cached_offers, &commod_names);
+        self.available_islands =
+            rebuild_island_list(&self.cached_offers, &commod_names);
     }
 
     // -- rendering --
@@ -548,10 +608,11 @@ impl AppShell {
     }
 
     /// Draw the full-width two-line top bar: a continuous shaded strip split
-    /// into four equal slots. Each slot's whole box is shaded along a three-step
-    /// brightness ramp — the open/selected app is brightest; while the bar is
-    /// focused the other slots sit a step up from the resting shade; once focus
-    /// drops into an app those others fall back to the base shade.
+    /// into four equal slots. Each slot's whole box is shaded along a
+    /// three-step brightness ramp — the open/selected app is brightest;
+    /// while the bar is focused the other slots sit a step up from the
+    /// resting shade; once focus drops into an app those others fall back
+    /// to the base shade.
     fn render_topbar(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.global_focus == GlobalFocus::TopBar;
 
@@ -559,16 +620,21 @@ impl AppShell {
         // (the open app). Backgrounds fill the entire slot box.
         let base = Style::default().bg(Color::DarkGray).fg(Color::White);
         let middle = Style::default().bg(Color::Gray).fg(Color::Black);
-        let strongest = Style::default().bg(Color::White).fg(Color::Black).bold();
+        let strongest =
+            Style::default().bg(Color::White).fg(Color::Black).bold();
 
-        // Four equal slots side by side, contiguous (no gaps) so the shade reads
-        // as one bar.
+        // Four equal slots side by side, contiguous (no gaps) so the shade
+        // reads as one bar.
         let slots = Layout::horizontal(
-            APP_LIST.iter().map(|_| Constraint::Ratio(1, APP_LIST.len() as u32)),
+            APP_LIST
+                .iter()
+                .map(|_| Constraint::Ratio(1, APP_LIST.len() as u32)),
         )
         .split(area);
 
-        for (i, (&app_id, &slot)) in APP_LIST.iter().zip(slots.iter()).enumerate() {
+        for (i, (&app_id, &slot)) in
+            APP_LIST.iter().zip(slots.iter()).enumerate()
+        {
             let style = if i == self.sidebar_index {
                 strongest
             } else if focused {
@@ -578,11 +644,14 @@ impl AppShell {
             };
 
             let (upper, lower) = app_id.bar_lines();
-            // Paragraph::style shades the whole slot box; centered text rides on
-            // top of it.
-            let para = Paragraph::new(vec![Line::from(upper), Line::from(lower)])
-                .style(style)
-                .centered();
+            // Paragraph::style shades the whole slot box; centered text rides
+            // on top of it.
+            let para = Paragraph::new(vec![
+                Line::from(upper),
+                Line::from(lower),
+            ])
+            .style(style)
+            .centered();
             frame.render_widget(para, slot);
 
             self.click_regions.push(ClickRegion {
@@ -598,17 +667,20 @@ impl AppShell {
     pub fn handle_key(
         &mut self,
         key: KeyEvent,
-        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+        tx: &tokio::sync::mpsc::UnboundedSender<
+            Result<HashMap<String, CachedOffers>, String>,
+        >,
     ) -> bool {
         // The Exit app lives entirely on the top bar — it has no content to
         // descend into. Selecting it shows its widget; Enter/Esc then quit.
         let on_exit = APP_LIST[self.sidebar_index] == AppId::Exit;
 
-        // Universal Esc: from anywhere it selects the Exit app on the bar (which
-        // shows its widget); pressed again while Exit is already selected, it
-        // quits. A modal popup keeps first claim on Esc so it stays closable.
-        let popup_open =
-            self.global_focus == GlobalFocus::Content && self.current_popup_open();
+        // Universal Esc: from anywhere it selects the Exit app on the bar
+        // (which shows its widget); pressed again while Exit is already
+        // selected, it quits. A modal popup keeps first claim on Esc so
+        // it stays closable.
+        let popup_open = self.global_focus == GlobalFocus::Content
+            && self.current_popup_open();
         if key.code == KeyCode::Esc && !popup_open {
             if on_exit {
                 return true;
@@ -696,15 +768,21 @@ impl AppShell {
         match key.code {
             // ←/→ wrap around the ends of the bar.
             KeyCode::Left => {
-                self.sidebar_index =
-                    if self.sidebar_index == 0 { last } else { self.sidebar_index - 1 };
+                self.sidebar_index = if self.sidebar_index == 0 {
+                    last
+                } else {
+                    self.sidebar_index - 1
+                };
             }
             KeyCode::Right => {
-                self.sidebar_index =
-                    if self.sidebar_index == last { 0 } else { self.sidebar_index + 1 };
+                self.sidebar_index = if self.sidebar_index == last {
+                    0
+                } else {
+                    self.sidebar_index + 1
+                };
             }
-            // Enter drops into the selected app — except Exit, which has nothing
-            // to enter, so Enter there quits.
+            // Enter drops into the selected app — except Exit, which has
+            // nothing to enter, so Enter there quits.
             KeyCode::Enter => {
                 if on_exit {
                     return true;
@@ -721,7 +799,8 @@ impl AppShell {
     /// Drop focus from the bar into the selected app's content.
     fn enter_app(&mut self) {
         self.global_focus = GlobalFocus::Content;
-        // Entering the Jobbers page lands on the Vessels button (the top widget).
+        // Entering the Jobbers page lands on the Vessels button (the top
+        // widget).
         self.jobbers_ui.focus = JobberFocus::Vessels;
         // Entering Profits lands on the topmost widget — the inventory table
         // (or the search box when the inventory is empty).
@@ -792,8 +871,8 @@ impl AppShell {
                 }
                 InputResult::Consumed
             }
-            // ←/→ page across selectable voyages (current login's runs + past runs
-            // from the voyages file).
+            // ←/→ page across selectable voyages (current login's runs + past
+            // runs from the voyages file).
             KeyCode::Left => {
                 self.nav_voyage(-1);
                 InputResult::Consumed
@@ -816,14 +895,17 @@ impl AppShell {
                 self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(1);
                 InputResult::Consumed
             }
-            // Enter opens the focused item: the Sea Battles section (focus 0) opens
-            // the per-fight log; a focused chart enlarges (charts follow the stats).
+            // Enter opens the focused item: the Sea Battles section (focus 0)
+            // opens the per-fight log; a focused chart enlarges
+            // (charts follow the stats).
             KeyCode::Enter => {
                 if self.voyage_ui.focus == 0 {
                     self.open_battles_popup();
                 } else if self.voyage_ui.focus >= self.voyage_ui.n_stats {
                     let idx = self.voyage_ui.focus - self.voyage_ui.n_stats;
-                    if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true) {
+                    if crate::voyage::ui::CHART_ENLARGEABLE.get(idx)
+                        == Some(&true)
+                    {
                         self.voyage_ui.chart_popup = Some(idx);
                     }
                 }
@@ -845,10 +927,11 @@ impl AppShell {
     /// vessel/voyage to show, the chosen ship's cannon size, and the aggregated
     /// battle + consumption stats. Shows the current vessel's live run, or its
     /// most recent completed run.
-    /// The ordered strip of selectable voyages for the pager: past runs from the
-    /// voyages file (read-only) first, then the current login's in-RAM runs
-    /// (read-write), oldest→newest. A run saved this session keeps its live page
-    /// and its on-disk twin is hidden, so nothing is listed twice.
+    /// The ordered strip of selectable voyages for the pager: past runs from
+    /// the voyages file (read-only) first, then the current login's in-RAM
+    /// runs (read-write), oldest→newest. A run saved this session keeps its
+    /// live page and its on-disk twin is hidden, so nothing is listed
+    /// twice.
     fn voyage_pages(&self) -> Vec<crate::voyage::ui::VoyageSel> {
         use crate::voyage::ui::VoyageSel;
         // History indices already represented by a live (in-RAM) saved run.
@@ -859,11 +942,13 @@ impl AppShell {
             .flat_map(|v| v.voyages.iter().chain(v.current_voyage.iter()))
             .filter_map(|vy| vy.saved_to)
             .collect();
-        let mut pages: Vec<VoyageSel> = (0..self.voyage_history.voyages.len())
-            .filter(|i| !claimed.contains(i))
-            .map(VoyageSel::Saved)
-            .collect();
-        // Current-login runs across all vessels, chronological (sail time, then id).
+        let mut pages: Vec<VoyageSel> =
+            (0 .. self.voyage_history.voyages.len())
+                .filter(|i| !claimed.contains(i))
+                .map(VoyageSel::Saved)
+                .collect();
+        // Current-login runs across all vessels, chronological (sail time, then
+        // id).
         let mut live: Vec<(Option<chrono::NaiveDateTime>, u64)> = self
             .chatlog
             .vessels
@@ -878,7 +963,10 @@ impl AppShell {
 
     /// Resolve the current selection to a page index. `Live` maps to the newest
     /// (last) page; a stale pin falls back there too.
-    fn current_voyage_page(&self, pages: &[crate::voyage::ui::VoyageSel]) -> usize {
+    fn current_voyage_page(
+        &self,
+        pages: &[crate::voyage::ui::VoyageSel],
+    ) -> usize {
         use crate::voyage::ui::VoyageSel;
         let last = pages.len().saturating_sub(1);
         match self.voyage_ui.selected {
@@ -888,7 +976,13 @@ impl AppShell {
     }
 
     /// Find a current-login voyage (and its vessel key) by stable id.
-    fn voyage_by_id(&self, id: u64) -> Option<(std::sync::Arc<str>, &crate::voyage::Voyage)> {
+    fn voyage_by_id(
+        &self,
+        id: u64,
+    ) -> Option<(
+        std::sync::Arc<str>,
+        &crate::voyage::Voyage,
+    )> {
         self.chatlog.vessels.iter().find_map(|(k, v)| {
             v.voyages
                 .iter()
@@ -898,8 +992,9 @@ impl AppShell {
         })
     }
 
-    /// The selected voyage's id **iff** it's a current-login run that's finished
-    /// and not yet saved — i.e. the one the save/discard prompt would act on.
+    /// The selected voyage's id **iff** it's a current-login run that's
+    /// finished and not yet saved — i.e. the one the save/discard prompt
+    /// would act on.
     fn selected_saveable_id(&self) -> Option<u64> {
         use crate::voyage::ui::VoyageSel;
         let pages = self.voyage_pages();
@@ -914,12 +1009,13 @@ impl AppShell {
     }
 
     /// Step the pager by `delta` pages (clamped). Landing on the newest page
-    /// returns to `Live` so the page keeps auto-following new runs; any page change
-    /// closes the Sea Battles popup. Scroll and the *focused field* are preserved
-    /// across the turn: we stash the outgoing field's stable key so the next render
-    /// re-focuses the same field by name on the incoming voyage — robust to the
-    /// conditional sections (Divvy/Enemies/Advantage/Consumption) that shift raw
-    /// indices between voyages. Scroll then follows via the render's auto-scroll.
+    /// returns to `Live` so the page keeps auto-following new runs; any page
+    /// change closes the Sea Battles popup. Scroll and the *focused field*
+    /// are preserved across the turn: we stash the outgoing field's stable
+    /// key so the next render re-focuses the same field by name on the
+    /// incoming voyage — robust to the conditional sections
+    /// (Divvy/Enemies/Advantage/Consumption) that shift raw indices between
+    /// voyages. Scroll then follows via the render's auto-scroll.
     fn nav_voyage(&mut self, delta: isize) {
         use crate::voyage::ui::VoyageSel;
         let pages = self.voyage_pages();
@@ -947,16 +1043,19 @@ impl AppShell {
         let page_count = pages.len();
         let page = self.current_voyage_page(&pages);
         match pages.get(page).copied() {
-            Some(VoyageSel::Saved(idx)) => self.build_saved_view(idx, page, page_count),
-            Some(VoyageSel::Session(id)) => self
-                .build_session_view(id, page, page_count)
-                .unwrap_or_else(|| self.empty_voyage_view()),
+            Some(VoyageSel::Saved(idx)) => {
+                self.build_saved_view(idx, page, page_count)
+            }
+            Some(VoyageSel::Session(id)) => {
+                self.build_session_view(id, page, page_count)
+                    .unwrap_or_else(|| self.empty_voyage_view())
+            }
             _ => self.empty_voyage_view(),
         }
     }
 
-    /// The "no voyage tracked yet" view — still shows the current vessel headline
-    /// if we're aboard one.
+    /// The "no voyage tracked yet" view — still shows the current vessel
+    /// headline if we're aboard one.
     fn empty_voyage_view(&self) -> crate::voyage::ui::VoyageView {
         use crate::voyage::ui::{VoyageBadge, VoyageView};
         let key = self.displayed_vessel_key();
@@ -1069,15 +1168,19 @@ impl AppShell {
             .as_ref()
             .map(|c| c.to_stats(&voyage))
             .unwrap_or_default();
-        // The real ported time only survives as the `ended_at` string (the in-RAM
-        // voyage uses synthetic epoch clocks); the start is it minus the duration.
-        let period = chrono::NaiveDateTime::parse_from_str(&saved.ended_at, "%Y-%m-%d %H:%M:%S")
-            .ok()
-            .zip(saved.duration_secs)
-            .map(|(end, dur)| {
-                let start = end - chrono::Duration::seconds(dur);
-                voyage_period(start, end)
-            });
+        // The real ported time only survives as the `ended_at` string (the
+        // in-RAM voyage uses synthetic epoch clocks); the start is it
+        // minus the duration.
+        let period = chrono::NaiveDateTime::parse_from_str(
+            &saved.ended_at,
+            "%Y-%m-%d %H:%M:%S",
+        )
+        .ok()
+        .zip(saved.duration_secs)
+        .map(|(end, dur)| {
+            let start = end - chrono::Duration::seconds(dur);
+            voyage_period(start, end)
+        });
         self.assemble_voyage_view(AssembleView {
             vessel_name: saved.vessel.clone(),
             ship_type: saved.ship_type.clone(),
@@ -1096,10 +1199,14 @@ impl AppShell {
         })
     }
 
-    /// Assemble a [`crate::voyage::ui::VoyageView`] from a resolved voyage plus its
-    /// pager framing. Shared by the live and historical paths — the stat/chart/
-    /// battle-row derivation is identical; only sourcing and flags differ.
-    fn assemble_voyage_view(&self, a: AssembleView<'_>) -> crate::voyage::ui::VoyageView {
+    /// Assemble a [`crate::voyage::ui::VoyageView`] from a resolved voyage plus
+    /// its pager framing. Shared by the live and historical paths — the
+    /// stat/chart/ battle-row derivation is identical; only sourcing and
+    /// flags differ.
+    fn assemble_voyage_view(
+        &self,
+        a: AssembleView<'_>,
+    ) -> crate::voyage::ui::VoyageView {
         use crate::voyage::ui::VoyageView;
         let AssembleView {
             vessel_name,
@@ -1115,21 +1222,22 @@ impl AppShell {
             page,
             page_count,
         } = a;
-        // Booty was frozen onto the voyage at its divvy (live) or restored from disk
-        // (saved), so both paths read it straight off the voyage.
+        // Booty was frozen onto the voyage at its divvy (live) or restored from
+        // disk (saved), so both paths read it straight off the voyage.
         let divvied = voyage.divvied;
         let booty_chest = voyage.booty_chest;
         let booty_goods = voyage.booty_goods.clone();
 
-        // Identity confirmation gates win/loss: until our configured name is seen
-        // in the log, every win/loss shows as Unknown (and flips retroactively).
-        // Historical pages pass `confirmed = true` (their verdicts are final).
+        // Identity confirmation gates win/loss: until our configured name is
+        // seen in the log, every win/loss shows as Unknown (and flips
+        // retroactively). Historical pages pass `confirmed = true`
+        // (their verdicts are final).
         let eff = |raw| crate::voyage::effective_outcome(raw, confirmed);
         let battle = crate::voyage::stats::battle_stats(voyage, confirmed);
 
-        // Per-fight rows for the Sea Battles popup: resolved fights first, then the
-        // in-progress one (so it can be inspected mid-fight). Mirrors the indexing
-        // in `GameState::displayed_battle_mut`.
+        // Per-fight rows for the Sea Battles popup: resolved fights first, then
+        // the in-progress one (so it can be inspected mid-fight).
+        // Mirrors the indexing in `GameState::displayed_battle_mut`.
         let battles: Vec<crate::voyage::ui::BattleRow> = voyage
             .battles
             .iter()
@@ -1145,7 +1253,8 @@ impl AppShell {
                     // A masked (unknown) verdict carries no signed PoE.
                     poe: matches!(
                         outcome,
-                        crate::voyage::BattleOutcome::Won | crate::voyage::BattleOutcome::Lost
+                        crate::voyage::BattleOutcome::Won
+                            | crate::voyage::BattleOutcome::Lost
                     )
                     .then_some(b.poe)
                     .flatten(),
@@ -1166,7 +1275,8 @@ impl AppShell {
             .collect();
 
         // Chart series: current voyage vs persisted history (won-fight PoE +
-        // per-voyage value-per-share). Value is net PoE for now; goods fold in later.
+        // per-voyage value-per-share). Value is net PoE for now; goods fold in
+        // later.
         let charts = {
             use crate::voyage::BattleOutcome::{Lost, Won};
             // Signed PoE of a fight, but only for a *confirmed* win/loss (an
@@ -1184,25 +1294,37 @@ impl AppShell {
                 .filter_map(&decisive_poe)
                 .map(|p| p as f64)
                 .collect();
-            // "Value per Share": total value ÷ total divvy shares. Shares are summed
-            // over the same decisive fights as the numerator — each pirate and each
-            // mercenary aboard a fight is one share; swabbies none. Ship- and
-            // duration-agnostic (crew size and fight count both divide out). Merc
-            // counts are exact live; a reloaded voyage has none, so it falls back to
-            // pirates-only shares (see the persistence note).
-            let (cur_total_i, cur_shares) = voyage.battles.iter().fold(
-                (0i64, 0u32),
-                |(poe, shares), b| match decisive_poe(b) {
-                    // A fight's shares = pirates + mercenaries aboard (swabbies none).
-                    // `our_team` is always present for a decisive fight; fall back to
-                    // the pirate count if somehow absent.
-                    Some(p) => (
-                        poe + p,
-                        shares + b.our_team.as_ref().map_or(b.pirates, |t| t.shares()),
-                    ),
-                    None => (poe, shares),
-                },
-            );
+            // "Value per Share": total value ÷ total divvy shares. Shares are
+            // summed over the same decisive fights as the numerator
+            // — each pirate and each mercenary aboard a fight is
+            // one share; swabbies none. Ship- and duration-agnostic
+            // (crew size and fight count both divide out). Merc
+            // counts are exact live; a reloaded voyage has none, so it falls
+            // back to pirates-only shares (see the persistence
+            // note).
+            let (cur_total_i, cur_shares) =
+                voyage
+                    .battles
+                    .iter()
+                    .fold((0i64, 0u32), |(poe, shares), b| {
+                        match decisive_poe(b) {
+                            // A fight's shares = pirates + mercenaries aboard
+                            // (swabbies none).
+                            // `our_team` is always present for a decisive
+                            // fight; fall back to
+                            // the pirate count if somehow absent.
+                            Some(p) => {
+                                (
+                                    poe + p,
+                                    shares
+                                        + b.our_team
+                                            .as_ref()
+                                            .map_or(b.pirates, |t| t.shares()),
+                                )
+                            }
+                            None => (poe, shares),
+                        }
+                    });
             let cur_total = cur_total_i as f64;
             let cur_per_share = if cur_shares > 0 {
                 cur_total / cur_shares as f64
@@ -1210,23 +1332,26 @@ impl AppShell {
                 0.0
             };
 
-            // Ship Winrate: this voyage's decisive fights bucketed by the *enemy*
-            // hull. Only fights whose foe hull is known contribute (an unknown foe
-            // can't be attributed to a ship type).
+            // Ship Winrate: this voyage's decisive fights bucketed by the
+            // *enemy* hull. Only fights whose foe hull is known
+            // contribute (an unknown foe can't be attributed to a
+            // ship type).
             use crate::voyage::ui::WinCount;
-            let mut wr_voyage: std::collections::BTreeMap<usize, WinCount> = Default::default();
+            let mut wr_voyage: std::collections::BTreeMap<usize, WinCount> =
+                Default::default();
             let mut voyage_fights = 0usize;
             for b in &voyage.battles {
                 let o = eff(b.outcome);
                 if !matches!(o, Won | Lost) {
                     continue;
                 }
-                // A decisive fight counts toward "have we fought" regardless of whether
-                // we can name the enemy hull.
+                // A decisive fight counts toward "have we fought" regardless of
+                // whether we can name the enemy hull.
                 voyage_fights += 1;
-                // The enemy hull: the game-announced type when known (Black Ship,
-                // Monkey Boats), else whatever ship type was set in the Damage
-                // calculator for the fight. Most brigand fights only have the latter.
+                // The enemy hull: the game-announced type when known (Black
+                // Ship, Monkey Boats), else whatever ship type
+                // was set in the Damage calculator for the
+                // fight. Most brigand fights only have the latter.
                 let foe = b.foe_ship.or_else(|| b.snapshot.map(|s| s.foe_ship));
                 if let Some(foe) = foe {
                     wr_voyage.entry(foe).or_default().add(matches!(o, Won));
@@ -1234,8 +1359,9 @@ impl AppShell {
             }
             let mut hist_per_share = Vec::new();
             // Signed per-fight PoE of the *rest* of the voyages sharing this
-            // voyage's hull — drives the "History" box beneath the per-fight bars.
-            // Only when the hull is actually known (no guessing).
+            // voyage's hull — drives the "History" box beneath the per-fight
+            // bars. Only when the hull is actually known (no
+            // guessing).
             let mut hull_fight_poe = Vec::new();
             for v in &self.voyage_history.voyages {
                 let mut total = 0i64;
@@ -1244,39 +1370,54 @@ impl AppShell {
                 for bt in &v.battles {
                     if let Some(p) = bt.poe {
                         total += p;
-                        // Shares = pirates + mercenaries aboard (persisted). Legacy
-                        // files (pre-merc-field) restore mercs = 0, falling back to
-                        // pirates-only shares. Paired with the numerator per fight.
-                        shares += bt.pirates + bt.our_team.as_ref().map_or(0, |t| t.mercenaries);
-                        // Decisive (won/lost) fights on the same hull, signed. The
-                        // displayed voyage is included (History no longer self-excludes),
+                        // Shares = pirates + mercenaries aboard (persisted).
+                        // Legacy files (pre-merc-field)
+                        // restore mercs = 0, falling back to
+                        // pirates-only shares. Paired with the numerator per
+                        // fight.
+                        shares += bt.pirates
+                            + bt.our_team.as_ref().map_or(0, |t| t.mercenaries);
+                        // Decisive (won/lost) fights on the same hull, signed.
+                        // The displayed voyage is
+                        // included (History no longer self-excludes),
                         // consistent with the Ship Winrate history.
-                        if same_hull && matches!(bt.outcome.as_str(), "won" | "lost") {
+                        if same_hull
+                            && matches!(bt.outcome.as_str(), "won" | "lost")
+                        {
                             hull_fight_poe.push(p as f64);
                         }
                     }
                 }
-                // Value per share for this past voyage (0 when no shares recorded).
-                hist_per_share.push(if shares > 0 {
-                    total as f64 / shares as f64
-                } else {
-                    0.0
-                });
+                // Value per share for this past voyage (0 when no shares
+                // recorded).
+                hist_per_share.push(
+                    if shares > 0 {
+                        total as f64 / shares as f64
+                    } else {
+                        0.0
+                    },
+                );
             }
 
-            // Ship Winrate history keyed by (our hull, enemy hull): the *persisted*
-            // voyage set only — runs already written to disk plus those saved this
-            // session (`save_displayed_voyage` pushes here and flushes immediately, so
-            // this is exactly "written or confirmed about to be written"). Unsaved
-            // in-RAM runs are deliberately NOT counted, and the displayed voyage is NOT
-            // excluded: when it's a saved run it counts here too, so Historical overlaps
-            // the Voyage column rather than being disjoint from it. The per-fight foe
-            // hull persists independently of the `recorded` flag (top-level `foe_ship`),
+            // Ship Winrate history keyed by (our hull, enemy hull): the
+            // *persisted* voyage set only — runs already written to
+            // disk plus those saved this
+            // session (`save_displayed_voyage` pushes here and flushes
+            // immediately, so this is exactly "written or confirmed
+            // about to be written"). Unsaved in-RAM runs are
+            // deliberately NOT counted, and the displayed voyage is NOT
+            // excluded: when it's a saved run it counts here too, so Historical
+            // overlaps the Voyage column rather than being disjoint
+            // from it. The per-fight foe hull persists
+            // independently of the `recorded` flag (top-level `foe_ship`),
             // so unrecorded fights still bucket correctly.
-            let mut wr_history: std::collections::BTreeMap<(usize, usize), WinCount> =
-                Default::default();
+            let mut wr_history: std::collections::BTreeMap<
+                (usize, usize),
+                WinCount,
+            > = Default::default();
             for v in &self.voyage_history.voyages {
-                let Some(our_idx) = v.ship_type.as_deref().and_then(crate::ships::ship_index)
+                let Some(our_idx) =
+                    v.ship_type.as_deref().and_then(crate::ships::ship_index)
                 else {
                     continue;
                 };
@@ -1297,15 +1438,19 @@ impl AppShell {
                     }
                 }
             }
-            // Boxes under the bars: this voyage's fights, then the same-hull rest.
-            // With no hull selected we can't say what "same hull" means, so the
-            // History row prompts the user to pick one instead of a box.
+            // Boxes under the bars: this voyage's fights, then the same-hull
+            // rest. With no hull selected we can't say what "same
+            // hull" means, so the History row prompts the user to
+            // pick one instead of a box.
             use crate::voyage::ui::ChartBox;
             let history_box = if ship_type.is_none() {
                 ChartBox {
                     label: "History".to_string(),
                     values: Vec::new(),
-                    empty_note: Some("Select ship hull first to show historical.".to_string()),
+                    empty_note: Some(
+                        "Select ship hull first to show historical."
+                            .to_string(),
+                    ),
                 }
             } else {
                 ChartBox {
@@ -1323,7 +1468,9 @@ impl AppShell {
                 history_box,
             ];
             let winrate = crate::voyage::ui::ShipWinrate {
-                our_ship: ship_type.as_deref().and_then(crate::ships::ship_index),
+                our_ship: ship_type
+                    .as_deref()
+                    .and_then(crate::ships::ship_index),
                 voyage_fights,
                 voyage: wr_voyage,
                 history: wr_history,
@@ -1358,44 +1505,58 @@ impl AppShell {
         }
     }
 
-    /// Feed one live chat-log line. When a fight resolves and the Damage calculator
-    /// has hits entered, freeze its full state + advantage onto that fight (Left =
-    /// our ship, Right = the foe) and clear the counts for the next fight — so a
-    /// fight we tracked live is recorded in the Sea Battles history automatically.
-    /// (The popup still lets the user amend a fight or hand-add one we missed.)
+    /// Feed one live chat-log line. When a fight resolves and the Damage
+    /// calculator has hits entered, freeze its full state + advantage onto
+    /// that fight (Left = our ship, Right = the foe) and clear the counts
+    /// for the next fight — so a fight we tracked live is recorded in the
+    /// Sea Battles history automatically. (The popup still lets the user
+    /// amend a fight or hand-add one we missed.)
     pub fn feed_chat_line(&mut self, line: &str) {
         self.chatlog.process_line(line);
-        // A special encounter (e.g. the Black Ship) just told us the foe's hull —
-        // point the live Damage calculator at it so live tracking and the captured
-        // snapshot use the right ship. The user can still override it by hand.
+        // A special encounter (e.g. the Black Ship) just told us the foe's hull
+        // — point the live Damage calculator at it so live tracking and
+        // the captured snapshot use the right ship. The user can still
+        // override it by hand.
         if let Some(idx) = self.chatlog.take_detected_foe_ship() {
             self.damage.right_ship = idx;
         }
-        // Capture both transition flags before the freeze step consumes them, so
-        // the auto-navigation below can fire regardless of the calculator state.
+        // Capture both transition flags before the freeze step consumes them,
+        // so the auto-navigation below can fire regardless of the
+        // calculator state.
         let battle_started = self.chatlog.take_battle_started();
         let battle_resolved = self.chatlog.take_resolved();
         if battle_resolved && self.damage.has_input() {
             // Our manpower = the crew that actually fought, as recorded on the
-            // just-resolved battle (grapple roster minus the disconnected). Falls
-            // back to the live count if that battle didn't record one.
-            let crew_n = self.chatlog.last_resolved_our_strength().unwrap_or_else(|| {
-                self.chatlog.current_pirates() + self.chatlog.current_swabbies()
-            });
-            // Their manpower came from the melee at resolution; fall back to the
-            // foe ship type's pirate capacity if the fight had no melee count.
-            let their = self.chatlog.last_resolved_their_manpower().unwrap_or_else(|| {
-                crate::ships::SHIPS[self.damage.right_ship].max_pirates as u32
-            });
+            // just-resolved battle (grapple roster minus the disconnected).
+            // Falls back to the live count if that battle didn't
+            // record one.
+            let crew_n = self
+                .chatlog
+                .last_resolved_our_strength()
+                .unwrap_or_else(|| {
+                    self.chatlog.current_pirates()
+                        + self.chatlog.current_swabbies()
+                });
+            // Their manpower came from the melee at resolution; fall back to
+            // the foe ship type's pirate capacity if the fight had
+            // no melee count.
+            let their = self
+                .chatlog
+                .last_resolved_their_manpower()
+                .unwrap_or_else(|| {
+                    crate::ships::SHIPS[self.damage.right_ship].max_pirates
+                        as u32
+                });
             let snap = self.damage.snapshot(crew_n);
             let dmg = self.damage.advantage_dmg();
             let crew = self.damage.crew_advantage(crew_n, their);
             self.chatlog.record_resolved_battle(snap, dmg, crew);
             self.damage.clear_counts();
         }
-        // Auto-navigation. A fight beginning surfaces the live Damage calculator
-        // (so it's tracked from the first hit); a fight concluding surfaces its
-        // entry in the Sea Battles log. A start wins if both somehow fire.
+        // Auto-navigation. A fight beginning surfaces the live Damage
+        // calculator (so it's tracked from the first hit); a fight
+        // concluding surfaces its entry in the Sea Battles log. A start
+        // wins if both somehow fire.
         if battle_started {
             self.jump_to_live_damage();
         } else if battle_resolved {
@@ -1406,26 +1567,27 @@ impl AppShell {
         if self.chatlog.take_lair_entered() {
             self.jump_to_vampirate_jobbers();
         }
-        // The Cursed Isles tell (the noxious fog) does the same for the Cursed Isles
-        // layout (Enthralled leaderboard + Fight Statistics).
+        // The Cursed Isles tell (the noxious fog) does the same for the Cursed
+        // Isles layout (Enthralled leaderboard + Fight Statistics).
         if self.chatlog.take_cursed_isles_detected() {
             self.jump_to_cursed_isles_jobbers();
         }
-        // The first melee KO of a grappled sea battle surfaces the live advantage
-        // graph mid-fight (lair / island runs already surfaced their layout on the
-        // entry tell, so they don't auto-jump here).
+        // The first melee KO of a grappled sea battle surfaces the live
+        // advantage graph mid-fight (lair / island runs already
+        // surfaced their layout on the entry tell, so they don't
+        // auto-jump here).
         if self.chatlog.take_battle_first_blood() {
             self.jump_to_concluded_fight();
         }
-        // Boarding a vessel snaps the Jobbers/Voyage vessel selector to it, so the
-        // pages follow us onto the ship we just stepped onto rather than sticking
-        // to whatever was previously picked.
+        // Boarding a vessel snaps the Jobbers/Voyage vessel selector to it, so
+        // the pages follow us onto the ship we just stepped onto rather
+        // than sticking to whatever was previously picked.
         if let Some(key) = self.chatlog.take_boarded_vessel() {
             self.jobbers_ui.selected = Some(key);
         }
-        // A booty division freezes the just-divvied run's booty (chest PoE + goods)
-        // from the live Profits state onto the voyage, so a later pillage can't blank
-        // the Divvy section.
+        // A booty division freezes the just-divvied run's booty (chest PoE +
+        // goods) from the live Profits state onto the voyage, so a
+        // later pillage can't blank the Divvy section.
         if self.chatlog.take_booty_divided() {
             let booty = self.current_booty_snapshot();
             if let Some(voy) = self.chatlog.current_pillage_voyage_mut() {
@@ -1455,8 +1617,8 @@ impl AppShell {
     /// Battles popup open on the fight that just ended (the last one). No-op if
     /// the displayed voyage somehow has no fights.
     fn jump_to_concluded_fight(&mut self) {
-        // The fight belongs to the live run — follow it, regardless of any page the
-        // user had paged back to.
+        // The fight belongs to the live run — follow it, regardless of any page
+        // the user had paged back to.
         self.voyage_ui.selected = crate::voyage::ui::VoyageSel::Live;
         let n = self.build_voyage_view().battles.len();
         let Some(last) = n.checked_sub(1) else {
@@ -1468,15 +1630,17 @@ impl AppShell {
         self.load_battle_editor(last);
     }
 
-    /// We just entered a vampire lair: surface the Jobbers page and switch it to
-    /// the Vampirates voyage layout (wave model + skill-distribution tooling).
+    /// We just entered a vampire lair: surface the Jobbers page and switch it
+    /// to the Vampirates voyage layout (wave model + skill-distribution
+    /// tooling).
     fn jump_to_vampirate_jobbers(&mut self) {
         self.jobbers_ui.voyage_type = VoyageType::Vampirates;
         self.switch_to(AppId::Chatlog);
     }
 
-    /// The Cursed Isles tell fired: surface the Jobbers page and switch it to the
-    /// Cursed Isles voyage layout (Enthralled leaderboard + Fight Statistics).
+    /// The Cursed Isles tell fired: surface the Jobbers page and switch it to
+    /// the Cursed Isles voyage layout (Enthralled leaderboard + Fight
+    /// Statistics).
     fn jump_to_cursed_isles_jobbers(&mut self) {
         self.jobbers_ui.voyage_type = VoyageType::CursedIsles;
         self.switch_to(AppId::Chatlog);
@@ -1492,20 +1656,25 @@ impl AppShell {
             .or_else(|| self.chatlog.vessels_by_recency().into_iter().next())
     }
 
-    /// Open the save/discard prompt if the displayed run is finished and unsaved.
+    /// Open the save/discard prompt if the displayed run is finished and
+    /// unsaved.
     fn open_voyage_save_prompt(&mut self) {
         if self.build_voyage_view().saveable {
             self.voyage_ui.prompt = Some(crate::voyage::ui::SaveChoice::Save);
         }
     }
 
-    /// Snapshot the current pillage's booty from the live Profits page: the chest
-    /// PoE (user-entered "Booty Chest" field, else auto-deduced net chest) and the
-    /// Booty-column goods (resolved to commodity names). Called on the divvy signal
-    /// to freeze the just-divvied run's booty onto its voyage, since the Profits
-    /// state is global and a later pillage would otherwise overwrite it.
-    fn current_booty_snapshot(&self) -> crate::voyage::persistence::BootySnapshot {
-        let (pillage_gross, pillage_stolen, pillage_chest) = self.chatlog.current_pillage_poe();
+    /// Snapshot the current pillage's booty from the live Profits page: the
+    /// chest PoE (user-entered "Booty Chest" field, else auto-deduced net
+    /// chest) and the Booty-column goods (resolved to commodity names).
+    /// Called on the divvy signal to freeze the just-divvied run's booty
+    /// onto its voyage, since the Profits state is global and a later
+    /// pillage would otherwise overwrite it.
+    fn current_booty_snapshot(
+        &self,
+    ) -> crate::voyage::persistence::BootySnapshot {
+        let (pillage_gross, pillage_stolen, pillage_chest) =
+            self.chatlog.current_pillage_poe();
         let shared = SharedState {
             commodities: &self.commodities,
             cached_offers: &self.cached_offers,
@@ -1523,7 +1692,12 @@ impl AppShell {
                 .profits
                 .booty_goods()
                 .into_iter()
-                .map(|(id, qty)| (commod_name(&self.commodities, id).to_string(), qty))
+                .map(|(id, qty)| {
+                    (
+                        commod_name(&self.commodities, id).to_string(),
+                        qty,
+                    )
+                })
                 .collect(),
         }
     }
@@ -1541,11 +1715,12 @@ impl AppShell {
             return;
         };
         let vessel_name = key.to_string();
-        // TODO: handle the case where no ship type was specified — this is `None`
-        // when the user never picked a hull in the jobbers picker. We persist
-        // `None` silently, but such a voyage can't be grouped into the per-ship
-        // box plots and its size-agnostic cannonball count has no hull context.
-        // Decide whether to prompt for the hull at save time, warn, or exclude it.
+        // TODO: handle the case where no ship type was specified — this is
+        // `None` when the user never picked a hull in the jobbers
+        // picker. We persist `None` silently, but such a voyage can't
+        // be grouped into the per-ship box plots and its size-agnostic
+        // cannonball count has no hull context. Decide whether to
+        // prompt for the hull at save time, warn, or exclude it.
         let ship_type = self
             .jobbers_ui
             .ship_types
@@ -1554,8 +1729,9 @@ impl AppShell {
             .and_then(|i| crate::ships::SHIPS.get(i))
             .map(|s| s.name.to_string());
         let confirmed = self.chatlog.self_confirmed;
-        // The disk index this run will occupy — pinned on the live voyage so the
-        // pager hides the on-disk twin and keeps showing the live (read-write) page.
+        // The disk index this run will occupy — pinned on the live voyage so
+        // the pager hides the on-disk twin and keeps showing the live
+        // (read-write) page.
         let new_index = self.voyage_history.voyages.len();
         let saved = {
             let Some(voyage) = self.chatlog.voyage_by_id_mut(id) else {
@@ -1568,8 +1744,8 @@ impl AppShell {
             // reconstructed once the hold is restocked.
             // TODO: prompt the user whether to record the inventory/consumption
             // for this voyage before storing it. `SavedVoyage.consumption` is
-            // already nullable for exactly this — pass `None` when they decline.
-            // For now we always record it.
+            // already nullable for exactly this — pass `None` when they
+            // decline. For now we always record it.
             let consumption = crate::voyage::stats::consumption_stats(
                 voyage,
                 &self.profits.rows,
@@ -1588,7 +1764,11 @@ impl AppShell {
         };
         self.voyage_history.voyages.push(saved);
         if let Some(path) = &self.voyages_path {
-            crate::utils::write_json_atomic(path, &self.voyage_history, "voyage history");
+            crate::utils::write_json_atomic(
+                path,
+                &self.voyage_history,
+                "voyage history",
+            );
         }
     }
 
@@ -1604,8 +1784,8 @@ impl AppShell {
 
     // -- Sea Battles popup (per-fight log) --
 
-    /// Open the Sea Battles popup on the first fight, loading its editor. No-op if
-    /// the displayed voyage has no fights.
+    /// Open the Sea Battles popup on the first fight, loading its editor. No-op
+    /// if the displayed voyage has no fights.
     fn open_battles_popup(&mut self) {
         if self.build_voyage_view().battles.is_empty() {
             return;
@@ -1624,9 +1804,10 @@ impl AppShell {
             return;
         };
         self.voyage_ui.editor_recorded = row.recorded;
-        // "Our strength" = the full crew aboard our ship: real pirates PLUS swabbies
-        // / named mercenaries (all fight in the melee). Use the fight's resolution
-        // roster; for an as-yet-unresolved fight fall back to the live crew.
+        // "Our strength" = the full crew aboard our ship: real pirates PLUS
+        // swabbies / named mercenaries (all fight in the melee). Use
+        // the fight's resolution roster; for an as-yet-unresolved fight
+        // fall back to the live crew.
         let crew = row.pirates + row.swabbies;
         let crew = if crew > 0 {
             crew
@@ -1638,9 +1819,10 @@ impl AppShell {
         self.voyage_ui.battle_editor = match row.snapshot {
             Some(s) => crate::damage::DamageApp::from_snapshot(&s),
             None => {
-                // No captured snapshot yet — start blank, but if the encounter told
-                // us the foe's hull (Black Ship, Monkey Boat) seed that as the foe
-                // ship so the calculator and the displayed type are right.
+                // No captured snapshot yet — start blank, but if the encounter
+                // told us the foe's hull (Black Ship, Monkey
+                // Boat) seed that as the foe ship so the
+                // calculator and the displayed type are right.
                 let mut app = crate::damage::DamageApp::new();
                 if let Some(idx) = row.foe_ship {
                     app.right_ship = idx;
@@ -1648,15 +1830,18 @@ impl AppShell {
                 app
             }
         };
-        // #16: when the foe's hull is *unknown* (no special encounter announced it)
-        // and the observed headcount can't fit the currently-seeded hull, bump the
-        // foe ship to the smallest hull that can man that crew — a sloop can't hold
-        // 18 boarders. Special encounters that announce their hull (Monkey Boats,
-        // and the Black Ship, which can be staffed beyond any hull's capacity) carry
-        // `foe_ship = Some(..)` and are left untouched.
+        // #16: when the foe's hull is *unknown* (no special encounter announced
+        // it) and the observed headcount can't fit the currently-seeded
+        // hull, bump the foe ship to the smallest hull that can man
+        // that crew — a sloop can't hold 18 boarders. Special
+        // encounters that announce their hull (Monkey Boats,
+        // and the Black Ship, which can be staffed beyond any hull's capacity)
+        // carry `foe_ship = Some(..)` and are left untouched.
         if row.foe_ship.is_none() {
             if let Some(their) = row.their_manpower {
-                let cur = crate::ships::SHIPS[self.voyage_ui.battle_editor.right_ship].max_pirates;
+                let cur = crate::ships::SHIPS
+                    [self.voyage_ui.battle_editor.right_ship]
+                    .max_pirates;
                 if (cur as u32) < their {
                     if let Some(idx) = crate::ships::smallest_ship_for(their) {
                         self.voyage_ui.battle_editor.right_ship = idx;
@@ -1684,9 +1869,9 @@ impl AppShell {
         }
     }
 
-    /// Write the editor's current state back onto the open fight, recomputing its
-    /// advantage. Always runs on an edit — the calculator is always live; recording
-    /// only governs persistence, not the in-RAM snapshot.
+    /// Write the editor's current state back onto the open fight, recomputing
+    /// its advantage. Always runs on an edit — the calculator is always
+    /// live; recording only governs persistence, not the in-RAM snapshot.
     fn sync_battle_editor(&mut self) {
         // A read-only history page has no live battle to write back to — bail
         // before `displayed_vessel_key` would target the current live vessel.
@@ -1701,12 +1886,14 @@ impl AppShell {
         };
         let ours = self.voyage_ui.editor_crew;
         let their = self.voyage_ui.editor_their.unwrap_or_else(|| {
-            crate::ships::SHIPS[self.voyage_ui.battle_editor.right_ship].max_pirates as u32
+            crate::ships::SHIPS[self.voyage_ui.battle_editor.right_ship]
+                .max_pirates as u32
         });
         let snap = self.voyage_ui.battle_editor.snapshot(ours);
         let dmg = self.voyage_ui.battle_editor.advantage_dmg();
         let crew = self.voyage_ui.battle_editor.crew_advantage(ours, their);
-        self.chatlog.set_battle_snapshot(&key, page, snap, dmg, crew);
+        self.chatlog
+            .set_battle_snapshot(&key, page, snap, dmg, crew);
     }
 
     /// Toggle whether the open fight is recorded (persisted to disk). Purely a
@@ -1726,17 +1913,20 @@ impl AppShell {
         self.voyage_ui.editor_recorded = now;
     }
 
-    /// Key handling while the Sea Battles popup is open. Three focus zones chained
-    /// top→bottom — the pager (←/→ change fight, wrapping), the record toggle
-    /// (Enter/Space flips it), and the always-editable calculator (arrows drive
-    /// it) — moved between with ↑/↓. Esc closes the editor's ship picker / reset
-    /// confirm first, otherwise the popup.
+    /// Key handling while the Sea Battles popup is open. Three focus zones
+    /// chained top→bottom — the pager (←/→ change fight, wrapping), the
+    /// record toggle (Enter/Space flips it), and the always-editable
+    /// calculator (arrows drive it) — moved between with ↑/↓. Esc closes
+    /// the editor's ship picker / reset confirm first, otherwise the popup.
     fn handle_battles_key(&mut self, key: KeyEvent) -> InputResult {
-        use crate::damage::{ROW_RAMS, ROW_SHIP, Side};
-        use crate::voyage::ui::BattlesFocus::{Calc, Pager, Record};
+        use crate::{
+            damage::{ROW_RAMS, ROW_SHIP, Side},
+            voyage::ui::BattlesFocus::{Calc, Pager, Record},
+        };
 
-        // A read-only history page: only paging between fights and closing — the
-        // calculator and record toggle are inert (nothing persists).
+        // A read-only history page: only paging between fights and closing —
+        // the calculator and record toggle are inert (nothing
+        // persists).
         if self.build_voyage_view().read_only {
             match key.code {
                 KeyCode::Esc => self.voyage_ui.battles_popup = None,
@@ -1747,9 +1937,9 @@ impl AppShell {
             return InputResult::Consumed;
         }
 
-        // While the editor has its own modal (ship picker or reset confirm), every
-        // key — including Esc, which dismisses that modal keeping the ship — drives
-        // the calculator rather than the popup.
+        // While the editor has its own modal (ship picker or reset confirm),
+        // every key — including Esc, which dismisses that modal keeping
+        // the ship — drives the calculator rather than the popup.
         let editor_modal = self.voyage_ui.battle_editor.popup.is_some()
             || self.voyage_ui.battle_editor.reset_prompt.is_some();
         if editor_modal {
@@ -1764,28 +1954,38 @@ impl AppShell {
         }
 
         match self.voyage_ui.battles_focus {
-            Pager => match key.code {
-                KeyCode::Left | KeyCode::PageUp => self.battles_page(-1),
-                KeyCode::Right | KeyCode::PageDown => self.battles_page(1),
-                KeyCode::Down => self.voyage_ui.battles_focus = Record,
-                _ => {}
-            },
-            // The toggle sits between the pager and the calculator, matching its
-            // on-screen position (directly under the page number, above the calc).
-            Record => match key.code {
-                KeyCode::Up => self.voyage_ui.battles_focus = Pager,
-                KeyCode::Down => {
-                    self.voyage_ui.battles_focus = Calc;
-                    self.voyage_ui.battle_editor.focus_row = ROW_SHIP;
-                    self.voyage_ui.battle_editor.focus_side = Side::Left;
+            Pager => {
+                match key.code {
+                    KeyCode::Left | KeyCode::PageUp => self.battles_page(-1),
+                    KeyCode::Right | KeyCode::PageDown => self.battles_page(1),
+                    KeyCode::Down => self.voyage_ui.battles_focus = Record,
+                    _ => {}
                 }
-                KeyCode::Enter | KeyCode::Char(' ') => self.toggle_battle_record(),
-                _ => {}
-            },
+            }
+            // The toggle sits between the pager and the calculator, matching
+            // its on-screen position (directly under the page
+            // number, above the calc).
+            Record => {
+                match key.code {
+                    KeyCode::Up => self.voyage_ui.battles_focus = Pager,
+                    KeyCode::Down => {
+                        self.voyage_ui.battles_focus = Calc;
+                        self.voyage_ui.battle_editor.focus_row = ROW_SHIP;
+                        self.voyage_ui.battle_editor.focus_side = Side::Left;
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        self.toggle_battle_record()
+                    }
+                    _ => {}
+                }
+            }
             Calc => {
-                // ↑ off the top row returns to the toggle; ↓ off the bottom row has
-                // nowhere to go (the calculator is the last control).
-                if key.code == KeyCode::Up && self.voyage_ui.battle_editor.focus_row == ROW_SHIP {
+                // ↑ off the top row returns to the toggle; ↓ off the bottom row
+                // has nowhere to go (the calculator is the last
+                // control).
+                if key.code == KeyCode::Up
+                    && self.voyage_ui.battle_editor.focus_row == ROW_SHIP
+                {
                     self.voyage_ui.battles_focus = Record;
                 } else if key.code == KeyCode::Down
                     && self.voyage_ui.battle_editor.focus_row == ROW_RAMS
@@ -1805,8 +2005,9 @@ impl AppShell {
     fn handle_jobbers_key(&mut self, key: KeyEvent) -> InputResult {
         use JobberFocus::*;
 
-        // The popups are modal: each eats keys until dismissed. The trophies popup
-        // is checked first since it layers over the pirate-stats popup.
+        // The popups are modal: each eats keys until dismissed. The trophies
+        // popup is checked first since it layers over the pirate-stats
+        // popup.
         if self.jobbers_ui.trophy_popup.is_some() {
             return self.handle_trophy_popup_key(key);
         }
@@ -1835,150 +2036,188 @@ impl AppShell {
         let implemented = self.jobbers_ui.voyage_type.implemented();
         // Vikings sits its leaderboard *beside* the panes (a horizontal split)
         // rather than above them, so ←/→ — not ↑/↓ — cross between the two.
-        let panes_beside = self.jobbers_ui.voyage_type.panes_beside_top_jobbers();
-        // The voyage box's bottom row: Unpoison when poisoned, else Voyage Type.
+        let panes_beside =
+            self.jobbers_ui.voyage_type.panes_beside_top_jobbers();
+        // The voyage box's bottom row: Unpoison when poisoned, else Voyage
+        // Type.
         let box_bottom = if poisoned { Unpoison } else { VoyageType };
-        // The Skill Distribution button (Vampirates) sits between the leaderboard and
-        // the panes, so it's the row just below the leaderboard and above the panes.
+        // The Skill Distribution button (Vampirates) sits between the
+        // leaderboard and the panes, so it's the row just below the
+        // leaderboard and above the panes.
         let has_button = self.jobbers_ui.voyage_type.has_skill_distribution();
-        let after_box = if has_button { Some(SkillDist) } else { first_pane };
+        let after_box = if has_button {
+            Some(SkillDist)
+        } else {
+            first_pane
+        };
         // Descending out of the voyage box lands on the Skill Leaderboard first
         // (when the layout is implemented), then the button / panes below it.
-        let into_content = if implemented { Some(Leaderboard) } else { after_box };
+        let into_content = if implemented {
+            Some(Leaderboard)
+        } else {
+            after_box
+        };
 
         match key.code {
             KeyCode::Esc => return InputResult::Exit,
-            KeyCode::Up => match self.jobbers_ui.focus {
-                // The Vessels button is the page's top widget; ↑ returns to the bar.
-                Vessels => return InputResult::Exit,
-                ShipType => self.jobbers_ui.focus = Vessels,
-                VoyageType => self.jobbers_ui.focus = ShipType,
-                Unpoison => self.jobbers_ui.focus = VoyageType,
-                // Within the leaderboard ↑ walks up the column; at the top it leaves
-                // for the box's bottom row.
-                Leaderboard => {
-                    if self.leaderboard_current_len() == 0 || self.jobbers_ui.top_sel == 0 {
-                        self.jobbers_ui.focus = box_bottom;
-                    } else {
-                        self.jobbers_ui.top_sel -= 1;
-                    }
-                }
-                // The button sits below the leaderboard; ↑ returns to it.
-                SkillDist => self.jobbers_ui.focus = Leaderboard,
-                Aboard | Greedy | Planked | Enthralled => {
-                    let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                    // At the top of a pane (or an empty one), ↑ leaves for whatever's
-                    // above the panes: the button if shown, else (side-by-side) the
-                    // box's bottom row, else the leaderboard stacked above.
-                    if self.jobbers_pane_count(pane) == 0 || self.jobbers_pane_sel(pane) == 0 {
-                        self.jobbers_ui.focus = if has_button {
-                            SkillDist
-                        } else if panes_beside {
-                            box_bottom
+            KeyCode::Up => {
+                match self.jobbers_ui.focus {
+                    // The Vessels button is the page's top widget; ↑ returns to
+                    // the bar.
+                    Vessels => return InputResult::Exit,
+                    ShipType => self.jobbers_ui.focus = Vessels,
+                    VoyageType => self.jobbers_ui.focus = ShipType,
+                    Unpoison => self.jobbers_ui.focus = VoyageType,
+                    // Within the leaderboard ↑ walks up the column; at the top
+                    // it leaves for the box's bottom row.
+                    Leaderboard => {
+                        if self.leaderboard_current_len() == 0
+                            || self.jobbers_ui.top_sel == 0
+                        {
+                            self.jobbers_ui.focus = box_bottom;
                         } else {
-                            Leaderboard
+                            self.jobbers_ui.top_sel -= 1;
+                        }
+                    }
+                    // The button sits below the leaderboard; ↑ returns to it.
+                    SkillDist => self.jobbers_ui.focus = Leaderboard,
+                    Aboard | Greedy | Planked | Enthralled => {
+                        let pane =
+                            Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                        // At the top of a pane (or an empty one), ↑ leaves for
+                        // whatever's above the panes:
+                        // the button if shown, else (side-by-side) the
+                        // box's bottom row, else the leaderboard stacked above.
+                        if self.jobbers_pane_count(pane) == 0
+                            || self.jobbers_pane_sel(pane) == 0
+                        {
+                            self.jobbers_ui.focus = if has_button {
+                                SkillDist
+                            } else if panes_beside {
+                                box_bottom
+                            } else {
+                                Leaderboard
+                            };
+                        } else {
+                            self.jobbers_pane_select_delta(pane, -1);
+                        }
+                    }
+                }
+            }
+            KeyCode::Down => {
+                match self.jobbers_ui.focus {
+                    Vessels => self.jobbers_ui.focus = ShipType,
+                    ShipType => self.jobbers_ui.focus = VoyageType,
+                    VoyageType => {
+                        self.jobbers_ui.focus = if poisoned {
+                            Unpoison
+                        } else {
+                            into_content.unwrap_or(VoyageType)
                         };
-                    } else {
-                        self.jobbers_pane_select_delta(pane, -1);
                     }
-                }
-            },
-            KeyCode::Down => match self.jobbers_ui.focus {
-                Vessels => self.jobbers_ui.focus = ShipType,
-                ShipType => self.jobbers_ui.focus = VoyageType,
-                VoyageType => {
-                    self.jobbers_ui.focus = if poisoned {
-                        Unpoison
-                    } else {
-                        into_content.unwrap_or(VoyageType)
-                    };
-                }
-                Unpoison => {
-                    if let Some(next) = into_content {
-                        self.jobbers_ui.focus = next;
-                    }
-                }
-                // Within the leaderboard ↓ walks down the column; at the bottom it
-                // leaves for the button / panes below.
-                Leaderboard => {
-                    let len = self.leaderboard_current_len();
-                    if len == 0 || self.jobbers_ui.top_sel + 1 >= len {
-                        if let Some(next) = after_box {
+                    Unpoison => {
+                        if let Some(next) = into_content {
                             self.jobbers_ui.focus = next;
                         }
-                    } else {
-                        self.jobbers_ui.top_sel += 1;
                     }
-                }
-                // ↓ from the button drops into the first pane.
-                SkillDist => {
-                    if let Some(pane) = first_pane {
-                        self.jobbers_ui.focus = pane;
-                    }
-                }
-                Aboard | Greedy | Planked | Enthralled => {
-                    let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                    self.jobbers_pane_select_delta(pane, 1);
-                }
-            },
-            KeyCode::Left => match self.jobbers_ui.focus {
-                // ← walks to the previous leaderboard column.
-                Leaderboard => {
-                    if self.jobbers_ui.top_col > 0 {
-                        self.jobbers_ui.top_col -= 1;
-                        self.leaderboard_clamp();
-                    }
-                }
-                Aboard | Greedy | Planked | Enthralled => {
-                    let cur = Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                    if let Some(i) = panes.iter().position(|p| *p == cur) {
-                        if i > 0 {
-                            self.jobbers_ui.focus = Self::pane_focus(panes[i - 1]);
-                        } else if panes_beside {
-                            // The leftmost pane sits to the right of the leaderboard.
-                            self.jobbers_ui.focus = Leaderboard;
+                    // Within the leaderboard ↓ walks down the column; at the
+                    // bottom it leaves for the button /
+                    // panes below.
+                    Leaderboard => {
+                        let len = self.leaderboard_current_len();
+                        if len == 0 || self.jobbers_ui.top_sel + 1 >= len {
+                            if let Some(next) = after_box {
+                                self.jobbers_ui.focus = next;
+                            }
+                        } else {
+                            self.jobbers_ui.top_sel += 1;
                         }
                     }
-                }
-                _ => {}
-            },
-            KeyCode::Right => match self.jobbers_ui.focus {
-                Leaderboard => {
-                    if panes_beside {
-                        // The leaderboard sits to the left of the pane(s).
+                    // ↓ from the button drops into the first pane.
+                    SkillDist => {
                         if let Some(pane) = first_pane {
                             self.jobbers_ui.focus = pane;
                         }
-                    } else if self.jobbers_ui.top_col + 1 < self.leaderboard_ncols() {
-                        self.jobbers_ui.top_col += 1;
-                        self.leaderboard_clamp();
+                    }
+                    Aboard | Greedy | Planked | Enthralled => {
+                        let pane =
+                            Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                        self.jobbers_pane_select_delta(pane, 1);
                     }
                 }
-                Aboard | Greedy | Planked | Enthralled => {
-                    let cur = Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                    if let Some(i) = panes.iter().position(|p| *p == cur) {
-                        if i + 1 < panes.len() {
-                            self.jobbers_ui.focus = Self::pane_focus(panes[i + 1]);
+            }
+            KeyCode::Left => {
+                match self.jobbers_ui.focus {
+                    // ← walks to the previous leaderboard column.
+                    Leaderboard => {
+                        if self.jobbers_ui.top_col > 0 {
+                            self.jobbers_ui.top_col -= 1;
+                            self.leaderboard_clamp();
                         }
                     }
+                    Aboard | Greedy | Planked | Enthralled => {
+                        let cur =
+                            Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                        if let Some(i) = panes.iter().position(|p| *p == cur) {
+                            if i > 0 {
+                                self.jobbers_ui.focus =
+                                    Self::pane_focus(panes[i - 1]);
+                            } else if panes_beside {
+                                // The leftmost pane sits to the right of the
+                                // leaderboard.
+                                self.jobbers_ui.focus = Leaderboard;
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                _ => {}
-            },
-            KeyCode::Enter => match self.jobbers_ui.focus {
-                Vessels => self.open_vessel_popup(),
-                ShipType => self.open_ship_popup(),
-                VoyageType => self.open_voyage_popup(),
-                Unpoison => {
-                    self.jobbers_unpoison();
-                    self.jobbers_ui.focus = Vessels;
+            }
+            KeyCode::Right => {
+                match self.jobbers_ui.focus {
+                    Leaderboard => {
+                        if panes_beside {
+                            // The leaderboard sits to the left of the pane(s).
+                            if let Some(pane) = first_pane {
+                                self.jobbers_ui.focus = pane;
+                            }
+                        } else if self.jobbers_ui.top_col + 1
+                            < self.leaderboard_ncols()
+                        {
+                            self.jobbers_ui.top_col += 1;
+                            self.leaderboard_clamp();
+                        }
+                    }
+                    Aboard | Greedy | Planked | Enthralled => {
+                        let cur =
+                            Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                        if let Some(i) = panes.iter().position(|p| *p == cur) {
+                            if i + 1 < panes.len() {
+                                self.jobbers_ui.focus =
+                                    Self::pane_focus(panes[i + 1]);
+                            }
+                        }
+                    }
+                    _ => {}
                 }
-                Leaderboard => self.open_leaderboard_popup(),
-                SkillDist => self.open_skill_dist_popup(),
-                Aboard | Greedy | Planked | Enthralled => {
-                    let pane = Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                    self.open_pirate_popup(pane);
+            }
+            KeyCode::Enter => {
+                match self.jobbers_ui.focus {
+                    Vessels => self.open_vessel_popup(),
+                    ShipType => self.open_ship_popup(),
+                    VoyageType => self.open_voyage_popup(),
+                    Unpoison => {
+                        self.jobbers_unpoison();
+                        self.jobbers_ui.focus = Vessels;
+                    }
+                    Leaderboard => self.open_leaderboard_popup(),
+                    SkillDist => self.open_skill_dist_popup(),
+                    Aboard | Greedy | Planked | Enthralled => {
+                        let pane =
+                            Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                        self.open_pirate_popup(pane);
+                    }
                 }
-            },
+            }
             _ => {}
         }
         InputResult::Consumed
@@ -1998,7 +2237,11 @@ impl AppShell {
     }
 
     /// Modal key handling while the ship-type popup is open.
-    fn handle_ship_popup_key(&mut self, key: KeyEvent, sel: usize) -> InputResult {
+    fn handle_ship_popup_key(
+        &mut self,
+        key: KeyEvent,
+        sel: usize,
+    ) -> InputResult {
         let count = crate::ships::SHIPS.len();
         match key.code {
             KeyCode::Esc => self.jobbers_ui.ship_popup = None,
@@ -2040,7 +2283,11 @@ impl AppShell {
     }
 
     /// Modal key handling while the vessel picker is open.
-    fn handle_vessel_popup_key(&mut self, key: KeyEvent, sel: usize) -> InputResult {
+    fn handle_vessel_popup_key(
+        &mut self,
+        key: KeyEvent,
+        sel: usize,
+    ) -> InputResult {
         let ordered = self.chatlog.vessels_by_recency();
         match key.code {
             KeyCode::Esc => self.jobbers_ui.vessel_popup = None,
@@ -2076,7 +2323,11 @@ impl AppShell {
     }
 
     /// Modal key handling while the voyage-type picker is open.
-    fn handle_voyage_popup_key(&mut self, key: KeyEvent, sel: usize) -> InputResult {
+    fn handle_voyage_popup_key(
+        &mut self,
+        key: KeyEvent,
+        sel: usize,
+    ) -> InputResult {
         match key.code {
             KeyCode::Esc => self.jobbers_ui.voyage_popup = None,
             KeyCode::Up => {
@@ -2143,8 +2394,8 @@ impl AppShell {
             .map_or(0, |c| c.len())
     }
 
-    /// Clamp the leaderboard cursor to the live column/row shape (after a column
-    /// switch, or when the aboard set changes under it).
+    /// Clamp the leaderboard cursor to the live column/row shape (after a
+    /// column switch, or when the aboard set changes under it).
     fn leaderboard_clamp(&mut self) {
         let cols = self.leaderboard_cols();
         if cols.is_empty() {
@@ -2161,8 +2412,9 @@ impl AppShell {
         };
     }
 
-    /// Open the pirate-stats popup for the leaderboard's selected pirate, jumping it
-    /// to the top of the fetch queue (mirrors [`Self::open_pirate_popup`]).
+    /// Open the pirate-stats popup for the leaderboard's selected pirate,
+    /// jumping it to the top of the fetch queue (mirrors
+    /// [`Self::open_pirate_popup`]).
     fn open_leaderboard_popup(&mut self) {
         let cols = self.leaderboard_cols();
         let Some(name) = cols
@@ -2178,8 +2430,8 @@ impl AppShell {
         });
     }
 
-    /// Modal key handling for the pirate-stats popup: ←/→ toggle the two buttons,
-    /// Enter activates, Esc closes.
+    /// Modal key handling for the pirate-stats popup: ←/→ toggle the two
+    /// buttons, Enter activates, Esc closes.
     fn handle_pirate_popup_key(&mut self, key: KeyEvent) -> InputResult {
         let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() else {
             return InputResult::Consumed;
@@ -2207,14 +2459,22 @@ impl AppShell {
             .jobbers_ui
             .selected
             .as_ref()
-            .map(|k| jobbers::default_skill_dist_cursor(&self.chatlog.aboard(k), &self.pirate_cache))
+            .map(|k| {
+                jobbers::default_skill_dist_cursor(
+                    &self.chatlog.aboard(k),
+                    &self.pirate_cache,
+                )
+            })
             .unwrap_or((0, 0));
-        self.jobbers_ui.skill_dist_popup = Some(SkillDistPopup { cursor });
+        self.jobbers_ui.skill_dist_popup = Some(SkillDistPopup {
+            cursor,
+        });
         self.jobbers_ui.focus = JobberFocus::SkillDist;
     }
 
-    /// Modal key handling for the skill-distribution popup: arrows move the cursor
-    /// over the 9×9 standing grid (x = Treasure Haul, y = Carpentry), Esc closes.
+    /// Modal key handling for the skill-distribution popup: arrows move the
+    /// cursor over the 9×9 standing grid (x = Treasure Haul, y =
+    /// Carpentry), Esc closes.
     fn handle_skill_dist_popup_key(&mut self, key: KeyEvent) -> InputResult {
         let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut() else {
             return InputResult::Consumed;
@@ -2224,7 +2484,8 @@ impl AppShell {
             KeyCode::Esc => self.jobbers_ui.skill_dist_popup = None,
             KeyCode::Left => sd.cursor.0 = th.saturating_sub(1),
             KeyCode::Right => sd.cursor.0 = (th + 1).min(8),
-            // ↑ raises Carpentry standing, ↓ lowers it (the grid runs high → low).
+            // ↑ raises Carpentry standing, ↓ lowers it (the grid runs high →
+            // low).
             KeyCode::Up => sd.cursor.1 = (carp + 1).min(8),
             KeyCode::Down => sd.cursor.1 = carp.saturating_sub(1),
             _ => {}
@@ -2232,8 +2493,8 @@ impl AppShell {
         InputResult::Consumed
     }
 
-    /// Modal key handling for the per-fight graph popup: ←/→ change fight, `t` or
-    /// Tab toggles the X-axis, Esc closes.
+    /// Modal key handling for the per-fight graph popup: ←/→ change fight, `t`
+    /// or Tab toggles the X-axis, Esc closes.
     fn handle_per_fight_popup_key(&mut self, key: KeyEvent) -> InputResult {
         let count = self
             .jobbers_ui
@@ -2247,11 +2508,17 @@ impl AppShell {
         match key.code {
             KeyCode::Esc => self.jobbers_ui.per_fight_popup = None,
             KeyCode::Left => pf.idx = pf.idx.saturating_sub(1),
-            KeyCode::Right => pf.idx = (pf.idx + 1).min(count.saturating_sub(1)),
+            KeyCode::Right => {
+                pf.idx = (pf.idx + 1).min(count.saturating_sub(1))
+            }
             KeyCode::Tab | KeyCode::Char('t') => {
                 pf.axis = match pf.axis {
-                    crate::voyage::AxisMode::Time => crate::voyage::AxisMode::Event,
-                    crate::voyage::AxisMode::Event => crate::voyage::AxisMode::Time,
+                    crate::voyage::AxisMode::Time => {
+                        crate::voyage::AxisMode::Event
+                    }
+                    crate::voyage::AxisMode::Event => {
+                        crate::voyage::AxisMode::Time
+                    }
                 };
             }
             _ => {}
@@ -2261,10 +2528,16 @@ impl AppShell {
 
     /// Open the trophies popup for the pirate in the stats popup.
     fn open_trophy_popup(&mut self) {
-        let Some(name) = self.jobbers_ui.pirate_popup.as_ref().map(|pp| pp.name.clone()) else {
+        let Some(name) = self
+            .jobbers_ui
+            .pirate_popup
+            .as_ref()
+            .map(|pp| pp.name.clone())
+        else {
             return;
         };
-        // On-demand: ensure this pirate's trophies are (re)fetched at top priority.
+        // On-demand: ensure this pirate's trophies are (re)fetched at top
+        // priority.
         self.pirate_cache.force_requery(&name);
         self.jobbers_ui.trophy_popup = Some(TrophyPopup {
             name,
@@ -2341,21 +2614,24 @@ impl AppShell {
         };
         match pane {
             JobberPane::Aboard => self.chatlog.aboard(key).len(),
-            JobberPane::Greedy => self
-                .chatlog
-                .vessels
-                .get(key)
-                .map_or(0, |v| v.greedy_by_pirate.len()),
-            JobberPane::Planked => self
-                .chatlog
-                .vessels
-                .get(key)
-                .map_or(0, |v| v.planked_by_us.len()),
-            JobberPane::Enthralled => self
-                .chatlog
-                .vessels
-                .get(key)
-                .map_or(0, |v| v.thralls_total.len()),
+            JobberPane::Greedy => {
+                self.chatlog
+                    .vessels
+                    .get(key)
+                    .map_or(0, |v| v.greedy_by_pirate.len())
+            }
+            JobberPane::Planked => {
+                self.chatlog
+                    .vessels
+                    .get(key)
+                    .map_or(0, |v| v.planked_by_us.len())
+            }
+            JobberPane::Enthralled => {
+                self.chatlog
+                    .vessels
+                    .get(key)
+                    .map_or(0, |v| v.thralls_total.len())
+            }
         }
     }
 
@@ -2377,11 +2653,7 @@ impl AppShell {
             JobberPane::Planked => self.jobbers_ui.planked_sel,
             JobberPane::Enthralled => self.jobbers_ui.enthralled_sel,
         };
-        if n == 0 {
-            0
-        } else {
-            raw.min(n - 1)
-        }
+        if n == 0 { 0 } else { raw.min(n - 1) }
     }
 
     /// Move a pane's selection by `delta`, clamped to the pirate count.
@@ -2390,7 +2662,8 @@ impl AppShell {
         if n == 0 {
             return;
         }
-        let next = (self.jobbers_pane_sel(pane) as i32 + delta).clamp(0, n as i32 - 1) as usize;
+        let next = (self.jobbers_pane_sel(pane) as i32 + delta)
+            .clamp(0, n as i32 - 1) as usize;
         *self.jobbers_pane_sel_mut(pane) = next;
     }
 
@@ -2417,11 +2690,17 @@ impl AppShell {
     pub fn handle_mouse(
         &mut self,
         mouse: MouseEvent,
-        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+        tx: &tokio::sync::mpsc::UnboundedSender<
+            Result<HashMap<String, CachedOffers>, String>,
+        >,
     ) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(target) = clickmap::hit_test(&self.click_regions, mouse.column, mouse.row) {
+                if let Some(target) = clickmap::hit_test(
+                    &self.click_regions,
+                    mouse.column,
+                    mouse.row,
+                ) {
                     self.handle_click(target, tx);
                 }
             }
@@ -2431,37 +2710,56 @@ impl AppShell {
             MouseEventKind::ScrollDown => {
                 self.handle_scroll(1, mouse.column, mouse.row);
             }
-            // Live hover: while the skill-distribution popup is open, moving the
-            // mouse over a cell parks the cursor there (updates the detail panel).
+            // Live hover: while the skill-distribution popup is open, moving
+            // the mouse over a cell parks the cursor there (updates
+            // the detail panel).
             MouseEventKind::Moved => {
                 if self.jobbers_ui.skill_dist_popup.is_some() {
-                    if let Some(ClickTarget::JobberSkillDistCell { th, carp }) =
-                        clickmap::hit_test(&self.click_regions, mouse.column, mouse.row)
-                    {
-                        if let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut() {
+                    if let Some(ClickTarget::JobberSkillDistCell {
+                        th,
+                        carp,
+                    }) = clickmap::hit_test(
+                        &self.click_regions,
+                        mouse.column,
+                        mouse.row,
+                    ) {
+                        if let Some(sd) =
+                            self.jobbers_ui.skill_dist_popup.as_mut()
+                        {
                             sd.cursor = (th, carp);
                         }
                     }
                 }
-                // Live hover over the Ship Winrate matrix highlights the cell and its
-                // row/column headers; leaving the grid clears the highlight.
+                // Live hover over the Ship Winrate matrix highlights the cell
+                // and its row/column headers; leaving the grid
+                // clears the highlight.
                 if self.voyage_ui.chart_popup == Some(0) {
                     self.voyage_ui.winrate_hover = match clickmap::hit_test(
                         &self.click_regions,
                         mouse.column,
                         mouse.row,
                     ) {
-                        Some(ClickTarget::VoyageWinrateCell { row, col }) => Some((row, col)),
+                        Some(ClickTarget::VoyageWinrateCell {
+                            row,
+                            col,
+                        }) => Some((row, col)),
                         _ => None,
                     };
                 }
-                // Live hover over a Profit Breakdown row parks the tooltip cursor.
+                // Live hover over a Profit Breakdown row parks the tooltip
+                // cursor.
                 if matches!(
                     self.profits.popup,
-                    Some(crate::profits::PopupKind::ProfitResult(_))
+                    Some(crate::profits::PopupKind::ProfitResult(
+                        _
+                    ))
                 ) {
                     if let Some(ClickTarget::ProfitsBreakdownRow(i)) =
-                        clickmap::hit_test(&self.click_regions, mouse.column, mouse.row)
+                        clickmap::hit_test(
+                            &self.click_regions,
+                            mouse.column,
+                            mouse.row,
+                        )
                     {
                         self.profits.breakdown_cursor = i;
                     }
@@ -2474,14 +2772,21 @@ impl AppShell {
     fn handle_click(
         &mut self,
         target: ClickTarget,
-        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+        tx: &tokio::sync::mpsc::UnboundedSender<
+            Result<HashMap<String, CachedOffers>, String>,
+        >,
     ) {
         // While the Sea Battles popup is open, Damage* clicks belong to its
-        // embedded editor (edits go to the recorded fight; clicks on a read-only
-        // widget are swallowed) and must never reach the live calculator behind it.
+        // embedded editor (edits go to the recorded fight; clicks on a
+        // read-only widget are swallowed) and must never reach the live
+        // calculator behind it.
         if self.voyage_ui.battles_popup.is_some() && is_damage_target(&target) {
-            self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Calc;
-            crate::damage::apply_click(&mut self.voyage_ui.battle_editor, &target);
+            self.voyage_ui.battles_focus =
+                crate::voyage::ui::BattlesFocus::Calc;
+            crate::damage::apply_click(
+                &mut self.voyage_ui.battle_editor,
+                &target,
+            );
             self.sync_battle_editor();
             return;
         }
@@ -2490,8 +2795,9 @@ impl AppShell {
             ClickTarget::SidebarItem(i) => {
                 if i < APP_LIST.len() {
                     self.sidebar_index = i;
-                    // Exit has no content to enter — clicking it just selects it
-                    // on the bar and shows its widget (Enter/Esc then quit).
+                    // Exit has no content to enter — clicking it just selects
+                    // it on the bar and shows its widget
+                    // (Enter/Esc then quit).
                     if APP_LIST[i] == AppId::Exit {
                         self.global_focus = GlobalFocus::TopBar;
                     } else {
@@ -2503,7 +2809,10 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.profits.focus_input();
             }
-            ClickTarget::ProfitsTableCell { row, col } => {
+            ClickTarget::ProfitsTableCell {
+                row,
+                col,
+            } => {
                 self.global_focus = GlobalFocus::Content;
                 if col == 0 {
                     // Clicking the item name column: open delete confirm
@@ -2513,12 +2822,15 @@ impl AppShell {
                             self.profits.rows[row].commod_id,
                         )
                         .to_owned();
-                        self.profits.popup = Some(crate::profits::PopupKind::DeleteConfirm {
-                            row_idx: row,
-                            // Default to Yes so a quick Enter confirms the delete.
-                            name,
-                            yes_focused: true,
-                        });
+                        self.profits.popup = Some(
+                            crate::profits::PopupKind::DeleteConfirm {
+                                row_idx: row,
+                                // Default to Yes so a quick Enter confirms the
+                                // delete.
+                                name,
+                                yes_focused: true,
+                            },
+                        );
                         self.profits.focus = crate::profits::Focus::Popup;
                     }
                 } else {
@@ -2591,7 +2903,10 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.profits.dismiss_ok_popup();
             }
-            ClickTarget::DamageCell { row, side } => {
+            ClickTarget::DamageCell {
+                row,
+                side,
+            } => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
                 if row == crate::damage::ROW_SHIP {
@@ -2608,14 +2923,20 @@ impl AppShell {
                     self.damage.focus_side = side;
                 }
             }
-            ClickTarget::DamageIncrement { row, side } => {
+            ClickTarget::DamageIncrement {
+                row,
+                side,
+            } => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
                 self.damage.focus_row = row;
                 self.damage.focus_side = side;
                 self.damage.increment();
             }
-            ClickTarget::DamageDecrement { row, side } => {
+            ClickTarget::DamageDecrement {
+                row,
+                side,
+            } => {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.popup = None;
                 self.damage.focus_row = row;
@@ -2644,7 +2965,9 @@ impl AppShell {
                     let side = popup.side;
                     match side {
                         crate::damage::Side::Left => self.damage.left_ship = i,
-                        crate::damage::Side::Right => self.damage.right_ship = i,
+                        crate::damage::Side::Right => {
+                            self.damage.right_ship = i
+                        }
                     }
                     self.damage.popup = None;
                     if !self.damage.counts_are_default() {
@@ -2706,7 +3029,10 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Leaderboard;
             }
-            ClickTarget::JobberLeaderboardPirate { col, row } => {
+            ClickTarget::JobberLeaderboardPirate {
+                col,
+                row,
+            } => {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Leaderboard;
                 self.jobbers_ui.top_col = col;
@@ -2729,7 +3055,10 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Enthralled;
             }
-            ClickTarget::JobberPirate { pane, idx } => {
+            ClickTarget::JobberPirate {
+                pane,
+                idx,
+            } => {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = Self::pane_focus(pane);
                 *self.jobbers_pane_sel_mut(pane) = idx;
@@ -2743,12 +3072,16 @@ impl AppShell {
             ClickTarget::JobberPirateClose => {
                 self.jobbers_ui.pirate_popup = None;
             }
-            // The trophies popup is keyboard-driven; a click on it is a no-op (it
-            // exists only so the scroll wheel has a target there).
+            // The trophies popup is keyboard-driven; a click on it is a no-op
+            // (it exists only so the scroll wheel has a target
+            // there).
             ClickTarget::JobberTrophyArea => {}
             ClickTarget::JobberSkillDistButton => self.open_skill_dist_popup(),
             // Clicking a cell parks the cursor there (same as hovering it).
-            ClickTarget::JobberSkillDistCell { th, carp } => {
+            ClickTarget::JobberSkillDistCell {
+                th,
+                carp,
+            } => {
                 if let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut() {
                     sd.cursor = (th, carp);
                 }
@@ -2765,10 +3098,11 @@ impl AppShell {
                     .as_ref()
                     .map(|k| crate::jobbers::fight_count(&self.chatlog, k))
                     .unwrap_or(0);
-                self.jobbers_ui.per_fight_popup = Some(crate::jobbers::PerFightPopup {
-                    idx: last.saturating_sub(1),
-                    axis: crate::voyage::AxisMode::default(),
-                });
+                self.jobbers_ui.per_fight_popup =
+                    Some(crate::jobbers::PerFightPopup {
+                        idx: last.saturating_sub(1),
+                        axis: crate::voyage::AxisMode::default(),
+                    });
             }
             ClickTarget::JobberPerFightClose => {
                 self.jobbers_ui.per_fight_popup = None;
@@ -2776,8 +3110,12 @@ impl AppShell {
             ClickTarget::JobberPerFightAxisToggle => {
                 if let Some(pf) = self.jobbers_ui.per_fight_popup.as_mut() {
                     pf.axis = match pf.axis {
-                        crate::voyage::AxisMode::Time => crate::voyage::AxisMode::Event,
-                        crate::voyage::AxisMode::Event => crate::voyage::AxisMode::Time,
+                        crate::voyage::AxisMode::Time => {
+                            crate::voyage::AxisMode::Event
+                        }
+                        crate::voyage::AxisMode::Event => {
+                            crate::voyage::AxisMode::Time
+                        }
                     };
                 }
             }
@@ -2811,16 +3149,21 @@ impl AppShell {
             ClickTarget::VoyageSaveCancel => {
                 self.voyage_ui.prompt = None;
             }
-            ClickTarget::VoyageStat { idx } => {
+            ClickTarget::VoyageStat {
+                idx,
+            } => {
                 self.voyage_ui.focus = idx;
                 // The Sea Battles section (focus 0) opens the per-fight log.
                 if idx == 0 {
                     self.open_battles_popup();
                 }
             }
-            ClickTarget::VoyageChart { idx } => {
+            ClickTarget::VoyageChart {
+                idx,
+            } => {
                 self.voyage_ui.focus = self.voyage_ui.n_stats + idx;
-                if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true) {
+                if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true)
+                {
                     self.voyage_ui.chart_popup = Some(idx);
                 }
             }
@@ -2828,12 +3171,17 @@ impl AppShell {
                 self.voyage_ui.chart_popup = None;
                 self.voyage_ui.winrate_hover = None;
             }
-            // Clicking a matrix cell just parks the highlight there (same as hover).
-            ClickTarget::VoyageWinrateCell { row, col } => {
+            // Clicking a matrix cell just parks the highlight there (same as
+            // hover).
+            ClickTarget::VoyageWinrateCell {
+                row,
+                col,
+            } => {
                 self.voyage_ui.winrate_hover = Some((row, col));
             }
             ClickTarget::VoyageBattlesClose => {
-                // Closing the editor's ship picker takes priority over the popup.
+                // Closing the editor's ship picker takes priority over the
+                // popup.
                 if self.voyage_ui.battle_editor.popup.is_some() {
                     self.voyage_ui.battle_editor.popup = None;
                 } else {
@@ -2843,7 +3191,8 @@ impl AppShell {
             ClickTarget::VoyageBattlesPrev => self.battles_page(-1),
             ClickTarget::VoyageBattlesNext => self.battles_page(1),
             ClickTarget::VoyageBattlesRecord => {
-                self.voyage_ui.battles_focus = crate::voyage::ui::BattlesFocus::Record;
+                self.voyage_ui.battles_focus =
+                    crate::voyage::ui::BattlesFocus::Record;
                 self.toggle_battle_record();
             }
         }
@@ -2881,29 +3230,35 @@ impl AppShell {
                 // While a picker popup is open, the wheel moves its highlight.
                 if let Some(sel) = self.jobbers_ui.ship_popup {
                     let count = crate::ships::SHIPS.len();
-                    self.jobbers_ui.ship_popup = Some(if delta < 0 {
-                        sel.saturating_sub(1)
-                    } else {
-                        (sel + 1).min(count.saturating_sub(1))
-                    });
+                    self.jobbers_ui.ship_popup = Some(
+                        if delta < 0 {
+                            sel.saturating_sub(1)
+                        } else {
+                            (sel + 1).min(count.saturating_sub(1))
+                        },
+                    );
                     return;
                 }
                 if let Some(sel) = self.jobbers_ui.vessel_popup {
                     let count = self.chatlog.vessels_by_recency().len();
-                    self.jobbers_ui.vessel_popup = Some(if delta < 0 {
-                        sel.saturating_sub(1)
-                    } else {
-                        (sel + 1).min(count.saturating_sub(1))
-                    });
+                    self.jobbers_ui.vessel_popup = Some(
+                        if delta < 0 {
+                            sel.saturating_sub(1)
+                        } else {
+                            (sel + 1).min(count.saturating_sub(1))
+                        },
+                    );
                     return;
                 }
                 if let Some(sel) = self.jobbers_ui.voyage_popup {
                     let count = VOYAGE_TYPES.len();
-                    self.jobbers_ui.voyage_popup = Some(if delta < 0 {
-                        sel.saturating_sub(1)
-                    } else {
-                        (sel + 1).min(count.saturating_sub(1))
-                    });
+                    self.jobbers_ui.voyage_popup = Some(
+                        if delta < 0 {
+                            sel.saturating_sub(1)
+                        } else {
+                            (sel + 1).min(count.saturating_sub(1))
+                        },
+                    );
                     return;
                 }
                 // The trophies popup scrolls its content with the wheel.
@@ -2919,52 +3274,62 @@ impl AppShell {
                 if self.jobbers_ui.pirate_popup.is_some() {
                     return;
                 }
-                // The wheel over the Skill Leaderboard moves its selection within the
-                // current column (the shared window auto-scrolls to follow it).
+                // The wheel over the Skill Leaderboard moves its selection
+                // within the current column (the shared window
+                // auto-scrolls to follow it).
                 if let Some(
-                    ClickTarget::JobberLeaderboard | ClickTarget::JobberLeaderboardPirate { .. },
+                    ClickTarget::JobberLeaderboard
+                    | ClickTarget::JobberLeaderboardPirate {
+                        ..
+                    },
                 ) = clickmap::hit_test(&self.click_regions, col, row)
                 {
                     let len = self.leaderboard_current_len();
                     if len > 0 {
-                        let next = (self.jobbers_ui.top_sel as i32 + delta.signum())
-                            .clamp(0, len as i32 - 1) as usize;
+                        let next = (self.jobbers_ui.top_sel as i32
+                            + delta.signum())
+                        .clamp(0, len as i32 - 1)
+                            as usize;
                         self.jobbers_ui.top_sel = next;
                     }
                     return;
                 }
-                // Otherwise move the selection of whichever pane the cursor is over
-                // (the panes auto-scroll to follow the selection).
-                let pane = match clickmap::hit_test(&self.click_regions, col, row) {
-                    Some(ClickTarget::JobberAboardList)
-                    | Some(ClickTarget::JobberPirate {
-                        pane: JobberPane::Aboard,
-                        ..
-                    }) => JobberPane::Aboard,
-                    Some(ClickTarget::JobberGreedyList)
-                    | Some(ClickTarget::JobberPirate {
-                        pane: JobberPane::Greedy,
-                        ..
-                    }) => JobberPane::Greedy,
-                    Some(ClickTarget::JobberPlankedList)
-                    | Some(ClickTarget::JobberPirate {
-                        pane: JobberPane::Planked,
-                        ..
-                    }) => JobberPane::Planked,
-                    Some(ClickTarget::JobberEnthralledList)
-                    | Some(ClickTarget::JobberPirate {
-                        pane: JobberPane::Enthralled,
-                        ..
-                    }) => JobberPane::Enthralled,
-                    _ => return,
-                };
+                // Otherwise move the selection of whichever pane the cursor is
+                // over (the panes auto-scroll to follow the
+                // selection).
+                let pane =
+                    match clickmap::hit_test(&self.click_regions, col, row) {
+                        Some(ClickTarget::JobberAboardList)
+                        | Some(ClickTarget::JobberPirate {
+                            pane: JobberPane::Aboard,
+                            ..
+                        }) => JobberPane::Aboard,
+                        Some(ClickTarget::JobberGreedyList)
+                        | Some(ClickTarget::JobberPirate {
+                            pane: JobberPane::Greedy,
+                            ..
+                        }) => JobberPane::Greedy,
+                        Some(ClickTarget::JobberPlankedList)
+                        | Some(ClickTarget::JobberPirate {
+                            pane: JobberPane::Planked,
+                            ..
+                        }) => JobberPane::Planked,
+                        Some(ClickTarget::JobberEnthralledList)
+                        | Some(ClickTarget::JobberPirate {
+                            pane: JobberPane::Enthralled,
+                            ..
+                        }) => JobberPane::Enthralled,
+                        _ => return,
+                    };
                 self.jobbers_pane_select_delta(pane, delta.signum());
             }
             AppId::Voyage => {
                 if delta < 0 {
-                    self.voyage_ui.focus = self.voyage_ui.focus.saturating_sub(1);
+                    self.voyage_ui.focus =
+                        self.voyage_ui.focus.saturating_sub(1);
                 } else {
-                    self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(1);
+                    self.voyage_ui.focus =
+                        self.voyage_ui.focus.saturating_add(1);
                 }
             }
             AppId::Exit => {}
@@ -2974,7 +3339,9 @@ impl AppShell {
     fn process_input_result(
         &mut self,
         result: InputResult,
-        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+        tx: &tokio::sync::mpsc::UnboundedSender<
+            Result<HashMap<String, CachedOffers>, String>,
+        >,
     ) {
         match result {
             InputResult::Consumed => {}
@@ -2999,30 +3366,32 @@ impl AppShell {
     ) {
         self.loading = false;
         match result {
-            Ok(offers_map) => match self.profits.fetch_purpose {
-                FetchPurpose::Islands => {
-                    self.cached_offers.extend(offers_map);
-                    self.rebuild_island_list();
+            Ok(offers_map) => {
+                match self.profits.fetch_purpose {
+                    FetchPurpose::Islands => {
+                        self.cached_offers.extend(offers_map);
+                        self.rebuild_island_list();
+                    }
+                    FetchPurpose::Profits => {
+                        self.cached_offers = offers_map;
+                        self.rebuild_island_list();
+                        let (pillage_gross, pillage_stolen, pillage_chest) =
+                            self.chatlog.current_pillage_poe();
+                        let shared = SharedState {
+                            commodities: &self.commodities,
+                            cached_offers: &self.cached_offers,
+                            available_islands: &self.available_islands,
+                            ocean_geo: self.ocean_geo(),
+                            loading: self.loading,
+                            market_supported: self.market_ok(),
+                            pillage_gross,
+                            pillage_stolen,
+                            pillage_chest,
+                        };
+                        self.profits.calculate_or_warn(&shared);
+                    }
                 }
-                FetchPurpose::Profits => {
-                    self.cached_offers = offers_map;
-                    self.rebuild_island_list();
-                    let (pillage_gross, pillage_stolen, pillage_chest) =
-                        self.chatlog.current_pillage_poe();
-                    let shared = SharedState {
-                        commodities: &self.commodities,
-                        cached_offers: &self.cached_offers,
-                        available_islands: &self.available_islands,
-                        ocean_geo: self.ocean_geo(),
-                        loading: self.loading,
-                        market_supported: self.market_ok(),
-                        pillage_gross,
-                        pillage_stolen,
-                        pillage_chest,
-                    };
-                    self.profits.calculate_or_warn(&shared);
-                }
-            },
+            }
             Err(msg) => {
                 self.profits.calc_error = Some(msg);
             }
@@ -3032,27 +3401,35 @@ impl AppShell {
     fn spawn_fetch(
         &self,
         purpose: FetchPurpose,
-        tx: &tokio::sync::mpsc::UnboundedSender<Result<HashMap<String, CachedOffers>, String>>,
+        tx: &tokio::sync::mpsc::UnboundedSender<
+            Result<HashMap<String, CachedOffers>, String>,
+        >,
     ) {
         let names: Vec<String> = match purpose {
-            FetchPurpose::Islands => self
-                .profits
-                .rows
-                .iter()
-                .map(|r| commod_name(&self.commodities, r.commod_id).to_owned())
-                .collect(),
-            FetchPurpose::Profits => self
-                .profits
-                .rows
-                .iter()
-                .filter(|r| {
-                    let restock = r.restock.parse::<u64>().unwrap_or(0);
-                    let stock = r.stock.parse::<u64>().unwrap_or(0);
-                    let booty = r.booty.parse::<u64>().unwrap_or(0);
-                    restock != 0 || stock != 0 || booty != 0
-                })
-                .map(|r| commod_name(&self.commodities, r.commod_id).to_owned())
-                .collect(),
+            FetchPurpose::Islands => {
+                self.profits
+                    .rows
+                    .iter()
+                    .map(|r| {
+                        commod_name(&self.commodities, r.commod_id).to_owned()
+                    })
+                    .collect()
+            }
+            FetchPurpose::Profits => {
+                self.profits
+                    .rows
+                    .iter()
+                    .filter(|r| {
+                        let restock = r.restock.parse::<u64>().unwrap_or(0);
+                        let stock = r.stock.parse::<u64>().unwrap_or(0);
+                        let booty = r.booty.parse::<u64>().unwrap_or(0);
+                        restock != 0 || stock != 0 || booty != 0
+                    })
+                    .map(|r| {
+                        commod_name(&self.commodities, r.commod_id).to_owned()
+                    })
+                    .collect()
+            }
         };
 
         let tx = tx.clone();
@@ -3061,7 +3438,9 @@ impl AppShell {
             let client = reqwest::Client::new();
             let result = match ocean.filter(|o| o.market_supported()) {
                 Some(o) => fetch_offers_for(&client, &names, o).await,
-                None => Err("No Market ocean selected for this run".to_owned()),
+                None => {
+                    Err("No Market ocean selected for this run".to_owned())
+                }
             };
             let _ = tx.send(result);
         });
@@ -3087,9 +3466,14 @@ mod restock_scope_tests {
 
     #[test]
     fn archipelago_name_fans_out_to_all_its_islands() {
-        // Even with no offers yet, the archipelago resolves to its full island set.
+        // Even with no offers yet, the archipelago resolves to its full island
+        // set.
         let scope = resolve_restock_scope("Orion", &[], Some(emerald()));
-        let RestockScope::Archipelago { name, islands } = scope else {
+        let RestockScope::Archipelago {
+            name,
+            islands,
+        } = scope
+        else {
             panic!("expected an archipelago scope");
         };
         assert_eq!(name, "Orion");
@@ -3101,24 +3485,35 @@ mod restock_scope_tests {
 
     #[test]
     fn island_name_resolves_to_a_single_island() {
-        let islands = vec!["Pukru Island".to_string(), "Toba Island".to_string()];
-        let scope = resolve_restock_scope("Pukru Island", &islands, Some(emerald()));
+        let islands =
+            vec!["Pukru Island".to_string(), "Toba Island".to_string()];
+        let scope = resolve_restock_scope(
+            "Pukru Island",
+            &islands,
+            Some(emerald()),
+        );
         let filter = scope.island_filter().expect("island scope filters");
         assert_eq!(filter, ["Pukru Island".to_string()]);
     }
 
     #[test]
     fn island_prefix_wins_over_archipelago_fuzz() {
-        // "Pukru" is a unique island prefix and no archipelago; it must stay an island.
+        // "Pukru" is a unique island prefix and no archipelago; it must stay an
+        // island.
         let islands = vec!["Pukru Island".to_string()];
         let scope = resolve_restock_scope("Pukru", &islands, Some(emerald()));
-        assert!(matches!(scope, RestockScope::Island(ref n) if n == "Pukru Island"));
+        assert!(
+            matches!(scope, RestockScope::Island(ref n) if n == "Pukru Island")
+        );
     }
 
     #[test]
     fn unrecognized_text_is_unknown() {
-        let scope =
-            resolve_restock_scope("Nowhere", &["Pukru Island".to_string()], Some(emerald()));
+        let scope = resolve_restock_scope(
+            "Nowhere",
+            &["Pukru Island".to_string()],
+            Some(emerald()),
+        );
         assert!(matches!(scope, RestockScope::Unknown));
         assert!(scope.island_filter().is_none());
     }
@@ -3126,7 +3521,11 @@ mod restock_scope_tests {
     #[test]
     fn archipelago_needs_geography() {
         // Without ocean geography, an archipelago name can't resolve.
-        let scope = resolve_restock_scope("Orion", &["Pukru Island".to_string()], None);
+        let scope = resolve_restock_scope(
+            "Orion",
+            &["Pukru Island".to_string()],
+            None,
+        );
         assert!(matches!(scope, RestockScope::Unknown));
     }
 }

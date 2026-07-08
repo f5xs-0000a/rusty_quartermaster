@@ -1,18 +1,22 @@
 //! The single on-disk cache file.
 //!
-//! Everything we persist between runs lives in one JSON file (see [`SavedCache`]):
-//! the inventory and commodity list are global, while market prices and the
-//! playerbase are kept per-ocean, since each ocean has its own economy and its
-//! own pirates.
+//! Everything we persist between runs lives in one JSON file (see
+//! [`SavedCache`]): the inventory and commodity list are global, while market
+//! prices and the playerbase are kept per-ocean, since each ocean has its own
+//! economy and its own pirates.
 
-use std::collections::{BTreeSet, HashMap};
-use std::path::Path;
+use std::{
+    collections::{BTreeSet, HashMap},
+    path::Path,
+};
 
 use serde::{Deserialize, Serialize};
 
-use crate::api::{CachedOffers, SavedCommodity};
-use crate::pirate::CachedPirate;
-use crate::profits::persistence::SavedInventory;
+use crate::{
+    api::{CachedOffers, SavedCommodity},
+    pirate::CachedPirate,
+    profits::persistence::SavedInventory,
+};
 
 /// Per-ocean cached data. Prices (`market`) and the playerbase are both
 /// specific to one ocean, so each ocean gets its own bucket.
@@ -32,7 +36,8 @@ pub struct OceanCache {
 ///
 /// Puzzle Pirates names NPCs two ways:
 /// - mercenary = `[name] [epithet]`  (e.g. "Luka Merciless")
-/// - swabbie / brigand / vampirate = `[adjective] [name]`  (e.g. "Gentle Gayle")
+/// - swabbie / brigand / vampirate = `[adjective] [name]`  (e.g. "Gentle
+///   Gayle")
 ///
 /// The two families share a *given-name* pool, so only the *position* of the
 /// adjective distinguishes them. We bootstrap the vocabulary from **brigand
@@ -45,7 +50,8 @@ pub struct NameSegments {
     /// Given names — the right word of a brigand `[adjective] [name]`.
     #[serde(default)]
     pub name: BTreeSet<String>,
-    /// Adjectives / epithets — the left word of a brigand `[adjective] [name]`.
+    /// Adjectives / epithets — the left word of a brigand `[adjective]
+    /// [name]`.
     #[serde(default)]
     pub adjectives: BTreeSet<String>,
 }
@@ -62,33 +68,37 @@ pub enum NpcKind {
 impl NameSegments {
     /// Learn one brigand's name (`[adjective] [name]`): the left word is an
     /// adjective, the right a given name. No-op unless the name is exactly two
-    /// whitespace-separated words and not a special character. Specials (Brigand
-    /// Kings, "Mother o' Nyght") are matched and excluded *whole* — never split
-    /// into segments, since their words overlap real ones (e.g. "Mad" in "Vargas
-    /// the Mad" is also a legitimate adjective).
+    /// whitespace-separated words and not a special character. Specials
+    /// (Brigand Kings, "Mother o' Nyght") are matched and excluded *whole*
+    /// — never split into segments, since their words overlap real ones
+    /// (e.g. "Mad" in "Vargas the Mad" is also a legitimate adjective).
     pub fn learn_brigand(&mut self, npc: &str) {
         if crate::pirate::is_special_name(npc) {
             return;
         }
         let mut words = npc.split_whitespace();
-        if let (Some(adj), Some(name), None) = (words.next(), words.next(), words.next()) {
+        if let (Some(adj), Some(name), None) =
+            (words.next(), words.next(), words.next())
+        {
             self.adjectives.insert(adj.to_string());
             self.name.insert(name.to_string());
         }
     }
 
     /// Classify a two-word NPC as a swabbie or mercenary. Returns `None` for a
-    /// special character or anything that isn't a two-word NPC (e.g. a single-word
-    /// player name, or a three-word special we don't recognize).
+    /// special character or anything that isn't a two-word NPC (e.g. a
+    /// single-word player name, or a three-word special we don't
+    /// recognize).
     ///
     /// It's a **swabbie** when the split is unambiguously `[adjective] [name]`:
     /// - the left word is a known adjective that is *not* also a known name, or
     /// - the right word is a known name.
     ///
-    /// Otherwise it's a **mercenary**. The left-side `!name` guard is essential —
-    /// it keeps "Red Ear-biter" a mercenary even though "Red" is also a name. The
-    /// right-side test needs no such guard, because a mercenary's epithet is never
-    /// a name; that's what lets "Red Red" correctly resolve to a swabbie.
+    /// Otherwise it's a **mercenary**. The left-side `!name` guard is essential
+    /// — it keeps "Red Ear-biter" a mercenary even though "Red" is also a
+    /// name. The right-side test needs no such guard, because a mercenary's
+    /// epithet is never a name; that's what lets "Red Red" correctly
+    /// resolve to a swabbie.
     pub fn classify(&self, npc: &str) -> Option<NpcKind> {
         if crate::pirate::is_special_name(npc) {
             return None;
@@ -98,13 +108,16 @@ impl NameSegments {
         if words.next().is_some() {
             return None; // more than two words — not a plain NPC name
         }
-        let left_is_adjective = self.adjectives.contains(left) && !self.name.contains(left);
+        let left_is_adjective =
+            self.adjectives.contains(left) && !self.name.contains(left);
         let right_is_name = self.name.contains(right);
-        Some(if left_is_adjective || right_is_name {
-            NpcKind::Swabbie
-        } else {
-            NpcKind::Mercenary
-        })
+        Some(
+            if left_is_adjective || right_is_name {
+                NpcKind::Swabbie
+            } else {
+                NpcKind::Mercenary
+            },
+        )
     }
 }
 
@@ -117,23 +130,26 @@ impl NameSegments {
 pub struct SavedCache {
     #[serde(default)]
     pub inventory: SavedInventory,
-    /// Commodity id<->name list. Market's commodity list is ocean-independent,
-    /// so it lives once at the top level rather than under each ocean.
+    /// Commodity id<->name list. Market's commodity list is
+    /// ocean-independent, so it lives once at the top level rather than
+    /// under each ocean.
     #[serde(default)]
     pub commodities: Vec<SavedCommodity>,
     /// Per-ocean data, keyed by ocean name (e.g. `"Emerald"`).
     #[serde(default)]
     pub oceans: HashMap<String, OceanCache>,
-    /// Learned NPC name-segment vocabulary (swabbie vs mercenary classification).
+    /// Learned NPC name-segment vocabulary (swabbie vs mercenary
+    /// classification).
     #[serde(default)]
     pub name_segments: NameSegments,
 }
 
 impl SavedCache {
-    /// A fresh cache seeded from the embedded [bare cache](crate::bare): the NPC
-    /// name vocabulary (swabbie names + adjectives) starts pre-populated so
-    /// swabbie/mercenary classification works from the very first fight, before
-    /// we've learned anything from brigand victories this run.
+    /// A fresh cache seeded from the embedded [bare cache](crate::bare): the
+    /// NPC name vocabulary (swabbie names + adjectives) starts
+    /// pre-populated so swabbie/mercenary classification works from the
+    /// very first fight, before we've learned anything from brigand
+    /// victories this run.
     pub fn seeded() -> SavedCache {
         let bare = &*crate::bare::BARE;
         SavedCache {
@@ -190,7 +206,9 @@ mod tests {
     fn learn_splits_adjective_and_name() {
         let ns = learned();
         assert!(ns.adjectives.contains("Gentle") && ns.name.contains("Gayle"));
-        assert!(ns.adjectives.contains("Furious") && ns.name.contains("William"));
+        assert!(
+            ns.adjectives.contains("Furious") && ns.name.contains("William")
+        );
         // "Red" appears in both positions across the rosters -> in both sets.
         assert!(ns.adjectives.contains("Red") && ns.name.contains("Red"));
     }
@@ -202,8 +220,9 @@ mod tests {
         ns.learn_brigand("Mother o' Nyght"); // special
         ns.learn_brigand("Playerone"); // single word (a player)
         assert!(ns.adjectives.is_empty() && ns.name.is_empty());
-        // "Mad" is a real adjective and must stay learnable from a normal brigand,
-        // even though it also appears inside the special "Vargas the Mad".
+        // "Mad" is a real adjective and must stay learnable from a normal
+        // brigand, even though it also appears inside the special
+        // "Vargas the Mad".
         ns.learn_brigand("Mad Carter");
         assert!(ns.adjectives.contains("Mad") && ns.name.contains("Carter"));
     }
@@ -211,21 +230,45 @@ mod tests {
     #[test]
     fn classifies_plain_swabbie_and_mercenary() {
         let ns = learned();
-        assert_eq!(ns.classify("Gentle Gayle"), Some(NpcKind::Swabbie));
-        assert_eq!(ns.classify("Callous Aster"), Some(NpcKind::Swabbie));
+        assert_eq!(
+            ns.classify("Gentle Gayle"),
+            Some(NpcKind::Swabbie)
+        );
+        assert_eq!(
+            ns.classify("Callous Aster"),
+            Some(NpcKind::Swabbie)
+        );
         // Mercenary = `[name] [epithet]`; the epithet is in neither set.
-        assert_eq!(ns.classify("Elias Callous"), Some(NpcKind::Mercenary));
-        assert_eq!(ns.classify("Bree Steeljaw"), Some(NpcKind::Mercenary));
+        assert_eq!(
+            ns.classify("Elias Callous"),
+            Some(NpcKind::Mercenary)
+        );
+        assert_eq!(
+            ns.classify("Bree Steeljaw"),
+            Some(NpcKind::Mercenary)
+        );
     }
 
     #[test]
     fn resolves_the_red_overlap() {
         let ns = learned();
         // "Red" is both a name and an adjective; each pair still resolves.
-        assert_eq!(ns.classify("Red Alan"), Some(NpcKind::Swabbie)); // right is a name
-        assert_eq!(ns.classify("Barmy Red"), Some(NpcKind::Swabbie)); // left is a pure adjective
-        assert_eq!(ns.classify("Red Ear-biter"), Some(NpcKind::Mercenary)); // left=name, epithet right
-        assert_eq!(ns.classify("Red Red"), Some(NpcKind::Swabbie)); // both-dual edge case
+        assert_eq!(
+            ns.classify("Red Alan"),
+            Some(NpcKind::Swabbie)
+        ); // right is a name
+        assert_eq!(
+            ns.classify("Barmy Red"),
+            Some(NpcKind::Swabbie)
+        ); // left is a pure adjective
+        assert_eq!(
+            ns.classify("Red Ear-biter"),
+            Some(NpcKind::Mercenary)
+        ); // left=name, epithet right
+        assert_eq!(
+            ns.classify("Red Red"),
+            Some(NpcKind::Swabbie)
+        ); // both-dual edge case
     }
 
     #[test]
@@ -241,10 +284,19 @@ mod tests {
         let bare = &*crate::bare::BARE;
         let cache = SavedCache::seeded();
         // Every bare swabbie name / adjective lands in the seeded vocabulary.
-        assert_eq!(cache.name_segments.name.len(), bare.swabbie_names.len());
-        assert_eq!(cache.name_segments.adjectives.len(), bare.adjectives.len());
+        assert_eq!(
+            cache.name_segments.name.len(),
+            bare.swabbie_names.len()
+        );
+        assert_eq!(
+            cache.name_segments.adjectives.len(),
+            bare.adjectives.len()
+        );
         for name in &bare.swabbie_names {
-            assert!(cache.name_segments.name.contains(name), "missing name {name}");
+            assert!(
+                cache.name_segments.name.contains(name),
+                "missing name {name}"
+            );
         }
         // A seeded cache classifies a known swabbie pattern immediately.
         assert!(cache.name_segments.classify("Gentle Gayle").is_some());
@@ -258,7 +310,13 @@ mod tests {
         cache.name_segments = learned();
         let json = serde_json::to_string(&cache).unwrap();
         let back: SavedCache = serde_json::from_str(&json).unwrap();
-        assert_eq!(back.name_segments.name, cache.name_segments.name);
-        assert_eq!(back.name_segments.adjectives, cache.name_segments.adjectives);
+        assert_eq!(
+            back.name_segments.name,
+            cache.name_segments.name
+        );
+        assert_eq!(
+            back.name_segments.adjectives,
+            cache.name_segments.adjectives
+        );
     }
 }

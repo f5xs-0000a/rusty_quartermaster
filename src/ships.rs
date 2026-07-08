@@ -41,13 +41,14 @@ pub struct Ship {
     pub morale_hp: u32,
     pub ram_damage: u32,
     /// Ram size class. Retained as reference data (and to document each hull's
-    /// collision tier); the calculator no longer auto-doubles head-ons — the user
-    /// enters a different-class head-on as two rams instead.
+    /// collision tier); the calculator no longer auto-doubles head-ons — the
+    /// user enters a different-class head-on as two rams instead.
     #[allow(dead_code)]
     pub ship_size_class: ShipClass,
     pub move_tokens: u8,
-    /// Maximum *mercenaries* (improved NPC crew) hireable, per yppedia. Used as
-    /// the swabbie cap for staffing checks — mercenaries, not basic swabbies.
+    /// Maximum *mercenaries* (improved NPC crew) hireable, per yppedia. Used
+    /// as the swabbie cap for staffing checks — mercenaries, not basic
+    /// swabbies.
     pub max_mercenaries: u8,
     /// Maximum pirates that can be aboard (Capacity "Pirates" column).
     pub max_pirates: u8,
@@ -365,17 +366,17 @@ pub const SHIPS: &[Ship] = &[
     GRAND_FRIGATE,
 ];
 
-/// Index into [`SHIPS`] of the ship with this exact display name, if any. Used to
-/// resolve a known foe hull (special encounters) to a calculator ship index.
+/// Index into [`SHIPS`] of the ship with this exact display name, if any. Used
+/// to resolve a known foe hull (special encounters) to a calculator ship index.
 pub fn ship_index(name: &str) -> Option<usize> {
     SHIPS.iter().position(|s| s.name == name)
 }
 
 /// Index into [`SHIPS`] of the smallest-capacity hull that can carry `crew`
-/// pirates — the fitting hull with the fewest [`Ship::max_pirates`]. `None` when
-/// no hull is large enough (a crew beyond the Grand Frigate's capacity). Used to
-/// suggest a foe hull when an observed headcount exceeds the selected ship's
-/// pirate capacity.
+/// pirates — the fitting hull with the fewest [`Ship::max_pirates`]. `None`
+/// when no hull is large enough (a crew beyond the Grand Frigate's capacity).
+/// Used to suggest a foe hull when an observed headcount exceeds the selected
+/// ship's pirate capacity.
 pub fn smallest_ship_for(crew: u32) -> Option<usize> {
     SHIPS
         .iter()

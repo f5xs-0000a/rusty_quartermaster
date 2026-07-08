@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 
-use crate::api::Commodity;
 use super::InventoryRow;
+use crate::api::Commodity;
 
 #[derive(Serialize, Deserialize)]
 pub struct SavedInventoryRow {
@@ -40,7 +40,10 @@ pub struct LoadedInventory {
 
 /// Resolve a deserialized [`SavedInventory`] against the known commodity list,
 /// dropping rows whose commodity name is unknown.
-pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInventory {
+pub fn from_saved(
+    inv: SavedInventory,
+    commodities: &[Commodity],
+) -> LoadedInventory {
     let mut rows = Vec::new();
     for saved_row in inv.rows {
         let Some(c) = commodities
@@ -68,7 +71,12 @@ pub fn from_saved(inv: SavedInventory, commodities: &[Commodity]) -> LoadedInven
     }
 
     // Keep rows in canonical (in-game) commodity order.
-    rows.sort_by_key(|r| crate::commodities::sort_key(crate::app::commod_name(commodities, r.commod_id)));
+    rows.sort_by_key(|r| {
+        crate::commodities::sort_key(crate::app::commod_name(
+            commodities,
+            r.commod_id,
+        ))
+    });
 
     LoadedInventory {
         rows,
@@ -89,13 +97,15 @@ pub fn to_saved(
     SavedInventory {
         rows: rows
             .iter()
-            .map(|r| SavedInventoryRow {
-                commodity: commod_name(r.commod_id),
-                restock: r.restock.clone(),
-                stock: r.stock.clone(),
-                booty: r.booty.clone(),
-                sell: r.sell.clone(),
-                buy: r.buy.clone(),
+            .map(|r| {
+                SavedInventoryRow {
+                    commodity: commod_name(r.commod_id),
+                    restock: r.restock.clone(),
+                    stock: r.stock.clone(),
+                    booty: r.booty.clone(),
+                    sell: r.sell.clone(),
+                    buy: r.buy.clone(),
+                }
             })
             .collect(),
         restocking_island: restocking_island.to_owned(),

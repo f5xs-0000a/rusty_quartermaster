@@ -3,8 +3,10 @@ use std::collections::HashMap;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::ocean::Ocean;
-use crate::ratelimit::{throttled, Service};
+use crate::{
+    ocean::Ocean,
+    ratelimit::{Service, throttled},
+};
 
 // ---------------------------------------------------------------------------
 // API types
@@ -84,13 +86,14 @@ pub struct SavedCommodity {
 // ---------------------------------------------------------------------------
 
 pub async fn fetch_commodities() -> Result<Vec<Commodity>, String> {
-    let mut commodities: Vec<Commodity> =
-        throttled(Service::Market, || reqwest::get("https://api.plunderly.app/commods"))
-            .await
-            .map_err(|e| format!("failed to fetch commodities: {}", e))?
-            .json()
-            .await
-            .map_err(|e| format!("failed to parse commodities: {}", e))?;
+    let mut commodities: Vec<Commodity> = throttled(Service::Market, || {
+        reqwest::get("https://api.plunderly.app/commods")
+    })
+    .await
+    .map_err(|e| format!("failed to fetch commodities: {}", e))?
+    .json()
+    .await
+    .map_err(|e| format!("failed to parse commodities: {}", e))?;
     // Canonical (in-game) order; anything not in our list sorts last.
     commodities.sort_by_key(|c| crate::commodities::sort_key(&c.name));
     Ok(commodities)
@@ -103,15 +106,19 @@ pub async fn fetch_offers_for(
 ) -> Result<HashMap<String, CachedOffers>, String> {
     let mut map = HashMap::new();
     for name in names {
-        let mut url =
-            reqwest::Url::parse("https://api.plunderly.app/buysells/by-commodity").unwrap();
+        let mut url = reqwest::Url::parse(
+            "https://api.plunderly.app/buysells/by-commodity",
+        )
+        .unwrap();
         url.query_pairs_mut()
             .append_pair("ocean", ocean.name())
             .append_pair("commodity", name);
 
-        let resp = throttled(Service::Market, || client.get(url).send())
-            .await
-            .map_err(|e| format!("Fetch error: {}", e))?;
+        let resp = throttled(Service::Market, || {
+            client.get(url).send()
+        })
+        .await
+        .map_err(|e| format!("Fetch error: {}", e))?;
 
         let data: BuySellResponse = resp
             .json()
@@ -119,7 +126,13 @@ pub async fn fetch_offers_for(
             .map_err(|e| format!("Parse error: {}", e))?;
 
         let offers = data.offers.into_iter().map(Offer::from).collect();
-        map.insert(name.clone(), CachedOffers { offers, fetched_at: Utc::now() });
+        map.insert(
+            name.clone(),
+            CachedOffers {
+                offers,
+                fetched_at: Utc::now(),
+            },
+        );
     }
     Ok(map)
 }

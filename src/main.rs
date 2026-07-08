@@ -1,14 +1,27 @@
-use std::collections::{HashMap, HashSet};
-use std::io;
-use std::path::PathBuf;
-use std::sync::Arc;
-use std::time::Duration;
+use std::{
+    collections::{HashMap, HashSet},
+    io,
+    path::PathBuf,
+    sync::Arc,
+    time::Duration,
+};
 
 use clap::Parser;
-use crossterm::event::{self, Event, KeyEventKind, EnableMouseCapture, DisableMouseCapture};
-use crossterm::execute;
-use crossterm::terminal::{
-    disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
+use crossterm::{
+    event::{
+        self,
+        DisableMouseCapture,
+        EnableMouseCapture,
+        Event,
+        KeyEventKind,
+    },
+    execute,
+    terminal::{
+        EnterAlternateScreen,
+        LeaveAlternateScreen,
+        disable_raw_mode,
+        enable_raw_mode,
+    },
 };
 use ratatui::prelude::*;
 
@@ -43,9 +56,9 @@ use ocean::Ocean;
 #[derive(Parser)]
 #[command(
     about = "A terminal toolkit for Yohoho! Puzzle Pirates players.",
-    long_about = "A terminal toolkit for Yohoho! Puzzle Pirates players.\n\n\
-        Market prices are fetched from the Market API. Use --cache to \
-        avoid re-fetching every run.",
+    long_about = "A terminal toolkit for Yohoho! Puzzle Pirates \
+                  players.\n\nMarket prices are fetched from the Market \
+                  API. Use --cache to avoid re-fetching every run."
 )]
 struct Args {
     /// Path to save/load the unified cache JSON.
@@ -106,8 +119,9 @@ struct Args {
     #[arg(long)]
     donate_to_crew: bool,
 
-    /// Reveal the "C.O. Rate" (commanding officer cut) row in Profits and apply
-    /// it. Hidden; off by default (no C.O. row, no C.O. cut deducted).
+    /// Reveal the "C.O. Rate" (commanding officer cut) row in Profits and
+    /// apply it. Hidden; off by default (no C.O. row, no C.O. cut
+    /// deducted).
     #[arg(long, hide = true)]
     pay_commanding_officer: bool,
 
@@ -115,8 +129,8 @@ struct Args {
     #[arg(long, value_name = "SECONDS", default_value_t = 1, hide = true)]
     market_query_rate: u64,
 
-    /// Minimum seconds between requests to puzzlepirates (yoweb pirate stats and
-    /// trophies). Higher is gentler on yoweb.
+    /// Minimum seconds between requests to puzzlepirates (yoweb pirate stats
+    /// and trophies). Higher is gentler on yoweb.
     #[arg(long, value_name = "SECONDS", default_value_t = 60)]
     ypp_query_rate: u64,
 }
@@ -145,11 +159,20 @@ async fn main() -> io::Result<()> {
 
     // Resolve persistence paths: an explicit flag wins, otherwise default to a
     // file sitting next to the executable.
-    let cache_path = args.cache.clone().or_else(|| exe_adjacent("ypp_cache.json"));
-    let voyages_path = args.voyages.clone().or_else(|| exe_adjacent("ypp_voyages.json"));
+    let cache_path = args
+        .cache
+        .clone()
+        .or_else(|| exe_adjacent("ypp_cache.json"));
+    let voyages_path = args
+        .voyages
+        .clone()
+        .or_else(|| exe_adjacent("ypp_voyages.json"));
 
     // Set per-service request spacing before any network call goes out.
-    ratelimit::configure(args.market_query_rate, args.ypp_query_rate);
+    ratelimit::configure(
+        args.market_query_rate,
+        args.ypp_query_rate,
+    );
 
     // -- Load the unified cache (inventory + commodities global; market +
     //    players per-ocean). Loaded before the setup popup so the popup can
@@ -164,31 +187,50 @@ async fn main() -> io::Result<()> {
         .map(cache::load)
         .unwrap_or_else(cache::SavedCache::seeded);
 
-    // -- Resolve ocean + pirate name (interactive popup if either is missing) --
+    // -- Resolve ocean + pirate name (interactive popup if either is missing)
+    // --
     let http = reqwest::Client::new();
-    let resolved: Option<(Option<Ocean>, Option<String>, Option<pirate::PirateUpdate>)> =
-        if args.ocean.is_none() || args.user.is_none() {
-            startup::prompt(&http, args.ocean, args.user.clone(), &oceans, args.query_market)
-                .await?
-        } else {
-            Some((args.ocean, args.user.clone(), None))
-        };
+    let resolved: Option<(
+        Option<Ocean>,
+        Option<String>,
+        Option<pirate::PirateUpdate>,
+    )> = if args.ocean.is_none() || args.user.is_none() {
+        startup::prompt(
+            &http,
+            args.ocean,
+            args.user.clone(),
+            &oceans,
+            args.query_market,
+        )
+        .await?
+    } else {
+        Some((args.ocean, args.user.clone(), None))
+    };
     // `None` means the user pressed Esc at setup to quit.
     let Some((ocean, user, self_update)) = resolved else {
         return Ok(());
     };
 
     match ocean {
-        None => eprintln!(
-            "warning: no ocean selected — market prices and pirate stats are unavailable."
-        ),
-        Some(o) if !o.market_supported() => eprintln!(
-            "note: {o} has no Market market data — profit calculation is disabled (inventory still works)."
-        ),
+        None => {
+            eprintln!(
+                "warning: no ocean selected — market prices and pirate stats \
+                 are unavailable."
+            )
+        }
+        Some(o) if !o.market_supported() => {
+            eprintln!(
+                "note: {o} has no Market market data — profit calculation \
+                 is disabled (inventory still works)."
+            )
+        }
         _ => {}
     }
     if user.is_none() {
-        eprintln!("warning: no pirate name set — Jobbers pirate-stat lookups are limited.");
+        eprintln!(
+            "warning: no pirate name set — Jobbers pirate-stat lookups are \
+             limited."
+        );
     }
 
     // The selected ocean's bucket. Other oceans' data stays in `oceans` and is
@@ -202,7 +244,12 @@ async fn main() -> io::Result<()> {
     let commodities: Vec<Commodity> = if !saved_commodities.is_empty() {
         saved_commodities
             .into_iter()
-            .map(|c| Commodity { id: c.id, name: c.name })
+            .map(|c| {
+                Commodity {
+                    id: c.id,
+                    name: c.name,
+                }
+            })
             .collect()
     } else if args.query_market {
         eprintln!("Fetching commodities from market...");
@@ -210,7 +257,10 @@ async fn main() -> io::Result<()> {
             .await
             .expect("failed to fetch commodities")
     } else {
-        eprintln!("note: --query-market is off and no cached commodities — commodity list is empty.");
+        eprintln!(
+            "note: --query-market is off and no cached commodities — \
+             commodity list is empty."
+        );
         Vec::new()
     };
 
@@ -228,8 +278,9 @@ async fn main() -> io::Result<()> {
     }
 
     let mut shell = AppShell::new(commodities);
-    // Seed the learned NPC naming vocabulary (swabbie vs mercenary) from the cache;
-    // it grows further as brigand-victory rosters are parsed this session.
+    // Seed the learned NPC naming vocabulary (swabbie vs mercenary) from the
+    // cache; it grows further as brigand-victory rosters are parsed this
+    // session.
     shell.chatlog.name_segments = saved_name_segments;
     shell.cached_offers = this_ocean.market;
     shell.ocean = ocean;
@@ -247,10 +298,10 @@ async fn main() -> io::Result<()> {
     // pirate is only re-queried once it's both relevant (seen in the log) and
     // past its staleness TTL, so startup never blocks on a refetch burst.
     shell.pirate_cache.fetched = this_ocean.players;
-    // Fold in our own pirate if the setup popup just verified (and thus fetched)
-    // it — otherwise the verification fetch would be thrown away and re-queried
-    // every run. `apply_update` builds the cache entry, leaving trophies stale
-    // for the lazy background fetcher.
+    // Fold in our own pirate if the setup popup just verified (and thus
+    // fetched) it — otherwise the verification fetch would be thrown away
+    // and re-queried every run. `apply_update` builds the cache entry,
+    // leaving trophies stale for the lazy background fetcher.
     if let (Some(update), Some(name)) = (self_update, user.as_deref()) {
         if let Ok(norm) = pirate::normalize_name(name) {
             shell.pirate_cache.apply_update(norm, update);
@@ -259,15 +310,18 @@ async fn main() -> io::Result<()> {
 
     // -- Load inventory --
     {
-        let loaded =
-            profits::persistence::from_saved(saved_inventory, &shell.commodities);
+        let loaded = profits::persistence::from_saved(
+            saved_inventory,
+            &shell.commodities,
+        );
         shell.profits.rows = loaded.rows;
         shell.profits.panel[0].value = loaded.restocking_island.clone();
         shell.profits.panel[0].cursor = loaded.restocking_island.len();
         shell.profits.panel[1].value = loaded.selling_island.clone();
         shell.profits.panel[1].cursor = loaded.selling_island.len();
         // The saved `panel` vec is everything after the two Place fields, so it
-        // lands at panel[2..]. Old caches (no Selling Place) slot in identically.
+        // lands at panel[2..]. Old caches (no Selling Place) slot in
+        // identically.
         for (i, val) in loaded.panel_values.into_iter().enumerate() {
             if i + 2 < profits::PANEL_COUNT {
                 shell.profits.panel[i + 2].value = val.clone();
@@ -278,13 +332,17 @@ async fn main() -> io::Result<()> {
 
     // -- Auto-fetch missing market data (only on Market oceans, and only
     //    when Market querying is enabled) --
-    if let Some(o) = ocean.filter(|o| o.market_supported() && args.query_market) {
+    if let Some(o) =
+        ocean.filter(|o| o.market_supported() && args.query_market)
+    {
         if !shell.profits.rows.is_empty() {
             let missing: Vec<String> = shell
                 .profits
                 .rows
                 .iter()
-                .map(|r| app::commod_name(&shell.commodities, r.commod_id).to_owned())
+                .map(|r| {
+                    app::commod_name(&shell.commodities, r.commod_id).to_owned()
+                })
                 .filter(|name| !shell.cached_offers.contains_key(name.as_str()))
                 .collect();
 
@@ -298,7 +356,10 @@ async fn main() -> io::Result<()> {
                         shell.cached_offers.extend(new_offers);
                     }
                     Err(e) => {
-                        eprintln!("warning: failed to fetch missing market data: {}", e);
+                        eprintln!(
+                            "warning: failed to fetch missing market data: {}",
+                            e
+                        );
                     }
                 }
             }
@@ -308,7 +369,8 @@ async fn main() -> io::Result<()> {
     shell.rebuild_island_list();
 
     // -- Chat log: read existing content, then tail live --
-    let (chat_tx, mut chat_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (chat_tx, mut chat_rx) =
+        tokio::sync::mpsc::unbounded_channel::<String>();
     shell.chatlog.player_name = user.as_deref().map(Arc::from);
     if let Some(ref path) = args.chat_log {
         shell.chatlog.attached = true;
@@ -324,26 +386,37 @@ async fn main() -> io::Result<()> {
     let basic_ttl = chrono::Duration::days(args.pirate_ttl_days.max(0));
     let trophy_ttl = chrono::Duration::days(args.trophy_ttl_days.max(0));
     let (pirate_tx, mut pirate_rx) =
-        tokio::sync::mpsc::unbounded_channel::<(String, pirate::PirateUpdate)>();
+        tokio::sync::mpsc::unbounded_channel::<(String, pirate::PirateUpdate)>(
+        );
     let pirate_client = reqwest::Client::new();
-    // The one in-flight page fetch, if any: (normalized name, page, abort handle).
-    let mut current_fetch: Option<(String, jobbers::PiratePage, tokio::task::JoinHandle<()>)> =
-        None;
+    // The one in-flight page fetch, if any: (normalized name, page, abort
+    // handle).
+    let mut current_fetch: Option<(
+        String,
+        jobbers::PiratePage,
+        tokio::task::JoinHandle<()>,
+    )> = None;
 
     // -- Terminal setup --
-    // Once the alternate screen is up, stderr still points at this terminal, so any
-    // stray `eprintln!` (notably the best-effort save messages) paints over the
-    // frame and garbles the render. Redirect diagnostics to a log file for the
-    // TUI's lifetime; startup progress above this point still goes to stderr.
+    // Once the alternate screen is up, stderr still points at this terminal, so
+    // any stray `eprintln!` (notably the best-effort save messages) paints
+    // over the frame and garbles the render. Redirect diagnostics to a log
+    // file for the TUI's lifetime; startup progress above this point still
+    // goes to stderr.
     if let Some(log) = exe_adjacent("ypp_quartermaster.log") {
         utils::init_diag_log(&log);
     }
     enable_raw_mode()?;
-    execute!(io::stdout(), EnterAlternateScreen, EnableMouseCapture)?;
+    execute!(
+        io::stdout(),
+        EnterAlternateScreen,
+        EnableMouseCapture
+    )?;
     let mut terminal = Terminal::new(CrosstermBackend::new(io::stdout()))?;
 
-    let (tx, mut rx) =
-        tokio::sync::mpsc::unbounded_channel::<Result<HashMap<String, CachedOffers>, String>>();
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<
+        Result<HashMap<String, CachedOffers>, String>,
+    >();
 
     // -- Event loop --
     loop {
@@ -357,12 +430,12 @@ async fn main() -> io::Result<()> {
             shell.feed_chat_line(&line);
         }
 
-        // Absorb completed pirate fetches, folding each into the cache. Clear the
-        // in-flight slot when its own result lands (a stale result from an aborted
-        // fetch for a different name still gets applied — it's real data — but
-        // won't disturb the current slot).
+        // Absorb completed pirate fetches, folding each into the cache. Clear
+        // the in-flight slot when its own result lands (a stale result
+        // from an aborted fetch for a different name still gets applied
+        // — it's real data — but won't disturb the current slot).
         while let Ok((norm, update)) = pirate_rx.try_recv() {
-            if current_fetch.as_ref().is_some_and(|(n, _, _)| n == &norm) {
+            if current_fetch.as_ref().is_some_and(|(n, ..)| n == &norm) {
                 current_fetch = None;
             }
             shell.pirate_cache.apply_update(norm, update);
@@ -373,8 +446,9 @@ async fn main() -> io::Result<()> {
         if let Some(pirate_ocean) = ocean.filter(|_| args.chat_log.is_some()) {
             let now = chrono::Utc::now();
 
-            // Normalized priority sets for the *selected* vessel: aboard (+ self)
-            // and planked. Pirates elsewhere aren't background-fetched.
+            // Normalized priority sets for the *selected* vessel: aboard (+
+            // self) and planked. Pirates elsewhere aren't
+            // background-fetched.
             let mut aboard: HashSet<String> = HashSet::new();
             let mut planked: HashSet<String> = HashSet::new();
             if let Some(key) = shell.jobbers_ui.selected.clone() {
@@ -397,18 +471,23 @@ async fn main() -> io::Result<()> {
                 }
             }
 
-            let order = shell
-                .pirate_cache
-                .next_order(&aboard, &planked, basic_ttl, trophy_ttl, now);
+            let order = shell.pirate_cache.next_order(
+                &aboard, &planked, basic_ttl, trophy_ttl, now,
+            );
 
             // Replace the in-flight fetch when it's gone irrelevant, or when a
-            // strictly higher-priority page is now wanted; otherwise let it run.
+            // strictly higher-priority page is now wanted; otherwise let it
+            // run.
             let dispatch = match &current_fetch {
                 None => order.is_some(),
-                Some((cn, _, _)) => match shell.pirate_cache.tier_of(cn, &aboard, &planked) {
-                    None => true,
-                    Some(cur_tier) => order.as_ref().is_some_and(|o| o.tier < cur_tier),
-                },
+                Some((cn, ..)) => {
+                    match shell.pirate_cache.tier_of(cn, &aboard, &planked) {
+                        None => true,
+                        Some(cur_tier) => {
+                            order.as_ref().is_some_and(|o| o.tier < cur_tier)
+                        }
+                    }
+                }
             };
 
             if dispatch {
@@ -418,18 +497,29 @@ async fn main() -> io::Result<()> {
                 if let Some(o) = order {
                     let plan = match o.page {
                         jobbers::PiratePage::Basic => {
-                            pirate::FetchPlan { basic: true, trophies: false }
+                            pirate::FetchPlan {
+                                basic: true,
+                                trophies: false,
+                            }
                         }
                         jobbers::PiratePage::Trophies => {
-                            pirate::FetchPlan { basic: false, trophies: true }
+                            pirate::FetchPlan {
+                                basic: false,
+                                trophies: true,
+                            }
                         }
                     };
                     let tx = pirate_tx.clone();
                     let client = pirate_client.clone();
                     let norm = o.norm.clone();
                     let handle = tokio::spawn(async move {
-                        let update =
-                            pirate::fetch_pirate_update(&client, &norm, pirate_ocean, plan).await;
+                        let update = pirate::fetch_pirate_update(
+                            &client,
+                            &norm,
+                            pirate_ocean,
+                            plan,
+                        )
+                        .await;
                         let _ = tx.send((norm, update));
                     });
                     current_fetch = Some((o.norm, o.page, handle));
@@ -459,15 +549,19 @@ async fn main() -> io::Result<()> {
 
     // -- Teardown --
     disable_raw_mode()?;
-    execute!(io::stdout(), LeaveAlternateScreen, DisableMouseCapture)?;
+    execute!(
+        io::stdout(),
+        LeaveAlternateScreen,
+        DisableMouseCapture
+    )?;
 
     // -- Cleanup temp images --
     shell.damage.cleanup_temp_images();
 
     // -- Save the unified cache --
     if let Some(ref path) = cache_path {
-        // Fold the current ocean's market + players back into the per-ocean map,
-        // leaving other oceans' buckets intact.
+        // Fold the current ocean's market + players back into the per-ocean
+        // map, leaving other oceans' buckets intact.
         if let Some(o) = shell.ocean {
             oceans.insert(
                 o.name().to_owned(),
@@ -480,7 +574,7 @@ async fn main() -> io::Result<()> {
         let saved = SavedCache {
             inventory: profits::persistence::to_saved(
                 &shell.profits.rows,
-                &shell.profits.panel[2..],
+                &shell.profits.panel[2 ..],
                 &shell.profits.panel[0].value,
                 &shell.profits.panel[1].value,
                 |id| app::commod_name(&shell.commodities, id).to_owned(),
@@ -488,7 +582,12 @@ async fn main() -> io::Result<()> {
             commodities: shell
                 .commodities
                 .iter()
-                .map(|c| SavedCommodity { id: c.id, name: c.name.clone() })
+                .map(|c| {
+                    SavedCommodity {
+                        id: c.id,
+                        name: c.name.clone(),
+                    }
+                })
                 .collect(),
             oceans,
             name_segments: std::mem::take(&mut shell.chatlog.name_segments),
