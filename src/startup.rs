@@ -429,7 +429,7 @@ fn tooltip_lines(state: &Setup) -> Vec<String> {
             // The Market note only applies when it would actually take
             // effect.
             if state.query_market && ocean.market_supported() {
-                v.push("Select this to enable Market querying.".to_owned());
+                v.push("Select this to enable market querying.".to_owned());
             }
             v.push(format!(
                 "Press Enter to select {ocean} Ocean."

@@ -3430,7 +3430,7 @@ impl AppShell {
             let result = match ocean.filter(|o| o.market_supported()) {
                 Some(o) => fetch_offers_for(&client, &names, o).await,
                 None => {
-                    Err("No Market ocean selected for this run".to_owned())
+                    Err("No market-data ocean selected for this run".to_owned())
                 }
             };
             let _ = tx.send(result);

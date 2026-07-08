@@ -2689,35 +2689,34 @@ fn build_lines(view: &VoyageView) -> Built {
         "Average cannonballs fired per sea battle.",
     );
     out.stat(
-        "Alcohol",
-        commas(c.alcohol.weighted() as i64),
-        "Alcohol consumed, weighted by potency (swill 2 / grog 3 / fine rum \
-         6).",
+        "Rum",
+        commas(c.rum.weighted() as i64),
+        "Rum consumed, weighted by potency (swill 2 / grog 3 / fine rum 6).",
     );
     out.stat(
         "  swill",
-        commas(c.alcohol.swill as i64),
+        commas(c.rum.swill as i64),
         "Swill drained this voyage (Restock minus Stock).",
     );
     out.stat(
         "  grog",
-        commas(c.alcohol.grog as i64),
+        commas(c.rum.grog as i64),
         "Grog drained this voyage (Restock minus Stock).",
     );
     out.stat(
         "  fine rum",
-        commas(c.alcohol.fine_rum as i64),
+        commas(c.rum.fine_rum as i64),
         "Fine rum drained this voyage (Restock minus Stock).",
     );
     out.stat(
         "  per crew",
-        opt1(c.alcohol_per_crew),
-        "Alcohol per crew member aboard.",
+        opt1(c.rum_per_crew),
+        "Rum per crew member aboard.",
     );
     out.stat(
         "  per crew / min",
-        opt2(c.alcohol_per_crew_per_min),
-        "Alcohol per crew member per minute of the run.",
+        opt2(c.rum_per_crew_per_min),
+        "Rum per crew member per minute of the run.",
     );
     out.stat(
         "Rum spice",

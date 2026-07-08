@@ -29,7 +29,7 @@ use crate::{
         TeamSide,
         Voyage,
         effective_outcome,
-        stats::{AlcoholUse, ConsumptionStats},
+        stats::{ConsumptionStats, RumUse},
     },
 };
 
@@ -185,7 +185,7 @@ impl SavedBattle {
 
 /// Consumables used over a voyage, snapshotted at save time from the Profits
 /// stock delta (`Restock - Stock`). The live delta can't be reconstructed once
-/// the hold is restocked, so it's frozen here. Alcohol is stored as the raw
+/// the hold is restocked, so it's frozen here. Rum is stored as the raw
 /// per-tier counts (the potency-weighted total is derived). Cannonballs are
 /// size-agnostic. `None` on a [`SavedVoyage`] means consumption wasn't recorded
 /// for that run (e.g. older history, or the user declined to store it).
@@ -352,9 +352,9 @@ pub fn from_voyage(
         consumption: consumption.map(|c| {
             SavedConsumption {
                 cannonballs: c.balls,
-                swill: c.alcohol.swill,
-                grog: c.alcohol.grog,
-                fine_rum: c.alcohol.fine_rum,
+                swill: c.rum.swill,
+                grog: c.rum.grog,
+                fine_rum: c.rum.fine_rum,
                 rum_spice: c.rum_spice,
             }
         }),
@@ -597,7 +597,7 @@ impl SavedConsumption {
     /// we reuse the stored figures rather than recompute. Mirrors the rate
     /// math in [`crate::voyage::stats::consumption_stats`].
     pub fn to_stats(&self, voyage: &Voyage) -> ConsumptionStats {
-        let alcohol = AlcoholUse {
+        let rum = RumUse {
             swill: self.swill,
             grog: self.grog,
             fine_rum: self.fine_rum,
@@ -616,15 +616,15 @@ impl SavedConsumption {
         let per = |amount: u64, denom: Option<f64>| {
             denom.filter(|d| *d > 0.0).map(|d| amount as f64 / d)
         };
-        let alcohol_per_crew = per(alcohol.weighted(), avg_crew);
+        let rum_per_crew = per(rum.weighted(), avg_crew);
         let rum_spice_per_mercenary = per(self.rum_spice, avg_mercenaries);
         ConsumptionStats {
             balls: self.cannonballs,
             balls_per_battle: (battles > 0)
                 .then(|| self.cannonballs as f64 / battles as f64),
-            alcohol,
-            alcohol_per_crew,
-            alcohol_per_crew_per_min: alcohol_per_crew
+            rum,
+            rum_per_crew,
+            rum_per_crew_per_min: rum_per_crew
                 .and_then(|a| minutes.map(|m| a / m)),
             rum_spice: self.rum_spice,
             rum_spice_per_mercenary,
@@ -974,9 +974,9 @@ mod tests {
         // Consumption rebuilds from the frozen counts (not the live inventory).
         let cs = sv.consumption.as_ref().unwrap().to_stats(&voy);
         assert_eq!(cs.balls, 150);
-        assert_eq!(cs.alcohol.weighted(), 60 * 3 + 15 * 6);
-        // 270 weighted alcohol over an average crew of 8.
-        assert!((cs.alcohol_per_crew.unwrap() - 270.0 / 8.0).abs() < 1e-9);
+        assert_eq!(cs.rum.weighted(), 60 * 3 + 15 * 6);
+        // 270 weighted rum over an average crew of 8.
+        assert!((cs.rum_per_crew.unwrap() - 270.0 / 8.0).abs() < 1e-9);
     }
 
     #[test]

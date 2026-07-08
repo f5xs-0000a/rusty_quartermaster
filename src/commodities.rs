@@ -66,10 +66,10 @@ pub fn sort_key(name: &str) -> (usize, String) {
     )
 }
 
-/// Potency weight of an alcoholic commodity (the in-game "units of alcohol" a
+/// Potency weight of a rum commodity (the in-game "units of rum" a
 /// single item is worth): Swill 2, Grog 3, Fine rum 6; 0 for everything else.
 /// A quantity times this weight is comparable across the three rum tiers.
-pub fn alcohol_multiplier(name: &str) -> u64 {
+pub fn rum_multiplier(name: &str) -> u64 {
     match () {
         _ if name.eq_ignore_ascii_case("swill") => 2,
         _ if name.eq_ignore_ascii_case("grog") => 3,

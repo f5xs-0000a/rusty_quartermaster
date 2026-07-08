@@ -57,15 +57,14 @@ use ocean::Ocean;
 #[command(
     about = "A terminal toolkit for Yohoho! Puzzle Pirates players.",
     long_about = "A terminal toolkit for Yohoho! Puzzle Pirates \
-                  players.\n\nMarket prices are fetched from the Market \
-                  API. Use --cache to avoid re-fetching every run."
+                  players.\n\nUse --cache to save your data between runs."
 )]
 struct Args {
     /// Path to save/load the unified cache JSON.
     ///
     /// One file holds the inventory and commodity list (global) plus, per
-    /// ocean, market prices and fetched pirate stats. Loaded on startup and
-    /// saved on exit. Defaults to `ypp_cache.json` next to the executable.
+    /// ocean, fetched pirate stats. Loaded on startup and saved on exit.
+    /// Defaults to `ypp_cache.json` next to the executable.
     #[arg(long, value_name = "PATH")]
     cache: Option<PathBuf>,
 
@@ -89,8 +88,7 @@ struct Args {
     user: Option<String>,
 
     /// Ocean (server) to use. Case-insensitive. One of the seven live oceans:
-    /// Emerald, Meridian, Cerulean, Obsidian, Opal, Jade, Ice. Profit
-    /// calculation needs a Market ocean (Emerald, Meridian, or Cerulean).
+    /// Emerald, Meridian, Cerulean, Obsidian, Opal, Jade, Ice.
     #[arg(long, value_name = "OCEAN", value_parser = parse_ocean)]
     ocean: Option<Ocean>,
 
@@ -211,20 +209,27 @@ async fn main() -> io::Result<()> {
         return Ok(());
     };
 
-    match ocean {
-        None => {
+    // Market fetching only happens on the hidden --query-market path, so the
+    // market-related notices are gated behind it; a default run stays quiet
+    // about market data entirely.
+    if ocean.is_none() {
+        if args.query_market {
             eprintln!(
                 "warning: no ocean selected — market prices and pirate stats \
                  are unavailable."
-            )
-        }
-        Some(o) if !o.market_supported() => {
+            );
+        } else {
             eprintln!(
-                "note: {o} has no Market market data — profit calculation \
-                 is disabled (inventory still works)."
-            )
+                "warning: no ocean selected — pirate stats are unavailable."
+            );
         }
-        _ => {}
+    } else if args.query_market
+        && let Some(o) = ocean.filter(|o| !o.market_supported())
+    {
+        eprintln!(
+            "note: {o} has no market data — profit calculation is disabled \
+             (inventory still works)."
+        );
     }
     if user.is_none() {
         eprintln!(
@@ -252,15 +257,12 @@ async fn main() -> io::Result<()> {
             })
             .collect()
     } else if args.query_market {
-        eprintln!("Fetching commodities from market...");
+        eprintln!("Fetching commodities...");
         api::fetch_commodities()
             .await
             .expect("failed to fetch commodities")
     } else {
-        eprintln!(
-            "note: --query-market is off and no cached commodities — \
-             commodity list is empty."
-        );
+        eprintln!("note: no cached commodities — commodity list is empty.");
         Vec::new()
     };
 

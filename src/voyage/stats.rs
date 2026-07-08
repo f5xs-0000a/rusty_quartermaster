@@ -13,27 +13,27 @@ use crate::{
     voyage::{BattleCategory, BattleOutcome, Voyage, effective_outcome},
 };
 
-/// Raw item counts of each alcohol tier used over a voyage (`Restock - Stock`
+/// Raw item counts of each rum tier used over a voyage (`Restock - Stock`
 /// per tier), kept un-weighted so the breakdown can be shown and persisted. The
-/// potency-weighted total (the Hold Stats "alcohol" figure) is
+/// potency-weighted total (the Hold Stats "rum" figure) is
 /// [`Self::weighted`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct AlcoholUse {
+pub struct RumUse {
     pub swill: u64,
     pub grog: u64,
     pub fine_rum: u64,
 }
 
-impl AlcoholUse {
-    /// Potency-weighted total alcohol (Swill×2 + Grog×3 + Fine rum×6), the
-    /// figure that matches the in-game Hold Stats "alcohol". Weights come
-    /// from [`crate::commodities::alcohol_multiplier`] so there's one
+impl RumUse {
+    /// Potency-weighted total rum (Swill×2 + Grog×3 + Fine rum×6), the
+    /// figure that matches the in-game Hold Stats "rum". Weights come
+    /// from [`crate::commodities::rum_multiplier`] so there's one
     /// source of truth.
     pub fn weighted(&self) -> u64 {
-        use crate::commodities::alcohol_multiplier;
-        self.swill * alcohol_multiplier("Swill")
-            + self.grog * alcohol_multiplier("Grog")
-            + self.fine_rum * alcohol_multiplier("Fine rum")
+        use crate::commodities::rum_multiplier;
+        self.swill * rum_multiplier("Swill")
+            + self.grog * rum_multiplier("Grog")
+            + self.fine_rum * rum_multiplier("Fine rum")
     }
 }
 
@@ -50,13 +50,13 @@ pub struct ConsumptionStats {
     pub balls: u64,
     /// Average balls per battle this voyage.
     pub balls_per_battle: Option<f64>,
-    /// Alcohol used, broken down by tier (raw item counts). The weighted total
-    /// is [`AlcoholUse::weighted`].
-    pub alcohol: AlcoholUse,
-    /// Alcohol per (pirate + swabbie), over the time-weighted average crew.
-    pub alcohol_per_crew: Option<f64>,
-    /// Alcohol per (pirate + swabbie) per minute.
-    pub alcohol_per_crew_per_min: Option<f64>,
+    /// Rum used, broken down by tier (raw item counts). The weighted total
+    /// is [`RumUse::weighted`].
+    pub rum: RumUse,
+    /// Rum per (pirate + swabbie), over the time-weighted average crew.
+    pub rum_per_crew: Option<f64>,
+    /// Rum per (pirate + swabbie) per minute.
+    pub rum_per_crew_per_min: Option<f64>,
     /// Rum spice used (`Restock - Stock`). Approximate: a stock delta whose
     /// per-mercenary rate is only ground-truthed at won fights and skewed by
     /// an unseen restock, running out mid-run, or a sea-battle loss.
@@ -99,13 +99,10 @@ fn used_by_name(
         .sum()
 }
 
-/// Per-tier alcohol used (raw item counts) via `Restock - Stock` for each rum
-/// tier. Kept un-weighted; [`AlcoholUse::weighted`] applies the potencies.
-fn alcohol_used(
-    rows: &[InventoryRow],
-    commodities: &[Commodity],
-) -> AlcoholUse {
-    AlcoholUse {
+/// Per-tier rum used (raw item counts) via `Restock - Stock` for each rum
+/// tier. Kept un-weighted; [`RumUse::weighted`] applies the potencies.
+fn rum_used(rows: &[InventoryRow], commodities: &[Commodity]) -> RumUse {
+    RumUse {
         swill: used_by_name(rows, commodities, "Swill"),
         grog: used_by_name(rows, commodities, "Grog"),
         fine_rum: used_by_name(rows, commodities, "Fine rum"),
@@ -129,7 +126,7 @@ pub fn consumption_stats(
     .iter()
     .map(|name| used_by_name(rows, commodities, name))
     .sum::<u64>();
-    let alcohol = alcohol_used(rows, commodities);
+    let rum = rum_used(rows, commodities);
     let rum_spice = used_by_name(rows, commodities, "Rum spice");
 
     let battles = voyage.battles.len() as u32;
@@ -150,9 +147,9 @@ pub fn consumption_stats(
     };
 
     let balls_per_battle = (battles > 0).then(|| balls as f64 / battles as f64);
-    let alcohol_per_crew = per(alcohol.weighted(), avg_crew);
-    let alcohol_per_crew_per_min =
-        alcohol_per_crew.and_then(|a| minutes.map(|m| a / m));
+    let rum_per_crew = per(rum.weighted(), avg_crew);
+    let rum_per_crew_per_min =
+        rum_per_crew.and_then(|a| minutes.map(|m| a / m));
     // Spice fuels mercenaries, so it's charged per mercenary, not per swabbie.
     let rum_spice_per_mercenary = per(rum_spice, avg_mercenaries);
     let rum_spice_per_mercenary_per_min =
@@ -169,9 +166,9 @@ pub fn consumption_stats(
     ConsumptionStats {
         balls,
         balls_per_battle,
-        alcohol,
-        alcohol_per_crew,
-        alcohol_per_crew_per_min,
+        rum,
+        rum_per_crew,
+        rum_per_crew_per_min,
         rum_spice,
         rum_spice_per_mercenary,
         rum_spice_per_mercenary_per_min,
@@ -537,8 +534,8 @@ mod tests {
         ];
         let rows = vec![
             row(1, "200", "50"), // 150 balls used
-            row(2, "100", "40"), // 60 grog -> x3 = 180 alcohol
-            row(3, "20", "5"),   // 15 fine rum -> x6 = 90 alcohol
+            row(2, "100", "40"), // 60 grog -> x3 = 180 rum
+            row(3, "20", "5"),   // 15 fine rum -> x6 = 90 rum
             row(4, "30", "12"),  // 18 rum spice
         ];
         // One-hour run, 4 battles, constant crew of 5 pirates + 3 NPC crew (2
@@ -559,17 +556,14 @@ mod tests {
         let stats = consumption_stats(&voy, &rows, &commodities);
         assert_eq!(stats.balls, 150);
         approx(stats.balls_per_battle.unwrap(), 37.5);
-        assert_eq!(stats.alcohol.grog, 60);
-        assert_eq!(stats.alcohol.fine_rum, 15);
-        assert_eq!(stats.alcohol.swill, 0);
-        assert_eq!(stats.alcohol.weighted(), 270); // 60×3 + 15×6
+        assert_eq!(stats.rum.grog, 60);
+        assert_eq!(stats.rum.fine_rum, 15);
+        assert_eq!(stats.rum.swill, 0);
+        assert_eq!(stats.rum.weighted(), 270); // 60×3 + 15×6
         assert_eq!(stats.rum_spice, 18);
+        approx(stats.rum_per_crew.unwrap(), 270.0 / 8.0); // crew = 5 + 3
         approx(
-            stats.alcohol_per_crew.unwrap(),
-            270.0 / 8.0,
-        ); // crew = 5 + 3
-        approx(
-            stats.alcohol_per_crew_per_min.unwrap(),
+            stats.rum_per_crew_per_min.unwrap(),
             270.0 / 8.0 / 60.0,
         );
         // Spice is charged per mercenary (2), not per swabbie.

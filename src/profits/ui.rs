@@ -90,7 +90,7 @@ pub fn render(
         .map(|f| f.label.chars().count())
         .max()
         .unwrap_or(0)
-        .max("Ship Hold Alcohol".len()) as u16;
+        .max("Ship Hold Rum".len()) as u16;
     // label + 2 gap + min input(8) + 2 borders + 2 padding.
     let params_width = label_width + 2 + 8 + 2 + 2;
 
@@ -318,22 +318,22 @@ fn render_hold_stats(
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
         .split(inner);
 
-    let restock_alcohol = compute_alcohol(app, shared, |r| &r.restock);
-    let hold_alcohol = compute_alcohol(app, shared, |r| &r.stock);
+    let restock_rum = compute_rum(app, shared, |r| &r.restock);
+    let hold_rum = compute_rum(app, shared, |r| &r.stock);
 
     render_stat_row(
         frame,
         rows[0],
         label_width,
-        "Restock Alcohol",
-        restock_alcohol,
+        "Restock Rum",
+        restock_rum,
     );
     render_stat_row(
         frame,
         rows[1],
         label_width,
-        "Ship Hold Alcohol",
-        hold_alcohol,
+        "Ship Hold Rum",
+        hold_rum,
     );
 }
 
@@ -764,7 +764,7 @@ fn build_tooltip<'a>(
 ) -> Option<Text<'a>> {
     if shared.loading {
         return Some(Text::from(Line::from(Span::styled(
-            "Fetching prices from market...",
+            "Fetching prices...",
             Style::default().fg(Color::Yellow),
         ))));
     }
@@ -852,8 +852,8 @@ fn build_tooltip<'a>(
     }
 }
 
-/// Sum of `field`'s quantity weighted by each commodity's alcohol multiplier.
-fn compute_alcohol(
+/// Sum of `field`'s quantity weighted by each commodity's rum multiplier.
+fn compute_rum(
     app: &ProfitsApp,
     shared: &SharedState,
     field: impl Fn(&InventoryRow) -> &String,
@@ -863,7 +863,7 @@ fn compute_alcohol(
         .map(|r| {
             let name = app::commod_name(shared.commodities, r.commod_id);
             let qty = field(r).parse::<u64>().unwrap_or(0);
-            qty * crate::commodities::alcohol_multiplier(name)
+            qty * crate::commodities::rum_multiplier(name)
         })
         .sum()
 }
@@ -927,7 +927,7 @@ fn render_popup(
             .split(inner);
 
             frame.render_widget(
-                Paragraph::new("Re-query Market?"),
+                Paragraph::new("Re-query market prices?"),
                 rows[0],
             );
             frame.render_widget(
