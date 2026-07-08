@@ -89,6 +89,11 @@ pub struct SavedBattle {
     /// `None`). Stored by name, robust to `SHIPS` reordering.
     #[serde(default)]
     pub foe_ship: Option<String>,
+    /// The enemy vessel's proper name from the interception line (e.g. a named
+    /// brigand or PvP ship). `None` when the interception line was unparsed or
+    /// carried no vessel name. Distinct from `foe_ship` (the hull type).
+    #[serde(default)]
+    pub enemy: Option<String>,
     #[serde(default)]
     pub poe: Option<i64>,
     #[serde(default)]
@@ -355,6 +360,10 @@ pub fn from_voyage(
                         .foe_ship
                         .or_else(|| b.snapshot.map(|s| s.foe_ship))
                         .and_then(ship_name),
+                    // The enemy vessel's proper name persists regardless of
+                    // `recorded` (log-derived metadata), so saved history keeps the
+                    // named foe in the Sea Battles popup rather than "Unknown vessel".
+                    enemy: b.enemy.clone(),
                     poe,
                     goods: b.goods,
                     pirates: b.pirates,
@@ -508,7 +517,7 @@ impl SavedBattle {
                 .map(|(s, b)| b + chrono::Duration::seconds(s))
         };
         Battle {
-            enemy: None,
+            enemy: self.enemy.clone(),
             started_at: base,
             grappled_at: after(self.naval_secs),
             ended_at: after(self.total_secs),
@@ -646,6 +655,25 @@ mod tests {
             .map(|&(x, _)| x)
             .collect();
         assert_eq!(xs, vec![0.0, 0.0, 12.0, 20.0]);
+    }
+
+    #[test]
+    fn enemy_vessel_name_round_trips() {
+        // The enemy vessel's proper name survives save -> load, so a reloaded fight
+        // shows the named foe rather than "Unknown vessel". A legacy file without the
+        // field defaults to `None`.
+        let sb = SavedBattle {
+            enemy: Some("Some Enemy Vessel".into()),
+            ..SavedBattle::default()
+        };
+        let json = serde_json::to_string(&sb).unwrap();
+        let back: SavedBattle = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.enemy.as_deref(), Some("Some Enemy Vessel"));
+        // The reconstructed in-RAM battle carries the name through to the UI row.
+        assert_eq!(back.to_battle(0).enemy.as_deref(), Some("Some Enemy Vessel"));
+
+        let legacy: SavedBattle = serde_json::from_str("{}").unwrap();
+        assert_eq!(legacy.enemy, None);
     }
 
     #[test]
