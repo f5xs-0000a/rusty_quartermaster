@@ -4620,11 +4620,12 @@ mod tests {
             .unwrap();
         assert!(!voy.crew_samples.is_empty());
         assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 1));
-        // The win backfills every sample of the just-closed stretch and advances
-        // the checkpoint over them. The post-resolution `sample_crew` then opens
-        // the next stretch with one fresh baseline sample, which stays
-        // uncheckpointed until the next win closes it — so the checkpoint sits
-        // exactly one behind the sample count.
+        // The win backfills every sample of the just-closed stretch and
+        // advances the checkpoint over them. The post-resolution
+        // `sample_crew` then opens the next stretch with one fresh
+        // baseline sample, which stays uncheckpointed until the next
+        // win closes it — so the checkpoint sits exactly one behind the
+        // sample count.
         assert_eq!(
             voy.merc_checkpoint,
             voy.crew_samples.len() - 1
