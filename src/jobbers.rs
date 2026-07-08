@@ -80,9 +80,11 @@ impl JobberColumn {
     }
 }
 
-/// Top Jobbers columns for a Pillage: gunners, navigators, and battle navigators.
-/// Other voyage types prioritise different skills — see [`VoyageType::top_jobbers`].
+/// Top Jobbers columns for a Pillage: the merged Sail+Rig station (Sailing/Rigging),
+/// then gunners, navigators, and battle navigators. Other voyage types prioritise
+/// different skills — see [`VoyageType::top_jobbers`].
 const PILLAGE_TOP_JOBBERS: &[JobberColumn] = &[
+    JobberColumn { label: Some("Sail+Rig"), skills: &[Skill::Sailing, Skill::Rigging] },
     JobberColumn { label: None, skills: &[Skill::Gunning] },
     JobberColumn { label: None, skills: &[Skill::Navigating] },
     JobberColumn { label: None, skills: &[Skill::BattleNavigation] },
