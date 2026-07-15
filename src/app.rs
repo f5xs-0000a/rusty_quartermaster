@@ -1247,7 +1247,7 @@ impl AppShell {
                     enemy: b.enemy.clone(),
                     outcome,
                     // PvP is its own category ("Players"); all categories carry
-                    // their own label now.
+                    // their own label.
                     category: crate::voyage::stats::category_label(&b.category),
                     // A masked (unknown) verdict carries no signed PoE.
                     poe: matches!(

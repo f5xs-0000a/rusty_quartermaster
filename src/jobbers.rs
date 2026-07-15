@@ -1266,8 +1266,8 @@ pub fn render(
     };
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at
-    // title. Aboard now leads with a "Pirates (n):" header and indents each
-    // name two spaces.
+    // title. The Aboard pane leads with a "Pirates (n):" header and indents
+    // each name two spaces.
     let aboard_cw = aboard_set
         .iter()
         .map(|n| n.chars().count() + ABOARD_INDENT)
@@ -2914,7 +2914,7 @@ fn render_panes(
         .collect();
     let cols = Layout::horizontal(constraints).split(area);
 
-    // Same-crew / self emphasis, mirroring the old lists column.
+    // Same-crew / self emphasis, consistent with the other rosters.
     let my_crew: Option<String> = state
         .player_name
         .as_deref()

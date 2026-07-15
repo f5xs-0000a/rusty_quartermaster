@@ -9,8 +9,8 @@ pub struct SavedInventoryRow {
     pub restock: String,
     pub stock: String,
     pub booty: String,
-    /// Manually-entered prices (used when Market is unavailable). Defaulted
-    /// for backward compatibility with caches written before they existed.
+    /// Manually-entered prices (used when Market is unavailable). Default
+    /// to empty when absent so older cache files still deserialize.
     #[serde(default)]
     pub sell: String,
     #[serde(default)]
@@ -25,8 +25,8 @@ pub struct SavedInventory {
     pub panel: Vec<String>,
     #[serde(default)]
     pub restocking_island: String,
-    /// The Selling Place (where surplus goods are offloaded). Defaulted for
-    /// backward compatibility with caches written before it existed.
+    /// The Selling Place (where surplus goods are offloaded). Defaults to
+    /// empty when absent so older cache files still deserialize.
     #[serde(default)]
     pub selling_island: String,
 }

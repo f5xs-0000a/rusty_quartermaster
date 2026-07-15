@@ -685,9 +685,7 @@ mod tests {
     #[test]
     fn corrected_ship_stats() {
         use crate::ships::{SHIPS, ship_index};
-        // Junk <-> Merchant Brig were transposed (morale/hull/ram); Xebec <->
-        // War Galleon had their HP transposed. Lock in the
-        // yppedia-correct values.
+        // Ship stats must match the yppedia reference values.
         let junk = &SHIPS[ship_index("Junk").unwrap()];
         assert_eq!(
             (
