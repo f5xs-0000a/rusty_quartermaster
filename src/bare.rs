@@ -59,12 +59,25 @@ pub struct Island {
     pub size: Size,
     #[allow(dead_code)] // deserialized reference data; read only via capital()
     pub status: Status,
+    /// Commodities this island spawns in its natural-resource stalls, in
+    /// yppedia's listed order. Empty for islands whose spawns haven't been
+    /// crawled yet, so absence in JSON deserializes cleanly.
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized reference data; not yet read
+    pub spawns: Vec<String>,
 }
 
 /// One archipelago and the islands within it.
 #[derive(Deserialize)]
 pub struct Archipelago {
     pub name: String,
+    /// Commodities forageable anywhere in this archipelago, in yppedia's
+    /// listed order. Foraging yield is an archipelago-wide property,
+    /// distinct from an island's own [`Island::spawns`]. Empty when not
+    /// yet crawled, so absence in JSON deserializes cleanly.
+    #[serde(default)]
+    #[allow(dead_code)] // deserialized reference data; not yet read
+    pub forageables: Vec<String>,
     pub islands: Vec<Island>,
 }
 
@@ -161,6 +174,35 @@ mod tests {
         assert_eq!(capital.name, "Wensleydale");
         assert_eq!(capital.size, Size::Large);
         assert!(gull.islands.iter().any(|i| i.name == "Admiral Island"));
+    }
+
+    #[test]
+    fn spawns_and_forageables_are_seeded() {
+        let emerald = BARE
+            .oceans
+            .iter()
+            .find(|o| o.name == "Emerald")
+            .expect("Emerald ocean present");
+        let gull = emerald
+            .archipelagos
+            .iter()
+            .find(|a| a.name == "Gull")
+            .expect("Gull archipelago present");
+        // Forageables are an archipelago-wide property.
+        assert_eq!(
+            gull.forageables,
+            ["Limes", "Passion fruit"]
+        );
+        // Spawns are per-island natural resources.
+        let hook = gull
+            .islands
+            .iter()
+            .find(|i| i.name == "Hook Shelf")
+            .expect("Hook Shelf present");
+        assert_eq!(
+            hook.spawns,
+            ["Hemp", "Pokeweed berries", "Stone"]
+        );
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::{
     collections::{HashMap, HashSet},
     io,
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
@@ -137,6 +137,28 @@ fn parse_ocean(s: &str) -> Result<Ocean, String> {
     s.parse()
 }
 
+/// Pull the pirate name and ocean out of a Puzzle Pirates chat-log filename.
+///
+/// Client logs are named `<PirateName>_<ocean>_ypp…`, e.g. `Playerone_emerald…` or
+/// `Mateone-East_emerald…`; the pirate name is a single underscore-delimited
+/// field, so a hyphen inside it stays intact. Only the first two fields are
+/// consulted, and a value is returned solely when the second field names a live
+/// ocean — the parse fails closed for paths that don't follow the convention.
+fn chat_log_identity(path: Option<&Path>) -> (Option<Ocean>, Option<String>) {
+    let Some(stem) = path.and_then(|p| p.file_name()).and_then(|n| n.to_str())
+    else {
+        return (None, None);
+    };
+    let mut fields = stem.split('_');
+    let (Some(name), Some(ocean_field)) = (fields.next(), fields.next()) else {
+        return (None, None);
+    };
+    match ocean_field.parse::<Ocean>() {
+        Ok(ocean) if !name.is_empty() => (Some(ocean), Some(name.to_owned())),
+        _ => (None, None),
+    }
+}
+
 /// A path sitting next to the running executable (e.g. `cache.json` beside the
 /// binary). The default location for the cache and voyage-history files when no
 /// explicit `--cache` / `--voyages` path is given. `None` only if the
@@ -187,6 +209,14 @@ async fn main() -> io::Result<()> {
 
     // -- Resolve ocean + pirate name (interactive popup if either is missing)
     // --
+    // The chat-log filename encodes the pirate name and ocean. Explicit
+    // --ocean / --user always win; the filename only fills in whichever the
+    // flags leave unset, and its values pre-fill the startup fields rather than
+    // skipping the popup.
+    let (log_ocean, log_user) = chat_log_identity(args.chat_log.as_deref());
+    let start_ocean = args.ocean.or(log_ocean);
+    let start_user = args.user.clone().or(log_user);
+
     let http = reqwest::Client::new();
     let resolved: Option<(
         Option<Ocean>,
@@ -195,8 +225,8 @@ async fn main() -> io::Result<()> {
     )> = if args.ocean.is_none() || args.user.is_none() {
         startup::prompt(
             &http,
-            args.ocean,
-            args.user.clone(),
+            start_ocean,
+            start_user,
             &oceans,
             args.query_market,
         )
@@ -597,4 +627,51 @@ async fn main() -> io::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chat_log_identity_reads_name_and_ocean() {
+        let (ocean, user) = chat_log_identity(Some(Path::new(
+            "Somepirate_emerald_ypp_log.txt",
+        )));
+        assert_eq!(user.as_deref(), Some("Somepirate"));
+        assert_eq!(ocean, Some(Ocean::Emerald));
+    }
+
+    #[test]
+    fn chat_log_identity_keeps_hyphenated_name() {
+        let (ocean, user) = chat_log_identity(Some(Path::new(
+            "Somepirate-East_emerald_ypp.log.txt",
+        )));
+        assert_eq!(user.as_deref(), Some("Somepirate-East"));
+        assert_eq!(ocean, Some(Ocean::Emerald));
+    }
+
+    #[test]
+    fn chat_log_identity_ignores_a_full_directory_path() {
+        let (ocean, user) = chat_log_identity(Some(Path::new(
+            "/home/someone/logs/Somepirate_meridian_ypp_log.txt",
+        )));
+        assert_eq!(user.as_deref(), Some("Somepirate"));
+        assert_eq!(ocean, Some(Ocean::Meridian));
+    }
+
+    #[test]
+    fn chat_log_identity_fails_closed_on_unknown_ocean() {
+        assert_eq!(
+            chat_log_identity(Some(Path::new(
+                "Somepirate_atlantis_ypp.txt"
+            ))),
+            (None, None),
+        );
+        assert_eq!(
+            chat_log_identity(Some(Path::new("plain_notes.txt"))),
+            (None, None),
+        );
+        assert_eq!(chat_log_identity(None), (None, None));
+    }
 }

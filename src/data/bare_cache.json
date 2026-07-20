@@ -786,536 +786,957 @@
       "archipelagos": [
         {
           "name": "Canis",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Armstrong Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Atchafalaya Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Old man's beard"
+              ]
             },
             {
               "name": "Immokalee Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lily of the valley",
+                "Hemp",
+                "Iron"
+              ]
             },
             {
               "name": "Moultrie Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Stone",
+                "Sugar cane",
+                "Cowslip"
+              ]
             },
             {
               "name": "Sho-ke Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Sirius Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Wood",
+                "Tellurium",
+                "Iron"
+              ]
             },
             {
               "name": "Tumult Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Serandite",
+                "Thorianite"
+              ]
             }
           ]
         },
         {
           "name": "Crab",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "The Beaufort Islands",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Messier's Crown",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Leushite"
+              ]
             },
             {
               "name": "Nunataq Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Yarrow"
+              ]
             },
             {
               "name": "Paollu Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lobelia",
+                "Papagoite"
+              ]
             },
             {
               "name": "Qaniit Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Sugar cane"
+              ]
             }
           ]
         },
         {
           "name": "Dodo",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Ancoraggio Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Sassafras"
+              ]
             },
             {
               "name": "Fluke Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite"
+              ]
             },
             {
               "name": "Kakraphoon Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Masuyite"
+              ]
             }
           ]
         },
         {
           "name": "Eagle",
+          "forageables": [
+            "Mangos",
+            "Pomegranates"
+          ],
           "islands": [
             {
               "name": "Cambium Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Elderberries",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Hubble's Eye",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Wood"
+              ]
             },
             {
               "name": "Ilha da Aguia",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Iron"
+              ]
             },
             {
               "name": "Ix Chel",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iris root",
+                "Chalcocite"
+              ]
             },
             {
               "name": "Manu Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sassafras"
+              ]
             }
           ]
         },
         {
           "name": "Gull",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Admiral Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Basset Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower"
+              ]
             },
             {
               "name": "Bryher Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lobelia"
+              ]
             },
             {
               "name": "Cromwell Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Old man's beard",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Hook Shelf",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Pokeweed berries",
+                "Stone"
+              ]
             },
             {
               "name": "Isle of Kent",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Lincoln Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Wensleydale",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Hemp",
+                "Iris root",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Horse Head",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Anegada Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lorandite"
+              ]
             },
             {
               "name": "Barnard Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Papagoite"
+              ]
             },
             {
               "name": "The Lowland Hundred",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Stone"
+              ]
             },
             {
               "name": "Lyonesse Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Thorianite",
+                "Nettle"
+              ]
             },
             {
               "name": "Myvatn Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Wood",
+                "Hemp"
+              ]
             }
           ]
         },
         {
           "name": "Ibis",
+          "forageables": [
+            "Mangos",
+            "Pomegranates"
+          ],
           "islands": [
             {
               "name": "Arakoua Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Iris root",
+                "Stone"
+              ]
             },
             {
               "name": "Aten Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Wood"
+              ]
             },
             {
               "name": "Barbary Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Iron",
+                "Broom flower"
+              ]
             },
             {
               "name": "Caravanserai Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Kasidim Island",
               "size": "medium",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Old man's beard",
+                "Wood"
+              ]
             },
             {
               "name": "Kiwara Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lobelia"
+              ]
             },
             {
               "name": "Terjit Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sincosite"
+              ]
             },
             {
               "name": "Tichka Plateau",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Iron",
+                "Pokeweed berries"
+              ]
             }
           ]
         },
         {
           "name": "Orion",
+          "forageables": [
+            "Bananas",
+            "Carambolas"
+          ],
           "islands": [
             {
               "name": "Aimuari Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Chachapoya Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Old man's beard",
+                "Sugar cane",
+                "Stone"
+              ]
             },
             {
               "name": "Matariki Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Tellurium"
+              ]
             },
             {
               "name": "Pukru Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Iron"
+              ]
             },
             {
               "name": "Quetzal Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Wood"
+              ]
             },
             {
               "name": "Saiph Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Weld",
+                "Hemp"
+              ]
             },
             {
               "name": "Toba Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Stone",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Osprey",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Albatross Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Serandite"
+              ]
             },
             {
               "name": "Ambush Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Chalcocite"
+              ]
             },
             {
               "name": "Deadlight Dunes",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Papagoite"
+              ]
             },
             {
               "name": "Gauntlet Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lorandite",
+                "Wood"
+              ]
             },
             {
               "name": "Jack's Last Gift",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Leushite"
+              ]
             },
             {
               "name": "Mirage Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane"
+              ]
             },
             {
               "name": "Scurvy Reef",
               "size": "outpost",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Butterfly weed",
+                "Iron"
+              ]
             }
           ]
         },
         {
           "name": "Pelican",
+          "forageables": [
+            "Bananas",
+            "Carambolas"
+          ],
           "islands": [
             {
               "name": "Blackthorpe Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron"
+              ]
             },
             {
               "name": "Cook Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Madder",
+                "Wood"
+              ]
             },
             {
               "name": "Descartes Isle",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Fowler Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Elderberries"
+              ]
             },
             {
               "name": "Greenwich Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Cowslip",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Halley Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Tellurium"
+              ]
             },
             {
               "name": "Spaniel Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Nettle",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Starfish Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Thorianite"
+              ]
             },
             {
               "name": "Ventress Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp"
+              ]
             }
           ]
         },
         {
           "name": "Pleiades",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Accompong Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Madder",
+                "Nettle"
+              ]
             },
             {
               "name": "Gallows Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Serandite",
+                "Thorianite"
+              ]
             },
             {
               "name": "Iocane Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Maia Island",
               "size": "medium",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Morgana Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Broom flower",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Paihia Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Indigo",
+                "Stone"
+              ]
             },
             {
               "name": "Umbarten Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Masuyite"
+              ]
             }
           ]
         },
         {
           "name": "Puffin",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Auk Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Tellurium"
+              ]
             },
             {
               "name": "Cryo Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Yarrow"
+              ]
             },
             {
               "name": "Hoarfrost Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Indigo"
+              ]
             }
           ]
         },
         {
           "name": "Stork",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Amity Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Thorianite"
+              ]
             },
             {
               "name": "Bowditch Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Nettle",
+                "Wood"
+              ]
             },
             {
               "name": "Hinga Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Penobscot Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries"
+              ]
             },
             {
               "name": "Rowes Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Madder",
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Scrimshaw Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Squibnocket Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Sincosite"
+              ]
             },
             {
               "name": "Wissahickon Island",
               "size": "medium",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Sugar cane"
+              ]
             }
           ]
         },
         {
           "name": "Tern",
+          "forageables": [
+            "Mangos",
+            "Pomegranates"
+          ],
           "islands": [
             {
               "name": "Ashkelon Arch",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron"
+              ]
             },
             {
               "name": "Kashgar Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lily of the valley",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Morannon Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Weld"
+              ]
             }
           ]
         },
         {
           "name": "Ursa",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Alkaid Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Sincosite",
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Doyle Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Stone"
+              ]
             },
             {
               "name": "Edgar's Choice",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane",
+                "Weld",
+                "Wood"
+              ]
             },
             {
               "name": "Isle of Keris",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Wood",
+                "Iron",
+                "Lily of the valley"
+              ]
             },
             {
               "name": "Marlowe Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Chalcocite",
+                "Nettle"
+              ]
             },
             {
               "name": "McGuffin's Isle",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Lobelia"
+              ]
             },
             {
               "name": "Sayers Rock",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Stone",
+                "Iris root",
+                "Iron"
+              ]
             }
           ]
         }
@@ -1326,601 +1747,1191 @@
       "archipelagos": [
         {
           "name": "Basilisk",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Black Ogopogo",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iris root",
+                "Lobelia",
+                "Stone"
+              ]
             },
             {
               "name": "Kithara Koro",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Lily of the valley",
+                "Sugar cane",
+                "Weld"
+              ]
             },
             {
               "name": "Marmara Odonata",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Hemp",
+                "Serandite",
+                "Weld"
+              ]
             },
             {
               "name": "Mirovia Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Leushite",
+                "Madder",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Rheic Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sincosite",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Sargasso Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Indigo",
+                "Tellurium"
+              ]
             },
             {
               "name": "Tasman Reef",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Lobelia",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Tethys Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Chalcocite",
+                "Cowslip",
+                "Iron",
+                "Wood"
+              ]
             },
             {
               "name": "Zechstein Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Nettle",
+                "Old man's beard",
+                "Stone"
+              ]
             }
           ]
         },
         {
           "name": "Chameleon",
+          "forageables": [
+            "Bananas",
+            "Carambolas"
+          ],
           "islands": [
             {
               "name": "Ebony Serpent",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Lobelia",
+                "Wood"
+              ]
             },
             {
               "name": "Ivorite Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Stone",
+                "Tellurium",
+                "Yarrow"
+              ]
             },
             {
               "name": "Lilac Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Masuyite",
+                "Old man's beard"
+              ]
             }
           ]
         },
         {
           "name": "Draco",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Alicorn Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Hemp",
+                "Madder",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Cetus Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Elderberries",
+                "Hemp",
+                "Stone"
+              ]
             },
             {
               "name": "Ichor Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lorandite",
+                "Pokeweed berries",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Seirene Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Old man's beard",
+                "Sincosite",
+                "Stone"
+              ]
             },
             {
               "name": "Spizzwink Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Cowslip",
+                "Iris root",
+                "Iron"
+              ]
             },
             {
               "name": "Striga Cay",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Chalcocite",
+                "Serandite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Taniwha Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Lily of the valley",
+                "Weld"
+              ]
             },
             {
               "name": "Threewood Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Madder",
+                "Sassafras",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Wyvern Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Lorandite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Xana's Trummet",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Sassafras",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Garnet",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Carmine Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Butterfly weed",
+                "Stone",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Cochineal Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Crimson Island",
               "size": "outpost",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Lorandite"
+              ]
             },
             {
               "name": "Diastrophe Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lily of the valley"
+              ]
             },
             {
               "name": "Echo Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Nettle",
+                "Wood"
+              ]
             },
             {
               "name": "Havoc Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Stone",
+                "Tellurium"
+              ]
             },
             {
               "name": "Jubilee Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Lobelia",
+                "Wood"
+              ]
             },
             {
               "name": "Mermaid's Purse",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Old man's beard",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Moab Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Chalcocite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Napi Peak",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Nova Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Madder",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Olin's Brow",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Indigo",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Pranayama Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Radix Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Iris root",
+                "Wood"
+              ]
             },
             {
               "name": "Spectre Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Stormy Fell",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Stone",
+                "Weld"
+              ]
             },
             {
               "name": "Surtsey Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Serandite",
+                "Stone"
+              ]
             },
             {
               "name": "Windward Vale",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Sugar cane",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Gila",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Acanthaster Spits",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Iron",
+                "Lobelia",
+                "Thorianite"
+              ]
             },
             {
               "name": "Akhlys Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Leushite",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Cinnabarite Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Indigo",
+                "Wood"
+              ]
             },
             {
               "name": "Eitr Glacier",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Fugu Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Lily of the valley",
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Mu Tambu",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Iris root",
+                "Iron",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Nightshade Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Serandite",
+                "Papagoite",
+                "Hemp"
+              ]
             },
             {
               "name": "Scorpion Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane",
+                "Stone",
+                "Cowslip",
+                "Elderberries"
+              ]
             },
             {
               "name": "Viper's Drop",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Madder",
+                "Yarrow",
+                "Hemp",
+                "Old man's beard"
+              ]
             }
           ]
         },
         {
           "name": "Iguana",
+          "forageables": [
+            "Mangos",
+            "Pomegranates"
+          ],
           "islands": [
             {
               "name": "Emerald Ocarina",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Leushite",
+                "Lily of the valley"
+              ]
             },
             {
               "name": "Murex Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Chalcocite",
+                "Iron",
+                "Lorandite"
+              ]
             },
             {
               "name": "Woad Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Indigo",
+                "Iris root",
+                "Sugar cane"
+              ]
             }
           ]
         },
         {
           "name": "Jade",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Conglin Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Leushite"
+              ]
             },
             {
               "name": "Corona Reef",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Madder"
+              ]
             },
             {
               "name": "Dendrite Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Iron"
+              ]
             },
             {
               "name": "Dragon's Nest",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Butterfly weed",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Erh Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Sugar cane",
+                "Tellurium"
+              ]
             },
             {
               "name": "Harmattan Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Pokeweed berries",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Hunter's Point",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Kirin Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Lily of the valley",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Lima Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Nettle",
+                "Wood"
+              ]
             },
             {
               "name": "Lonelywood Lagoon",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Old man's beard",
+                "Wood"
+              ]
             },
             {
               "name": "Olive Island",
               "size": "medium",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Iron",
+                "Stone",
+                "Weld"
+              ]
             },
             {
               "name": "Prolix Purlieu",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Papagoite",
+                "Wood"
+              ]
             },
             {
               "name": "Sakejima Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Iris root",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Swampfen Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Sugar cane",
+                "Thorianite"
+              ]
             },
             {
               "name": "Terra Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lobelia",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Typhoon Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Sincosite"
+              ]
             },
             {
               "name": "Viridis Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Wood",
+                "Yarrow"
+              ]
             },
             {
               "name": "Xian Rock",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Serandite"
+              ]
             }
           ]
         },
         {
           "name": "Komodo",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Arcadia Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Broom flower",
+                "Stone"
+              ]
             },
             {
               "name": "Buyan's Vortice",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Lily of the valley",
+                "Pokeweed berries",
+                "Wood"
+              ]
             },
             {
               "name": "Celesta Isle",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Pokeweed berries",
+                "Weld",
+                "Wood"
+              ]
             },
             {
               "name": "Drogeo Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Elderberries",
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Duat Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Hemp",
+                "Serandite",
+                "Sugar cane",
+                "Tellurium"
+              ]
             },
             {
               "name": "Flyaway Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Old man's beard",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Midgard Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Nettle",
+                "Old man's beard",
+                "Wood"
+              ]
             },
             {
               "name": "Mu Abtu",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Iris root",
+                "Masuyite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Zuyua Mist",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Hemp",
+                "Iron"
+              ]
             }
           ]
         },
         {
           "name": "Lacerta",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Barracuda Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Hemp",
+                "Papagoite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Cenote Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Masuyite",
+                "Stone"
+              ]
             },
             {
               "name": "Chelydra Cove",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iris root",
+                "Iron",
+                "Madder",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Chrysalis Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Cornet Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Iron",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Morgan Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Cowslip",
+                "Sincosite",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Saltstraum Rock",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lily of the valley",
+                "Papagoite",
+                "Stone"
+              ]
             },
             {
               "name": "Sconce Isle",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Yarrow",
+                "Hemp",
+                "Nettle"
+              ]
             },
             {
               "name": "Stalwart Reef",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Old man's beard",
+                "Sugar cane",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Onyx",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Adder Ridge",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Ansel Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Sincosite"
+              ]
             },
             {
               "name": "Cabo de Hornos",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Iron",
+                "Weld"
+              ]
             },
             {
               "name": "Charcoal Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Elderberries",
+                "Hemp",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Cormorant Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Leushite",
+                "Old man's beard",
+                "Stone"
+              ]
             },
             {
               "name": "Fintan Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Nettle",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Garden Cradle",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Hemp",
+                "Stone"
+              ]
             },
             {
               "name": "Hadrian Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Kuhio Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iris root",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Labyrinth Moors",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Masuyite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Last Stand Hill",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Serandite"
+              ]
             },
             {
               "name": "Oasis Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Lily of the valley",
+                "Wood"
+              ]
             },
             {
               "name": "Polaris Point",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Raven's Roost",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Sapling Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane"
+              ]
             },
             {
               "name": "Tigerleaf Mountain",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Madder",
+                "Stone"
+              ]
             },
             {
               "name": "Whistler Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lobelia",
+                "Wood"
+              ]
             },
             {
               "name": "Yax Mutal",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sassafras"
+              ]
             }
           ]
         },
         {
           "name": "Whiptail",
+          "forageables": [
+            "Mangos",
+            "Pomegranates"
+          ],
           "islands": [
             {
               "name": "Brunneria Borealis",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Sassafras",
+                "Weld"
+              ]
             },
             {
               "name": "Granuaile",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Broom flower",
+                "Cowslip"
+              ]
             },
             {
               "name": "Yemaya",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Stone"
+              ]
             }
           ]
         }
@@ -1931,46 +2942,93 @@
       "archipelagos": [
         {
           "name": "Coral",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Angelfish Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Serandite",
+                "Tellurium"
+              ]
             },
             {
               "name": "Delta Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Sugar cane",
+                "Weld"
+              ]
             },
             {
               "name": "Durian Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lorandite",
+                "Old man's beard",
+                "Pokeweed berries",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Macaw Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Hemp",
+                "Sassafras"
+              ]
             },
             {
               "name": "Meke Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Leushite",
+                "Masuyite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Monsoon Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Hemp",
+                "Iron",
+                "Papagoite"
+              ]
             },
             {
               "name": "Park Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lobelia",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Turongo Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Nettle",
+                "Stone",
+                "Sugar cane"
+              ]
             }
           ]
         },
@@ -1985,32 +3043,64 @@
             {
               "name": "Byrne Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Cnossos Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Serandite",
+                "Stone",
+                "Tellurium"
+              ]
             },
             {
               "name": "Oyster Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Hemp"
+              ]
             },
             {
               "name": "Papaya Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Cubanite",
+                "Hemp",
+                "Lily of the valley",
+                "Wood"
+              ]
             },
             {
               "name": "Turtle Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Winter Solstice",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Madder",
+                "Stone",
+                "Sugar cane"
+              ]
             }
           ]
         },
@@ -2020,377 +3110,725 @@
             {
               "name": "Emperor Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Serandite",
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Epsilon Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Hemp",
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Gaea Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Guava Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Stone",
+                "Weld",
+                "Wood"
+              ]
             },
             {
               "name": "Spring Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Tinga Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Indigo",
+                "Madder",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Wrasse Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Chalcocite",
+                "Iron",
+                "Lobelia",
+                "Pokeweed berries"
+              ]
             }
           ]
         },
         {
           "name": "Garnet",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Carmine Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Butterfly weed",
+                "Stone",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Cochineal Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Hemp",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Crimson Island",
               "size": "outpost",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Lorandite"
+              ]
             },
             {
               "name": "Diastrophe Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lily of the valley"
+              ]
             },
             {
               "name": "Echo Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Nettle",
+                "Wood"
+              ]
             },
             {
               "name": "Havoc Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Stone",
+                "Tellurium"
+              ]
             },
             {
               "name": "Jubilee Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Lobelia",
+                "Wood"
+              ]
             },
             {
               "name": "Mermaid's Purse",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Old man's beard",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Moab Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Chalcocite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Napi Peak",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Nova Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Madder",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Olin's Brow",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Indigo",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Pranayama Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Radix Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Iris root",
+                "Wood"
+              ]
             },
             {
               "name": "Spectre Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Stormy Fell",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Stone",
+                "Weld"
+              ]
             },
             {
               "name": "Surtsey Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Serandite",
+                "Stone"
+              ]
             },
             {
               "name": "Windward Vale",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Sugar cane",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Jade",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Conglin Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Leushite"
+              ]
             },
             {
               "name": "Corona Reef",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Madder"
+              ]
             },
             {
               "name": "Dendrite Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Iron"
+              ]
             },
             {
               "name": "Dragon's Nest",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Butterfly weed",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Erh Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Sugar cane",
+                "Tellurium"
+              ]
             },
             {
               "name": "Harmattan Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Pokeweed berries",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Hunter's Point",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Kirin Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Lily of the valley",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Lima Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Nettle",
+                "Wood"
+              ]
             },
             {
               "name": "Lonelywood Lagoon",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Old man's beard",
+                "Wood"
+              ]
             },
             {
               "name": "Olive Island",
               "size": "medium",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Iron",
+                "Stone",
+                "Weld"
+              ]
             },
             {
               "name": "Prolix Purlieu",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Papagoite",
+                "Wood"
+              ]
             },
             {
               "name": "Sakejima Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Iris root",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Swampfen Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Sugar cane",
+                "Thorianite"
+              ]
             },
             {
               "name": "Terra Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Lobelia",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Typhoon Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Sincosite"
+              ]
             },
             {
               "name": "Viridis Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Wood",
+                "Yarrow"
+              ]
             },
             {
               "name": "Xian Rock",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Serandite"
+              ]
             }
           ]
         },
         {
           "name": "Jet",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Chaparral Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Wood",
+                "Old man's beard",
+                "Broom flower"
+              ]
             },
             {
               "name": "Dugong Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Pokeweed berries",
+                "Wood"
+              ]
             },
             {
               "name": "Eclipse Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Hemp"
+              ]
             },
             {
               "name": "Hephaestus' Forge",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Tellurium"
+              ]
             },
             {
               "name": "Lagniappe Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Butterfly weed",
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Namath Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Madder",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Rhinoceros Ridge",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Lily of the valley",
+                "Lorandite",
+                "Stone"
+              ]
             },
             {
               "name": "Xi Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Elderberries",
+                "Stone",
+                "Sugar cane"
+              ]
             }
           ]
         },
         {
           "name": "Onyx",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Adder Ridge",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Iron",
+                "Stone"
+              ]
             },
             {
               "name": "Ansel Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Sincosite"
+              ]
             },
             {
               "name": "Cabo de Hornos",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Iron",
+                "Weld"
+              ]
             },
             {
               "name": "Charcoal Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Elderberries",
+                "Hemp",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Cormorant Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Leushite",
+                "Old man's beard",
+                "Stone"
+              ]
             },
             {
               "name": "Fintan Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Nettle",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Garden Cradle",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Hemp",
+                "Stone"
+              ]
             },
             {
               "name": "Hadrian Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Broom flower",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Kuhio Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iris root",
+                "Sugar cane",
+                "Wood"
+              ]
             },
             {
               "name": "Labyrinth Moors",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Masuyite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Last Stand Hill",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Serandite"
+              ]
             },
             {
               "name": "Oasis Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Lily of the valley",
+                "Wood"
+              ]
             },
             {
               "name": "Polaris Point",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Raven's Roost",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Thorianite",
+                "Wood"
+              ]
             },
             {
               "name": "Sapling Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane"
+              ]
             },
             {
               "name": "Tigerleaf Mountain",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Madder",
+                "Stone"
+              ]
             },
             {
               "name": "Whistler Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lobelia",
+                "Wood"
+              ]
             },
             {
               "name": "Yax Mutal",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sassafras"
+              ]
             }
           ]
         },
         {
           "name": "Opal",
+          "forageables": [
+            "Bananas",
+            "Carambolas"
+          ],
           "islands": [
             {
               "name": "Boyle Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Endurance Island",
@@ -2400,152 +3838,298 @@
             {
               "name": "Flow",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Stone",
+                "Thorianite",
+                "Yarrow"
+              ]
             },
             {
               "name": "Norse Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Papagoite",
+                "Serandite",
+                "Stone"
+              ]
             },
             {
               "name": "Nu Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Hemp",
+                "Nettle",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Orca Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Tellurium"
+              ]
             },
             {
               "name": "Oseberg Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Iris root",
+                "Leushite"
+              ]
             },
             {
               "name": "Waterberry",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Elderberries",
+                "Hemp",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Pearl",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Cleopatra's Pearls",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Chalcocite",
+                "Cowslip",
+                "Elderberries",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Frond Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Butterfly weed",
+                "Hemp",
+                "Leushite",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Nuptial Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lily of the valley"
+              ]
             },
             {
               "name": "O'Reilly Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Stone",
+                "Masuyite"
+              ]
             },
             {
               "name": "Ostreum Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iris root",
+                "Iron"
+              ]
             },
             {
               "name": "Tadpole Isle",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Zeta Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Old man's beard",
+                "Tellurium",
+                "Weld",
+                "Wood"
+              ]
             }
           ]
         },
         {
           "name": "Ruby",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Cranberry Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Wood"
+              ]
             },
             {
               "name": "Eta Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Wood"
+              ]
             },
             {
               "name": "Islay of Luthien",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Elderberries",
+                "Iron",
+                "Serandite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Jorvik Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Stone",
+                "Wood"
+              ]
             },
             {
               "name": "Lynx Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Chalcocite",
+                "Papagoite",
+                "Stone"
+              ]
             },
             {
               "name": "Midsummer",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Nettle"
+              ]
             },
             {
               "name": "Olivia Isle",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lily of the valley",
+                "Sincosite",
+                "Sugar cane",
+                "Tellurium"
+              ]
             }
           ]
         },
         {
           "name": "Sapphire",
+          "forageables": [
+            "Limes",
+            "Passion fruit"
+          ],
           "islands": [
             {
               "name": "Beta Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "spawns": [
+                "Sugar cane",
+                "Wood",
+                "Yarrow"
+              ]
             },
             {
               "name": "The Horseshoe Crabs",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Butterfly weed",
+                "Leushite",
+                "Papagoite"
+              ]
             },
             {
               "name": "Iris Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Lorandite",
+                "Papagoite"
+              ]
             },
             {
               "name": "Remora Island",
               "size": "outpost",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iris root",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Uxmal Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Nettle",
+                "Stone",
+                "Sugar cane",
+                "Tellurium"
+              ]
             },
             {
               "name": "Verdant Atoll",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Madder",
+                "Nettle",
+                "Old man's beard"
+              ]
             },
             {
               "name": "Vernal Equinox",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Broom flower",
+                "Hemp",
+                "Sincosite",
+                "Sugar cane",
+                "Thorianite"
+              ]
             }
           ]
         }
@@ -2556,206 +4140,390 @@
       "archipelagos": [
         {
           "name": "Darkling Seas",
+          "forageables": [
+            "Passion fruit",
+            "Limes"
+          ],
           "islands": [
             {
               "name": "Devil's Heart",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Pokeweed berries"
+              ]
             },
             {
               "name": "Flatback Rift",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Tellurium",
+                "Wood",
+                "Iris root"
+              ]
             },
             {
               "name": "Moonlight Cove",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Nettle",
+                "Wood"
+              ]
             },
             {
               "name": "Nevermore Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cowslip",
+                "Iron"
+              ]
             },
             {
               "name": "Night Harbour",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Old man's beard",
+                "Stone"
+              ]
             },
             {
               "name": "Point Petrify",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane",
+                "Butterfly weed"
+              ]
             },
             {
               "name": "Whisper Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Lily of the valley"
+              ]
             }
           ]
         },
         {
           "name": "Greywaters",
+          "forageables": [
+            "Pineapples",
+            "Rambutan"
+          ],
           "islands": [
             {
               "name": "Green Oasis",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Madder",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Kreis Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Nettle",
+                "Papagoite"
+              ]
             },
             {
               "name": "Pele Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Serandite",
+                "Stone"
+              ]
             },
             {
               "name": "Port Venture",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cubanite",
+                "Old man's beard",
+                "Wood"
+              ]
             },
             {
               "name": "Traveler's Rest",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Elderberries",
+                "Hemp",
+                "Sincosite"
+              ]
             }
           ]
         },
         {
           "name": "Straits o' Defiance",
+          "forageables": [
+            "Bananas",
+            "Carambolas"
+          ],
           "islands": [
             {
               "name": "Anole Garden",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Iron",
+                "Iris root"
+              ]
             },
             {
               "name": "Cavum Ridge",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Madder"
+              ]
             },
             {
               "name": "Kingfisher Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Lily of the valley"
+              ]
             },
             {
               "name": "Lionhaven",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Cowslip",
+                "Stone",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Pride Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Weld",
+                "Wood"
+              ]
             },
             {
               "name": "Ridley's Valor",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Old man's beard",
+                "Tellurium",
+                "Wood"
+              ]
             },
             {
               "name": "Triumph Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Broom flower",
+                "Sugar cane"
+              ]
             }
           ]
         },
         {
           "name": "Wild Eastern Seas",
+          "forageables": [
+            "Mangos",
+            "Pomegranates"
+          ],
           "islands": [
             {
               "name": "Bogong Cove",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Chalcocite",
+                "Wood",
+                "Broom flower",
+                "Thorianite"
+              ]
             },
             {
               "name": "Ember Eye",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Lorandite",
+                "Iron"
+              ]
             },
             {
               "name": "Hawksbill Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Sugar cane",
+                "Butterfly weed",
+                "Serandite",
+                "Yarrow"
+              ]
             },
             {
               "name": "Wind Combs Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Masuyite",
+                "Indigo"
+              ]
             }
           ]
         },
         {
           "name": "Wild Western Seas",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Holloway Isle",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Wood",
+                "Papagoite",
+                "Lobelia"
+              ]
             },
             {
               "name": "Huracan Island",
               "size": "medium",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Pokeweed berries",
+                "Sincosite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Krakentoa Island",
               "size": "outpost",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Chalcocite",
+                "Thorianite"
+              ]
             },
             {
               "name": "Leatherback Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Leushite",
+                "Sassafras",
+                "Weld"
+              ]
             }
           ]
         },
         {
           "name": "Ye Bloody Bounding Main",
+          "forageables": [
+            "Coconuts",
+            "Durians"
+          ],
           "islands": [
             {
               "name": "Dingwall Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iris root",
+                "Wood"
+              ]
             },
             {
               "name": "Loggerhead Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Masuyite",
+                "Sugar cane"
+              ]
             },
             {
               "name": "Magpie Island",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Stone",
+                "Indigo"
+              ]
             },
             {
               "name": "Melanaster Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Hemp",
+                "Lily of the valley",
+                "Stone"
+              ]
             },
             {
               "name": "Mitjana Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Hemp",
+                "Elderberries"
+              ]
             },
             {
               "name": "Picklepine Ridge",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Iron",
+                "Lobelia"
+              ]
             },
             {
               "name": "Triplet's Treasure",
               "size": "medium",
-              "status": "colonized"
+              "status": "colonized",
+              "spawns": [
+                "Sugar cane",
+                "Tellurium"
+              ]
             },
             {
               "name": "Woodtick Island",
               "size": "large",
-              "status": "uninhabited"
+              "status": "uninhabited",
+              "spawns": [
+                "Cubanite",
+                "Cowslip",
+                "Wood"
+              ]
             }
           ]
         }
