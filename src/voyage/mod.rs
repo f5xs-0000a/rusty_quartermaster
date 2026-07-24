@@ -87,9 +87,9 @@ pub struct TeamSide {
     /// **Mercenaries** on this side — the NPCs with the `[name] [epithet]`
     /// convention, distinct from and disjoint with [`Self::swabbies`]. Our
     /// side only, and only as accurate as the last winners-roster ground
-    /// truth; `0` on the enemy side (never classified). Mercs take a full
-    /// divvy share, swabbies none — so this is the merc half of a fight's
-    /// [`Self::shares`].
+    /// truth; `0` on the enemy side (never classified). Neither mercenaries
+    /// nor swabbies earn a divvy share, so this count does not feed
+    /// [`Self::shares`] — it's tracked for the roster and per-merc stats.
     pub mercenaries: u32,
 }
 
@@ -100,11 +100,11 @@ impl TeamSide {
         self.players.len() as u32 + self.swabbies + self.mercenaries
     }
 
-    /// Divvy shares on this side: every real pirate and every mercenary earns
-    /// one full share; free swabbies earn none (they're paid off the top).
-    /// Drives the "Value per Share" metric.
+    /// Divvy shares on this side: only real pirates hold a share. Neither
+    /// mercenaries nor swabbies earn one — swabbies are paid off the top and
+    /// mercenaries take no share at all. Drives the "Value per Share" metric.
     pub fn shares(&self) -> u32 {
-        self.players.len() as u32 + self.mercenaries
+        self.players.len() as u32
     }
 }
 

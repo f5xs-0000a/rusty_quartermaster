@@ -66,10 +66,11 @@ pub struct SavedTeam {
     #[serde(default)]
     pub swabbies: u32,
     /// Mercenaries — a distinct crew kind, disjoint with `swabbies`. Persisted
-    /// so the "Value per share" metric keeps its exact shares split after
-    /// a reload. Legacy files (pre-field) and the enemy side default to
-    /// `0`, folding those bodies into `swabbies` and yielding pirates-only
-    /// shares.
+    /// to preserve the exact swabbie/mercenary split after a reload (for the
+    /// roster and per-merc stats); mercenaries earn no divvy share, so this
+    /// does not feed the "Value per share" metric. Legacy files (pre-field)
+    /// and the enemy side default to `0`, folding those bodies into
+    /// `swabbies`.
     #[serde(default)]
     pub mercenaries: u32,
 }
@@ -792,12 +793,12 @@ mod tests {
         let back = saved.to_team();
         assert_eq!(back.swabbies, 4);
         assert_eq!(back.mercenaries, 2);
-        assert_eq!(back.shares(), 1 + 2); // players + mercenaries (swabbies earn none)
+        assert_eq!(back.shares(), 1); // players only (mercs and swabbies earn none)
         assert_eq!(back.headcount(), 1 + 4 + 2); // players + swabbies + mercenaries
 
         // A legacy file predates the merc field: `mercenaries` defaults to 0,
         // so those bodies stay folded in `swabbies` — headcount is
-        // intact, shares fall back to pirates-only.
+        // intact. Shares are pirates-only regardless.
         let legacy: SavedTeam =
             serde_json::from_str(r#"{"players":["Playerone"],"swabbies":6}"#)
                 .unwrap();

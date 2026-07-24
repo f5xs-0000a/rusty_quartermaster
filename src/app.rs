@@ -1292,20 +1292,17 @@ impl AppShell {
                 .collect();
             // "Value per Share": total value ÷ total divvy shares. Shares are
             // summed over the same decisive fights as the numerator
-            // — each pirate and each mercenary aboard a fight is
-            // one share; swabbies none. Ship- and duration-agnostic
-            // (crew size and fight count both divide out). Merc
-            // counts are exact live; a reloaded voyage has none, so it falls
-            // back to pirates-only shares (see the persistence
-            // note).
+            // — only real pirates hold a share; neither mercenaries
+            // nor swabbies earn one. Ship- and duration-agnostic
+            // (crew size and fight count both divide out).
             let (cur_total_i, cur_shares) =
                 voyage
                     .battles
                     .iter()
                     .fold((0i64, 0u32), |(poe, shares), b| {
                         match decisive_poe(b) {
-                            // A fight's shares = pirates + mercenaries aboard
-                            // (swabbies none).
+                            // A fight's shares = pirates aboard (neither
+                            // mercenaries nor swabbies earn a share).
                             // `our_team` is always present for a decisive
                             // fight; fall back to
                             // the pirate count if somehow absent.
@@ -1366,13 +1363,10 @@ impl AppShell {
                 for bt in &v.battles {
                     if let Some(p) = bt.poe {
                         total += p;
-                        // Shares = pirates + mercenaries aboard (persisted).
-                        // Legacy files (pre-merc-field)
-                        // restore mercs = 0, falling back to
-                        // pirates-only shares. Paired with the numerator per
-                        // fight.
-                        shares += bt.pirates
-                            + bt.our_team.as_ref().map_or(0, |t| t.mercenaries);
+                        // Shares = pirates aboard. Neither mercenaries nor
+                        // swabbies earn a share, so only the pirate count
+                        // feeds the divvy. Paired with the numerator per fight.
+                        shares += bt.pirates;
                         // Decisive (won/lost) fights on the same hull, signed.
                         // The displayed voyage is
                         // included (History no longer self-excludes),

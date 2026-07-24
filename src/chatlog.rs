@@ -363,7 +363,8 @@ pub struct Vessel {
     /// between wins it's maintained best-effort: swabbies leave before
     /// mercs, and the rum-spice depletion swap sheds one merc. A merc both
     /// hired and lost between two wins is invisible until the next roster
-    /// re-truths it. Drives the mercenary half of each fight's divvy shares.
+    /// re-truths it. Tracked for the roster and per-merc stats; mercenaries
+    /// earn no divvy share.
     pub mercenaries: BTreeSet<String>,
     /// Lone dragoons currently aboard on an Atlantis run: +1 per "Ye hear a
     /// splash, and the sound of foreign footsteps." line, −1 per dragoon
@@ -1497,12 +1498,12 @@ impl GameState {
             .map(|v| v.disconnected.clone())
             .unwrap_or_default();
         let swabbies = self.current_vessel().map(|v| v.swabbies).unwrap_or(0);
-        // Mercenary count for this fight's divvy shares, read from the roster
-        // that `on_battle_end` (run just before us on this same `Game
-        // over`) re-truthed from the winners list on a win. On a
-        // loss/disengage our side isn't named, so the roster is the
-        // carried best-effort estimate. See the mercenary roster on
-        // `Vessel`.
+        // Mercenary count for this fight's roster/per-merc stats (mercenaries
+        // earn no divvy share), read from the roster that `on_battle_end`
+        // (run just before us on this same `Game over`) re-truthed from the
+        // winners list on a win. On a loss/disengage our side isn't named, so
+        // the roster is the carried best-effort estimate. See the mercenary
+        // roster on `Vessel`.
         let mercenaries = self
             .current_vessel()
             .map(|v| v.mercenaries.len() as u32)
@@ -1534,7 +1535,7 @@ impl GameState {
         }
         // Split a roster into real players (kept by name) and a bare NPC count.
         // Used for the enemy side, which we never classify —
-        // `mercenaries` stays 0 (their divvy isn't ours; see the PvP
+        // `mercenaries` stays 0 (we only classify our own crew; see the PvP
         // note in the design).
         let split_side = |names: &[String]| {
             TeamSide {
@@ -4389,7 +4390,7 @@ mod tests {
         );
     }
 
-    // ---- Mercenary roster + divvy shares
+    // ---- Mercenary roster + divvy shares (mercs earn none)
     // -------------------------------------
 
     #[test]
@@ -4440,9 +4441,9 @@ mod tests {
         assert_eq!(team.swabbies, 2); // genuine swabbies only (Gentle Gayle + A swabbie)
         assert_eq!(team.mercenaries, 1);
         assert_eq!(team.headcount(), 4); // 1 pirate + 2 swabbies + 1 merc
-        // Divvy shares: us (1 pirate) + 1 merc; the two genuine swabbies earn
-        // none.
-        assert_eq!(team.shares(), 2);
+        // Divvy shares: just us (1 pirate); the merc and the two genuine
+        // swabbies earn none.
+        assert_eq!(team.shares(), 1);
     }
 
     #[test]

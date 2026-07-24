@@ -58,8 +58,8 @@ const CHART_TOOLTIPS: [&str; 3] = [
     "PoE of each concluded fight, newest first (losses negative), with \
      box-plots for this voyage and the rest of the same-hull voyages. Enter \
      to enlarge.",
-    "This voyage's value per share — total value ÷ (pirates+mercenaries \
-     summed over its fights, swabbies excluded) — as a point against a \
+    "This voyage's value per share — total value ÷ (pirates summed over its \
+     fights; mercenaries and swabbies earn no share) — as a point against a \
      historical box of past voyages. Ship- and length-agnostic.",
 ];
 
@@ -172,12 +172,12 @@ pub struct ChartData {
     /// "historical". Typically `[Voyage, History]` — this voyage vs the
     /// rest of the same-hull voyages — but the renderer takes any number.
     pub fight_boxes: Vec<ChartBox>,
-    /// This voyage's **value per share** — total value ÷ Σ(pirates+mercs per
-    /// fight). The per-head take a pirate/merc earns; swabbies don't
-    /// dilute it. `0` when no shares were recorded yet.
+    /// This voyage's **value per share** — total value ÷ Σ(pirates per
+    /// fight). The per-head take a pirate earns; mercenaries and swabbies
+    /// hold no share and don't dilute it. `0` when no shares were recorded
+    /// yet.
     pub cur_per_share: f64,
-    /// Value per share of each past voyage (one point each). Reloaded voyages
-    /// have no merc split, so their shares count pirates only.
+    /// Value per share of each past voyage (one point each).
     pub hist_per_share: Vec<f64>,
     /// Ship-vs-ship win rates for the Ship Winrate widget (chart 0).
     pub winrate: ShipWinrate,
@@ -1912,7 +1912,7 @@ fn signed_box_line(w: usize, lo: f64, hi: f64, bp: &BoxPlot) -> String {
 }
 
 /// Chart 2 — value per share: this voyage's per-head take (total value ÷
-/// Σ(pirates+mercs per fight)) as a single point (the Current row) against a
+/// Σ(pirates per fight)) as a single point (the Current row) against a
 /// historical box & whiskers of past voyages' per-share values, sharing one
 /// axis, with a legend below. No popup.
 fn per_share_lines(data: &ChartData, width: usize) -> Vec<Line<'static>> {
