@@ -90,7 +90,7 @@ pub fn render(
         .map(|f| f.label.chars().count())
         .max()
         .unwrap_or(0)
-        .max("Ship Hold Rum".len()) as u16;
+        .max("Rum (Hold / Restock)".len()) as u16;
     // label + 2 gap + min input(8) + 2 borders + 2 padding.
     let params_width = label_width + 2 + 8 + 2 + 2;
 
@@ -112,7 +112,7 @@ pub fn render(
     // -- Vertical stack ----------------------------------------------------
     let visible_panels = app.visible_panels(shared.market_supported).len();
     let params_h = visible_panels as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
-    let stats_h = 2 + 2; // 2 rows + borders
+    let stats_h = 1 + 2; // 1 row + borders
     let search_h = 2 + 2; // input + suggestion + borders
 
     // Inventory is the topmost widget and takes the Fill slot so it scrolls;
@@ -315,8 +315,7 @@ fn render_hold_stats(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Length(1), Constraint::Length(1)])
-        .split(inner);
+    let rows = Layout::vertical([Constraint::Length(1)]).split(inner);
 
     let restock_rum = compute_rum(app, shared, |r| &r.restock);
     let hold_rum = compute_rum(app, shared, |r| &r.stock);
@@ -325,15 +324,8 @@ fn render_hold_stats(
         frame,
         rows[0],
         label_width,
-        "Restock Rum",
-        restock_rum,
-    );
-    render_stat_row(
-        frame,
-        rows[1],
-        label_width,
-        "Ship Hold Rum",
-        hold_rum,
+        "Rum (Hold / Restock)",
+        format!("{hold_rum} / {restock_rum}"),
     );
 }
 
@@ -342,7 +334,7 @@ fn render_stat_row(
     area: Rect,
     label_width: u16,
     label: &str,
-    value: u64,
+    value: String,
 ) {
     let cols = Layout::horizontal([
         Constraint::Length(label_width),
@@ -358,7 +350,7 @@ fn render_stat_row(
         cols[0],
     );
     frame.render_widget(
-        Paragraph::new(Line::from(value.to_string()).right_aligned()),
+        Paragraph::new(Line::from(value).right_aligned()),
         cols[2],
     );
 }
