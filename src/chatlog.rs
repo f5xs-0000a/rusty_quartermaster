@@ -480,6 +480,12 @@ pub struct Vessel {
     pub planked_by_us: BTreeSet<String>,
     /// We left this vessel mid-run, so its data has gaps.
     pub poisoned: bool,
+    /// We jobbed aboard via an offer, so the vessel's real name isn't known
+    /// yet — it's keyed by a provisional `Ship of <crew>` label until a
+    /// grapple reveals the hull's name and
+    /// [`GameState::promote_current_vessel`] re-keys it. Drives the italic
+    /// styling of the placeholder in the vessel selector.
+    pub provisional: bool,
     /// Monotonic board sequence; higher = boarded more recently. Updated on
     /// every (re)boarding so the selector can show the latest vessel on top.
     /// Always present, so it drives ordering even when timestamps are missing.
@@ -723,24 +729,21 @@ impl GameState {
         }
 
         // Battle start: a fresh battle resets the current-battle greedy tally
-        // and opens a new [`Battle`] record. We capture the enemy
-        // vessel name; the direction (who intercepted whom) isn't
-        // tracked. Both "the X" forms end in `!` (live) or `.` (some
-        // variants).
+        // and opens a new [`Battle`] record. The interception line names the
+        // foe as `<Hull> '<Name>'`; the hull seeds the Damage calculator and
+        // the quoted portion is kept as the enemy name. Only that form opens a
+        // battle — legacy bare descriptors (an unnamed brigand/monster name, or
+        // the generic `Brigands`/`Barbarians`) no longer occur, so a
+        // strip_prefix that fails to resolve a hull is ignored. Direction (who
+        // intercepted whom) isn't tracked.
         let intercept = body
             .strip_prefix("You intercepted the ")
             .or_else(|| body.strip_prefix("You have been intercepted by the "));
         if let Some(rest) = intercept {
-            let enemy = rest.trim_end_matches(['!', '.']).trim();
-            self.on_battle_start(enemy);
-            return;
-        }
-        // Bare forms without a vessel name (e.g. "You intercepted the
-        // Brigands.").
-        if body.starts_with("You intercepted")
-            || body.starts_with("You have been intercepted")
-        {
-            self.on_battle_start("");
+            let descriptor = rest.trim_end_matches(['!', '.']).trim();
+            if let (Some(foe_ship), name) = parse_foe_vessel(descriptor) {
+                self.on_battle_start(foe_ship, name);
+            }
             return;
         }
 
@@ -764,10 +767,15 @@ impl GameState {
         }
         // A grapple begins the boarding melee: "<A> has grappled <B>. A melee
         // breaks out between the crews!" (logged for both sides; we keep the
-        // first).
+        // first). The two vessels named here also let us learn a jobbed
+        // vessel's real name — whichever grappler is the open battle's foe, the
+        // other is ours.
         if body.contains(" has grappled ")
             && body.ends_with("A melee breaks out between the crews!")
         {
+            if let Some((a, b)) = parse_grapple(body) {
+                self.promote_from_grapple(a, b);
+            }
             self.on_grapple();
             return;
         }
@@ -1162,6 +1170,24 @@ impl GameState {
             self.leave_vessel();
             return;
         }
+        // Whisking home ends time aboard whatever we were on (jobbing home mid
+        // run, retreating from an island, etc.).
+        if body == "Whisking away to yer home on the magical winds." {
+            self.leave_vessel();
+            return;
+        }
+        // Jobbing aboard via an offer. The vessel we join is never named in the
+        // log until a grapple reveals it, so board it under a provisional
+        // `Ship of <crew>` label; a later grapple promotes it to the real name.
+        // Accepting an offer swaps vessels directly, so any current run is left
+        // (and poisoned) first.
+        if let Some(crew) = body
+            .strip_prefix("Ye accepted the offer to job with '")
+            .and_then(|s| s.strip_suffix("'."))
+        {
+            self.on_job_accept(crew);
+            return;
+        }
 
         // Third-person plank: "<Planker> forced <Victim> to walk the plank."
         if let Some(mid) = body.strip_suffix(" to walk the plank.")
@@ -1239,6 +1265,57 @@ impl GameState {
         self.boarded_vessel = Some(key);
     }
 
+    /// Player jobbed aboard a vessel via an offer from `crew`. Since accepting
+    /// swaps vessels outright, any current vessel is left first (poisoning an
+    /// unfinished run). The joined vessel isn't named until a grapple reveals
+    /// it, so it's keyed provisionally by crew and marked
+    /// [`Vessel::provisional`] for the italic placeholder;
+    /// [`Self::promote_current_vessel`] re-keys it once the name is known.
+    fn on_job_accept(&mut self, crew: &str) {
+        self.leave_vessel();
+        let key: Arc<str> = Arc::from(format!("Ship of {crew}"));
+        self.order_counter += 1;
+        let order = self.order_counter;
+        let now = self.now;
+        let v = self.vessels.entry(key.clone()).or_default();
+        v.order = order;
+        v.boarded_at = now;
+        v.provisional = true;
+        self.current = Some(key.clone());
+        self.boarded_vessel = Some(key);
+    }
+
+    /// Re-key the current provisional (jobbed) vessel to its real name, now
+    /// that a grapple has revealed it. No-op unless the current vessel is
+    /// provisional and `real` differs from its placeholder key. If a vessel of
+    /// that real name already exists (e.g. we boarded it earlier), the
+    /// placeholder is dropped and the existing one becomes current rather than
+    /// clobbering its accumulated data.
+    fn promote_current_vessel(&mut self, real: &str) {
+        let Some(old_key) = self.current.clone() else {
+            return;
+        };
+        if !self.vessels.get(&old_key).is_some_and(|v| v.provisional)
+            || &*old_key == real
+        {
+            return;
+        }
+        let new_key: Arc<str> = Arc::from(real);
+        // A vessel by this real name already exists (we boarded it earlier):
+        // leave the provisional one in place rather than clobbering or
+        // discarding either's accumulated data.
+        if self.vessels.contains_key(&new_key) {
+            return;
+        }
+        let Some(mut v) = self.vessels.remove(&old_key) else {
+            return;
+        };
+        v.provisional = false;
+        self.vessels.insert(new_key.clone(), v);
+        self.current = Some(new_key.clone());
+        self.boarded_vessel = Some(new_key);
+    }
+
     /// Player left the current vessel (left the crew, or was planked). If the
     /// vessel's run wasn't finished (booty not yet divided), it's now poisoned.
     fn leave_vessel(&mut self) {
@@ -1277,22 +1354,23 @@ impl GameState {
     }
 
     /// A new battle began — start a fresh current-battle greedy tally and open
-    /// a new [`Battle`] record on the current voyage (creating the voyage
-    /// if a fight somehow starts before we saw a sail order). `enemy` empty
-    /// => unknown vessel.
-    fn on_battle_start(&mut self, enemy: &str) {
+    /// a new [`Battle`] record on the current voyage (creating the voyage if a
+    /// fight somehow starts before we saw a sail order). `foe_ship` is the hull
+    /// the interception line named (resolved by [`parse_foe_vessel`]); `enemy`
+    /// is the foe vessel's own name, kept for display.
+    fn on_battle_start(&mut self, foe_ship: usize, enemy: &str) {
         let now = self.now;
         self.battle_just_started = true;
         if let Some(v) = self.current_vessel_mut() {
             v.greedy_current.clear();
         }
+        // The named hull seeds the live Damage calculator's foe ship. A monkey
+        // boat additionally carries its fixed fruit name in the quoted portion,
+        // which tags the fight; all these names come from the system line, so
+        // none can be spoofed via chat.
+        self.detected_foe_ship = Some(foe_ship);
+        let monkey_ship = monkey_boat_ship(enemy);
         let enemy = (!enemy.is_empty()).then(|| enemy.to_string());
-        // A monkey boat is identified by its (fixed) vessel name — which also
-        // tells us its hull. The name is from the system interception
-        // line, so this can't be spoofed via chat. Also seed the live
-        // Damage calculator's foe ship.
-        let monkey_ship = enemy.as_deref().and_then(monkey_boat_ship);
-        self.detected_foe_ship = monkey_ship;
         if let Some(voy) = self.ensure_voyage() {
             // A still-open previous battle means we never saw its resolution;
             // keep it as a dangling record rather than dropping it.
@@ -1307,11 +1385,11 @@ impl GameState {
                 // opt an individual fight out. On save this
                 // writes the fight's snapshot when one exists.
                 recorded: true,
+                foe_ship: Some(foe_ship),
                 ..Battle::default()
             };
-            if let Some(idx) = monkey_ship {
+            if monkey_ship.is_some() {
                 battle.category = BattleCategory::MonkeyBoat;
-                battle.foe_ship = Some(idx);
             }
             voy.current_battle = Some(battle);
         }
@@ -1377,6 +1455,29 @@ impl GameState {
                 voy.battles.push(b);
             }
             v.voyages.push(voy);
+        }
+    }
+
+    /// Learn a jobbed vessel's real name from a grapple. No-op unless the
+    /// current vessel is still provisional. The open battle's `enemy` is the
+    /// foe; whichever grappler matches it, the other party is our vessel, so we
+    /// promote the placeholder to that name.
+    fn promote_from_grapple(&mut self, a: &str, b: &str) {
+        if !self.current_vessel().is_some_and(|v| v.provisional) {
+            return;
+        }
+        let foe = self
+            .current_vessel()
+            .and_then(|v| v.current_voyage.as_ref())
+            .and_then(|voy| voy.current_battle.as_ref())
+            .and_then(|batt| batt.enemy.as_deref());
+        let ours = match foe {
+            Some(f) if f == a => Some(b),
+            Some(f) if f == b => Some(a),
+            _ => None,
+        };
+        if let Some(name) = ours {
+            self.promote_current_vessel(name);
         }
     }
 
@@ -2751,6 +2852,33 @@ const MONKEY_BOATS: &[(&str, &str)] = &[
     ("Juicy Watermelon", "Grand Frigate"),
 ];
 
+/// Split an interception's foe descriptor into its named hull and the vessel's
+/// display name. Interceptions are logged as `<Hull> '<Name>'`: the hull
+/// resolves through [`crate::ships::ship_index`] and the display name is the
+/// quoted portion (for a monkey boat that quoted name is its fixed fruit name,
+/// which [`monkey_boat_ship`] uses to tag the fight). A descriptor whose hull
+/// doesn't resolve yields `(None, raw)`, which the caller ignores rather than
+/// opening a battle.
+/// Split a grapple line into its two vessel names: `<A> has grappled <B>. A
+/// melee breaks out between the crews!` -> `(A, B)`.
+fn parse_grapple(body: &str) -> Option<(&str, &str)> {
+    let (a, rest) = body.split_once(" has grappled ")?;
+    let b = rest
+        .strip_suffix("A melee breaks out between the crews!")?
+        .trim_end_matches([' ', '.']);
+    Some((a, b))
+}
+
+fn parse_foe_vessel(raw: &str) -> (Option<usize>, &str) {
+    if let Some((hull, quoted)) = raw.split_once(" '")
+        && let Some(name) = quoted.strip_suffix('\'')
+        && let Some(idx) = crate::ships::ship_index(hull)
+    {
+        return (Some(idx), name);
+    }
+    (None, raw)
+}
+
 /// The [`crate::ships::SHIPS`] index of the monkey boat with this exact vessel
 /// name, if `name` is one. The name comes from the (system) interception line,
 /// so it can't be spoofed via chat.
@@ -3283,6 +3411,101 @@ mod tests {
     }
 
     #[test]
+    fn jobbing_boards_a_provisional_vessel() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line(
+            "[01:00:00] Ye accepted the offer to job with 'Test Crew'.",
+        );
+        assert_eq!(
+            gs.current.as_deref(),
+            Some("Ship of Test Crew")
+        );
+        assert!(gs.current_vessel().unwrap().provisional);
+    }
+
+    #[test]
+    fn grapple_promotes_jobbed_vessel_to_its_real_name() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line(
+            "[01:00:00] Ye accepted the offer to job with 'Test Crew'.",
+        );
+        gs.process_line(
+            "[01:00:05] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:01:00] You have been intercepted by the War Frigate 'Enemy \
+             Boat'!",
+        );
+        // The battle opened under the provisional vessel.
+        assert_eq!(
+            gs.current.as_deref(),
+            Some("Ship of Test Crew")
+        );
+        // The grapple names both vessels; the foe is 'Enemy Boat', so ours is
+        // 'Our Boat' -> promote.
+        gs.process_line(
+            "[01:02:00] Enemy Boat has grappled Our Boat. A melee breaks out \
+             between the crews!",
+        );
+        assert_eq!(gs.current.as_deref(), Some("Our Boat"));
+        assert!(!gs.vessels.contains_key("Ship of Test Crew"));
+        let v = gs.current_vessel().unwrap();
+        assert!(!v.provisional);
+        // The battle recorded before the promotion moved with the vessel.
+        assert!(v.current_voyage.as_ref().unwrap().current_battle.is_some());
+    }
+
+    #[test]
+    fn jobbing_onto_another_ship_leaves_the_previous() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line(
+            "[01:00:00] Ye accepted the offer to job with 'Crew A'.",
+        );
+        gs.process_line(
+            "[01:00:01] This vessel is now Pillaging, Hard Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:05] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:10:00] Ye accepted the offer to job with 'Crew B'.",
+        );
+        assert_eq!(
+            gs.current.as_deref(),
+            Some("Ship of Crew B")
+        );
+        // The mid-run vessel we left is poisoned.
+        assert!(gs.vessels["Ship of Crew A"].poisoned);
+    }
+
+    #[test]
+    fn whisking_home_leaves_the_jobbed_vessel() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line(
+            "[01:00:00] Ye accepted the offer to job with 'Crew A'.",
+        );
+        gs.process_line(
+            "[01:00:01] This vessel is now Pillaging, Hard Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:05] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:20:00] Whisking away to yer home on the magical winds.",
+        );
+        assert!(gs.current.is_none());
+        assert!(gs.vessels["Ship of Crew A"].poisoned);
+    }
+
+    #[test]
     fn rolls_date_over_midnight_without_a_new_header() {
         let mut gs = GameState::new();
         gs.process_line("====== 2026/06/16 ======");
@@ -3362,7 +3585,7 @@ mod tests {
     fn greedy_splits_total_and_current_battle() {
         let mut gs = GameState::new();
         gs.process_line("[01:00:00] Going aboard the War Carp...");
-        gs.process_line("[01:00:05] You intercepted the Brigands.");
+        gs.process_line("[01:00:05] You intercepted the Sloop 'Foo'!");
         gs.process_line(
             "[01:00:06] Mateone delivers an overwhelming barrage against X, \
              who drops treasure!",
@@ -3374,7 +3597,7 @@ mod tests {
         gs.process_line("[01:05:00] Game over.  Winner: Playerone.");
         // Second battle: current tally resets, but Mateone's run total carries.
         gs.process_line(
-            "[01:10:00] You have been intercepted by the Barbarians.",
+            "[01:10:00] You have been intercepted by the Sloop 'Bar'!",
         );
         gs.process_line(
             "[01:10:06] Mateone performs a powerful attack against Z, who \
@@ -3738,7 +3961,8 @@ mod tests {
             "[02:00:05] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[02:01:00] You have been intercepted by the Modest Sild!",
+            "[02:01:00] You have been intercepted by the War Frigate 'Modest \
+             Sild'!",
         );
         gs.process_line(
             "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out \
@@ -3769,6 +3993,60 @@ mod tests {
     }
 
     #[test]
+    fn parse_foe_vessel_reads_hull_and_strips_name() {
+        let galleon = crate::ships::ship_index("Merchant Galleon");
+        assert_eq!(
+            parse_foe_vessel("Merchant Galleon 'Foo'"),
+            (galleon, "Foo"),
+        );
+        // A bare brigand/monster name has no hull and is its own name.
+        assert_eq!(
+            parse_foe_vessel("Modest Sild"),
+            (None, "Modest Sild")
+        );
+        // An unknown hull word isn't mistaken for a ship — kept whole.
+        assert_eq!(
+            parse_foe_vessel("Rowboat 'Bar'"),
+            (None, "Rowboat 'Bar'"),
+        );
+    }
+
+    #[test]
+    fn intercept_named_hull_seeds_foe_ship_and_display_name() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("====== 2026/05/14 ======");
+        gs.process_line("[02:00:00] Going aboard the War Carp...");
+        gs.process_line(
+            "[02:00:05] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[02:01:00] You have been intercepted by the Xebec 'Foo'!",
+        );
+        // The Damage calculator is told the foe hull for the app to pick up.
+        assert_eq!(
+            gs.detected_foe_ship,
+            crate::ships::ship_index("Xebec")
+        );
+        let v = gs.current_vessel().unwrap();
+        let b = v
+            .current_voyage
+            .as_ref()
+            .unwrap()
+            .current_battle
+            .as_ref()
+            .unwrap();
+        assert_eq!(
+            b.foe_ship,
+            crate::ships::ship_index("Xebec")
+        );
+        // The stored enemy name drops the hull, keeping just the vessel's name.
+        assert_eq!(b.enemy.as_deref(), Some("Foo"));
+        // A named-hull foe is not a monkey boat.
+        assert_ne!(b.category, BattleCategory::MonkeyBoat);
+    }
+
+    #[test]
     fn sea_first_elimination_triggers_fight_jump_once() {
         let mut gs = GameState::new();
         gs.player_name = Some(Arc::from("Playerone"));
@@ -3778,7 +4056,8 @@ mod tests {
             "[02:00:05] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[02:01:00] You have been intercepted by the Modest Sild!",
+            "[02:01:00] You have been intercepted by the War Frigate 'Modest \
+             Sild'!",
         );
         gs.process_line(
             "[02:02:00] Modest Sild has grappled War Carp. A melee breaks out \
@@ -3862,7 +4141,8 @@ mod tests {
             "[02:05:00] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[02:06:06] You have been intercepted by the Modest Sild!",
+            "[02:06:06] You have been intercepted by the War Frigate 'Modest \
+             Sild'!",
         );
         gs.process_line(
             "[02:09:51] Modest Sild has grappled Test Vessel. A melee \
@@ -3959,7 +4239,9 @@ mod tests {
         gs.process_line("[02:00:20] Mateleaver has come aboard.");
         gs.process_line("[02:00:21] Matedrop has come aboard.");
         gs.process_line("[02:00:22] Matefighter has come aboard.");
-        gs.process_line("[02:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[02:01:00] You intercepted the War Frigate 'Modest Sild'!",
+        );
         gs.process_line(
             "[02:02:00] Test Vessel has grappled Modest Sild. A melee \
              breaks out between the crews!",
@@ -3993,7 +4275,9 @@ mod tests {
             "[02:00:10] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line("[02:00:20] Matedrop has come aboard.");
-        gs.process_line("[02:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[02:01:00] You intercepted the War Frigate 'Modest Sild'!",
+        );
         gs.process_line(
             "[02:02:00] Modest Sild has grappled Test Vessel. A melee \
              breaks out between the crews!",
@@ -4014,7 +4298,9 @@ mod tests {
         gs.process_line(
             "[03:00:10] Playerone issued an order to set the vessel to sail.",
         );
-        gs.process_line("[03:01:00] You intercepted the Bloody Nightmare!");
+        gs.process_line(
+            "[03:01:00] You intercepted the War Frigate 'Bloody Nightmare'!",
+        );
         gs.process_line(
             "[03:02:00] Test Vessel has grappled Bloody Nightmare. A \
              melee breaks out between the crews!",
@@ -4036,7 +4322,8 @@ mod tests {
             "[04:00:10] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[04:01:00] You have been intercepted by the Bloody Nightmare!",
+            "[04:01:00] You have been intercepted by the War Frigate 'Bloody \
+             Nightmare'!",
         );
         gs.process_line(
             "[04:02:00] Bloody Nightmare has grappled Test Vessel. A \
@@ -4064,7 +4351,8 @@ mod tests {
             "[00:20:49] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[00:20:49] You have been intercepted by the Boring Gar!",
+            "[00:20:49] You have been intercepted by the War Frigate 'Boring \
+             Gar'!",
         );
         gs.process_line(
             "[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.",
@@ -4089,7 +4377,8 @@ mod tests {
         // and we're not among the winners).
         gs.process_line("[01:00:00] Going aboard the Test Vessel...");
         gs.process_line(
-            "[01:01:00] You have been intercepted by the Boring Gar!",
+            "[01:01:00] You have been intercepted by the War Frigate 'Boring \
+             Gar'!",
         );
         gs.process_line(
             "[01:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.",
@@ -4119,7 +4408,8 @@ mod tests {
         let mut gs = GameState::new(); // no player_name
         gs.process_line("[02:00:00] Going aboard the Test Vessel...");
         gs.process_line(
-            "[02:01:00] You have been intercepted by the Boring Gar!",
+            "[02:01:00] You have been intercepted by the War Frigate 'Boring \
+             Gar'!",
         );
         gs.process_line(
             "[02:04:00] Game over.  Winners: Nervy Hugh, Insane Yang.",
@@ -4146,7 +4436,8 @@ mod tests {
             "[23:27:02] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[23:27:23] You have been intercepted by the Lucky Mackerel!",
+            "[23:27:23] You have been intercepted by the War Frigate 'Lucky \
+             Mackerel'!",
         );
         gs.process_line(
             "[23:28:00] Lucky Mackerel disengaged from the battle.",
@@ -4177,7 +4468,9 @@ mod tests {
         gs.process_line(
             "[02:33:02] Playerone issued an order to set the vessel to sail.",
         );
-        gs.process_line("[02:33:23] You intercepted the Hot Barbel!");
+        gs.process_line(
+            "[02:33:23] You intercepted the War Frigate 'Hot Barbel'!",
+        );
         // Stale pursuit of an unrelated target ends — must be ignored.
         gs.process_line(
             "[02:33:33] Arr, ye can no longer pursue the Thieving \
@@ -4224,7 +4517,8 @@ mod tests {
         );
         // Lose with an empty chest — they can't take 9,000 from nothing.
         gs.process_line(
-            "[00:01:00] You have been intercepted by the Brigand One!",
+            "[00:01:00] You have been intercepted by the War Frigate 'Brigand \
+             One'!",
         );
         gs.process_line(
             "[00:01:30] Brigand One has grappled Brave Marlin. A melee breaks \
@@ -4236,7 +4530,9 @@ mod tests {
              goods from the defeated vessel.",
         );
         // Win: chest gets ceil(2000/2) = 1,000.
-        gs.process_line("[00:02:00] You intercepted the Brigand Two!");
+        gs.process_line(
+            "[00:02:00] You intercepted the War Frigate 'Brigand Two'!",
+        );
         gs.process_line(
             "[00:02:30] Brave Marlin has grappled Brigand Two. A melee breaks \
              out between the crews!",
@@ -4248,7 +4544,8 @@ mod tests {
         );
         // Lose again: they "plunder" 5,000, but the chest only holds 1,000.
         gs.process_line(
-            "[00:03:00] You have been intercepted by the Brigand Three!",
+            "[00:03:00] You have been intercepted by the War Frigate 'Brigand \
+             Three'!",
         );
         gs.process_line(
             "[00:03:30] Brigand Three has grappled Brave Marlin. A melee \
@@ -4281,7 +4578,8 @@ mod tests {
         );
         // Lose to the Boring Gar...
         gs.process_line(
-            "[00:20:49] You have been intercepted by the Boring Gar!",
+            "[00:20:49] You have been intercepted by the War Frigate 'Boring \
+             Gar'!",
         );
         gs.process_line(
             "[00:33:03] Game over.  Winners: Nervy Hugh, Insane Yang.",
@@ -4291,7 +4589,9 @@ mod tests {
              goods from the defeated vessel.",
         );
         // ...then immediately re-engage the same vessel and win.
-        gs.process_line("[00:33:25] You intercepted the Boring Gar!");
+        gs.process_line(
+            "[00:33:25] You intercepted the War Frigate 'Boring Gar'!",
+        );
         gs.process_line("[00:44:00] Game over.  Winners: Playerone.");
         gs.process_line(
             "[00:44:01] The victors plundered 5,000 pieces of eight and 2 \
@@ -4324,12 +4624,15 @@ mod tests {
             "[01:00:02] Playerone issued an order to set the vessel to sail.",
         );
         // An ordinary fight -> generic Brigand.
-        gs.process_line("[01:00:10] You intercepted the Fat Mackerel!");
+        gs.process_line(
+            "[01:00:10] You intercepted the War Frigate 'Fat Mackerel'!",
+        );
         gs.process_line("[01:02:00] Game over.  Winners: Playerone.");
         // A king fight: engagement chant tags it, victory line confirms the
         // name.
         gs.process_line(
-            "[01:03:00] You have been intercepted by the Simple Ling!",
+            "[01:03:00] You have been intercepted by the War Frigate 'Simple \
+             Ling'!",
         );
         gs.process_line(
             "[01:03:01] Brace yourself! Vargas the Mad and his barbaric horde \
@@ -4363,7 +4666,8 @@ mod tests {
             "[01:00:02] Playerone issued an order to set the vessel to sail.",
         );
         gs.process_line(
-            "[01:00:10] You intercepted the Bloodstained Tigerfish!",
+            "[01:00:10] You intercepted the War Frigate 'Bloodstained \
+             Tigerfish'!",
         );
         gs.process_line(
             "[01:00:11] Avast! Yer blood runs cold beneath a gathering gloom \
@@ -4371,7 +4675,9 @@ mod tests {
              a Vampirate vessel closes in!",
         );
         gs.process_line("[01:02:00] Game over.  Winners: Playerone.");
-        gs.process_line("[01:03:00] You intercepted the Snarling Pike!");
+        gs.process_line(
+            "[01:03:00] You intercepted the War Frigate 'Snarling Pike'!",
+        );
         gs.process_line(
             "[01:03:01] Unearthly howling echos o'er the waves, moonlight \
              glints off curving fangs and hungry eyes watch ye from the dark! \
@@ -4388,6 +4694,41 @@ mod tests {
             voy.battles[1].category,
             BattleCategory::Werewolf
         );
+    }
+
+    #[test]
+    fn black_ship_herald_tags_grand_frigate_foe() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the War Frigate...");
+        gs.process_line(
+            "[01:00:01] This vessel is now Pillaging, Hard Barbarians.",
+        );
+        gs.process_line(
+            "[01:00:02] Playerone issued an order to set the vessel to sail.",
+        );
+        gs.process_line(
+            "[01:00:10] You intercepted the War Frigate 'Snarling Pike'!",
+        );
+        // The Black Ship herald replaces the target: the foe becomes a Grand
+        // Frigate and the fight is tagged BlackShip. Matched in full — an exact
+        // copy of the in-game line (verified against yppedia).
+        gs.process_line(
+            "[01:00:11] Dark clouds gather as ye bear down upon yer hapless \
+             victims, and from the miasma emerges the Black Ship to take the \
+             place of yer target in battle! Arrrrgh! Ye be doomed fer sure!",
+        );
+        let grand = crate::ships::ship_index("Grand Frigate");
+        // Seeds the live Damage calculator's foe ship.
+        assert_eq!(gs.detected_foe_ship, grand);
+        let b = gs
+            .current_voyage()
+            .unwrap()
+            .current_battle
+            .as_ref()
+            .unwrap();
+        assert_eq!(b.category, BattleCategory::BlackShip);
+        assert_eq!(b.foe_ship, grand);
     }
 
     // ---- Mercenary roster + divvy shares (mercs earn none)
@@ -4408,7 +4749,9 @@ mod tests {
         gs.process_line(
             "[01:00:10] Playerone issued an order to set the vessel to sail.",
         );
-        gs.process_line("[01:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[01:01:00] You intercepted the War Frigate 'Modest Sild'!",
+        );
         gs.process_line(
             "[01:02:00] Test Vessel has grappled Modest Sild. A melee \
              breaks out between the crews!",
@@ -4584,7 +4927,9 @@ mod tests {
             assert!(voy.crew_samples.iter().all(|s| s.mercenaries == 0));
             assert_eq!(voy.merc_checkpoint, 0); // no ground truth yet
         }
-        gs.process_line("[01:01:00] You intercepted the Modest Sild!");
+        gs.process_line(
+            "[01:01:00] You intercepted the War Frigate 'Modest Sild'!",
+        );
         gs.process_line(
             "[01:02:00] Test Vessel has grappled Modest Sild. A melee \
              breaks out between the crews!",

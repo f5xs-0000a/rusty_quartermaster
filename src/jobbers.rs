@@ -1147,6 +1147,10 @@ pub fn render(
         .as_ref()
         .and_then(|k| state.vessels.get(k))
         .is_some_and(|v| v.poisoned);
+    let sel_provisional = selected
+        .as_ref()
+        .and_then(|k| state.vessels.get(k))
+        .is_some_and(|v| v.provisional);
     if !sel_poisoned && ui.focus == JobberFocus::Unpoison {
         ui.focus = JobberFocus::Vessels;
     }
@@ -1741,6 +1745,7 @@ pub fn render(
         &selected,
         ship_idx,
         sel_poisoned,
+        sel_provisional,
         warn,
         &warn_lines,
         label_w,
@@ -2138,6 +2143,7 @@ fn render_voyage_box(
     selected: &Option<Arc<str>>,
     ship_idx: Option<usize>,
     poisoned: bool,
+    provisional: bool,
     warn: Option<Staffing>,
     warn_lines: &[String],
     label_w: u16,
@@ -2224,10 +2230,15 @@ fn render_voyage_box(
             cols[0],
         );
         let is_focused = page_focused && ui.focus == focus;
+        // A jobbed vessel we can't name yet shows its `Ship of <crew>`
+        // placeholder in italics, matching the selector popup.
+        let provisional_row = provisional && focus == JobberFocus::Vessels;
         let value_style = if is_focused {
             Style::default().bg(Color::White).fg(Color::Black)
         } else if placeholder {
             Style::default().fg(Color::DarkGray).italic()
+        } else if provisional_row {
+            Style::default().italic()
         } else {
             Style::default()
         };
@@ -3782,13 +3793,19 @@ fn render_vessel_popup(
         ordered
             .iter()
             .map(|k| {
-                let poisoned = state.vessels.get(k).is_some_and(|v| v.poisoned);
-                let item = ListItem::new(k.to_string());
+                let vessel = state.vessels.get(k);
+                let poisoned = vessel.is_some_and(|v| v.poisoned);
+                // A jobbed vessel whose name we don't know yet shows its
+                // `Ship of <crew>` placeholder in italics.
+                let provisional = vessel.is_some_and(|v| v.provisional);
+                let mut style = Style::default();
                 if poisoned {
-                    item.style(Style::default().fg(Color::Red))
-                } else {
-                    item
+                    style = style.fg(Color::Red);
                 }
+                if provisional {
+                    style = style.add_modifier(Modifier::ITALIC);
+                }
+                ListItem::new(k.to_string()).style(style)
             })
             .collect()
     };
