@@ -138,6 +138,10 @@ pub fn render_calculator(
     if let Some(yes) = app.reset_prompt {
         render_reset_prompt(frame, yes, regions);
     }
+    // "New battle" prompt (raised when a fight begins) sits over everything.
+    if let Some(ref prompt) = app.battle_prompt {
+        render_battle_prompt(frame, app, prompt, regions);
+    }
 }
 
 /// The Damage Calculator page: the shared calculator grid centered in `area`,
@@ -609,7 +613,7 @@ fn render_reset_prompt(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
-        .title(" Reset values? ");
+        .title(offset_title("Reset values?").0);
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -648,6 +652,111 @@ fn render_reset_prompt(
     regions.push(ClickRegion {
         rect: btns[1],
         target: ClickTarget::DamageResetNo,
+    });
+}
+
+/// Modal: "New battle" — shows the foe (ship name, hull, and a note for a
+/// noteworthy foe) and offers Apply (seed the foe hull and clear the tally, the
+/// default) / Keep (change nothing). A status line reports whether the previous
+/// fight's tally was already saved, so the user knows if clearing loses data.
+fn render_battle_prompt(
+    frame: &mut Frame,
+    app: &super::DamageApp,
+    prompt: &super::BattlePrompt,
+    regions: &mut Vec<ClickRegion>,
+) {
+    let area = frame.area();
+    let (w, h) = (46u16, 8u16);
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(w) / 2,
+        area.y + area.height.saturating_sub(h) / 2,
+        w.min(area.width),
+        h.min(area.height),
+    );
+    frame.render_widget(Clear, rect);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::White))
+        .title(offset_title("New battle").0);
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // ship name
+        Constraint::Length(1), // hull
+        Constraint::Length(1), // note
+        Constraint::Length(1), // staging status
+        Constraint::Length(1), // spacer
+        Constraint::Min(0),    // buttons
+    ])
+    .split(inner);
+
+    let field = Style::default().fg(Color::Gray);
+    let name = prompt.ship_name.as_deref().unwrap_or("unknown");
+    frame.render_widget(
+        Paragraph::new(format!("Ship: {name}"))
+            .style(field)
+            .centered(),
+        rows[0],
+    );
+    let hull = prompt.foe_ship.map(|i| SHIPS[i].name).unwrap_or("unknown");
+    frame.render_widget(
+        Paragraph::new(format!("Hull: {hull}"))
+            .style(field)
+            .centered(),
+        rows[1],
+    );
+    if let Some(note) = prompt.note.as_deref() {
+        frame.render_widget(
+            Paragraph::new(note)
+                .style(Style::default().fg(Color::Magenta).bold())
+                .centered(),
+            rows[2],
+        );
+    }
+
+    // Tell the user whether clearing the current tally loses anything.
+    let (status, status_style) = if prompt.prev_saved {
+        (
+            "Previous tally saved to Sea Battles.",
+            Style::default().fg(Color::Green),
+        )
+    } else if app.has_input() {
+        (
+            "Current tally is not saved.",
+            Style::default().fg(Color::Yellow),
+        )
+    } else {
+        ("", Style::default())
+    };
+    frame.render_widget(
+        Paragraph::new(status).style(status_style).centered(),
+        rows[3],
+    );
+
+    let btns = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
+        .split(rows[5]);
+    let button = |label: &str, focused: bool| {
+        let style = if focused {
+            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+        } else {
+            Style::default().fg(Color::Cyan)
+        };
+        Paragraph::new(Line::from(Span::styled(
+            format!("[ {label} ]"),
+            style,
+        )))
+        .centered()
+    };
+    frame.render_widget(button("Apply", prompt.apply), btns[0]);
+    frame.render_widget(button("Keep", !prompt.apply), btns[1]);
+    regions.push(ClickRegion {
+        rect: btns[0],
+        target: ClickTarget::DamageBattleApply,
+    });
+    regions.push(ClickRegion {
+        rect: btns[1],
+        target: ClickTarget::DamageBattleKeep,
     });
 }
 

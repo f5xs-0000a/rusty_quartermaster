@@ -510,6 +510,17 @@ impl Vessel {
     }
 }
 
+/// A brief of the current open battle, surfaced to the new-battle prompt.
+pub struct BattleBrief {
+    /// The foe vessel's own name, if known.
+    pub name: Option<String>,
+    /// The foe's hull, as a [`crate::ships::SHIPS`] index, if known.
+    pub foe_ship: Option<usize>,
+    /// A short note for a noteworthy foe (special encounter / player), else
+    /// `None` for an ordinary brigand.
+    pub note: Option<String>,
+}
+
 // ---------------------------------------------------------------------------
 // GameState — the state machine
 // ---------------------------------------------------------------------------
@@ -2668,6 +2679,35 @@ impl GameState {
         }
     }
 
+    /// A brief of the current open battle for the new-battle prompt: the foe's
+    /// vessel name, its hull (when known), and a note for a noteworthy foe.
+    /// Refreshed each line so a mid-fight reveal (Black Ship, monster telltale)
+    /// updates the prompt live.
+    pub fn current_battle_summary(&self) -> Option<BattleBrief> {
+        let b = self
+            .current_vessel()?
+            .current_voyage
+            .as_ref()?
+            .current_battle
+            .as_ref()?;
+        Some(BattleBrief {
+            name: b.enemy.clone(),
+            foe_ship: b.foe_ship,
+            note: b.category.special_note(),
+        })
+    }
+
+    /// Whether the most recently recorded battle on the current voyage already
+    /// carries a Damage-calculator snapshot (its tally was staged into the
+    /// voyage history). Read when a new fight opens to tell the user whether
+    /// clearing the calculator loses anything.
+    pub fn last_recorded_battle_saved(&self) -> bool {
+        self.current_vessel()
+            .and_then(|v| v.current_voyage.as_ref())
+            .and_then(|voy| voy.battles.last())
+            .is_some_and(|b| b.snapshot.is_some())
+    }
+
     /// Real pirates aboard the current vessel right now (crewmates + us), or 0.
     pub fn current_pirates(&self) -> u32 {
         self.current_vessel()
@@ -2852,13 +2892,6 @@ const MONKEY_BOATS: &[(&str, &str)] = &[
     ("Juicy Watermelon", "Grand Frigate"),
 ];
 
-/// Split an interception's foe descriptor into its named hull and the vessel's
-/// display name. Interceptions are logged as `<Hull> '<Name>'`: the hull
-/// resolves through [`crate::ships::ship_index`] and the display name is the
-/// quoted portion (for a monkey boat that quoted name is its fixed fruit name,
-/// which [`monkey_boat_ship`] uses to tag the fight). A descriptor whose hull
-/// doesn't resolve yields `(None, raw)`, which the caller ignores rather than
-/// opening a battle.
 /// Split a grapple line into its two vessel names: `<A> has grappled <B>. A
 /// melee breaks out between the crews!` -> `(A, B)`.
 fn parse_grapple(body: &str) -> Option<(&str, &str)> {
@@ -2869,6 +2902,13 @@ fn parse_grapple(body: &str) -> Option<(&str, &str)> {
     Some((a, b))
 }
 
+/// Split an interception's foe descriptor into its named hull and the vessel's
+/// display name. Interceptions are logged as `<Hull> '<Name>'`: the hull
+/// resolves through [`crate::ships::ship_index`] and the display name is the
+/// quoted portion (for a monkey boat that quoted name is its fixed fruit name,
+/// which [`monkey_boat_ship`] uses to tag the fight). A descriptor whose hull
+/// doesn't resolve yields `(None, raw)`, which the caller ignores rather than
+/// opening a battle.
 fn parse_foe_vessel(raw: &str) -> (Option<usize>, &str) {
     if let Some((hull, quoted)) = raw.split_once(" '")
         && let Some(name) = quoted.strip_suffix('\'')

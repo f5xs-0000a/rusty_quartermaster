@@ -21,6 +21,25 @@ pub struct ShipSelectPopup {
     pub selected: usize,
 }
 
+/// The "New battle" prompt raised when a fight begins: choose whether to seed
+/// the calculator from the fight or leave it as it stands.
+pub struct BattlePrompt {
+    /// The foe vessel's own name, if known.
+    pub ship_name: Option<String>,
+    /// The foe hull the interception named, to apply on `Apply` (if known).
+    pub foe_ship: Option<usize>,
+    /// A note for a noteworthy foe (Black Ship, Brigand King, ...), else
+    /// `None`. Updated on the fly if a mid-fight reveal changes what the
+    /// foe is.
+    pub note: Option<String>,
+    /// Whether the previous fight's tally was already saved into the voyage's
+    /// battle history — shown so the user knows if clearing loses anything.
+    pub prev_saved: bool,
+    /// The focused choice: `true` = Apply (seed hull + clear tally, the
+    /// default), `false` = Keep (change nothing).
+    pub apply: bool,
+}
+
 pub const ROW_SHIP: usize = 0;
 /// Times Rammed — a single shared counter (a ram damages *both* ships),
 /// rendered in the merged single-cell layout. A head-on collision is entered
@@ -65,6 +84,9 @@ pub struct DamageApp {
     /// When `Some`, the "Reset values?" confirm (shown after a ship change) is
     /// open; the bool is the focused choice (`true` = Yes, the default).
     pub reset_prompt: Option<bool>,
+    /// When `Some`, the "New battle" prompt (shown when a fight begins) is
+    /// open.
+    pub battle_prompt: Option<BattlePrompt>,
     pub temp_images: Vec<Option<PathBuf>>,
 }
 
@@ -86,6 +108,7 @@ impl DamageApp {
             focus_side: Side::Left,
             popup: None,
             reset_prompt: None,
+            battle_prompt: None,
             temp_images: vec![None; SHIPS.len()],
         }
     }
@@ -314,6 +337,9 @@ impl DamageApp {
     // -- key handling --
 
     pub fn handle_key(&mut self, key: KeyEvent) -> InputResult {
+        if self.battle_prompt.is_some() {
+            return self.handle_battle_prompt_key(key);
+        }
         if self.reset_prompt.is_some() {
             return self.handle_reset_prompt_key(key);
         }
@@ -415,6 +441,43 @@ impl DamageApp {
             _ => {}
         }
         InputResult::Consumed
+    }
+
+    /// Keys for the "New battle" prompt (default Apply). Left/Right move
+    /// between Apply and Keep; Enter/Space commits the focused choice; Esc
+    /// keeps things as they are.
+    fn handle_battle_prompt_key(&mut self, key: KeyEvent) -> InputResult {
+        match key.code {
+            KeyCode::Left | KeyCode::Right => {
+                if let Some(p) = self.battle_prompt.as_mut() {
+                    p.apply = !p.apply;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let apply =
+                    self.battle_prompt.as_ref().is_some_and(|p| p.apply);
+                self.commit_battle_prompt(apply);
+            }
+            KeyCode::Esc => {
+                self.battle_prompt = None;
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// Resolve the "New battle" prompt. On `apply` the foe hull (when known) is
+    /// seeded and the tally cleared; otherwise nothing changes. Either way the
+    /// prompt closes.
+    pub fn commit_battle_prompt(&mut self, apply: bool) {
+        if let Some(p) = self.battle_prompt.take()
+            && apply
+        {
+            if let Some(idx) = p.foe_ship {
+                self.right_ship = idx;
+            }
+            self.clear_counts();
+        }
     }
 
     fn handle_popup_key(&mut self, key: KeyEvent) -> InputResult {

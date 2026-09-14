@@ -738,7 +738,10 @@ impl AppShell {
     fn current_popup_open(&self) -> bool {
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => self.profits.popup.is_some(),
-            AppId::Damage => self.damage.popup.is_some(),
+            AppId::Damage => {
+                self.damage.popup.is_some()
+                    || self.damage.battle_prompt.is_some()
+            }
             AppId::Chatlog => {
                 self.jobbers_ui.ship_popup.is_some()
                     || self.jobbers_ui.vessel_popup.is_some()
@@ -1503,16 +1506,10 @@ impl AppShell {
     /// amend a fight or hand-add one we missed.)
     pub fn feed_chat_line(&mut self, line: &str) {
         self.chatlog.process_line(line);
-        // A special encounter (e.g. the Black Ship) just told us the foe's hull
-        // — point the live Damage calculator at it so live tracking and
-        // the captured snapshot use the right ship. The user can still
-        // override it by hand.
-        if let Some(idx) = self.chatlog.take_detected_foe_ship() {
-            self.damage.right_ship = idx;
-        }
-        // Capture both transition flags before the freeze step consumes them,
-        // so the auto-navigation below can fire regardless of the
-        // calculator state.
+        // Capture the transition flags (and any detected foe hull) before the
+        // steps below consume them, so navigation and the new-battle prompt can
+        // fire regardless of the calculator state.
+        let detected_foe = self.chatlog.take_detected_foe_ship();
         let battle_started = self.chatlog.take_battle_started();
         let battle_resolved = self.chatlog.take_resolved();
         if battle_resolved && self.damage.has_input() {
@@ -1549,7 +1546,33 @@ impl AppShell {
         // wins if both somehow fire.
         if battle_started {
             self.jump_to_live_damage();
-        } else if battle_resolved {
+            // Ask before touching the calculator: Apply seeds the foe hull and
+            // clears the tally, Keep leaves it as-is. The hull is applied only
+            // on Apply, so an unanswered prompt changes nothing. `prev_saved`
+            // reports whether the previous fight's tally was already staged;
+            // the ship name/hull/note are filled in by the sync step below.
+            self.damage.battle_prompt = Some(crate::damage::BattlePrompt {
+                ship_name: None,
+                foe_ship: None,
+                note: None,
+                prev_saved: self.chatlog.last_recorded_battle_saved(),
+                apply: true,
+            });
+        }
+        // Keep an open prompt synced to the current fight (ship name, hull,
+        // note), so a mid-fight reveal — e.g. the Black Ship replacing the
+        // target — updates it live. With no prompt open, a mid-fight hull
+        // reveal applies straight to the calculator.
+        if let Some(p) = self.damage.battle_prompt.as_mut() {
+            if let Some(brief) = self.chatlog.current_battle_summary() {
+                p.ship_name = brief.name;
+                p.foe_ship = brief.foe_ship;
+                p.note = brief.note;
+            }
+        } else if let Some(idx) = detected_foe {
+            self.damage.right_ship = idx;
+        }
+        if !battle_started && battle_resolved {
             self.jump_to_concluded_fight();
         }
         // Entering a vampire lair: surface the Jobbers page in its Vampirates
@@ -2969,6 +2992,14 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.damage.reset_prompt = None;
             }
+            ClickTarget::DamageBattleApply => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.commit_battle_prompt(true);
+            }
+            ClickTarget::DamageBattleKeep => {
+                self.global_focus = GlobalFocus::Content;
+                self.damage.commit_battle_prompt(false);
+            }
             ClickTarget::JobberVesselButton => {
                 self.global_focus = GlobalFocus::Content;
                 self.open_vessel_popup();
@@ -3429,6 +3460,102 @@ impl AppShell {
             };
             let _ = tx.send(result);
         });
+    }
+}
+
+#[cfg(test)]
+mod battle_prompt_tests {
+    use super::*;
+
+    fn shell() -> AppShell {
+        let mut s = AppShell::new(vec![]);
+        s.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        s
+    }
+
+    fn start_a_voyage(s: &mut AppShell) {
+        s.feed_chat_line("====== 2026/05/14 ======");
+        s.feed_chat_line("[01:00:00] Going aboard the War Frigate...");
+        s.feed_chat_line(
+            "[01:00:05] Playerone issued an order to set the vessel to sail.",
+        );
+    }
+
+    #[test]
+    fn new_battle_arms_prompt_without_touching_the_calculator() {
+        let mut s = shell();
+        start_a_voyage(&mut s);
+        let before = s.damage.right_ship;
+        s.feed_chat_line(
+            "[01:01:00] You have been intercepted by the Xebec 'Foo'!",
+        );
+        // The prompt is armed with the detected foe hull, defaulting to Apply,
+        // but the calculator is untouched until the user answers.
+        let prompt = s.damage.battle_prompt.as_ref().expect("prompt armed");
+        assert_eq!(
+            prompt.foe_ship,
+            crate::ships::ship_index("Xebec")
+        );
+        assert!(prompt.apply);
+        assert_eq!(s.damage.right_ship, before);
+        // Apply seeds the foe hull and closes the prompt.
+        s.damage.commit_battle_prompt(true);
+        assert_eq!(
+            s.damage.right_ship,
+            crate::ships::ship_index("Xebec").unwrap()
+        );
+        assert!(s.damage.battle_prompt.is_none());
+    }
+
+    #[test]
+    fn black_ship_reveal_updates_the_open_prompt() {
+        let mut s = shell();
+        start_a_voyage(&mut s);
+        s.feed_chat_line(
+            "[01:01:00] You have been intercepted by the Xebec 'Foo'!",
+        );
+        {
+            let p = s.damage.battle_prompt.as_ref().unwrap();
+            assert_eq!(
+                p.foe_ship,
+                crate::ships::ship_index("Xebec")
+            );
+            assert_eq!(p.ship_name.as_deref(), Some("Foo"));
+            assert!(p.note.is_none()); // ordinary brigand so far
+        }
+        // The Black Ship replaces the target while the prompt is still open.
+        s.feed_chat_line(
+            "[01:01:05] Dark clouds gather as ye bear down upon yer hapless \
+             victims, and from the miasma emerges the Black Ship to take the \
+             place of yer target in battle! Arrrrgh! Ye be doomed fer sure!",
+        );
+        let p = s.damage.battle_prompt.as_ref().unwrap();
+        assert_eq!(
+            p.foe_ship,
+            crate::ships::ship_index("Grand Frigate")
+        );
+        assert_eq!(p.note.as_deref(), Some("Black Ship"));
+        // Apply now seeds the corrected hull.
+        s.damage.commit_battle_prompt(true);
+        assert_eq!(
+            s.damage.right_ship,
+            crate::ships::ship_index("Grand Frigate").unwrap()
+        );
+    }
+
+    #[test]
+    fn keep_leaves_hull_and_tally_untouched() {
+        let mut s = shell();
+        start_a_voyage(&mut s);
+        s.damage.right_ship = 3;
+        s.damage.left[0] = 5; // a tally to preserve
+        s.feed_chat_line(
+            "[01:01:00] You have been intercepted by the Xebec 'Foo'!",
+        );
+        s.damage.commit_battle_prompt(false);
+        assert_eq!(s.damage.right_ship, 3);
+        assert_eq!(s.damage.left[0], 5);
+        assert!(s.damage.battle_prompt.is_none());
     }
 }
 

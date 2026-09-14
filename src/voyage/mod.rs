@@ -70,6 +70,27 @@ pub enum BattleCategory {
     Pvp,
 }
 
+impl BattleCategory {
+    /// A short label for a *noteworthy* foe (special encounter or player), or
+    /// `None` for an ordinary brigand. Shown on the new-battle prompt so a
+    /// Black Ship, Brigand King, monster or player vessel is called out.
+    pub fn special_note(&self) -> Option<String> {
+        Some(match self {
+            BattleCategory::Brigand => return None,
+            BattleCategory::BrigandKing(name) => {
+                format!("Brigand King: {name}")
+            }
+            BattleCategory::Vampirate => "Vampirate".to_string(),
+            BattleCategory::Skelly => "Skeleton".to_string(),
+            BattleCategory::Werewolf => "Werewolf".to_string(),
+            BattleCategory::Zombie => "Zombie".to_string(),
+            BattleCategory::BlackShip => "Black Ship".to_string(),
+            BattleCategory::MonkeyBoat => "Monkey Boat".to_string(),
+            BattleCategory::Pvp => "Player vessel".to_string(),
+        })
+    }
+}
+
 /// One side of a boarding melee — the players on it (by name) and a bare
 /// swabbie (NPC) count. Swabbie *identities* are intentionally dropped: we only
 /// persist who the real players were and how many swabbies fought beside them.
