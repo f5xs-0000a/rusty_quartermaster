@@ -114,7 +114,6 @@ When you start the app, the top bar lists the available tools; the selected tool
 ## Troubleshooting
 
 - **Display looks garbled** — make sure your terminal supports ANSI escape codes and is at least 80 columns wide. On Windows, use Windows Terminal or PowerShell rather than the legacy `cmd.exe`.
-- **Ship images don't open** — the `v` key in the ship popup writes a temporary PNG and opens it with `xdg-open` (Linux). On Windows or macOS this may not work automatically; the damage calculator itself works fine without it.
 
 ## License
 

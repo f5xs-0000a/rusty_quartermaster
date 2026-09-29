@@ -785,8 +785,7 @@ fn render_ship_popup(
             Block::default()
                 .borders(Borders::ALL)
                 .padding(Padding::horizontal(1))
-                .title(offset_title("Select Ship").0)
-                .title_bottom(" v: View "),
+                .title(offset_title("Select Ship").0),
         )
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
         .highlight_symbol("> ");

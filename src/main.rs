@@ -586,9 +586,6 @@ async fn main() -> io::Result<()> {
         DisableMouseCapture
     )?;
 
-    // -- Cleanup temp images --
-    shell.damage.cleanup_temp_images();
-
     // -- Save the unified cache --
     if let Some(ref path) = cache_path {
         // Fold the current ocean's market + players back into the per-ocean

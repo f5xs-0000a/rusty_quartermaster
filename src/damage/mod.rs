@@ -1,7 +1,5 @@
 pub mod ui;
 
-use std::{path::PathBuf, process::Command};
-
 use crossterm::event::{KeyCode, KeyEvent};
 
 use crate::{app::InputResult, clickmap::ClickTarget, ships::SHIPS};
@@ -87,7 +85,6 @@ pub struct DamageApp {
     /// When `Some`, the "New battle" prompt (shown when a fight begins) is
     /// open.
     pub battle_prompt: Option<BattlePrompt>,
-    pub temp_images: Vec<Option<PathBuf>>,
 }
 
 impl Default for DamageApp {
@@ -109,7 +106,6 @@ impl DamageApp {
             popup: None,
             reset_prompt: None,
             battle_prompt: None,
-            temp_images: vec![None; SHIPS.len()],
         }
     }
 
@@ -302,38 +298,6 @@ impl DamageApp {
         vals[idx] = vals[idx].saturating_sub(1);
     }
 
-    // -- ship image viewing --
-
-    fn view_ship(&mut self, idx: usize) {
-        let path = if let Some(ref path) = self.temp_images[idx] {
-            path.clone()
-        } else {
-            let name = SHIPS[idx].name.to_lowercase().replace(' ', "_");
-            let path =
-                std::env::temp_dir().join(format!("ratatui-ship-{}.png", name));
-            if std::fs::write(&path, SHIPS[idx].image_data).is_err() {
-                return;
-            }
-            self.temp_images[idx] = Some(path.clone());
-            path
-        };
-
-        Command::new("xdg-open")
-            .arg(&path)
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn()
-            .ok();
-    }
-
-    pub fn cleanup_temp_images(&mut self) {
-        for slot in &mut self.temp_images {
-            if let Some(path) = slot.take() {
-                let _ = std::fs::remove_file(path);
-            }
-        }
-    }
-
     // -- key handling --
 
     pub fn handle_key(&mut self, key: KeyEvent) -> InputResult {
@@ -509,10 +473,6 @@ impl DamageApp {
                 if !self.counts_are_default() {
                     self.reset_prompt = Some(true);
                 }
-            }
-            KeyCode::Char('v') => {
-                let idx = popup.selected;
-                self.view_ship(idx);
             }
             _ => {}
         }
