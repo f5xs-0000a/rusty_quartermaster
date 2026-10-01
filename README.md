@@ -8,7 +8,7 @@ A terminal toolkit for [Yohoho! Puzzle Pirates](https://www.puzzlepirates.com/) 
 
 Switch between these from the top bar (plus **Exit**):
 
-- **Profits** — Work out whether a pillage paid off. List the commodities you carried, fill in how many units you restocked, held, and plundered, and enter their buy/sell prices; the tool returns a full profit breakdown — gross plunder, jobber cuts, the booty chest (gross and net), goods value, restock cost, pre-voyage stocking, and the bottom-line split between the hold and the divvy. Your inventory and inputs persist between runs.
+- **Profits** — Work out whether a pillage paid off. List the commodities you carried, fill in how many units you restocked, held, and plundered, and enter their buy/sell prices; the tool returns a full profit breakdown — gross plunder, jobber cuts, the booty chest (gross and net), goods value, restock cost, pre-voyage stocking, and the bottom-line split between the hold and the divvy. Your inventory and inputs persist between runs. Copy your vessel's hold to the clipboard (the game's hold JSON) and the tool offers to fill the **Stock** column from it — you confirm before anything changes, and the Booty column is never touched.
 
 - **Damage** — A sea-battle damage calculator. Pick both hull types (yours and the foe's) and enter the shots, rocks, and rams each ship took; it shows the morale and hull damage for each side, how many more shots each can absorb before losing morale or sinking, and a crew-strength advantage inferred from the two hulls.
 
@@ -114,6 +114,8 @@ When you start the app, the top bar lists the available tools; the selected tool
 ## Troubleshooting
 
 - **Display looks garbled** — make sure your terminal supports ANSI escape codes and is at least 80 columns wide. On Windows, use Windows Terminal or PowerShell rather than the legacy `cmd.exe`.
+
+- **The hold prompt never appears** — the clipboard is checked about once a second, and only a *change* triggers the prompt: whatever was on the clipboard when the tool started is ignored, so copy the hold again. On Linux the clipboard needs an X11 session or a Wayland compositor that supports the data-control protocol (over SSH or in a bare TTY there is no clipboard at all).
 
 ## License
 

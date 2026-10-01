@@ -34,6 +34,7 @@ mod chatlog;
 mod clickmap;
 mod commodities;
 mod damage;
+mod hold;
 mod jobbers;
 mod ocean;
 mod pirate;
@@ -410,6 +411,11 @@ async fn main() -> io::Result<()> {
         chatlog::spawn_tailer(path.clone(), offset, chat_tx);
     }
 
+    // -- Clipboard: offer a copied hold to the Profits page --
+    let (hold_tx, mut hold_rx) =
+        tokio::sync::mpsc::unbounded_channel::<hold::HoldContents>();
+    hold::spawn_watcher(hold_tx);
+
     // -- Background pirate-stat fetching (yoweb) --
     // A single greedy worker: at most one page in flight, chosen by priority
     // (on-demand ▸ aboard/self ▸ planked) and recomputed every tick from live
@@ -460,6 +466,11 @@ async fn main() -> io::Result<()> {
         while let Ok(line) = chat_rx.try_recv() {
             shell.feed_chat_line(&line);
         }
+
+        while let Ok(hold) = hold_rx.try_recv() {
+            shell.queue_hold_import(&hold);
+        }
+        shell.surface_hold_import();
 
         // Absorb completed pirate fetches, folding each into the cache. Clear
         // the in-flight slot when its own result lands (a stale result

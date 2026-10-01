@@ -8,6 +8,7 @@ use crate::{
     aliases,
     api::Commodity,
     app::{self, FetchPurpose, InputResult, SharedState},
+    hold::HoldContents,
     utils::{FieldKind, PromptField, parse_rate, text_similarity},
 };
 
@@ -250,6 +251,23 @@ pub enum PopupKind {
         need_sell: Vec<String>,
     },
     ProfitResult(ProfitResult),
+    /// A hold copied to the clipboard, offered for the Stock column.
+    HoldImport(HoldImport),
+}
+
+/// A hold read off the clipboard, resolved against the commodity list and
+/// awaiting the user's say-so before it touches the Stock column.
+pub struct HoldImport {
+    /// `(commodity id, quantity)` for every recognized good.
+    pub goods: Vec<(u64, u64)>,
+    /// Names the commodity list doesn't know; shown so the user can see what
+    /// the import will skip.
+    pub unknown: Vec<String>,
+    /// The focused choice: `true` = Yes (apply, the default), `false` = No.
+    pub yes_focused: bool,
+    /// Where focus returns once the prompt closes, whichever way it's
+    /// answered.
+    pub resume: Focus,
 }
 
 pub struct InventoryRow {
@@ -287,7 +305,7 @@ impl InventoryRow {
     }
 }
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum Focus {
     Input,
     Table,
@@ -309,6 +327,9 @@ pub struct ProfitsApp {
     pub panel: [PromptField; PANEL_COUNT],
     pub submit_failed: Option<String>,
     pub popup: Option<PopupKind>,
+    /// A clipboard hold waiting for the popup slot to free up; see
+    /// [`Self::raise_pending_hold`].
+    pub pending_hold: Option<HoldImport>,
     pub calc_error: Option<String>,
     pub fetch_purpose: FetchPurpose,
     /// CLI-revealed parameter rows (otherwise hidden from the panel). When
@@ -347,6 +368,7 @@ impl ProfitsApp {
             ],
             submit_failed: None,
             popup: None,
+            pending_hold: None,
             calc_error: None,
             fetch_purpose: FetchPurpose::Profits,
             show_co_rate: false,
@@ -465,19 +487,8 @@ impl ProfitsApp {
         let mut changed = false;
         match self.suggest(commodities) {
             Some(id) => {
-                if !self.rows.iter().any(|r| r.commod_id == id) {
-                    // Keep rows in canonical (in-game) commodity order.
-                    let key = |cid: u64| {
-                        crate::commodities::sort_key(app::commod_name(
-                            commodities,
-                            cid,
-                        ))
-                    };
-                    let new_key = key(id);
-                    let pos = self
-                        .rows
-                        .partition_point(|r| key(r.commod_id) < new_key);
-                    self.rows.insert(pos, InventoryRow::new(id));
+                if self.row_index(id).is_none() {
+                    self.insert_row(id, commodities);
                     changed = true;
                 }
                 self.submit_failed = None;
@@ -490,6 +501,129 @@ impl ProfitsApp {
         self.input.clear();
         self.cursor = 0;
         changed
+    }
+
+    fn row_index(&self, commod_id: u64) -> Option<usize> {
+        self.rows.iter().position(|r| r.commod_id == commod_id)
+    }
+
+    /// Insert a blank row for `commod_id`, keeping the table in canonical
+    /// (in-game) commodity order. Returns the new row's index.
+    fn insert_row(
+        &mut self,
+        commod_id: u64,
+        commodities: &[Commodity],
+    ) -> usize {
+        let key = |cid: u64| {
+            crate::commodities::sort_key(app::commod_name(commodities, cid))
+        };
+        let new_key = key(commod_id);
+        let pos = self.rows.partition_point(|r| key(r.commod_id) < new_key);
+        self.rows.insert(pos, InventoryRow::new(commod_id));
+        pos
+    }
+
+    // -- hold import (clipboard) --
+
+    /// Queue a hold read off the clipboard for the user's confirmation. It is
+    /// raised as a popup as soon as no other popup is open (see
+    /// [`Self::raise_pending_hold`]); a newer hold replaces an unanswered
+    /// older one, since the clipboard only ever holds the latest copy.
+    pub fn queue_hold(
+        &mut self,
+        hold: &HoldContents,
+        commodities: &[Commodity],
+    ) {
+        let mut goods = Vec::new();
+        let mut unknown = Vec::new();
+        for (name, qty) in &hold.goods {
+            match commodities
+                .iter()
+                .find(|c| c.name.eq_ignore_ascii_case(name))
+            {
+                Some(c) => goods.push((c.id, *qty)),
+                None => unknown.push(name.clone()),
+            }
+        }
+        // `resume` is provisional: the raise records the focus actually
+        // interrupted, and a replacement keeps the open prompt's.
+        let import = HoldImport {
+            goods,
+            unknown,
+            yes_focused: true,
+            resume: self.focus,
+        };
+        match self.popup {
+            Some(PopupKind::HoldImport(ref mut open)) => {
+                let resume = open.resume;
+                *open = HoldImport {
+                    resume,
+                    ..import
+                };
+            }
+            _ => self.pending_hold = Some(import),
+        }
+    }
+
+    /// Open the queued hold prompt if the popup slot is free. Returns whether
+    /// a prompt was opened, so the shell can surface the Profits page.
+    pub fn raise_pending_hold(&mut self) -> bool {
+        if self.popup.is_some() {
+            return false;
+        }
+        let Some(import) = self.pending_hold.take() else {
+            return false;
+        };
+        self.popup = Some(PopupKind::HoldImport(HoldImport {
+            resume: self.focus,
+            ..import
+        }));
+        self.focus = Focus::Popup;
+        true
+    }
+
+    /// Overwrite the Stock column from a hold snapshot: each listed good gets
+    /// its quantity (with a row added for any good not yet in the table), and
+    /// every other row's Stock is blanked, since the snapshot is the whole
+    /// hold. The Booty and price columns are untouched. Returns true if rows
+    /// were added (the island list needs rebuilding).
+    pub fn apply_hold(
+        &mut self,
+        goods: &[(u64, u64)],
+        commodities: &[Commodity],
+    ) -> bool {
+        for row in &mut self.rows {
+            row.stock.clear();
+        }
+        let mut added = false;
+        for &(id, qty) in goods {
+            let idx = match self.row_index(id) {
+                Some(i) => i,
+                None => {
+                    added = true;
+                    self.insert_row(id, commodities)
+                }
+            };
+            self.rows[idx].stock = qty.to_string();
+        }
+        added
+    }
+
+    /// Resolve the hold prompt: apply the snapshot on `yes`, then close it and
+    /// hand focus back to where it was.
+    fn commit_hold_import(
+        &mut self,
+        yes: bool,
+        commodities: &[Commodity],
+    ) -> InputResult {
+        let Some(PopupKind::HoldImport(import)) = self.popup.take() else {
+            return InputResult::Consumed;
+        };
+        self.focus = import.resume;
+        if yes && self.apply_hold(&import.goods, commodities) {
+            return InputResult::RebuildIslands;
+        }
+        InputResult::Consumed
     }
 
     // -- focus transitions --
@@ -1040,6 +1174,9 @@ impl ProfitsApp {
             Some(PopupKind::PriceBlock {
                 ..
             }) => self.dismiss_ok_popup(),
+            Some(PopupKind::HoldImport(_)) => {
+                return self.commit_hold_import(false, shared.commodities);
+            }
             _ => {
                 self.popup = None;
                 self.focus = Focus::Input;
@@ -1389,6 +1526,9 @@ impl ProfitsApp {
                 self.popup = None;
                 self.focus = Focus::Input;
             }
+            Some(PopupKind::HoldImport(_)) => {
+                return self.commit_hold_import(yes_side, shared.commodities);
+            }
             // PriceBlock has a single "Ok" button handled via ProfitsPopupOk.
             Some(PopupKind::PriceBlock {
                 ..
@@ -1525,6 +1665,27 @@ impl ProfitsApp {
             Some(PopupKind::PriceBlock {
                 ..
             }) => {}
+            Some(PopupKind::HoldImport(ref mut import)) => {
+                match key.code {
+                    KeyCode::Left | KeyCode::Right => {
+                        import.yes_focused = !import.yes_focused;
+                    }
+                    KeyCode::Enter | KeyCode::Char(' ') => {
+                        let yes = import.yes_focused;
+                        return self
+                            .commit_hold_import(yes, shared.commodities);
+                    }
+                    KeyCode::Char('y' | 'Y') => {
+                        return self
+                            .commit_hold_import(true, shared.commodities);
+                    }
+                    KeyCode::Char('n' | 'N') => {
+                        return self
+                            .commit_hold_import(false, shared.commodities);
+                    }
+                    _ => {}
+                }
+            }
             None => {}
         }
         InputResult::Consumed
@@ -1574,5 +1735,108 @@ mod tests {
         r2.booty = "0".into(); // Zero booty is skipped.
         app.rows = vec![r0, r1, r2];
         assert_eq!(app.booty_goods(), vec![(7, 30)]);
+    }
+
+    fn commodities() -> Vec<Commodity> {
+        ["Foo", "Bar", "Baz"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                Commodity {
+                    id: i as u64 + 1,
+                    name: (*name).to_owned(),
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn queue_hold_resolves_names_and_keeps_unknowns() {
+        let commodities = commodities();
+        let mut app = ProfitsApp::new();
+        let hold = HoldContents {
+            goods: vec![
+                ("foo".to_owned(), 84),
+                ("Nope".to_owned(), 3),
+                ("Baz".to_owned(), 257),
+            ],
+        };
+        app.queue_hold(&hold, &commodities);
+        assert!(app.popup.is_none());
+        assert!(app.raise_pending_hold());
+        let Some(PopupKind::HoldImport(ref import)) = app.popup else {
+            panic!("hold prompt open");
+        };
+        assert_eq!(import.goods, vec![(1, 84), (3, 257)]);
+        assert_eq!(import.unknown, vec!["Nope".to_owned()]);
+        assert_eq!(app.focus, Focus::Popup);
+        // Nothing raised a second time; the queue was consumed.
+        assert!(!app.raise_pending_hold());
+    }
+
+    #[test]
+    fn hold_waits_behind_an_open_popup() {
+        let commodities = commodities();
+        let mut app = ProfitsApp::new();
+        app.popup = Some(PopupKind::ReQueryConfirm {
+            yes_focused: true,
+        });
+        app.queue_hold(
+            &HoldContents {
+                goods: vec![("Foo".to_owned(), 1)],
+            },
+            &commodities,
+        );
+        assert!(!app.raise_pending_hold());
+        app.popup = None;
+        assert!(app.raise_pending_hold());
+    }
+
+    #[test]
+    fn apply_hold_sets_stock_adds_rows_and_blanks_the_rest() {
+        let commodities = commodities();
+        let mut app = ProfitsApp::new();
+        let mut r = InventoryRow::new(2); // Bar
+        r.stock = "5".into();
+        r.booty = "9".into();
+        app.rows = vec![r];
+        let added = app.apply_hold(&[(3, 257), (1, 84)], &commodities);
+        assert!(added);
+        let stock: Vec<(u64, &str)> = app
+            .rows
+            .iter()
+            .map(|r| (r.commod_id, r.stock.as_str()))
+            .collect();
+        // Bar (absent from the hold) is blanked; the rest carry the hold's
+        // quantities. Order follows the commodity sort key, not the hold.
+        assert_eq!(stock.len(), 3);
+        assert!(stock.contains(&(1, "84")));
+        assert!(stock.contains(&(2, "")));
+        assert!(stock.contains(&(3, "257")));
+        // Booty is the divvy's business - untouched.
+        let bar = app.rows.iter().find(|r| r.commod_id == 2).unwrap();
+        assert_eq!(bar.booty, "9");
+    }
+
+    #[test]
+    fn declining_the_hold_prompt_changes_nothing() {
+        let commodities = commodities();
+        let mut app = ProfitsApp::new();
+        let mut r = InventoryRow::new(1);
+        r.stock = "5".into();
+        app.rows = vec![r];
+        app.focus = Focus::Button;
+        app.queue_hold(
+            &HoldContents {
+                goods: vec![("Foo".to_owned(), 84)],
+            },
+            &commodities,
+        );
+        app.raise_pending_hold();
+        let result = app.commit_hold_import(false, &commodities);
+        assert!(matches!(result, InputResult::Consumed));
+        assert!(app.popup.is_none());
+        assert_eq!(app.rows[0].stock, "5");
+        assert_eq!(app.focus, Focus::Button);
     }
 }

@@ -7,6 +7,7 @@ description = "Unofficial fan tool for Puzzle Pirates: parses the game chat log 
 license = "MIT"
 
 [dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 clap = { version = "4", features = ["derive"] }
 crossterm = "0.29.0"

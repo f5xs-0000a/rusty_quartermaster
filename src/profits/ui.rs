@@ -17,6 +17,7 @@ use super::{
     BreakdownRow,
     FIRST_COL,
     Focus,
+    HoldImport,
     InventoryRow,
     P_BOOTY_CHEST,
     P_CO_RATE,
@@ -30,6 +31,7 @@ use super::{
     is_place_field,
 };
 use crate::{
+    api::Commodity,
     app::{self, SharedState},
     clickmap::{ClickRegion, ClickTarget},
     utils::{offset_title, offset_title_width},
@@ -170,6 +172,7 @@ pub fn render(
             breakdown_cursor,
             show_co,
             show_donation,
+            shared.commodities,
             regions,
         );
     }
@@ -882,17 +885,170 @@ fn wrapped_line_count(text: &str, width: usize) -> u16 {
     lines.max(1)
 }
 
+/// The "Hold from clipboard" prompt: the recognized goods with their
+/// quantities, any names the commodity list doesn't know, and a No / Yes pair.
+fn render_hold_import(
+    frame: &mut Frame,
+    import: &HoldImport,
+    commodities: &[Commodity],
+    regions: &mut Vec<ClickRegion>,
+) {
+    const CAP: usize = 8; // goods listed before "...and N more"
+    let area = frame.area();
+
+    let shown: Vec<(&str, u64)> = import
+        .goods
+        .iter()
+        .take(CAP)
+        .map(|&(id, qty)| (app::commod_name(commodities, id), qty))
+        .collect();
+    let extra = import.goods.len().saturating_sub(CAP);
+    let unknown_line = (!import.unknown.is_empty()).then(|| {
+        format!(
+            "Not recognized: {}",
+            import.unknown.join(", ")
+        )
+    });
+
+    let list_lines = if import.goods.is_empty() {
+        1
+    } else {
+        shown.len() + usize::from(0 < extra)
+    };
+    let w: u16 = 48;
+    let inner_w = w as usize - 4; // borders + horizontal padding
+    let unknown_lines = unknown_line.as_deref().map_or(0, |s| {
+        wrapped_line_count(s, inner_w) as usize
+    });
+    // header, list, unknowns, note, blank, buttons
+    let h: u16 = (2 + 1 + list_lines + unknown_lines + 1 + 1 + 1) as u16;
+    let x = area.width.saturating_sub(w) / 2;
+    let y = area.height.saturating_sub(h) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Hold from clipboard").0);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut constraints = vec![Constraint::Length(1)]; // header
+    constraints.extend((0 .. list_lines).map(|_| Constraint::Length(1)));
+    constraints.push(Constraint::Length(unknown_lines as u16));
+    constraints.push(Constraint::Length(1)); // note
+    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Length(1)); // buttons
+    let rows = Layout::vertical(constraints).split(inner);
+
+    frame.render_widget(
+        Paragraph::new("Set the Stock column from the copied hold?"),
+        rows[0],
+    );
+    if import.goods.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "  (the hold is empty)",
+                Style::default().fg(Color::DarkGray),
+            )),
+            rows[1],
+        );
+    }
+    for (i, (name, qty)) in shown.iter().enumerate() {
+        let qty = qty.to_string();
+        let pad = inner_w.saturating_sub(4 + name.chars().count() + qty.len());
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw(format!("  \u{2022} {name}")),
+                Span::raw(" ".repeat(pad)),
+                Span::styled(qty, Style::default().bold()),
+            ])),
+            rows[1 + i],
+        );
+    }
+    if 0 < extra {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("  ...and {extra} more"),
+                Style::default().fg(Color::DarkGray),
+            )),
+            rows[1 + shown.len()],
+        );
+    }
+    let unknown_row = rows[1 + list_lines];
+    if let Some(text) = unknown_line {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                text,
+                Style::default().fg(Color::Yellow),
+            ))
+            .wrap(Wrap {
+                trim: true,
+            }),
+            unknown_row,
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "Other rows' Stock is cleared; Booty is left as is.",
+            Style::default().fg(Color::DarkGray),
+        )),
+        rows[2 + list_lines],
+    );
+
+    let no_style = if !import.yes_focused {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else {
+        Style::default()
+    };
+    let yes_style = if import.yes_focused {
+        Style::default().bg(Color::White).fg(Color::Black).bold()
+    } else {
+        Style::default()
+    };
+    let buttons = Line::from(vec![
+        Span::styled(" No ", no_style),
+        Span::raw("  "),
+        Span::styled(" Yes ", yes_style),
+    ]);
+    let btn_row = rows[rows.len() - 1];
+    frame.render_widget(
+        Paragraph::new(buttons).centered(),
+        btn_row,
+    );
+
+    let half = btn_row.width / 2;
+    regions.push(ClickRegion {
+        rect: Rect::new(btn_row.x, btn_row.y, half, 1),
+        target: ClickTarget::ProfitsPopupNo,
+    });
+    regions.push(ClickRegion {
+        rect: Rect::new(
+            btn_row.x + half,
+            btn_row.y,
+            btn_row.width - half,
+            1,
+        ),
+        target: ClickTarget::ProfitsPopupYes,
+    });
+}
+
 fn render_popup(
     frame: &mut Frame,
     popup: &PopupKind,
     breakdown_cursor: usize,
     show_co: bool,
     show_donation: bool,
+    commodities: &[Commodity],
     regions: &mut Vec<ClickRegion>,
 ) {
     let area = frame.area();
 
     match popup {
+        PopupKind::HoldImport(import) => {
+            render_hold_import(frame, import, commodities, regions);
+        }
         PopupKind::ReQueryConfirm {
             yes_focused,
         } => {

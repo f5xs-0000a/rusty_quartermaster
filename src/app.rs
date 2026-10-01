@@ -1619,6 +1619,21 @@ impl AppShell {
         }
     }
 
+    /// A hold landed on the clipboard: queue it for the Profits page's
+    /// confirmation prompt (see [`Self::surface_hold_import`]).
+    pub fn queue_hold_import(&mut self, hold: &crate::hold::HoldContents) {
+        self.profits.queue_hold(hold, &self.commodities);
+    }
+
+    /// Open a queued hold prompt once the Profits popup slot is free, and
+    /// surface the Profits page so the prompt is actually seen - the same
+    /// auto-navigation a starting fight gives the Damage calculator.
+    pub fn surface_hold_import(&mut self) {
+        if self.profits.raise_pending_hold() {
+            self.switch_to(AppId::Profits);
+        }
+    }
+
     /// A new fight just began: close any open Sea Battles popup and surface the
     /// live Damage calculator so the fight is tracked from the first hit.
     fn jump_to_live_damage(&mut self) {
