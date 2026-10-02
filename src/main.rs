@@ -132,6 +132,14 @@ struct Args {
     /// and trophies). Higher is gentler on yoweb.
     #[arg(long, value_name = "SECONDS", default_value_t = 60)]
     ypp_query_rate: u64,
+
+    /// Watch the clipboard for a copied hold and offer it to Profits.
+    ///
+    /// When set, the clipboard is checked about once a second; when the
+    /// game's hold JSON appears on it, Profits asks before filling the Stock
+    /// column from it. Off by default: the clipboard is never read.
+    #[arg(long)]
+    clipboard: bool,
 }
 
 fn parse_ocean(s: &str) -> Result<Ocean, String> {
@@ -411,10 +419,12 @@ async fn main() -> io::Result<()> {
         chatlog::spawn_tailer(path.clone(), offset, chat_tx);
     }
 
-    // -- Clipboard: offer a copied hold to the Profits page --
+    // -- Clipboard: offer a copied hold to the Profits page (opt-in) --
     let (hold_tx, mut hold_rx) =
         tokio::sync::mpsc::unbounded_channel::<hold::HoldContents>();
-    hold::spawn_watcher(hold_tx);
+    if args.clipboard {
+        hold::spawn_watcher(hold_tx);
+    }
 
     // -- Background pirate-stat fetching (yoweb) --
     // A single greedy worker: at most one page in flight, chosen by priority
