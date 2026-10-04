@@ -1120,6 +1120,7 @@ pub fn render(
         .block(
             Block::default()
                 .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
                 .border_style(border_style(focused))
                 .title(offset_title("Vessel's Jobbers").0),
         );
@@ -3853,8 +3854,10 @@ fn render_voyage_popup(
         })
         .collect();
     let max_name = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
+    // The contents are the longest label plus the two columns the selection
+    // marker takes; the border and its padding come from `titled_block`.
     let (block, w) =
-        crate::utils::titled_block("Voyage Type", max_name as u16 + 6);
+        crate::utils::titled_block("Voyage Type", max_name as u16 + 2);
     let h = VOYAGE_TYPES.len() as u16 + 2;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3875,7 +3878,7 @@ fn render_voyage_popup(
         })
         .collect();
     let list = List::new(items)
-        .block(block.padding(Padding::horizontal(1)))
+        .block(block)
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
         .highlight_symbol("> ");
 

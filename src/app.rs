@@ -67,6 +67,12 @@ impl AppId {
             AppId::Exit => ("Exit", ""),
         }
     }
+
+    /// Columns the label occupies: the wider of its two lines.
+    fn label_width(self) -> u16 {
+        let (upper, lower) = self.bar_lines();
+        upper.len().max(lower.len()) as u16
+    }
 }
 
 pub const APP_LIST: &[AppId] = &[
@@ -102,6 +108,46 @@ fn is_damage_target(target: &ClickTarget) -> bool {
 
 /// Top bar: two label lines, no border (a shaded strip).
 const TOPBAR_HEIGHT: u16 = 2;
+
+/// Blank columns each side of a top-bar label, the padding every widget keeps
+/// between its contents and its edge.
+const TOPBAR_PADDING: u16 = 1;
+
+/// Smallest terminal the app draws its pages in. Below this a page starts
+/// dropping whole widgets rather than merely tightening, so it would misreport
+/// the state of things rather than look cramped.
+const MIN_WIDTH: u16 = 80;
+const MIN_HEIGHT: u16 = 24;
+
+/// Columns the top bar needs before a label would be clipped: every label with
+/// its padding. Slots are allowed to differ in width; a label is never clipped
+/// to keep them equal.
+fn topbar_min_width() -> u16 {
+    APP_LIST
+        .iter()
+        .map(|app| app.label_width() + 2 * TOPBAR_PADDING)
+        .sum()
+}
+
+/// Width of each top-bar slot at `width`: its label and padding, plus an even
+/// share of whatever is left over so the bar still spans the full width.
+fn topbar_slots(width: u16) -> Vec<u16> {
+    let mut slots: Vec<u16> = APP_LIST
+        .iter()
+        .map(|app| app.label_width() + 2 * TOPBAR_PADDING)
+        .collect();
+    let mut slack = width.saturating_sub(slots.iter().sum());
+    let share = slack / slots.len() as u16;
+    for slot in slots.iter_mut() {
+        *slot += share;
+        slack -= share;
+    }
+    // Whatever doesn't divide evenly goes out a column at a time.
+    for slot in slots.iter_mut().take(slack as usize) {
+        *slot += 1;
+    }
+    slots
+}
 
 #[derive(PartialEq)]
 enum GlobalFocus {
@@ -608,6 +654,11 @@ impl AppShell {
 
         let area = frame.area();
 
+        if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+            self.render_too_small(frame, area);
+            return;
+        }
+
         // Layout tree: [top bar / content]. The top bar spans the full
         // terminal width; each page then centers its own fixed-width block in
         // the content area rather than stretching to fill it. Pages own
@@ -708,6 +759,61 @@ impl AppShell {
     /// while the bar is focused the other slots sit a step up from the
     /// resting shade; once focus drops into an app those others fall back
     /// to the base shade.
+    /// A terminal too small for the app: nothing is drawn but a note asking
+    /// for more room. Drawing a page here would drop widgets silently, which
+    /// reads as the app being wrong rather than the window being small.
+    ///
+    /// The bar survives as long as it fits whole, since it still says what the
+    /// app is; once a label would be clipped it goes too, a clipped bar being
+    /// worse than none.
+    fn render_too_small(&mut self, frame: &mut Frame, area: Rect) {
+        let bar_fits =
+            topbar_min_width() <= area.width && TOPBAR_HEIGHT < area.height;
+        let body = if bar_fits {
+            let chunks = Layout::vertical([
+                Constraint::Length(TOPBAR_HEIGHT),
+                Constraint::Min(0),
+            ])
+            .split(area);
+            self.render_topbar(frame, chunks[0]);
+            chunks[1]
+        } else {
+            area
+        };
+
+        // Wrap by hand so the message can be centered on both axes: its height
+        // isn't known until it has been folded to the width.
+        let width = body.width.saturating_sub(2 * TOPBAR_PADDING);
+        let mut lines: Vec<Line> = Vec::new();
+        for (text, style) in [
+            (
+                "Terminal too small".to_owned(),
+                Style::default().bold(),
+            ),
+            (
+                format!(
+                    "Enlarge the window to at least {MIN_WIDTH}x{MIN_HEIGHT} \
+                     (it is {}x{}).",
+                    area.width, area.height,
+                ),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ] {
+            for line in crate::utils::wrap_words(&text, width as usize) {
+                lines.push(Line::from(Span::styled(line, style)));
+            }
+        }
+
+        let height = (lines.len() as u16).min(body.height);
+        let rect = Rect {
+            x: body.x + TOPBAR_PADDING.min(body.width),
+            y: body.y + body.height.saturating_sub(height) / 2,
+            width,
+            height,
+        };
+        frame.render_widget(Paragraph::new(lines).centered(), rect);
+    }
+
     fn render_topbar(&mut self, frame: &mut Frame, area: Rect) {
         let focused = self.global_focus == GlobalFocus::TopBar;
 
@@ -718,12 +824,11 @@ impl AppShell {
         let strongest =
             Style::default().bg(Color::White).fg(Color::Black).bold();
 
-        // Four equal slots side by side, contiguous (no gaps) so the shade
-        // reads as one bar.
+        // Slots side by side, contiguous (no gaps) so the shade reads as one
+        // bar. Each is wide enough for its own label and padding before any
+        // slack is shared out, so no label is ever clipped.
         let slots = Layout::horizontal(
-            APP_LIST
-                .iter()
-                .map(|_| Constraint::Ratio(1, APP_LIST.len() as u32)),
+            topbar_slots(area.width).into_iter().map(Constraint::Length),
         )
         .split(area);
 
@@ -3811,5 +3916,86 @@ mod map_cursor_tests {
         let mut s = AppShell::new(vec![]);
         s.restore_map_cursor(Some((1, 1)));
         assert_eq!(s.map.cursor, None);
+    }
+}
+
+#[cfg(test)]
+mod topbar_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::{
+        APP_LIST,
+        AppShell,
+        TOPBAR_PADDING,
+        topbar_min_width,
+        topbar_slots,
+    };
+
+    /// Draw into a terminal of the given size and return the screen as text.
+    fn screen(width: u16, height: u16) -> String {
+        let mut shell = AppShell::new(Vec::new());
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        terminal.draw(|frame| shell.render(frame)).expect("draw");
+        format!("{}", terminal.backend())
+    }
+
+    #[test]
+    fn slots_span_the_bar_and_never_starve_a_label() {
+        for width in [topbar_min_width(), 80, 120, 200] {
+            let slots = topbar_slots(width);
+            assert_eq!(
+                slots.iter().sum::<u16>(),
+                width,
+                "slots must tile the bar exactly at {width}",
+            );
+            for (app, slot) in APP_LIST.iter().zip(&slots) {
+                assert!(
+                    app.label_width() + 2 * TOPBAR_PADDING <= *slot,
+                    "{:?} has no room for its label at {width}",
+                    app.bar_lines(),
+                );
+            }
+        }
+    }
+
+    /// The floor has to be the labels' own requirement: renaming a tab must
+    /// move it rather than silently start clipping.
+    #[test]
+    fn every_label_is_drawn_whole_at_the_bar_minimum() {
+        let screen = screen(topbar_min_width(), 8);
+        for app in APP_LIST {
+            let (upper, lower) = app.bar_lines();
+            assert!(
+                screen.contains(upper),
+                "{upper:?} missing from the bar"
+            );
+            assert!(
+                lower.is_empty() || screen.contains(lower),
+                "{lower:?} missing from the bar",
+            );
+        }
+    }
+
+    #[test]
+    fn a_bar_that_would_clip_a_label_is_not_drawn_at_all() {
+        let screen = screen(topbar_min_width() - 1, 8);
+        for app in APP_LIST {
+            let (upper, lower) = app.bar_lines();
+            assert!(
+                !screen.contains(upper),
+                "{upper:?} drawn below the floor"
+            );
+            assert!(
+                lower.is_empty() || !screen.contains(lower),
+                "{lower:?} drawn below the floor",
+            );
+        }
+    }
+
+    #[test]
+    fn a_terminal_under_the_minimum_says_so_instead_of_drawing_a_page() {
+        let screen = screen(60, 20);
+        assert!(screen.contains("Terminal too small"));
     }
 }

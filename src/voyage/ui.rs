@@ -413,6 +413,7 @@ pub fn render(
     };
     let block = Block::default()
         .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
         .border_style(border)
         .title(title);
     let inner = block.inner(area);
@@ -959,6 +960,7 @@ fn render_battles_popup(
     frame.render_widget(Clear, rect);
     let block = Block::default()
         .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
         .border_style(Style::default().fg(Color::White))
         .title(offset_title("Sea Battles").0);
     let inner = block.inner(rect);

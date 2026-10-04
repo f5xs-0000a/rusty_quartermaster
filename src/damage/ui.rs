@@ -601,8 +601,14 @@ fn render_reset_prompt(
     yes: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
+    const QUESTION: &str = "Clear the hit tallies for this fight?";
+
     let area = frame.area();
-    let (w, h) = (32u16, 5u16);
+    let (block, w) = crate::utils::titled_block(
+        "Reset values?",
+        QUESTION.chars().count() as u16,
+    );
+    let h = 5u16;
     let rect = Rect::new(
         area.x + area.width.saturating_sub(w) / 2,
         area.y + area.height.saturating_sub(h) / 2,
@@ -610,10 +616,7 @@ fn render_reset_prompt(
         h.min(area.height),
     );
     frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White))
-        .title(offset_title("Reset values?").0);
+    let block = block.border_style(Style::default().fg(Color::White));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -624,7 +627,7 @@ fn render_reset_prompt(
     ])
     .split(inner);
     frame.render_widget(
-        Paragraph::new("Clear the hit tallies for this fight?")
+        Paragraph::new(QUESTION)
             .style(Style::default().fg(Color::Gray))
             .centered(),
         rows[0],

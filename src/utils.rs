@@ -261,10 +261,20 @@ pub const fn offset_title_width(title: &'static str) -> u16 {
     (title.len() + 2 * TITLE_DASHES + 4) as u16
 }
 
-/// A bordered block titled in the house style, together with the width the
-/// widget must not go below. `content_width` is what the contents alone would
-/// need; the answer is whichever of the two is larger, so sizing a widget to
-/// its contents can never squeeze the title's trailing run away.
+/// Columns a boxed widget spends on its frame: a border and a blank column on
+/// each side, the blanks holding the contents off the border.
+pub const BOX_MARGIN: u16 = 2 * (1 + PADDING);
+
+/// Blank columns between a widget's border and its contents, on each side.
+const PADDING: u16 = 1;
+
+/// A bordered, padded block titled in the house style, together with the width
+/// the widget must not go below.
+///
+/// `content_width` is what the contents alone occupy, counting neither border
+/// nor padding. The width answers both of the things that can force a widget
+/// wider: the contents inside their margins, and the title needing a trailing
+/// rule.
 ///
 /// Taking both from one call is the point: [`offset_title`] hands back the
 /// same floor, but a caller that wants only the title tends to drop it.
@@ -272,13 +282,14 @@ pub fn titled_block(
     title: &'static str,
     content_width: u16,
 ) -> (ratatui::widgets::Block<'static>, u16) {
-    use ratatui::widgets::{Block, Borders};
+    use ratatui::widgets::{Block, Borders, Padding};
 
     (
         Block::default()
             .borders(Borders::ALL)
+            .padding(Padding::horizontal(PADDING))
             .title(offset_title(title).0),
-        content_width.max(offset_title_width(title)),
+        (content_width + BOX_MARGIN).max(offset_title_width(title)),
     )
 }
 

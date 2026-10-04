@@ -129,3 +129,131 @@ Checking it across the whole interface is a scan of the `.txt` dumps for
 asserting the leading run is exactly three and the trailing run at least
 three. At the time of writing the gallery draws 39 distinct titles and all of
 them pass.
+
+## Rule 2: Boxed widgets are padded
+
+A boxed widget keeps one blank column between its border and its contents, on
+the left and on the right. Contents never touch the frame:
+
+```
+┌─── Inventory ──────┐
+│ Item  Restock      │
+└────────────────────┘
+```
+
+not
+
+```
+┌─── Inventory ──────┐
+│Item  Restock       │
+└────────────────────┘
+```
+
+This is distinct from the spaces flanking a title in Rule 1. Those sit on the
+border row and belong to the title; this padding belongs to the body.
+
+### It raises the floor again
+
+Four columns of every widget are spent before any content is drawn: a border
+and a blank on each side. That is `utils::BOX_MARGIN`. So the contents impose
+their own floor, and a widget's width is the larger of the two floors:
+
+```
+width = max(content_width + BOX_MARGIN, len(title) + 2 * TITLE_DASHES + 4)
+```
+
+where `content_width` counts the contents alone, neither border nor padding.
+The two floors do not combine: the title's are border-row columns and the
+padding's are body columns, so whichever demands more wins.
+
+### Implementation
+
+`utils::titled_block` applies the padding and returns the width with both
+floors already taken, so a widget that gets its block from it satisfies both
+rules by construction:
+
+```rust
+let (block, width) = titled_block("Voyage Type", max_name as u16 + 2);
+```
+
+Pass the content width only. Adding the border or the padding yourself
+double-counts them.
+
+### Verifying
+
+A violation is a character that is neither a space nor part of the frame
+sitting immediately inside a `│`. Scanning the `.txt` dumps for that finds
+them, with one caveat: a popup drawn over a page puts the page's own text
+immediately *outside* the popup's border, which reads as a hit and is not one.
+Only adjacency on the inside of a box counts.
+
+The gallery currently draws no widget whose contents touch its border.
+
+Six did before the rule was written: the Voyage Statistics stat lines (labels
+flush left, values flush right), its consumption warning, the Sea Battles
+popup rows, the Damage reset prompt, the Map help popup, and the Jobbers
+placeholder. The Damage reset prompt was also a clipping bug rather than only
+an aesthetic one — its question is 37 columns and its box was 32, so the text
+was cut mid-word; sizing the box from the question fixed both faults at once.
+
+One thing padding did not fix: the Jobbers placeholder is pinned to the
+top-left of its box and runs off the right edge mid-sentence at 80 columns
+instead of wrapping, so padding it moved the cut one word earlier. How
+placeholders should behave is not settled here yet.
+
+## Rule 3: Too small a terminal shows a message, not the app
+
+Below the size the app needs, no page is drawn. A page squeezed past its
+minimum does not merely look cramped: it drops whole widgets, so it reports
+the state of things wrongly. A message saying to enlarge the window, centered
+on both axes, is drawn instead.
+
+```
+                     Terminal too small
+       Enlarge the window to at least 80x24 (it is 70x20).
+```
+
+The top bar is held to its own, smaller, minimum. While the bar fits whole it
+stays, because it still says what the app is; once a label would be clipped
+the bar goes too, a clipped bar reading as broken rather than as small. So
+there are three sizes of window:
+
+| terminal                        | drawn                   |
+| ------------------------------- | ----------------------- |
+| at least the app's minimum      | the page                |
+| at least the bar's minimum      | the bar and the message |
+| smaller                         | the message alone       |
+
+### The numbers
+
+The app's minimum is **80x24**, the conventional terminal floor.
+
+The top bar's minimum is the sum of every label's width with a blank column
+each side — the same padding Rule 2 gives a boxed widget:
+
+```
+topbar_min = Σ (label_width + 2 * TOPBAR_PADDING)
+```
+
+which is **49** columns, plus the bar's two rows. Slots are *not* equal width.
+Equal slots would size every slot to the widest label, `Statistics`, needing
+72 columns before the bar fit; sizing each slot to its own label needs 49.
+Keeping the slots equal is not worth clipping a label for, so each slot takes
+its label and padding first and any slack is shared out afterwards.
+
+### Everything must work at 80 columns
+
+This is the half of the rule that constrains ordinary work rather than the
+degenerate case: a widget that cannot shrink to 80 columns is unfinished. The
+minimum is not an aspiration to render *something* at 80; it is where the app
+must be fully usable.
+
+### Known gaps
+
+The app does not yet satisfy its own minimum:
+
+| page | fault at 80x24 |
+| ---- | -------------- |
+| Profits | the Inventory table collapses to its header, hiding every row the user entered; the four boxes below it take the height first |
+| Profits | `Restocking Place` and `Selling Place` show `Query Ma`, truncated — its block is a fixed 40 columns at every terminal width, too narrow for its own labels |
+| Jobbers | the placeholder runs off the right edge instead of wrapping |

@@ -817,7 +817,10 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
         )),
     ]);
 
-    let width = 66u16.min(area.width);
+    // Widest help line, plus the border and its padding.
+    let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16
+        + crate::utils::BOX_MARGIN)
+        .min(area.width);
     let height = (lines.len() as u16 + 2).min(area.height);
     let popup = Rect::new(
         area.x + (area.width - width) / 2,
@@ -830,6 +833,7 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
         Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
+                .padding(Padding::horizontal(1))
                 .border_style(Style::default().fg(Color::White))
                 .title(offset_title("Help").0),
         ),
