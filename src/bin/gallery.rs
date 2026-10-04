@@ -1,14 +1,18 @@
-//! Offline UI gallery: renders interface states to text files.
+//! Offline UI gallery: renders interface states to text and SVG.
 //!
 //! Every state is drawn through the same [`AppShell::render`] the real app
-//! uses, against ratatui's `TestBackend`, and written out as the plain
-//! character grid the terminal would show. Reading those dumps is how layout
-//! is audited without a terminal: labels drawn whole, columns aligned, nothing
-//! clipped at the right margin.
+//! uses, against ratatui's `TestBackend`, and written out twice: as the plain
+//! character grid the terminal would show, and as an SVG. Reading the text is
+//! how layout is audited without a terminal — labels drawn whole, columns
+//! aligned, nothing clipped at the right margin — but it keeps only the
+//! characters, so focus, selection and every other colour-borne cue vanish
+//! from it. The SVG keeps them, and `STYLES-<size>.txt` lists them in prose.
 //!
 //! ```sh
-//! cargo run --bin gallery -- --out tmp/ui-gallery
+//! cargo run --bin gallery -- --out tmp/ui-gallery --prune
 //! ```
+//!
+//! `index.html` beside the dumps shows every SVG on one page.
 //!
 //! State is reached the way the app reaches it: pages via the top bar's
 //! arrow keys, page content by feeding chat-log lines through the real
@@ -16,14 +20,19 @@
 //! parser's own tests use, so a page populated here is populated the same way
 //! a game session populates it.
 //!
-//! Nothing is ever deleted: a re-run overwrites the states it produces and
-//! leaves everything else in the directory alone.
+//! Deleting is opt-in: without `--prune` a re-run overwrites the states it
+//! produces and leaves everything else in the directory alone.
 
 use std::{fs, path::PathBuf, sync::Arc};
 
 use clap::Parser;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use ratatui::{Terminal, backend::TestBackend, style::Color};
+use ratatui::{
+    Terminal,
+    backend::TestBackend,
+    buffer::Buffer,
+    style::{Color, Modifier},
+};
 use rusty_quartermaster::{
     api::Commodity,
     app::{APP_LIST, AppId, AppShell},
@@ -44,7 +53,7 @@ use rusty_quartermaster::{
 };
 
 #[derive(Parser)]
-#[command(about = "Render the TUI's interface states to text files")]
+#[command(about = "Render the TUI's interface states to text and SVG")]
 struct Args {
     /// Directory to write the dumps into (created if missing).
     #[arg(long, default_value = "tmp/ui-gallery")]
@@ -60,12 +69,29 @@ struct Args {
     /// states that no longer exist linger and read as current.
     #[arg(long)]
     prune: bool,
+
+    /// Colour scheme for the SVGs.
+    #[arg(long, default_value = "dark")]
+    theme: String,
+
+    /// Font family for the SVGs. Needs the box-drawing and block glyphs, or
+    /// the frames and the Map canvas come out as blanks.
+    #[arg(long, default_value = "monospace")]
+    font: String,
+
+    /// Font size in pixels for the SVGs; the cell grid is derived from it.
+    #[arg(long, default_value_t = 16.0)]
+    font_size: f64,
 }
 
-/// Whether `name` is one of this tool's dumps (`<cols>x<rows>-<slug>.txt`),
-/// which is the only thing `--prune` is allowed to delete.
+/// Whether `name` is one of this tool's dumps
+/// (`<cols>x<rows>-<slug>.txt` or `.svg`), which is the only thing `--prune`
+/// is allowed to delete.
 fn is_dump_name(name: &str) -> bool {
-    let Some(rest) = name.strip_suffix(".txt") else {
+    let Some(rest) = name
+        .strip_suffix(".txt")
+        .or_else(|| name.strip_suffix(".svg"))
+    else {
         return false;
     };
     let Some((size, slug)) = rest.split_once('-') else {
@@ -99,8 +125,7 @@ fn parse_size(raw: &str) -> Result<(u16, u16), String> {
 
 /// The rendered screen as text: one line per terminal row, full width, with
 /// trailing blanks kept so column alignment survives into the file.
-fn screen(terminal: &Terminal<TestBackend>) -> String {
-    let buffer = terminal.backend().buffer();
+fn screen(buffer: &Buffer) -> String {
     let area = buffer.area;
     let mut out = String::new();
     for y in 0 .. area.height {
@@ -112,45 +137,281 @@ fn screen(terminal: &Terminal<TestBackend>) -> String {
     out
 }
 
-/// Where the screen is styled away from the terminal default: one line per run
-/// of cells sharing a colour or modifier. Focus, selection and highlighting
-/// are drawn with style alone, so two states can share a character grid and
-/// differ only here.
-fn style_report(terminal: &Terminal<TestBackend>) -> String {
-    let buffer = terminal.backend().buffer();
+/// A horizontal stretch of cells on one row sharing a single style. The unit
+/// both the style report and the SVG are built from, so neither can disagree
+/// with the other about where a highlight begins or ends.
+struct Run {
+    row: u16,
+    col: u16,
+    text: String,
+    fg: Color,
+    bg: Color,
+    modifier: Modifier,
+}
+
+impl Run {
+    /// Whether the run carries no styling at all, and so says nothing about
+    /// highlighting.
+    fn is_plain(&self) -> bool {
+        self.fg == Color::Reset
+            && self.bg == Color::Reset
+            && self.modifier.is_empty()
+    }
+
+    fn width(&self) -> u16 {
+        self.text.chars().count() as u16
+    }
+}
+
+/// Split the screen into styled runs, row by row, covering every cell.
+fn runs(buffer: &Buffer) -> Vec<Run> {
     let area = buffer.area;
-    let mut out = String::new();
-    for y in 0 .. area.height {
-        let mut x = 0;
-        while x < area.width {
-            let cell = &buffer[(x, y)];
-            let plain = cell.fg == Color::Reset
-                && cell.bg == Color::Reset
-                && cell.modifier.is_empty();
-            if plain {
-                x += 1;
-                continue;
-            }
+    let mut out = Vec::new();
+    for row in 0 .. area.height {
+        let mut col = 0;
+        while col < area.width {
+            let cell = &buffer[(col, row)];
             let (fg, bg, modifier) = (cell.fg, cell.bg, cell.modifier);
-            let start = x;
+            let start = col;
             let mut text = String::new();
-            while x < area.width {
-                let cell = &buffer[(x, y)];
+            while col < area.width {
+                let cell = &buffer[(col, row)];
                 if cell.fg != fg || cell.bg != bg || cell.modifier != modifier {
                     break;
                 }
                 text.push_str(cell.symbol());
-                x += 1;
+                col += 1;
             }
-            out.push_str(&format!(
-                "row {y:>3}  cols {start:>3}-{:<3}  fg={fg:?} bg={bg:?} \
-                 mod={modifier:?}  {:?}\n",
-                x - 1,
-                text.trim_end(),
-            ));
+            out.push(Run {
+                row,
+                col: start,
+                text,
+                fg,
+                bg,
+                modifier,
+            });
         }
     }
     out
+}
+
+/// Where the screen is styled away from the terminal default: one line per run
+/// of cells sharing a colour or modifier. Focus, selection and highlighting
+/// are drawn with style alone, so two states can share a character grid and
+/// differ only here.
+fn style_report(buffer: &Buffer) -> String {
+    let mut out = String::new();
+    for run in runs(buffer).iter().filter(|r| !r.is_plain()) {
+        out.push_str(&format!(
+            "row {:>3}  cols {:>3}-{:<3}  fg={:?} bg={:?} mod={:?}  {:?}\n",
+            run.row,
+            run.col,
+            run.col + run.width() - 1,
+            run.fg,
+            run.bg,
+            run.modifier,
+            run.text.trim_end(),
+        ));
+    }
+    out
+}
+
+// ---------------------------------------------------------------------------
+// SVG export
+// ---------------------------------------------------------------------------
+
+/// A terminal colour scheme: the sixteen ANSI slots plus the default
+/// foreground and background a `Color::Reset` resolves to.
+struct Theme {
+    name: &'static str,
+    fg: &'static str,
+    bg: &'static str,
+    ansi: [&'static str; 16],
+}
+
+const THEMES: &[Theme] = &[
+    Theme {
+        name: "dark",
+        fg: "#c5c8c6",
+        bg: "#1d1f21",
+        ansi: [
+            "#1d1f21", "#cc6666", "#b5bd68", "#f0c674", "#81a2be", "#b294bb",
+            "#8abeb7", "#c5c8c6", "#666666", "#d54e53", "#b9ca4a", "#e7c547",
+            "#7aa6da", "#c397d8", "#70c0b1", "#eaeaea",
+        ],
+    },
+    Theme {
+        name: "light",
+        fg: "#2e3436",
+        bg: "#ffffff",
+        ansi: [
+            "#000000", "#cc0000", "#4e9a06", "#c4a000", "#3465a4", "#75507b",
+            "#06989a", "#d3d7cf", "#555753", "#ef2929", "#8ae234", "#fce94f",
+            "#729fcf", "#ad7fa8", "#34e2e2", "#eeeeec",
+        ],
+    },
+];
+
+fn theme_named(name: &str) -> Result<&'static Theme, String> {
+    THEMES.iter().find(|t| t.name == name).ok_or_else(|| {
+        let known: Vec<_> = THEMES.iter().map(|t| t.name).collect();
+        format!(
+            "unknown theme {name:?}; known: {}",
+            known.join(", ")
+        )
+    })
+}
+
+/// Resolve one ratatui colour against `theme`. `Reset` means "whatever the
+/// terminal defaults to", which differs for text and for background.
+fn resolve(color: Color, theme: &Theme, is_fg: bool) -> String {
+    let ansi = |i: usize| theme.ansi[i].to_owned();
+    match color {
+        Color::Reset => {
+            if is_fg {
+                theme.fg.to_owned()
+            } else {
+                theme.bg.to_owned()
+            }
+        }
+        Color::Black => ansi(0),
+        Color::Red => ansi(1),
+        Color::Green => ansi(2),
+        Color::Yellow => ansi(3),
+        Color::Blue => ansi(4),
+        Color::Magenta => ansi(5),
+        Color::Cyan => ansi(6),
+        Color::Gray => ansi(7),
+        Color::DarkGray => ansi(8),
+        Color::LightRed => ansi(9),
+        Color::LightGreen => ansi(10),
+        Color::LightYellow => ansi(11),
+        Color::LightBlue => ansi(12),
+        Color::LightMagenta => ansi(13),
+        Color::LightCyan => ansi(14),
+        Color::White => ansi(15),
+        Color::Rgb(r, g, b) => format!("#{r:02x}{g:02x}{b:02x}"),
+        Color::Indexed(i) => xterm_256(i, theme),
+    }
+}
+
+/// The xterm 256-colour palette: the sixteen ANSI slots, then a 6x6x6 RGB
+/// cube, then a 24-step greyscale ramp.
+fn xterm_256(i: u8, theme: &Theme) -> String {
+    match i {
+        0 ..= 15 => theme.ansi[i as usize].to_owned(),
+        16 ..= 231 => {
+            const LEVELS: [u8; 6] = [0, 95, 135, 175, 215, 255];
+            let i = i as usize - 16;
+            let (r, g, b) = (
+                LEVELS[i / 36],
+                LEVELS[(i / 6) % 6],
+                LEVELS[i % 6],
+            );
+            format!("#{r:02x}{g:02x}{b:02x}")
+        }
+        _ => {
+            let v = 8 + 10 * (i as u16 - 232);
+            format!("#{v:02x}{v:02x}{v:02x}")
+        }
+    }
+}
+
+fn escape_xml(text: &str) -> String {
+    text.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Draw the screen as an SVG: a background rectangle per styled stretch and a
+/// text element per stretch of glyphs. Unlike the text dump this keeps every
+/// colour and modifier, so highlighting and focus survive into the file.
+///
+/// Each text run is pinned to its grid width with `textLength`, so the cells
+/// stay aligned under any font whose advance width isn't exactly `0.6em`.
+fn svg(buffer: &Buffer, theme: &Theme, font: &str, font_size: f64) -> String {
+    let area = buffer.area;
+    let cell_w = font_size * 0.6;
+    let cell_h = font_size * 1.2;
+    let (width, height) = (
+        cell_w * area.width as f64,
+        cell_h * area.height as f64,
+    );
+
+    let mut out = format!(
+        "<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"{width:.0}\" \
+         height=\"{height:.0}\" viewBox=\"0 0 {width:.2} \
+         {height:.2}\">\n<rect width=\"100%\" height=\"100%\" \
+         fill=\"{}\"/>\n<g font-family=\"{}\" font-size=\"{font_size}px\" \
+         xml:space=\"preserve\">\n",
+        theme.bg,
+        escape_xml(font),
+    );
+
+    let runs = runs(buffer);
+
+    // Backgrounds first, so every glyph lands on top of its own cell colour.
+    for run in &runs {
+        let (_, bg) = reversed_pair(run);
+        let fill = resolve(bg, theme, false);
+        if fill == theme.bg {
+            continue;
+        }
+        out.push_str(&format!(
+            "<rect x=\"{:.2}\" y=\"{:.2}\" width=\"{:.2}\" height=\"{:.2}\" \
+             fill=\"{fill}\"/>\n",
+            run.col as f64 * cell_w,
+            run.row as f64 * cell_h,
+            run.width() as f64 * cell_w,
+            cell_h,
+        ));
+    }
+
+    for run in &runs {
+        if run.text.trim().is_empty() || run.modifier.contains(Modifier::HIDDEN)
+        {
+            continue;
+        }
+        let (fg, _) = reversed_pair(run);
+        let mut attrs = format!("fill=\"{}\"", resolve(fg, theme, true));
+        if run.modifier.contains(Modifier::BOLD) {
+            attrs.push_str(" font-weight=\"bold\"");
+        }
+        if run.modifier.contains(Modifier::ITALIC) {
+            attrs.push_str(" font-style=\"italic\"");
+        }
+        if run.modifier.contains(Modifier::DIM) {
+            attrs.push_str(" opacity=\"0.6\"");
+        }
+        if run.modifier.contains(Modifier::UNDERLINED) {
+            attrs.push_str(" text-decoration=\"underline\"");
+        }
+        if run.modifier.contains(Modifier::CROSSED_OUT) {
+            attrs.push_str(" text-decoration=\"line-through\"");
+        }
+        out.push_str(&format!(
+            "<text x=\"{:.2}\" y=\"{:.2}\" textLength=\"{:.2}\" \
+             lengthAdjust=\"spacing\" {attrs}>{}</text>\n",
+            run.col as f64 * cell_w,
+            // Baseline, not the cell top: most of the glyph sits above it.
+            run.row as f64 * cell_h + font_size * 0.95,
+            run.width() as f64 * cell_w,
+            escape_xml(&run.text),
+        ));
+    }
+
+    out.push_str("</g>\n</svg>\n");
+    out
+}
+
+/// A run's drawing colours, with `REVERSED` applied — the terminal swaps the
+/// pair itself, so an exported image has to do it too.
+fn reversed_pair(run: &Run) -> (Color, Color) {
+    if run.modifier.contains(Modifier::REVERSED) {
+        (run.bg, run.fg)
+    } else {
+        (run.fg, run.bg)
+    }
 }
 
 /// One gallery entry: a slug for the filename, a description for the index,
@@ -583,31 +844,29 @@ fn damage_states(states: &mut Vec<State>) {
         open(shell, AppId::Damage, true);
     };
 
+    // Only rows up to `LAST_INTERACTIVE_ROW` take the cursor; Shots Left,
+    // Damage and Manpower Advantage are derived readouts it never lands on,
+    // so focusing them is not a state the app can be in.
     for (slug, description, row) in [
         (
             "damage-focus-ship",
-            "Damage, ship row focused",
+            "Damage, Ship row focused",
             0usize,
         ),
         (
+            "damage-focus-shots-taken",
+            "Damage, Shots Taken row focused",
+            1,
+        ),
+        (
+            "damage-focus-rocks",
+            "Damage, Rocks Banged row focused",
+            2,
+        ),
+        (
             "damage-focus-rams",
-            "Damage, rams row focused",
+            "Damage, Times Rammed row focused",
             3,
-        ),
-        (
-            "damage-focus-shots",
-            "Damage, shots row focused",
-            5,
-        ),
-        (
-            "damage-focus-damage",
-            "Damage, damage row focused",
-            6,
-        ),
-        (
-            "damage-focus-manpower",
-            "Damage, manpower row focused",
-            7,
         ),
     ] {
         states.push(state(slug, description, move |shell| {
@@ -1040,7 +1299,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
     }
 
+    let theme = theme_named(&args.theme)?;
     let states = states();
+    let (mut nav, mut sheet) = (String::new(), String::new());
     let mut index = String::from(
         "Interface states rendered by `cargo run --bin gallery`.\n\nEach dump \
          is the plain character grid of one screen. Focus and selection\nare \
@@ -1061,19 +1322,43 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 Terminal::new(TestBackend::new(*width, *height))?;
             terminal.draw(|frame| shell.render(frame))?;
 
-            let name = format!("{width}x{height}-{}.txt", state.slug);
-            fs::write(args.out.join(&name), screen(&terminal))?;
+            let stem = format!("{width}x{height}-{}", state.slug);
+            let buffer = terminal.backend().buffer();
+
+            fs::write(
+                args.out.join(format!("{stem}.txt")),
+                screen(buffer),
+            )?;
+            fs::write(
+                args.out.join(format!("{stem}.svg")),
+                svg(
+                    buffer,
+                    theme,
+                    &args.font,
+                    args.font_size,
+                ),
+            )?;
             index.push_str(&format!(
-                "  {name}  -- {}\n",
+                "  {stem}.txt / .svg  -- {}\n",
                 state.description
             ));
 
             styles.push_str(&format!(
-                "=== {} -- {}\n",
-                name, state.description
+                "=== {stem}.txt -- {}\n",
+                state.description
             ));
-            styles.push_str(&style_report(&terminal));
+            styles.push_str(&style_report(buffer));
             styles.push('\n');
+
+            sheet.push_str(&format!(
+                "<section id=\"{stem}\"><h2>{stem}</h2><p>{}</p><img \
+                 src=\"{stem}.svg\" alt=\"{stem}\"></section>\n",
+                escape_xml(state.description),
+            ));
+            nav.push_str(&format!(
+                "<li><a href=\"#{stem}\">{}</a></li>\n",
+                escape_xml(state.slug),
+            ));
             written += 1;
         }
         fs::write(
@@ -1083,12 +1368,38 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     fs::write(args.out.join("INDEX.txt"), &index)?;
+    fs::write(
+        args.out.join("index.html"),
+        contact_sheet(&nav, &sheet),
+    )?;
     if pruned > 0 {
-        println!("pruned {pruned} dump(s) from an earlier run");
+        println!("pruned {pruned} file(s) from an earlier run");
     }
     println!(
-        "wrote {written} dumps to {}",
+        "wrote {written} states to {} (open index.html to browse)",
         args.out.display()
     );
     Ok(())
+}
+
+/// One page listing every SVG, for browsing the whole gallery at once instead
+/// of opening files one at a time.
+fn contact_sheet(nav: &str, sections: &str) -> String {
+    format!(
+        "<!doctype html>\n<meta charset=\"utf-8\">\n<title>Interface \
+         gallery</title>\n<style>\nbody {{ margin: 0; display: flex; font: \
+         14px system-ui, sans-serif; background: #15171a; color: #c5c8c6; \
+         }}\nnav {{ position: sticky; top: 0; align-self: flex-start; height: \
+         100vh; overflow-y: auto; min-width: 20em; padding: 1em; background: \
+         #1d1f21; }}\nnav ul {{ list-style: none; margin: 0; padding: 0; \
+         }}\nnav a {{ color: #81a2be; text-decoration: none; }}\nnav a:hover \
+         {{ text-decoration: underline; }}\nmain {{ flex: 1; padding: 1em \
+         2em; min-width: 0; }}\nsection {{ margin-bottom: 3em; }}\nh2 {{ \
+         font: 600 13px ui-monospace, monospace; color: #b5bd68; }}\np {{ \
+         margin: 0 0 .75em; color: #969896; }}\nimg {{ max-width: 100%; \
+         border: 1px solid #373b41; \
+         }}\n</style>\n<nav><ul>\n{nav}</ul></nav>\n<main>\n{sections}</main>\\
+         \
+         n"
+    )
 }
