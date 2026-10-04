@@ -5,9 +5,10 @@
 //! prices and the playerbase are kept per-ocean, since each ocean has its own
 //! economy and its own pirates.
 //!
-//! Everything here is data about the *game* and can be refetched, so losing
-//! this file costs only time. What the user themselves has done and learned
-//! lives in [`crate::persistence`] instead.
+//! Everything here is data about the *game* and can be refetched, or else a
+//! convenience like where the Map page was last looking, so losing this file
+//! costs only time. What the user themselves has done and learned lives in
+//! [`crate::persistence`] instead.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -37,6 +38,12 @@ pub struct OceanCache {
     /// exports), with its fetch time; `None` until first fetched.
     #[serde(default)]
     pub islands: Option<crate::islands::CachedIslands>,
+    /// The grid cell the Map page's cursor was last left on, so the page
+    /// reopens on the same view. Where one is looking is a property of the
+    /// ocean, not of a pirate - unlike what a pirate has memorized, which
+    /// lives in [`crate::persistence`]. `None` until the page is used.
+    #[serde(default)]
+    pub map_cursor: Option<(u16, u16)>,
 }
 
 /// Learned NPC name-segment vocabulary, used to tell a **swabbie** from a
@@ -327,6 +334,28 @@ mod tests {
         assert_eq!(
             back.name_segments.adjectives,
             cache.name_segments.adjectives
+        );
+    }
+
+    /// A cache written before the Map page had a remembered view still
+    /// loads, and a view written into an ocean's bucket stays there.
+    #[test]
+    fn the_map_cursor_rides_with_its_ocean() {
+        let older = r#"{"oceans":{"Test":{"market":{}}}}"#;
+        let mut cache: SavedCache =
+            serde_json::from_str(older).expect("an older cache loads");
+        assert_eq!(cache.oceans["Test"].map_cursor, None);
+
+        cache
+            .oceans
+            .get_mut("Test")
+            .expect("the ocean's bucket")
+            .map_cursor = Some((3, 4));
+        let json = serde_json::to_string(&cache).unwrap();
+        let back: SavedCache = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.oceans["Test"].map_cursor,
+            Some((3, 4))
         );
     }
 }

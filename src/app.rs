@@ -31,7 +31,10 @@ use crate::{
         VOYAGE_TYPES,
         VoyageType,
     },
-    map::{MapApp, data::Map},
+    map::{
+        MapApp,
+        data::{Map, Point},
+    },
     ocean::Ocean,
     profits::ProfitsApp,
     utils::text_similarity,
@@ -530,6 +533,19 @@ impl AppShell {
     /// The selected ocean's compiled-in map for the Map page, if any.
     fn ocean_map(&self) -> Option<&'static Map> {
         self.ocean.and_then(|o| Map::for_ocean(o.name()))
+    }
+
+    /// Put the Map page's cursor back where the last run left it. A point
+    /// that is no longer on the ocean's map is dropped, so a cursor cannot
+    /// land in open water when the map data changes; the page then opens on
+    /// its own default.
+    pub fn restore_map_cursor(&mut self, at: Option<Point>) {
+        let Some((map, p)) = self.ocean_map().zip(at) else {
+            return;
+        };
+        if map.points().contains(&p) {
+            self.map.cursor = Some(p);
+        }
     }
 
     /// Fold the Map page's memorization into the persisted data, under the
@@ -3755,5 +3771,44 @@ mod restock_scope_tests {
             None,
         );
         assert!(matches!(scope, RestockScope::Unknown));
+    }
+}
+
+#[cfg(test)]
+mod map_cursor_tests {
+    use super::*;
+
+    fn on_emerald() -> AppShell {
+        let mut s = AppShell::new(vec![]);
+        s.ocean = Some(crate::ocean::Ocean::Emerald);
+        s
+    }
+
+    #[test]
+    fn the_cached_view_point_comes_back() {
+        let mut s = on_emerald();
+        let at = Map::for_ocean("Emerald")
+            .expect("Emerald map")
+            .islands
+            .first()
+            .expect("an island on the map")
+            .at();
+        s.restore_map_cursor(Some(at));
+        assert_eq!(s.map.cursor, Some(at));
+    }
+
+    #[test]
+    fn a_view_point_that_is_no_longer_on_the_map_is_dropped() {
+        let mut s = on_emerald();
+        // every league point has an odd x + y, so this cell is open water
+        s.restore_map_cursor(Some((0, 0)));
+        assert_eq!(s.map.cursor, None);
+    }
+
+    #[test]
+    fn an_ocean_with_no_map_keeps_the_cursor_unplaced() {
+        let mut s = AppShell::new(vec![]);
+        s.restore_map_cursor(Some((1, 1)));
+        assert_eq!(s.map.cursor, None);
     }
 }

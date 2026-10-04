@@ -351,6 +351,9 @@ async fn main() -> io::Result<()> {
     shell.cached_offers = this_ocean.market;
     shell.islands = this_ocean.islands;
     shell.ocean = ocean;
+    // the Map page reopens on the view it was left on; that belongs to the
+    // ocean rather than to a pirate, so it rides in the cache
+    shell.restore_map_cursor(this_ocean.map_cursor);
     shell.query_market = args.query_market;
     // The user's own persisted data (per-human-behind-keyboard): the voyage
     // history and every pirate's memorization. Loaded now so it's available
@@ -686,6 +689,7 @@ async fn main() -> io::Result<()> {
                     market: shell.cached_offers,
                     players: shell.pirate_cache.fetched,
                     islands: shell.islands,
+                    map_cursor: shell.map.cursor,
                 },
             );
         }
