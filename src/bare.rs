@@ -39,6 +39,18 @@ pub enum Size {
     Large,
 }
 
+impl Size {
+    /// Lowercase display name, e.g. `"outpost"`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Size::Outpost => "outpost",
+            Size::Small => "small",
+            Size::Medium => "medium",
+            Size::Large => "large",
+        }
+    }
+}
+
 /// Inhabitation status. `Capital` is the archipelago's hub island — always also
 /// colonized; at most one per archipelago (some archipelagos have none).
 #[derive(Deserialize, Debug, Clone, Copy, PartialEq, Eq)]
@@ -49,22 +61,40 @@ pub enum Status {
     Capital,
 }
 
+impl Status {
+    /// Lowercase display name, e.g. `"colonized"`.
+    pub fn label(self) -> &'static str {
+        match self {
+            Status::Uninhabited => "uninhabited",
+            Status::Colonized => "colonized",
+            Status::Capital => "capital",
+        }
+    }
+}
+
+/// What an island's palace pays per gem it buys: every gem's destination
+/// pays the same full price.
+pub const GEM_BUY_PRICE: u32 = 1000;
+
 /// One island: its name, size class, and inhabitation status. Status reflects
 /// the yppedia snapshot at crawl time (colonization is dynamic in-game); size
 /// and capital designation are stable.
 #[derive(Deserialize)]
 pub struct Island {
     pub name: String,
-    #[allow(dead_code)] // deserialized reference data; not yet read
     pub size: Size,
-    #[allow(dead_code)] // deserialized reference data; read only via capital()
     pub status: Status,
     /// Commodities this island spawns in its natural-resource stalls, in
     /// yppedia's listed order. Empty for islands whose spawns haven't been
     /// crawled yet, so absence in JSON deserializes cleanly.
     #[serde(default)]
-    #[allow(dead_code)] // deserialized reference data; not yet read
     pub spawns: Vec<String>,
+    /// Gems this island's palace buys at [`GEM_BUY_PRICE`], from yppedia's
+    /// gem price guide (see `scripts/extract_gems.py`). Empty means no
+    /// purchase is known, not that none exists, so absence in JSON
+    /// deserializes cleanly and says nothing.
+    #[serde(default)]
+    pub buys_gems: Vec<String>,
 }
 
 /// One archipelago and the islands within it.
@@ -76,7 +106,6 @@ pub struct Archipelago {
     /// distinct from an island's own [`Island::spawns`]. Empty when not
     /// yet crawled, so absence in JSON deserializes cleanly.
     #[serde(default)]
-    #[allow(dead_code)] // deserialized reference data; not yet read
     pub forageables: Vec<String>,
     pub islands: Vec<Island>,
 }
@@ -94,6 +123,18 @@ impl Archipelago {
 pub struct Ocean {
     pub name: String,
     pub archipelagos: Vec<Archipelago>,
+}
+
+impl Ocean {
+    /// An island by (case-insensitive) name, with the archipelago it is in.
+    pub fn island(&self, name: &str) -> Option<(&Archipelago, &Island)> {
+        self.archipelagos.iter().find_map(|a| {
+            a.islands
+                .iter()
+                .find(|i| i.name.eq_ignore_ascii_case(name))
+                .map(|i| (a, i))
+        })
+    }
 }
 
 /// The whole bare cache, as parsed from the embedded JSON.
@@ -203,6 +244,19 @@ mod tests {
             hook.spawns,
             ["Hemp", "Pokeweed berries", "Stone"]
         );
+    }
+
+    #[test]
+    fn gem_purchases_are_seeded() {
+        let emerald = BARE.ocean("Emerald").expect("Emerald ocean present");
+        // Alkaid is amber's destination
+        let (_, alkaid) =
+            emerald.island("Alkaid Island").expect("Alkaid present");
+        assert_eq!(alkaid.buys_gems, ["Amber"]);
+        // an island with no known purchase carries nothing
+        let (_, cromwell) =
+            emerald.island("Cromwell Island").expect("Cromwell present");
+        assert!(cromwell.buys_gems.is_empty());
     }
 
     #[test]

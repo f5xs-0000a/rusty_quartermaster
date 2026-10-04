@@ -847,6 +847,9 @@
                 "Wood",
                 "Tellurium",
                 "Iron"
+              ],
+              "buys_gems": [
+                "Quartz"
               ]
             },
             {
@@ -1076,6 +1079,9 @@
                 "Hemp",
                 "Iris root",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Lapis"
               ]
             }
           ]
@@ -1184,6 +1190,9 @@
               "spawns": [
                 "Old man's beard",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Amethyst"
               ]
             },
             {
@@ -1352,6 +1361,9 @@
               "spawns": [
                 "Butterfly weed",
                 "Iron"
+              ],
+              "buys_gems": [
+                "Coral"
               ]
             }
           ]
@@ -1406,6 +1418,9 @@
                 "Cowslip",
                 "Stone",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Jade"
               ]
             },
             {
@@ -1484,6 +1499,9 @@
               "spawns": [
                 "Stone",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Moonstones"
               ]
             },
             {
@@ -1624,6 +1642,9 @@
               "status": "capital",
               "spawns": [
                 "Sugar cane"
+              ],
+              "buys_gems": [
+                "Ruby"
               ]
             }
           ]
@@ -1679,6 +1700,9 @@
                 "Sincosite",
                 "Hemp",
                 "Sugar cane"
+              ],
+              "buys_gems": [
+                "Amber"
               ]
             },
             {
@@ -1781,6 +1805,9 @@
                 "Hemp",
                 "Serandite",
                 "Weld"
+              ],
+              "buys_gems": [
+                "Moonstones"
               ]
             },
             {
@@ -1904,6 +1931,9 @@
                 "Madder",
                 "Tellurium",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Lapis"
               ]
             },
             {
@@ -2035,6 +2065,9 @@
               "status": "capital",
               "spawns": [
                 "Lorandite"
+              ],
+              "buys_gems": [
+                "Jasper"
               ]
             },
             {
@@ -2251,6 +2284,9 @@
                 "Iron",
                 "Thorianite",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Tigereye"
               ]
             },
             {
@@ -2439,6 +2475,9 @@
                 "Iron",
                 "Stone",
                 "Weld"
+              ],
+              "buys_gems": [
+                "Jade"
               ]
             },
             {
@@ -2579,6 +2618,9 @@
                 "Iron",
                 "Old man's beard",
                 "Sugar cane"
+              ],
+              "buys_gems": [
+                "Topaz"
               ]
             },
             {
@@ -2682,6 +2724,9 @@
                 "Sincosite",
                 "Stone",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Jasper"
               ]
             },
             {
@@ -2762,6 +2807,9 @@
                 "Hemp",
                 "Tellurium",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Jet"
               ]
             },
             {
@@ -2964,6 +3012,9 @@
               "spawns": [
                 "Sugar cane",
                 "Weld"
+              ],
+              "buys_gems": [
+                "Coral"
               ]
             },
             {
@@ -3038,7 +3089,10 @@
             {
               "name": "Alpha Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "buys_gems": [
+                "Diamond"
+              ]
             },
             {
               "name": "Byrne Island",
@@ -3125,6 +3179,9 @@
                 "Hemp",
                 "Sincosite",
                 "Sugar cane"
+              ],
+              "buys_gems": [
+                "Emerald"
               ]
             },
             {
@@ -3214,6 +3271,9 @@
               "status": "capital",
               "spawns": [
                 "Lorandite"
+              ],
+              "buys_gems": [
+                "Jasper"
               ]
             },
             {
@@ -3475,6 +3535,9 @@
                 "Iron",
                 "Stone",
                 "Weld"
+              ],
+              "buys_gems": [
+                "Jade"
               ]
             },
             {
@@ -3629,6 +3692,9 @@
                 "Elderberries",
                 "Stone",
                 "Sugar cane"
+              ],
+              "buys_gems": [
+                "Jet"
               ]
             }
           ]
@@ -3678,6 +3744,9 @@
                 "Hemp",
                 "Tellurium",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Jet"
               ]
             },
             {
@@ -3864,6 +3933,9 @@
                 "Hemp",
                 "Nettle",
                 "Sugar cane"
+              ],
+              "buys_gems": [
+                "Opal"
               ]
             },
             {
@@ -3970,6 +4042,9 @@
                 "Tellurium",
                 "Weld",
                 "Wood"
+              ],
+              "buys_gems": [
+                "Pearl"
               ]
             }
           ]
@@ -3996,6 +4071,9 @@
               "status": "capital",
               "spawns": [
                 "Wood"
+              ],
+              "buys_gems": [
+                "Ruby"
               ]
             },
             {
@@ -4066,6 +4144,9 @@
                 "Sugar cane",
                 "Wood",
                 "Yarrow"
+              ],
+              "buys_gems": [
+                "Sapphire"
               ]
             },
             {
@@ -5083,7 +5164,10 @@
             {
               "name": "Fort Royal",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "buys_gems": [
+                "Lapis"
+              ]
             },
             {
               "name": "Maelstrom Island",
@@ -5128,7 +5212,10 @@
             {
               "name": "Shatterstone Island",
               "size": "large",
-              "status": "colonized"
+              "status": "colonized",
+              "buys_gems": [
+                "Quartz"
+              ]
             },
             {
               "name": "Wyeth Island",
@@ -5143,7 +5230,10 @@
             {
               "name": "Cold Spring Island",
               "size": "large",
-              "status": "capital"
+              "status": "capital",
+              "buys_gems": [
+                "Beryl"
+              ]
             },
             {
               "name": "Cringe Island",

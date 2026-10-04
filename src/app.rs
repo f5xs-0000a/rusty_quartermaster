@@ -612,13 +612,16 @@ impl AppShell {
                 );
             }
             AppId::Map => {
-                let map = self.ocean_map();
+                let ctx = crate::map::ui::OceanContext {
+                    map: self.ocean_map(),
+                    geo: self.ocean_geo(),
+                    ocean: self.ocean.map(Ocean::name),
+                };
                 crate::map::ui::render(
                     frame,
                     content_area,
                     &mut self.map,
-                    map,
-                    self.ocean.map(Ocean::name),
+                    ctx,
                     content_focused,
                     &mut self.click_regions,
                 );
