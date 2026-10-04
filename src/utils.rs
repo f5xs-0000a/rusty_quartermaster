@@ -261,6 +261,27 @@ pub const fn offset_title_width(title: &'static str) -> u16 {
     (title.len() + 2 * TITLE_DASHES + 4) as u16
 }
 
+/// A bordered block titled in the house style, together with the width the
+/// widget must not go below. `content_width` is what the contents alone would
+/// need; the answer is whichever of the two is larger, so sizing a widget to
+/// its contents can never squeeze the title's trailing run away.
+///
+/// Taking both from one call is the point: [`offset_title`] hands back the
+/// same floor, but a caller that wants only the title tends to drop it.
+pub fn titled_block(
+    title: &'static str,
+    content_width: u16,
+) -> (ratatui::widgets::Block<'static>, u16) {
+    use ratatui::widgets::{Block, Borders};
+
+    (
+        Block::default()
+            .borders(Borders::ALL)
+            .title(offset_title(title).0),
+        content_width.max(offset_title_width(title)),
+    )
+}
+
 /// Word-wrap `text` to `width` columns, hard-breaking any single word longer
 /// than the line so a narrow column never overflows. Returns one `String` per
 /// line.

@@ -3853,7 +3853,8 @@ fn render_voyage_popup(
         })
         .collect();
     let max_name = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
-    let w = max_name as u16 + 6;
+    let (block, w) =
+        crate::utils::titled_block("Voyage Type", max_name as u16 + 6);
     let h = VOYAGE_TYPES.len() as u16 + 2;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3874,12 +3875,7 @@ fn render_voyage_popup(
         })
         .collect();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Voyage Type").0),
-        )
+        .block(block.padding(Padding::horizontal(1)))
         .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
         .highlight_symbol("> ");
 

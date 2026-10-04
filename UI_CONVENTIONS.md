@@ -52,34 +52,80 @@ centered:
 ┌─── Inventory ───┐
 ```
 
+### The title sets a floor on the widget's width
+
+A widget sized to its contents can come out narrower than its own title needs.
+The title is not truncated when that happens; the trailing run is eaten
+instead, down to nothing, leaving the title jammed against the corner:
+
+```
+┌─── Voyage Type ┐
+```
+
+So a widget's width is **never** just what its contents need. It is the larger
+of the two:
+
+```
+width = max(content_width, len(title) + 2 * TITLE_DASHES + 4)
+```
+
+which with `TITLE_DASHES = 3` is `len(title) + 10`, accounting for:
+
+| part                      | columns      |
+| ------------------------- | ------------ |
+| left and right corners    | 2            |
+| leading run               | `TITLE_DASHES` |
+| trailing run              | `TITLE_DASHES` |
+| the spaces flanking it    | 2            |
+| the title itself          | `len(title)` |
+
+`Voyage Type` is 11 columns, so its widget may never be narrower than 21. Its
+five entries only needed 18, which is how the trailing run vanished.
+
 ### Implementation
 
-Use `utils::offset_title`, which returns the title string and the minimum
-width that keeps it readable:
+Take the block and the width from one call, `utils::titled_block`, so sizing a
+widget to its contents cannot quietly drop the floor:
 
 ```rust
-let (title, min_width) = offset_title("Inventory");
-let block = Block::default().borders(Borders::ALL).title(title);
+let (block, width) = titled_block("Voyage Type", max_name as u16 + 6);
+let list = List::new(items).block(block.padding(Padding::horizontal(1)));
 ```
 
-Never build the string by hand. The leading run's length lives in one place,
-`utils::TITLE_DASHES`.
+The width it hands back already has `max` applied, so it is the width to use.
+Both halves matter; a caller that keeps only the block is the bug this rule
+exists to prevent.
 
-`utils::offset_title_width` is a `const fn`, so a widget can derive its layout
-floor at compile time from the same source the title comes from and the two
-can never drift:
+Never build the title string by hand. The leading run's length lives in one
+place, `utils::TITLE_DASHES`.
 
-```rust
-const MIN_W: u16 = offset_title_width("Inventory");
-```
+The two lower-level helpers remain for cases that need them:
 
-The width it returns is `title.len() + 2 * TITLE_DASHES + 4`: the title, both
-three-dash runs, both flanking spaces, and the two corners. It assumes an
-ASCII title, where byte length equals column count, which all of ours are.
+- `utils::offset_title` returns the title string and the same floor, for a
+  widget that needs an unusual block (different borders, no borders).
+- `utils::offset_title_width` is a `const fn`, so a widget can derive a layout
+  floor at compile time from the same source the title comes from and the two
+  can never drift:
+
+  ```rust
+  const MIN_W: u16 = offset_title_width("Inventory");
+  ```
+
+Both assume an ASCII title, where byte length equals column count, which all
+of ours are.
 
 ### Verifying
 
-In any dump, a correct title matches `┌─── <title> ─` and a correct minimum
-width shows equal runs on both sides. A title touching a corner, missing
-either space, or with a leading run of any length other than three is a
-violation.
+In any dump, a correct title matches `┌─── <title> ─`, with a trailing run of
+at least three. A title touching a corner, missing either space, or with a
+leading run of any length other than three is a violation.
+
+Checking it across the whole interface is a scan of the `.txt` dumps for
+
+```
+[┌├](─+) (title) (─*)[┐┤]
+```
+
+asserting the leading run is exactly three and the trailing run at least
+three. At the time of writing the gallery draws 39 distinct titles and all of
+them pass.
