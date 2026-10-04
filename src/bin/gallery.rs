@@ -1342,6 +1342,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             let mut shell = attached_shell();
             (state.build)(&mut shell);
 
+            // The gallery must stay offline: it renders states for inspection
+            // and has no business touching Market or yoweb. `loading` is
+            // raised the moment a fetch is asked for, so it catches a state
+            // that starts one however indirectly.
+            if shell.loading {
+                return Err(format!(
+                    "state {:?} asked for a network fetch",
+                    state.slug,
+                )
+                .into());
+            }
+
             let mut terminal =
                 Terminal::new(TestBackend::new(*width, *height))?;
             terminal.draw(|frame| shell.render(frame))?;
