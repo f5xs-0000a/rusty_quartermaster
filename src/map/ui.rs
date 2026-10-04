@@ -44,7 +44,7 @@ const MARGIN_Y: usize = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Paint {
     Sea,
-    /// A league on a route with no chart to buy.
+    /// A league on a route whose chart is not sold: it only drops as booty.
     Dotted,
     /// A league on a route whose chart can be bought.
     Solid,
@@ -531,6 +531,22 @@ fn render_metadata(
             rows[1],
         );
     }
+    // memorization belongs to a pirate: with none loaded there is no one
+    // whose knowledge the tally could count, so say what it would take
+    if app.pirate.is_none() {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "Memorizing needs a pirate:",
+                    Style::default().bold(),
+                )),
+                Line::from("name one with --user."),
+            ])
+            .style(Style::default().fg(Color::DarkGray)),
+            rows[2],
+        );
+        return;
+    }
     let (known, total) = memorized_tally(app, map);
     let percent = if total == 0 {
         0.0
@@ -559,6 +575,25 @@ fn memorized_tally(app: &MapApp, map: &Map) -> (usize, usize) {
     (known, points.len())
 }
 
+/// The memorized state of `p` for the loaded pirate, or nothing when no
+/// pirate is loaded (the state is a pirate's, not the map's).
+fn memorized_mark(app: &MapApp, p: Point) -> Option<Span<'static>> {
+    app.pirate.as_ref()?;
+    Some(
+        if app.memorized.contains(&p) {
+            Span::styled(
+                "Memorized",
+                Style::default().fg(Color::Yellow).bold(),
+            )
+        } else {
+            Span::styled(
+                "Not memorized",
+                Style::default().fg(Color::DarkGray),
+            )
+        },
+    )
+}
+
 /// The metadata lines for point `p`: name, size and status, memorized
 /// state, then what the island produces, what its archipelago forages,
 /// and the gems it buys. Open sea only has a name and a memorized state.
@@ -571,31 +606,20 @@ fn metadata_lines(
     let bold = |s: String| Span::styled(s, Style::default().bold());
     let dim =
         |s: &'static str| Span::styled(s, Style::default().fg(Color::DarkGray));
-    let memorized = if app.memorized.contains(&p) {
-        Span::styled(
-            "Memorized",
-            Style::default().fg(Color::Yellow).bold(),
-        )
-    } else {
-        Span::styled(
-            "Not memorized",
-            Style::default().fg(Color::DarkGray),
-        )
-    };
+    let memorized = memorized_mark(app, p).map(Line::from);
 
     let Some(island) = map.island_at(p) else {
-        return vec![
-            Line::from(bold(format!(
-                "Open sea ({},{})",
-                p.0, p.1
-            ))),
-            Line::from(memorized),
-        ];
+        let mut lines = vec![Line::from(bold(format!(
+            "Open sea ({},{})",
+            p.0, p.1
+        )))];
+        lines.extend(memorized);
+        return lines;
     };
     let mut lines = vec![Line::from(bold(island.name.to_owned()))];
     let Some((arch, info)) = sources.geo.and_then(|g| g.island(island.name))
     else {
-        lines.push(Line::from(memorized));
+        lines.extend(memorized);
         lines.push(Line::from(""));
         lines.push(Line::from(dim(
             "No geography data for this island."
@@ -607,7 +631,7 @@ fn metadata_lines(
         info.size.label(),
         info.status.label()
     )));
-    lines.push(Line::from(memorized));
+    lines.extend(memorized);
 
     // every fact below is shown only once it is known: a section that has
     // nothing to say is left out rather than saying so
@@ -653,22 +677,18 @@ fn point_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
         return Line::from("The map has no islands.");
     };
     let name = map.island_at(p).map_or("Open sea", |i| i.name);
-    let mark = if app.memorized.contains(&p) {
-        Span::styled(
-            "memorized",
-            Style::default().fg(Color::Yellow).bold(),
-        )
-    } else {
-        Span::styled(
-            "not memorized",
-            Style::default().fg(Color::DarkGray),
-        )
-    };
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(name, Style::default().bold()),
-        Span::raw(format!(" ({},{})  ", p.0, p.1)),
-        mark,
-    ])
+        Span::raw(format!(" ({},{})", p.0, p.1)),
+    ];
+    if let Some(mark) = memorized_mark(app, p) {
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(
+            mark.content.to_lowercase(),
+            mark.style,
+        ));
+    }
+    Line::from(spans)
 }
 
 /// The leagues leaving the cursor's point, each as its heading and the line
@@ -743,6 +763,9 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             key("Space"),
             Span::raw("  mark the league point under the cursor as memorized"),
         ]),
+        Line::from(dim(
+            "  what is memorized belongs to the pirate given by --user."
+        )),
         Line::from(vec![
             key("/"),
             Span::raw("      search for an island (Enter jumps, Esc cancels)"),
@@ -774,9 +797,9 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
         ]),
         Line::from(vec![
             Span::styled("  ───", Paint::Solid.style()),
-            Span::raw(" chart can be bought    "),
+            Span::raw(" chart is sold    "),
             Span::styled("┄┄┄", Paint::Dotted.style()),
-            Span::raw(" sail from memory"),
+            Span::raw(" chart only drops as booty"),
         ]),
         Line::from(vec![
             Span::styled("  ━━━", Paint::Known.style()),
@@ -1021,6 +1044,7 @@ mod tests {
             .find(|i| i.name == "Cromwell Island")
             .expect("Cromwell on the map");
         app.jump_to(cromwell.at());
+        app.pirate = Some("Someone".to_owned());
         app.memorized.insert(cromwell.at());
         let mut terminal =
             Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
@@ -1095,6 +1119,47 @@ mod tests {
         }
     }
 
+    /// The column's bottom block is a pirate's tally once one is named, and
+    /// the way to name one until then.
+    #[test]
+    fn the_column_asks_for_a_pirate_before_it_tallies() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let mut app = MapApp::new();
+        let draw = |app: &mut MapApp| {
+            let mut terminal = Terminal::new(TestBackend::new(120, 40))
+                .expect("test terminal");
+            terminal
+                .draw(|frame| {
+                    let ctx = OceanContext {
+                        map: Some(map),
+                        geo: None,
+                        ocean: Some("Emerald"),
+                        islands: None,
+                        fetching_islands: false,
+                    };
+                    render(
+                        frame,
+                        frame.area(),
+                        app,
+                        ctx,
+                        true,
+                        &mut Vec::new(),
+                    );
+                })
+                .expect("draw");
+            format!("{}", terminal.backend())
+        };
+        let screen = draw(&mut app);
+        assert!(screen.contains("Memorizing needs a pirate:"));
+        assert!(!screen.contains("Memorized league points"));
+        app.pirate = Some("Someone".to_owned());
+        let screen = draw(&mut app);
+        assert!(screen.contains("Memorized league points"));
+        assert!(!screen.contains("Memorizing needs a pirate:"));
+    }
+
     /// Prints the whole Emerald canvas, for eyeballing the drawing:
     /// `cargo test dump_emerald_canvas -- --ignored --nocapture`.
     #[test]
@@ -1127,6 +1192,15 @@ mod tests {
         };
         let mut app = MapApp::new();
         let cromwell = island(map, "Cromwell Island");
+        // the memorized state is a pirate's: with none loaded, no line
+        let lines = text(&metadata_lines(
+            &app,
+            map,
+            &sources,
+            (2, 9),
+        ));
+        assert_eq!(lines, ["Open sea (2,9)"]);
+        app.pirate = Some("Someone".to_owned());
         app.memorized.insert(cromwell);
         let lines = text(&metadata_lines(
             &app, map, &sources, cromwell,

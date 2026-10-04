@@ -4,6 +4,10 @@
 //! [`SavedCache`]): the inventory and commodity list are global, while market
 //! prices and the playerbase are kept per-ocean, since each ocean has its own
 //! economy and its own pirates.
+//!
+//! Everything here is data about the *game* and can be refetched, so losing
+//! this file costs only time. What the user themselves has done and learned
+//! lives in [`crate::persistence`] instead.
 
 use std::{
     collections::{BTreeSet, HashMap},
@@ -29,10 +33,6 @@ pub struct OceanCache {
     /// we don't re-query it next run. Each entry carries fetch timestamps.
     #[serde(default)]
     pub players: HashMap<String, CachedPirate>,
-    /// League points (islands included) the user has marked as memorized on
-    /// the Map page, as `(x, y)` map cells.
-    #[serde(default)]
-    pub memorized: BTreeSet<(u16, u16)>,
     /// Yoweb's list of the ocean's colonized islands (governor, flag, tax,
     /// exports), with its fetch time; `None` until first fetched.
     #[serde(default)]

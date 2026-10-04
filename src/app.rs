@@ -476,10 +476,11 @@ pub struct AppShell {
     /// Whether the Map page has asked for the island list and the fetch has
     /// not come back yet (the event loop runs it).
     pub island_list_wanted: bool,
-    /// Persisted voyage history (loaded from / written to `voyages_path`).
-    pub voyage_history: crate::voyage::persistence::SavedVoyages,
-    /// Where voyage history lives on disk (set by `--voyages`).
-    pub voyages_path: Option<std::path::PathBuf>,
+    /// What the user has done and learned, loaded from / written to
+    /// `persistence_path`: the voyage history and per-pirate memorization.
+    pub persistence: crate::persistence::SavedPersistence,
+    /// Where that lives on disk (set by `--persistence`).
+    pub persistence_path: Option<std::path::PathBuf>,
     // click regions rebuilt each render
     click_regions: Vec<ClickRegion>,
 }
@@ -505,8 +506,8 @@ impl AppShell {
             map: MapApp::new(),
             islands: None,
             island_list_wanted: false,
-            voyage_history: crate::voyage::persistence::SavedVoyages::default(),
-            voyages_path: None,
+            persistence: crate::persistence::SavedPersistence::default(),
+            persistence_path: None,
             click_regions: Vec::new(),
         }
     }
@@ -529,6 +530,21 @@ impl AppShell {
     /// The selected ocean's compiled-in map for the Map page, if any.
     fn ocean_map(&self) -> Option<&'static Map> {
         self.ocean.and_then(|o| Map::for_ocean(o.name()))
+    }
+
+    /// Fold the Map page's memorization into the persisted data, under the
+    /// pirate and ocean it belongs to. A run with no pirate or no ocean has
+    /// nowhere to put it and leaves the file's own marks alone.
+    pub fn save_memorization(&mut self) {
+        if let (Some(ocean), Some(pirate)) =
+            (self.ocean, self.map.pirate.as_deref())
+        {
+            self.persistence.set_memorized(
+                ocean.name(),
+                pirate,
+                self.map.memorized.clone(),
+            );
+        }
     }
 
     /// The Map page was opened: ask for the ocean's island list if it has
@@ -1020,11 +1036,10 @@ impl AppShell {
             .flat_map(|v| v.voyages.iter().chain(v.current_voyage.iter()))
             .filter_map(|vy| vy.saved_to)
             .collect();
-        let mut pages: Vec<VoyageSel> =
-            (0 .. self.voyage_history.voyages.len())
-                .filter(|i| !claimed.contains(i))
-                .map(VoyageSel::Saved)
-                .collect();
+        let mut pages: Vec<VoyageSel> = (0 .. self.persistence.voyages.len())
+            .filter(|i| !claimed.contains(i))
+            .map(VoyageSel::Saved)
+            .collect();
         // Current-login runs across all vessels, chronological (sail time, then
         // id).
         let mut live: Vec<(Option<chrono::NaiveDateTime>, u64)> = self
@@ -1237,7 +1252,7 @@ impl AppShell {
         page_count: usize,
     ) -> crate::voyage::ui::VoyageView {
         use crate::voyage::ui::VoyageBadge;
-        let Some(saved) = self.voyage_history.voyages.get(idx) else {
+        let Some(saved) = self.persistence.voyages.get(idx) else {
             return self.empty_voyage_view();
         };
         let voyage = saved.to_voyage();
@@ -1435,7 +1450,7 @@ impl AppShell {
             // bars. Only when the hull is actually known (no
             // guessing).
             let mut hull_fight_poe = Vec::new();
-            for v in &self.voyage_history.voyages {
+            for v in &self.persistence.voyages {
                 let mut total = 0i64;
                 let mut shares = 0u32;
                 let same_hull = ship_type.is_some() && v.ship_type == ship_type;
@@ -1484,7 +1499,7 @@ impl AppShell {
                 (usize, usize),
                 WinCount,
             > = Default::default();
-            for v in &self.voyage_history.voyages {
+            for v in &self.persistence.voyages {
                 let Some(our_idx) =
                     v.ship_type.as_deref().and_then(crate::ships::ship_index)
                 else {
@@ -1836,7 +1851,7 @@ impl AppShell {
         // The disk index this run will occupy — pinned on the live voyage so
         // the pager hides the on-disk twin and keeps showing the live
         // (read-write) page.
-        let new_index = self.voyage_history.voyages.len();
+        let new_index = self.persistence.voyages.len();
         let saved = {
             let Some(voyage) = self.chatlog.voyage_by_id_mut(id) else {
                 return;
@@ -1866,13 +1881,12 @@ impl AppShell {
             voyage.saved_to = Some(new_index);
             saved
         };
-        self.voyage_history.voyages.push(saved);
-        if let Some(path) = &self.voyages_path {
-            crate::utils::write_json_atomic(
-                path,
-                &self.voyage_history,
-                "voyage history",
-            );
+        self.persistence.voyages.push(saved);
+        // the memorization in the same file has to survive this write, so
+        // the whole of it goes out, not just the history
+        if let Some(path) = self.persistence_path.clone() {
+            self.save_memorization();
+            crate::persistence::save(&path, &self.persistence);
         }
     }
 

@@ -26,8 +26,9 @@ league is a div holding one of seven tile images:
     Map_O  the league-difficulty colour ruler at the top; not part of the sea
 
 Solid tiles come from the wiki's `Chart_league_solid` template and dotted ones
-from `Chart_league`: a solid league lies on a route whose chart can be bought
-in game, a dotted one has to be sailed from memory. Each league is emitted as
+from `Chart_league`: a solid league lies on a route whose chart is sold in
+game, a dotted one's chart is not sold and only drops as booty. Each league
+is emitted as
 `"x,y dir kind"` where `dir` is the heading from the named grid cell (`e`,
 `se`, `ne`) and `kind` is `solid` or `dotted`.
 """

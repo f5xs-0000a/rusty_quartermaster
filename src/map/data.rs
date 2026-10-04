@@ -89,8 +89,8 @@ impl Place {
 /// One league between two neighbouring points. Each league is listed once,
 /// from its western point, so `heading` is only ever `E`, `Se` or `Ne`.
 /// `solid` is the line style on the yppedia map: a solid league lies on a
-/// route whose chart can be bought in game; a dotted one has to be sailed
-/// from memory.
+/// route whose chart is sold in game; a dotted one's chart is not sold and
+/// only drops as booty.
 pub struct League {
     pub x: u16,
     pub y: u16,

@@ -150,7 +150,7 @@ macro_rules! diag {
 /// filesystem is atomic, so a reader never sees a half-written file.
 ///
 /// `label` names the payload for the log lines (e.g. `"cache"`,
-/// `"voyage history"`): a `Saved {label} to {path}` on success, or a
+/// `"persisted data"`): a `Saved {label} to {path}` on success, or a
 /// `failed to … {label}` on error. Messages go through [`diag`] (the TUI-safe
 /// sink) rather than straight to stderr — this runs mid-render from the
 /// save/discard prompt, and a raw `eprintln!` would garble the alternate

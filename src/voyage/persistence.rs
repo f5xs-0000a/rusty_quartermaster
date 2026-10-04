@@ -1,18 +1,16 @@
-//! On-disk persistence for completed voyages.
+//! The persisted form of a completed voyage.
 //!
 //! This is the **only** path from the in-RAM [`crate::voyage::Voyage`] data to
 //! disk — written when the user confirms via the save/discard prompt, never
-//! automatically. The file is **per-user-behind-keyboard** (one human's history
-//! across all their pirates), set by `--voyages` (default: `ypp_voyages.json`
-//! next to the executable).
+//! automatically. These land in the persistence file's voyage history (see
+//! [`crate::persistence`]), which is **per-user-behind-keyboard**: one human's
+//! voyages across all their pirates.
 //!
 //! The on-disk shape is decoupled from the runtime structs (like `cache.rs` and
 //! `profits::persistence`): we store precomputed numeric fields so the format
 //! doesn't churn with internal refactors and we never need to round-trip
 //! `chrono` timestamps. Aggregates are computed at save time. See the
 //! `voyage-statistics-model` memory.
-
-use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 
@@ -281,13 +279,6 @@ pub struct SavedVoyage {
     pub booty_goods: Vec<SavedBootyGood>,
     #[serde(default)]
     pub battles: Vec<SavedBattle>,
-}
-
-/// The whole persisted history file.
-#[derive(Serialize, Deserialize, Default)]
-pub struct SavedVoyages {
-    #[serde(default)]
-    pub voyages: Vec<SavedVoyage>,
 }
 
 fn outcome_str(o: BattleOutcome) -> &'static str {
@@ -683,27 +674,6 @@ impl SavedVoyage {
                 self.avg_swabbies,
                 self.avg_mercenaries,
             )),
-        }
-    }
-}
-
-/// Load the voyage history from `path`. A missing or unparseable file yields an
-/// empty history rather than an error, so a first run just starts fresh.
-pub fn load(path: &Path) -> SavedVoyages {
-    let Ok(data) = std::fs::read_to_string(path) else {
-        return SavedVoyages::default();
-    };
-    match serde_json::from_str(&data) {
-        Ok(v) => {
-            eprintln!(
-                "Loaded voyage history from {}",
-                path.display()
-            );
-            v
-        }
-        Err(e) => {
-            eprintln!("warning: failed to parse voyage history: {e}");
-            SavedVoyages::default()
         }
     }
 }

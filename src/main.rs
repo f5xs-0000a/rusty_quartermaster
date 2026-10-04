@@ -39,6 +39,7 @@ mod islands;
 mod jobbers;
 mod map;
 mod ocean;
+mod persistence;
 mod pirate;
 mod profits;
 mod ratelimit;
@@ -71,13 +72,15 @@ struct Args {
     #[arg(long, value_name = "PATH")]
     cache: Option<PathBuf>,
 
-    /// Path to save/load the voyage-history JSON.
+    /// Path to save/load your own persisted data as JSON.
     ///
-    /// Holds completed voyages (per-human-behind-keyboard, across all their
-    /// pirates). Loaded on startup, appended on save. Defaults to
-    /// `ypp_voyages.json` next to the executable.
-    #[arg(long, value_name = "PATH")]
-    voyages: Option<PathBuf>,
+    /// Holds what you have done and learned (per-human-behind-keyboard,
+    /// across all their pirates): the completed-voyage history, and what
+    /// each pirate has memorized of each ocean. Defaults to
+    /// `ypp_persistence.json` next to the executable, falling back to an
+    /// `ypp_voyages.json` left there by an earlier version.
+    #[arg(long, value_name = "PATH", alias = "voyages")]
+    persistence: Option<PathBuf>,
 
     /// Path to the Puzzle Pirates client chat log to monitor (optional).
     ///
@@ -171,13 +174,30 @@ fn chat_log_identity(path: Option<&Path>) -> (Option<Ocean>, Option<String>) {
 }
 
 /// A path sitting next to the running executable (e.g. `cache.json` beside the
-/// binary). The default location for the cache and voyage-history files when no
-/// explicit `--cache` / `--voyages` path is given. `None` only if the
+/// binary). The default location for the cache and persistence files when no
+/// explicit `--cache` / `--persistence` path is given. `None` only if the
 /// executable's location can't be determined.
 fn exe_adjacent(name: &str) -> Option<PathBuf> {
     std::env::current_exe()
         .ok()
         .and_then(|exe| exe.parent().map(|dir| dir.join(name)))
+}
+
+/// Where persisted data goes without an explicit `--persistence`: the file
+/// beside the executable. An `ypp_voyages.json` left there by a version that
+/// called this file the voyage history is used as-is, so that history is
+/// never stranded by the rename.
+fn default_persistence_path() -> Option<PathBuf> {
+    let legacy = exe_adjacent("ypp_voyages.json").filter(|p| p.is_file());
+    if let Some(path) = legacy {
+        eprintln!(
+            "note: using {} — rename it to ypp_persistence.json at your \
+             leisure.",
+            path.display()
+        );
+        return Some(path);
+    }
+    exe_adjacent("ypp_persistence.json")
 }
 
 // ---------------------------------------------------------------------------
@@ -194,10 +214,8 @@ async fn main() -> io::Result<()> {
         .cache
         .clone()
         .or_else(|| exe_adjacent("ypp_cache.json"));
-    let voyages_path = args
-        .voyages
-        .clone()
-        .or_else(|| exe_adjacent("ypp_voyages.json"));
+    let persistence_path =
+        args.persistence.clone().or_else(default_persistence_path);
 
     // Set per-service request spacing before any network call goes out.
     ratelimit::configure(
@@ -275,9 +293,14 @@ async fn main() -> io::Result<()> {
     if user.is_none() {
         eprintln!(
             "warning: no pirate name set — Jobbers pirate-stat lookups are \
-             limited."
+             limited and the Map page cannot memorize league points."
         );
     }
+    // memorized league points are one pirate's knowledge of one ocean, so
+    // they are kept under the pirate's normalized name in the ocean's bucket
+    let this_pirate = user
+        .as_deref()
+        .and_then(|name| pirate::normalize_name(name).ok());
 
     // The selected ocean's bucket. Other oceans' data stays in `oceans` and is
     // written back untouched on save.
@@ -326,17 +349,24 @@ async fn main() -> io::Result<()> {
     // session.
     shell.chatlog.name_segments = saved_name_segments;
     shell.cached_offers = this_ocean.market;
-    shell.map.memorized = this_ocean.memorized;
     shell.islands = this_ocean.islands;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
-    // Voyage history (per-human-behind-keyboard). Load it now so it's available
-    // across sessions; new runs are appended when the user confirms the save
-    // prompt.
-    shell.voyages_path = voyages_path;
-    if let Some(path) = &shell.voyages_path {
-        shell.voyage_history = voyage::persistence::load(path);
+    // The user's own persisted data (per-human-behind-keyboard): the voyage
+    // history and every pirate's memorization. Loaded now so it's available
+    // across sessions; voyages are appended when the user confirms the save
+    // prompt, and the whole file is rewritten on exit.
+    shell.persistence_path = persistence_path;
+    if let Some(path) = &shell.persistence_path {
+        shell.persistence = persistence::load(path);
     }
+    // This pirate's memorization is taken out of the file for the Map page to
+    // work on; the other pirates' stay where they are and are written back
+    // untouched.
+    if let (Some(o), Some(norm)) = (ocean, &this_pirate) {
+        shell.map.memorized = shell.persistence.take_memorized(o.name(), norm);
+    }
+    shell.map.pirate = this_pirate;
     shell.profits.show_co_rate = args.pay_commanding_officer;
     shell.profits.show_donation = args.donate_to_crew;
     // Pre-seed pirate stats from the cache. They're refreshed lazily: a cached
@@ -636,6 +666,15 @@ async fn main() -> io::Result<()> {
         DisableMouseCapture
     )?;
 
+    // -- Save the user's own data (memorization changes as the Map page is
+    //    used; voyages were already written as they were saved) --
+    if let Some(path) = shell.persistence_path.clone()
+        && shell.map.pirate.is_some()
+    {
+        shell.save_memorization();
+        persistence::save(&path, &shell.persistence);
+    }
+
     // -- Save the unified cache --
     if let Some(ref path) = cache_path {
         // Fold the current ocean's market + players back into the per-ocean
@@ -646,7 +685,6 @@ async fn main() -> io::Result<()> {
                 OceanCache {
                     market: shell.cached_offers,
                     players: shell.pirate_cache.fetched,
-                    memorized: shell.map.memorized,
                     islands: shell.islands,
                 },
             );

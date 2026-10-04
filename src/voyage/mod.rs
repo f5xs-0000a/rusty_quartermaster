@@ -429,7 +429,7 @@ pub struct Voyage {
     /// Runtime-only; not persisted (`0` for a default/test voyage).
     pub id: u64,
     /// If this voyage was persisted to history this run, the index it occupies
-    /// in [`crate::voyage::persistence::SavedVoyages::voyages`]. The pager
+    /// in [`crate::persistence::SavedPersistence::voyages`]. The pager
     /// keeps showing this live (read-write) page and hides its on-disk
     /// read-only twin, so a just-saved run isn't listed twice. `None`
     /// until saved. Runtime-only.

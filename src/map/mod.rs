@@ -1,5 +1,6 @@
 //! The Map app: the selected ocean's map, scrolled by a cursor that sails
-//! league by league, with league points marked as memorized.
+//! league by league, with league points marked as memorized. What is
+//! memorized belongs to one pirate on one ocean.
 
 pub mod data;
 pub mod ui;
@@ -89,8 +90,12 @@ fn move_key(key: char) -> Option<&'static MoveKey> {
 pub struct MapApp {
     /// The point under the cursor. `None` until a map has been shown.
     pub cursor: Option<Point>,
-    /// Points marked as memorized on the selected ocean. Persisted per ocean
-    /// in the cache.
+    /// The pirate (normalized name) whose memorization is loaded. Memorized
+    /// points belong to one pirate on one ocean, so without a pirate there
+    /// is nowhere to keep a mark and Space does nothing.
+    pub pirate: Option<String>,
+    /// Points `pirate` has marked as memorized on the selected ocean.
+    /// Persisted per pirate per ocean in the cache.
     pub memorized: BTreeSet<Point>,
     /// The open `/` island search, if any.
     pub search: Option<PromptField>,
@@ -108,6 +113,7 @@ impl MapApp {
     pub fn new() -> Self {
         Self {
             cursor: None,
+            pirate: None,
             memorized: BTreeSet::new(),
             search: None,
             help: false,
@@ -160,9 +166,11 @@ impl MapApp {
         }
     }
 
-    /// Flip the memorized mark on the point under the cursor.
+    /// Flip the memorized mark on the point under the cursor. A mark is
+    /// only ever made for a known pirate, so that none is made that could
+    /// not be saved.
     pub fn toggle_memorized(&mut self) {
-        let Some(p) = self.cursor else {
+        let (Some(p), Some(_)) = (self.cursor, &self.pirate) else {
             return;
         };
         if !self.memorized.remove(&p) {
@@ -361,6 +369,10 @@ mod tests {
     #[test]
     fn space_toggles_memorized_and_a_league_is_sailable_between_two_marks() {
         let mut app = MapApp::new();
+        // without a pirate there is no one to remember the point
+        press(&mut app, KeyCode::Char(' '));
+        assert!(app.memorized.is_empty());
+        app.pirate = Some("Someone".to_owned());
         press(&mut app, KeyCode::Char(' '));
         assert!(app.memorized.contains(&(1, 1)));
         assert!(!app.sailable(&MAP.leagues[0]));
@@ -416,6 +428,7 @@ mod tests {
     #[test]
     fn help_is_modal_and_closes_on_question_mark_or_esc() {
         let mut app = MapApp::new();
+        app.pirate = Some("Someone".to_owned());
         app.cursor_on(&MAP);
         press(&mut app, KeyCode::Char('?'));
         assert!(app.help);
