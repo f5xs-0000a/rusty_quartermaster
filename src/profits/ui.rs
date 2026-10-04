@@ -1028,7 +1028,7 @@ fn wrapped_line_count(text: &str, width: usize) -> u16 {
     lines.max(1)
 }
 
-/// The "Hold from clipboard" prompt: the recognized goods with their
+/// The "Hold From Clipboard" prompt: the recognized goods with their
 /// quantities, any names the commodity list doesn't know, and a No / Yes pair.
 fn render_hold_import(
     frame: &mut Frame,
@@ -1073,7 +1073,7 @@ fn render_hold_import(
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
-        .title(offset_title("Hold from clipboard").0);
+        .title(offset_title("Hold From Clipboard").0);
     let inner = block.inner(popup_area);
     frame.render_widget(block, popup_area);
 
@@ -1199,7 +1199,7 @@ fn render_popup(
             const QUESTION: &str = "Re-query market prices?";
             const CAVEAT: &str = "This may take some time.";
             let (block, w) = crate::utils::titled_block(
-                "Re-query?",
+                "Re-Query?",
                 ((QUESTION.len() + 1 + CAVEAT.len()) as u16).max(YES_NO_W),
             );
             let h: u16 = 5;
@@ -1276,7 +1276,7 @@ fn render_popup(
             // wider.
             let text_len = "Delete row \"\"?".len() + name.chars().count();
             let (block, w) = crate::utils::titled_block(
-                "Delete row",
+                "Delete Row",
                 (text_len as u16).max(YES_NO_W),
             );
             let h: u16 = 5;
@@ -1367,7 +1367,7 @@ fn render_popup(
                 .unwrap_or(0)
                 .max(HEADER.len()) as u16;
             let (block, w) = crate::utils::titled_block(
-                "Restock warning",
+                "Restock Warning",
                 content_w.max(BUTTONS_W),
             );
             let x = area.width.saturating_sub(w) / 2;
@@ -1503,7 +1503,7 @@ fn render_popup(
             let content_w =
                 lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
             let (block, w) =
-                crate::utils::titled_block("Prices needed", content_w);
+                crate::utils::titled_block("Prices Needed", content_w);
             let h: u16 = lines.len() as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;

@@ -467,7 +467,7 @@ fn render(frame: &mut Frame, state: &Setup) {
     let block = Block::default()
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
-        .title(Line::from("Choose yer Pirate").centered());
+        .title(Line::from("Choose Yer Pirate").centered());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -548,7 +548,7 @@ fn render(frame: &mut Frame, state: &Setup) {
         .borders(Borders::ALL)
         .border_style(border_for(name_focused))
         .padding(Padding::horizontal(1))
-        .title(offset_title("Who are ye?").0);
+        .title(offset_title("Who Are Ye?").0);
     let name_inner = name_block.inner(rows[1]);
     frame.render_widget(name_block, rows[1]);
     let name_span = if state.name.value.is_empty() && !name_focused {

@@ -134,11 +134,11 @@ pub fn render_calculator(
     if let Some(ref popup) = app.popup {
         render_ship_popup(frame, popup, regions);
     }
-    // "Reset values?" confirm (after a ship change) sits over everything.
+    // "Reset Values?" confirm (after a ship change) sits over everything.
     if let Some(yes) = app.reset_prompt {
         render_reset_prompt(frame, yes, regions);
     }
-    // "New battle" prompt (raised when a fight begins) sits over everything.
+    // "New Battle" prompt (raised when a fight begins) sits over everything.
     if let Some(ref prompt) = app.battle_prompt {
         render_battle_prompt(frame, app, prompt, regions);
     }
@@ -604,7 +604,7 @@ fn apply_damage_bar(
     }
 }
 
-/// Modal: "Reset values?" with Yes/No buttons (`yes` = the focused choice).
+/// Modal: "Reset Values?" with Yes/No buttons (`yes` = the focused choice).
 fn render_reset_prompt(
     frame: &mut Frame,
     yes: bool,
@@ -614,7 +614,7 @@ fn render_reset_prompt(
 
     let area = frame.area();
     let (block, w) = crate::utils::titled_block(
-        "Reset values?",
+        "Reset Values?",
         QUESTION.chars().count() as u16,
     );
     let h = 5u16;
@@ -667,7 +667,7 @@ fn render_reset_prompt(
     });
 }
 
-/// Modal: "New battle" — shows the foe (ship name, hull, and a note for a
+/// Modal: "New Battle" — shows the foe (ship name, hull, and a note for a
 /// noteworthy foe) and offers Apply (seed the foe hull and clear the tally, the
 /// default) / Keep (change nothing). A status line reports whether the previous
 /// fight's tally was already saved, so the user knows if clearing loses data.
@@ -720,7 +720,7 @@ fn render_battle_prompt(
         )
         .max(status.chars().count() as u16)
         .max(BUTTONS_W);
-    let (block, w) = crate::utils::titled_block("New battle", content_w);
+    let (block, w) = crate::utils::titled_block("New Battle", content_w);
     let h = 1 /*intercepted by*/ + note_h + status_h + 1 /*spacer*/ + 1 /*buttons*/ + 2;
     let rect = Rect::new(
         area.x + area.width.saturating_sub(w) / 2,

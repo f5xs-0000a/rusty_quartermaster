@@ -622,3 +622,50 @@ A control that cannot do anything is not drawn. The Trophies popup hides its
 search box when the pirate has no trophies, or none fetched yet, and shrinks to
 the one line it has to say — but it keeps the box when a *filter* matches
 nothing, since clearing the filter is what the user needs it for.
+
+## Rule 8: Titles are in title case
+
+Every widget title, popup title and chart title follows **APA title case**:
+
+- the first word is capitalized, whatever it is;
+- so is every major word — nouns, verbs, adjectives, adverbs, pronouns — and
+  every word of four letters or more, whatever its part of speech;
+- minor words of three letters or fewer stay lowercase: the articles `a`, `an`,
+  `the`, the short conjunctions (`and`, `but`, `for`, `or`, `nor`, `so`, `yet`)
+  and the short prepositions (`at`, `by`, `in`, `of`, `on`, `per`, `to`, `up`,
+  `via`);
+- both halves of a hyphenated compound are capitalized.
+
+So `PoE per Fight` keeps `per` lowercase at three letters, while
+`Hold From Clipboard` capitalizes `From` at four — the length is what decides
+it, not whether the word feels important.
+
+A title is a name, which is why it gets this treatment. Anything that is a
+*sentence* does not: the body of a popup, a tooltip, a hint, a button label and
+a stat row's label are all left as they read.
+
+```
+┌─── Delete Row ────┐      ← title, title case
+│ Delete row "Rum"? │      ← a question, sentence case
+```
+
+### What the sweep changed
+
+| was | is |
+| --- | -- |
+| `Delete row` | `Delete Row` |
+| `Re-query?` | `Re-Query?` |
+| `Restock warning` | `Restock Warning` |
+| `Prices needed` | `Prices Needed` |
+| `Hold from clipboard` | `Hold From Clipboard` |
+| `Reset values?` | `Reset Values?` |
+| `New battle` | `New Battle` |
+| `Save voyage?` | `Save Voyage?` |
+| `PoE per fight` | `PoE per Fight` |
+| `Value per share` | `Value per Share` |
+| `Who are ye?` | `Who Are Ye?` |
+| `Choose yer Pirate` | `Choose Yer Pirate` |
+
+The other seventeen titles the gallery draws already complied. The doc comments
+that name a popup by its title were carried along with it, so searching the
+source for a title still finds the code behind it.

@@ -37,10 +37,10 @@ pub enum ClickTarget {
     DamageRamIncrement,
     DamageRamDecrement,
     DamageShipItem(usize),
-    /// Yes / No on the "Reset values?" confirm shown after a ship change.
+    /// Yes / No on the "Reset Values?" confirm shown after a ship change.
     DamageResetYes,
     DamageResetNo,
-    /// Apply / Keep on the "New battle" prompt shown when a fight begins:
+    /// Apply / Keep on the "New Battle" prompt shown when a fight begins:
     /// Apply seeds the foe hull and clears the tally, Keep leaves it untouched.
     DamageBattleApply,
     DamageBattleKeep,

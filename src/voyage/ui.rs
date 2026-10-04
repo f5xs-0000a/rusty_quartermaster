@@ -41,10 +41,10 @@ use crate::{
 
 /// The charts, in display order.
 pub const CHART_TITLES: [&str; 3] =
-    ["Ship Winrate", "PoE per fight", "Value per share"];
+    ["Ship Winrate", "PoE per Fight", "Value per Share"];
 
 /// Which charts can enlarge into a popup (parallel to [`CHART_TITLES`]). The
-/// "Value per share" box-plot shows everything in its mini box, so it has no
+/// "Value per Share" box-plot shows everything in its mini box, so it has no
 /// popup — it stays selectable for its tooltip only. "Ship Winrate" enlarges
 /// into the full hull-matchup matrix.
 pub const CHART_ENLARGEABLE: [bool; 3] = [true, true, false];
@@ -856,7 +856,7 @@ fn render_save_prompt(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
-        .title(" Save voyage? ");
+        .title(" Save Voyage? ");
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 

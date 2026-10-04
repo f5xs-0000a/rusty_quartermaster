@@ -66,7 +66,7 @@ pub struct SavedTeam {
     /// Mercenaries — a distinct crew kind, disjoint with `swabbies`. Persisted
     /// to preserve the exact swabbie/mercenary split after a reload (for the
     /// roster and per-merc stats); mercenaries earn no divvy share, so this
-    /// does not feed the "Value per share" metric. Legacy files (pre-field)
+    /// does not feed the "Value per Share" metric. Legacy files (pre-field)
     /// and the enemy side default to `0`, folding those bodies into
     /// `swabbies`.
     #[serde(default)]

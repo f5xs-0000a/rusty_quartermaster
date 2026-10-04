@@ -19,7 +19,7 @@ pub struct ShipSelectPopup {
     pub selected: usize,
 }
 
-/// The "New battle" prompt raised when a fight begins: choose whether to seed
+/// The "New Battle" prompt raised when a fight begins: choose whether to seed
 /// the calculator from the fight or leave it as it stands.
 pub struct BattlePrompt {
     /// The foe vessel's own name, if known.
@@ -79,10 +79,10 @@ pub struct DamageApp {
     pub focus_row: usize,
     pub focus_side: Side,
     pub popup: Option<ShipSelectPopup>,
-    /// When `Some`, the "Reset values?" confirm (shown after a ship change) is
+    /// When `Some`, the "Reset Values?" confirm (shown after a ship change) is
     /// open; the bool is the focused choice (`true` = Yes, the default).
     pub reset_prompt: Option<bool>,
-    /// When `Some`, the "New battle" prompt (shown when a fight begins) is
+    /// When `Some`, the "New Battle" prompt (shown when a fight begins) is
     /// open.
     pub battle_prompt: Option<BattlePrompt>,
 }
@@ -235,7 +235,7 @@ impl DamageApp {
     }
 
     /// True when the tally board is untouched (all counts zero). A ship change
-    /// then has nothing to invalidate, so we skip the "Reset values?" confirm.
+    /// then has nothing to invalidate, so we skip the "Reset Values?" confirm.
     pub fn counts_are_default(&self) -> bool {
         self.left == [0; 2] && self.right == [0; 2] && self.rams == 0
     }
@@ -380,7 +380,7 @@ impl DamageApp {
         InputResult::Exit
     }
 
-    /// Keys for the "Reset values?" confirm (default Yes). Enter/Space/Y on Yes
+    /// Keys for the "Reset Values?" confirm (default Yes). Enter/Space/Y on Yes
     /// clears the hit counts; No / N / Esc dismisses it keeping the values.
     fn handle_reset_prompt_key(&mut self, key: KeyEvent) -> InputResult {
         match key.code {
@@ -407,7 +407,7 @@ impl DamageApp {
         InputResult::Consumed
     }
 
-    /// Keys for the "New battle" prompt (default Apply). Left/Right move
+    /// Keys for the "New Battle" prompt (default Apply). Left/Right move
     /// between Apply and Keep; Enter/Space commits the focused choice; Esc
     /// keeps things as they are.
     fn handle_battle_prompt_key(&mut self, key: KeyEvent) -> InputResult {
@@ -430,7 +430,7 @@ impl DamageApp {
         InputResult::Consumed
     }
 
-    /// Resolve the "New battle" prompt. On `apply` the foe hull (when known) is
+    /// Resolve the "New Battle" prompt. On `apply` the foe hull (when known) is
     /// seeded and the tally cleared; otherwise nothing changes. Either way the
     /// prompt closes.
     pub fn commit_battle_prompt(&mut self, apply: bool) {
