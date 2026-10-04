@@ -733,6 +733,30 @@ fn profits_states(states: &mut Vec<State>) {
             shell.profits.focus = Focus::Button;
         },
     ));
+    // A table too wide for its box: the columns keep their widths and the
+    // view scrolls to the selected one instead.
+    states.push(state(
+        "profits-wide-table",
+        "Profits, inventory wider than its box (scrolled)",
+        |shell| {
+            shell.commodities.push(Commodity {
+                id: 99,
+                name: "Fine enchanted midnight broadcloth".to_owned(),
+            });
+            for id in [99, 1, 2] {
+                let mut row = InventoryRow::new(id);
+                row.stock = "120".to_owned();
+                row.sell = "450".to_owned();
+                row.buy = "380".to_owned();
+                shell.profits.rows.push(row);
+            }
+            open(shell, AppId::Profits, true);
+            shell.profits.focus = Focus::Table;
+            shell.profits.table_state.select(Some(0));
+            shell.profits.table_state.select_column(Some(5));
+        },
+    ));
+
     states.push(state(
         "profits-submit-failed",
         "Profits with a rejected commodity search",

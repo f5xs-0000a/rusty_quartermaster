@@ -324,6 +324,10 @@ pub struct ProfitsApp {
     pub cursor: usize,
     pub focus: Focus,
     pub table_state: TableState,
+    /// Columns the inventory table is scrolled right by, when it is wider than
+    /// the box holding it. Columns keep their width and the view moves
+    /// instead, so a narrow terminal costs reach rather than legibility.
+    pub hscroll: u16,
     pub panel: [PromptField; PANEL_COUNT],
     pub submit_failed: Option<String>,
     pub popup: Option<PopupKind>,
@@ -351,6 +355,7 @@ impl ProfitsApp {
             cursor: 0,
             focus: Focus::Input,
             table_state: TableState::default(),
+            hscroll: 0,
             panel: [
                 PromptField::new("Restocking Place", FieldKind::Text),
                 PromptField::new("Selling Place", FieldKind::Text),

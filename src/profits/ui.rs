@@ -420,74 +420,131 @@ fn render_inventory(
     } else {
         Style::default()
     };
-    let table = Table::new(rows, widths)
+    let table = Table::new(rows, widths.clone())
         .header(header)
         .column_spacing(COL_GAP)
         .row_highlight_style(Style::default())
-        .cell_highlight_style(highlight)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Inventory").0),
-        );
+        .cell_highlight_style(highlight);
 
-    frame.render_stateful_widget(table, area, &mut app.table_state);
+    // The box is drawn here rather than by the table, so the table can be
+    // placed inside it: centered when it is narrower, scrolled when it is
+    // wider.
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title("Inventory").0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Column widths never shrink, so the table has one intrinsic width.
+    let col_ws: Vec<u16> = widths
+        .iter()
+        .map(|c| {
+            match c {
+                Constraint::Length(w) => *w,
+                _ => 0,
+            }
+        })
+        .collect();
+    let columns_width = col_ws.iter().sum::<u16>()
+        + COL_GAP * col_ws.len().saturating_sub(1) as u16;
+
+    // Where column `i` starts, measured from the table's own left edge.
+    let col_offsets: Vec<u16> = col_ws
+        .iter()
+        .scan(0, |x, w| {
+            let at = *x;
+            *x += w + COL_GAP;
+            Some(at)
+        })
+        .collect();
+
+    // `columns_x` is where the table's left edge lands on screen, which the
+    // click regions below are measured from. It sits left of `inner` while
+    // scrolled.
+    let columns_x: i32 = if columns_width <= inner.width {
+        app.hscroll = 0;
+        inner.x as i32 + (inner.width - columns_width) as i32 / 2
+    } else {
+        // Too wide to show at once: keep the selected column in view and move
+        // the window, never the column widths.
+        let max_scroll = columns_width - inner.width;
+        if let Some(col) = app.table_state.selected_column()
+            && col < col_offsets.len()
+        {
+            let (start, width) = (col_offsets[col], col_ws[col]);
+            if start < app.hscroll {
+                app.hscroll = start;
+            } else if app.hscroll + inner.width < start + width {
+                app.hscroll = start + width - inner.width;
+            }
+        }
+        app.hscroll = app.hscroll.min(max_scroll);
+        inner.x as i32 - app.hscroll as i32
+    };
+
+    if columns_width <= inner.width {
+        let rect = Rect {
+            x: columns_x as u16,
+            y: inner.y,
+            width: columns_width,
+            height: inner.height,
+        };
+        frame.render_stateful_widget(table, rect, &mut app.table_state);
+    } else {
+        // Draw at full width offscreen, then blit the visible window, so a
+        // partially-scrolled column clips cleanly at the border.
+        let mut canvas = Buffer::empty(Rect::new(
+            0,
+            0,
+            columns_width,
+            inner.height,
+        ));
+        StatefulWidget::render(
+            table,
+            Rect::new(0, 0, columns_width, inner.height),
+            &mut canvas,
+            &mut app.table_state,
+        );
+        for row in 0 .. inner.height {
+            for col in 0 .. inner.width {
+                let src = Position::new(app.hscroll + col, row);
+                if let Some(cell) = canvas.cell(src).cloned()
+                    && let Some(dst) = frame.buffer_mut().cell_mut(
+                        Position::new(inner.x + col, inner.y + row),
+                    )
+                {
+                    *dst = cell;
+                }
+            }
+        }
+    }
 
     // Register click regions for the name + editable cells. The Sell/Buy
     // columns are only present (and clickable) when prices are entered
     // manually.
-    let inner_x = area.x + 2; // border + padding
-    let inner_y = area.y + 1; // top border
-    let data_start_y = inner_y + 2; // header row + bottom_margin
+    let data_start_y = inner.y + 2; // header row + bottom_margin
     let scroll_offset = app.table_state.offset();
-    let visible_height = area.height.saturating_sub(2); // borders
-    let visible_rows = visible_height.saturating_sub(2); // header + margin
-    // Build column x-offsets left-to-right so the price columns (when shown)
-    // line up with their click targets.
-    let mut col_xs = vec![inner_x];
-    let mut col_ws = vec![item_width];
-    let mut x = inner_x + item_width + COL_GAP;
-    let push_col =
-        |xs: &mut Vec<u16>, ws: &mut Vec<u16>, x: &mut u16, w: u16| {
-            xs.push(*x);
-            ws.push(w);
-            *x += w + COL_GAP;
-        };
-    push_col(
-        &mut col_xs,
-        &mut col_ws,
-        &mut x,
-        RESTOCK_W,
-    );
-    push_col(
-        &mut col_xs,
-        &mut col_ws,
-        &mut x,
-        STOCK_W,
-    );
-    push_col(
-        &mut col_xs,
-        &mut col_ws,
-        &mut x,
-        BOOTY_W,
-    );
-    if show_prices {
-        push_col(&mut col_xs, &mut col_ws, &mut x, SELL_W);
-        push_col(&mut col_xs, &mut col_ws, &mut x, BUY_W);
-    }
-    let ncols = col_xs.len();
+    let visible_rows = inner.height.saturating_sub(2); // header + margin
     for vis_row in 0 .. visible_rows as usize {
         let data_row = scroll_offset + vis_row;
         if data_row >= app.rows.len() {
             break;
         }
-        for c in 0 .. ncols {
+        for (c, (at, w)) in col_offsets.iter().zip(&col_ws).enumerate() {
+            // A scrolled column can start left of the box; clip it to what is
+            // on screen and drop it entirely once nothing is.
+            let left = (columns_x + *at as i32).max(inner.x as i32);
+            let right = (columns_x + (*at + *w) as i32)
+                .min((inner.x + inner.width) as i32);
+            if right <= left {
+                continue;
+            }
             regions.push(ClickRegion {
                 rect: Rect::new(
-                    col_xs[c],
+                    left as u16,
                     data_start_y + vis_row as u16,
-                    col_ws[c],
+                    (right - left) as u16,
                     1,
                 ),
                 target: ClickTarget::ProfitsTableCell {
@@ -1508,5 +1565,127 @@ fn render_popup(
                 target: ClickTarget::ProfitsPopupOk,
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+    use super::{InventoryRow, ProfitsApp, render};
+    use crate::{
+        api::Commodity,
+        app::SharedState,
+        clickmap::{ClickRegion, ClickTarget},
+    };
+
+    /// Render the Profits page and hand back the cell click regions.
+    fn cells(names: &[&str], width: u16) -> (Vec<ClickRegion>, Rect) {
+        let commodities: Vec<Commodity> = names
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                Commodity {
+                    id: i as u64 + 1,
+                    name: (*name).to_owned(),
+                }
+            })
+            .collect();
+        let mut app = ProfitsApp::new();
+        for i in 0 .. names.len() {
+            app.rows.push(InventoryRow::new(i as u64 + 1));
+        }
+        app.table_state.select(Some(0));
+        app.table_state.select_column(Some(0));
+
+        let mut regions = Vec::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, 40)).expect("terminal");
+        let area = Rect::new(0, 0, width, 40);
+        terminal
+            .draw(|frame| {
+                let shared = SharedState {
+                    commodities: &commodities,
+                    cached_offers: &Default::default(),
+                    available_islands: &[],
+                    ocean_geo: None,
+                    loading: false,
+                    market_supported: false,
+                    pillage_gross: 0,
+                    pillage_stolen: 0,
+                    pillage_chest: 0,
+                };
+                render(
+                    frame,
+                    area,
+                    &mut app,
+                    &shared,
+                    true,
+                    &mut regions,
+                );
+            })
+            .expect("draw");
+        let cells = regions
+            .into_iter()
+            .filter(|r| {
+                matches!(
+                    r.target,
+                    ClickTarget::ProfitsTableCell { .. }
+                )
+            })
+            .collect();
+        (cells, area)
+    }
+
+    /// A cell you cannot see is a cell you must not be able to click, however
+    /// far the table is scrolled.
+    #[test]
+    fn no_cell_region_escapes_the_page() {
+        for (names, width) in [
+            (vec!["Rum", "Iron"], 120u16),
+            (
+                vec!["Fine enchanted midnight broadcloth", "Rum"],
+                80,
+            ),
+        ] {
+            let (cells, area) = cells(&names, width);
+            assert!(!cells.is_empty(), "no cells at {width}");
+            for cell in &cells {
+                assert!(
+                    area.x <= cell.rect.x
+                        && cell.rect.x + cell.rect.width <= area.x + area.width,
+                    "cell {:?} outside the page at {width}",
+                    cell.rect,
+                );
+                assert!(
+                    cell.rect.width > 0,
+                    "empty cell at {width}"
+                );
+            }
+        }
+    }
+
+    /// The table is centered when it is narrower than its box, so the first
+    /// column does not start hard against the padding.
+    #[test]
+    fn a_narrow_table_is_centered_in_its_box() {
+        let (cells, _) = cells(&["Rum", "Iron"], 120);
+        let first = cells
+            .iter()
+            .find(|c| {
+                matches!(
+                    c.target,
+                    ClickTarget::ProfitsTableCell {
+                        col: 0,
+                        ..
+                    }
+                )
+            })
+            .expect("a first column cell");
+        assert!(
+            first.rect.x > 2,
+            "first column at {} is not centered",
+            first.rect.x,
+        );
     }
 }
