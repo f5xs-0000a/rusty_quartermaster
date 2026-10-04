@@ -552,10 +552,13 @@ impl ProfitsApp {
         }
         // `resume` is provisional: the raise records the focus actually
         // interrupted, and a replacement keeps the open prompt's.
+        // Defaults to No: the user did not ask for this prompt — a clipboard
+        // they filled elsewhere raised it — and saying yes overwrites the Stock
+        // column they may have typed by hand.
         let import = HoldImport {
             goods,
             unknown,
-            yes_focused: true,
+            yes_focused: false,
             resume: self.focus,
         };
         match self.popup {

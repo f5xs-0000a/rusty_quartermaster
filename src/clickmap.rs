@@ -101,10 +101,9 @@ pub enum ClickTarget {
     /// The "save voyage to history" prompt opener on the Voyage Statistics
     /// page.
     VoyageSaveOpen,
-    /// Buttons inside the save/discard prompt.
+    /// The Save button inside the save prompt.
     VoyageSaveConfirm,
-    VoyageSaveDiscard,
-    /// The backdrop / cancel of the save/discard prompt.
+    /// Its Cancel button, and the backdrop behind the prompt.
     VoyageSaveCancel,
     /// A focusable stat number on the Voyage Statistics page (`idx` into the
     /// page's focusable-stat list); clicking it focuses that stat's tooltip.

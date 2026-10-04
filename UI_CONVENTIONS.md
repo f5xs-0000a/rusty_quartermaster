@@ -534,9 +534,15 @@ text, its list and its buttons, plus the frame Rules 1 and 2 ask for.
 A row nothing is drawn into is not reserved either — the `New battle` prompt has
 a line for a noteworthy foe and shows it only when there is one.
 
-The exception is content with no size of its own. A chart or a grid scales to
-the room it is given, so those popups may fill the screen; what may not happen
-is a popup of fixed text sitting in a box wider than the text.
+Content with no size of its own still has a *largest useful* size. The Trophies
+grid reflows into three columns of whatever width it is given, so it is three
+columns of the longest trophy's name and no wider — not the 80 it used to be
+typed at. The enlarged `PoE per Fight` chart spends height on one row per fight,
+so it is as tall as it has fights to show, where before it took twenty rows and
+left the spare ones blank.
+
+Only a view that genuinely uses every column and row it is handed, like the
+Ship Winrate matrix, may fill the screen.
 
 ### A single-line body is centered
 
@@ -557,6 +563,61 @@ the caveat dimmed, and so it is centered too.
 
 A body of several lines is laid out on its own terms — a bulleted list reads
 down a left edge, so it is left-aligned and the rule does not touch it.
+
+### Buttons are bracketed, equal, and evenly spaced
+
+A button is always written `[ Label ]`, brackets included, whether its label is
+a word or a letter — `[ Yes ]`, not ` Yes `. Within a row every button is as
+wide as the widest label among them, and the gaps between them and at both ends
+of the row are equal:
+
+```
+│   [ Change Island ]  [  Ocean-wide   ]   │
+│         [ Yes ]       [ No  ]            │
+```
+
+Equal widths are what make a row read as a set of alternatives rather than as
+words of differing importance, and the equal end gaps are what keep the set
+centered without a hand-placed offset.
+
+A popup takes its width from `utils::buttons_width`, so the buttons are never
+the thing that gets squeezed when the text above them happens to be short.
+
+One look for all of them: the focused button is drawn in reverse, the same mark
+the top bar and the table cursor use. Three different looks (reverse here, cyan
+there, bold-and-dim elsewhere) used to say the same thing three ways.
+
+Take the row from `utils::render_buttons`, which hands back each button's rect
+for the caller to register its click on.
+
+### Nothing sits under the bottom row of buttons
+
+The last row inside a popup is its buttons, with **one blank row above them and
+nothing below**. A blank row under a button is room reserved for nothing, which
+is what the Ship Winrate popup kept until its frame stopped padding the bottom.
+
+The exception is a tooltip strip, which a popup may reserve beneath its buttons
+the way a page does.
+
+### The default is the convenient choice
+
+The highlighted button is the one the user most likely came for. Convenience
+decides it; where no choice is clearly the wanted one, the default is the one
+that changes least.
+
+| prompt | default | why |
+| ------ | ------- | --- |
+| `Delete Row` | Yes | the user pressed Delete; Enter finishes what they started |
+| `Reset Values?` | Yes | raised by their own ship change, and clearing is the point of it |
+| `New Battle` | Apply | a new foe wants its hull seeded; that is why the prompt exists |
+| `Hold From Clipboard` | No | nobody asked for it — a clipboard filled elsewhere raised it, and Yes overwrites a hand-typed Stock column |
+| `Re-Query?` | No | costs a round trip to the market |
+| `Restock Warning` | Change Island | returns the user to the field they were editing |
+| `Save Voyage?` | Cancel | the prompt can be raised in passing |
+
+`Save Voyage?` is Cancel and Save; it used to be Save and Discard, with the
+default depending on which key opened it. Nothing on screen throws a voyage away
+now — a run is discarded by never saving it.
 
 ### Esc is not worth a line
 
@@ -615,6 +676,23 @@ with no `> ` prefix:
 The highlight already says which row it is, and it says so in a way the marker
 cannot: it survives the row being read at a glance. Dropping the marker also
 narrows the box by the two columns it held.
+
+The choices are centered **as a block**, and are not themselves centered. A list
+is read down its left edge, so the words stay flush with one another and the
+whole column moves instead — which matters because the box is usually held open
+by its title rather than by its longest entry:
+
+```
+┌─── Voyage Type ───┐          ┌─── Voyage Type ───┐
+│   Pillage         │          │ Pillage           │
+│   Atlantis        │          │ Atlantis          │
+│   Cursed Isles    │          │ Cursed Isles      │
+└───────────────────┘          └───────────────────┘
+   block centered                 flush left, box
+   in the box's slack             looking lopsided
+```
+
+`utils::choice_block` is `titled_block` with that offset applied.
 
 ### Nothing to search is nothing to show
 

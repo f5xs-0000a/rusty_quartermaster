@@ -49,9 +49,11 @@ const COL_GAP: u16 = 2; // spacing between inventory columns
 /// it to wrap once.
 const TOOLTIP_H: u16 = 2;
 
-/// Columns a ` No `/` Yes ` button row spends, the two blank columns between
-/// them included. A confirm popup is never narrower than its own buttons.
-const YES_NO_W: u16 = 11;
+/// Columns a No / Yes button row spends. A confirm popup is never narrower than
+/// its own buttons.
+fn yes_no_width() -> u16 {
+    crate::utils::buttons_width(&["No", "Yes"])
+}
 
 pub fn render(
     frame: &mut Frame,
@@ -1140,41 +1142,36 @@ fn render_hold_import(
         rows[2 + list_lines],
     );
 
-    let no_style = if !import.yes_focused {
-        Style::default().bg(Color::White).fg(Color::Black).bold()
-    } else {
-        Style::default()
-    };
-    let yes_style = if import.yes_focused {
-        Style::default().bg(Color::White).fg(Color::Black).bold()
-    } else {
-        Style::default()
-    };
-    let buttons = Line::from(vec![
-        Span::styled(" No ", no_style),
-        Span::raw("  "),
-        Span::styled(" Yes ", yes_style),
-    ]);
-    let btn_row = rows[rows.len() - 1];
-    frame.render_widget(
-        Paragraph::new(buttons).centered(),
-        btn_row,
+    let buttons = crate::utils::render_buttons(
+        frame,
+        rows[rows.len() - 1],
+        &["No", "Yes"],
+        Some(usize::from(import.yes_focused)),
     );
+    for (rect, target) in buttons
+        .into_iter()
+        .zip([ClickTarget::ProfitsPopupNo, ClickTarget::ProfitsPopupYes])
+    {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
+}
 
-    let half = btn_row.width / 2;
-    regions.push(ClickRegion {
-        rect: Rect::new(btn_row.x, btn_row.y, half, 1),
-        target: ClickTarget::ProfitsPopupNo,
-    });
-    regions.push(ClickRegion {
-        rect: Rect::new(
-            btn_row.x + half,
-            btn_row.y,
-            btn_row.width - half,
-            1,
-        ),
-        target: ClickTarget::ProfitsPopupYes,
-    });
+/// Hang the popup's No / Yes click regions on a two-button row, in that order.
+/// Every confirm popup on this page answers to the same two targets, whatever
+/// its buttons are called.
+fn push_yes_no_regions(regions: &mut Vec<ClickRegion>, buttons: Vec<Rect>) {
+    for (rect, target) in buttons
+        .into_iter()
+        .zip([ClickTarget::ProfitsPopupNo, ClickTarget::ProfitsPopupYes])
+    {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
 }
 
 fn render_popup(
@@ -1200,7 +1197,8 @@ fn render_popup(
             const CAVEAT: &str = "This may take some time.";
             let (block, w) = crate::utils::titled_block(
                 "Re-Query?",
-                ((QUESTION.len() + 1 + CAVEAT.len()) as u16).max(YES_NO_W),
+                ((QUESTION.len() + 1 + CAVEAT.len()) as u16)
+                    .max(yes_no_width()),
             );
             let h: u16 = 5;
             let x = area.width.saturating_sub(w) / 2;
@@ -1231,41 +1229,15 @@ fn render_popup(
                 rows[0],
             );
 
-            let no_style = if !yes_focused {
-                Style::default().bg(Color::White).fg(Color::Black).bold()
-            } else {
-                Style::default()
-            };
-            let yes_style = if *yes_focused {
-                Style::default().bg(Color::White).fg(Color::Black).bold()
-            } else {
-                Style::default()
-            };
-            let buttons = Line::from(vec![
-                Span::styled(" No ", no_style),
-                Span::raw("  "),
-                Span::styled(" Yes ", yes_style),
-            ]);
-            frame.render_widget(
-                Paragraph::new(buttons).centered(),
-                rows[2],
-            );
-
-            // Register popup button regions (split button row in half)
-            let half = rows[2].width / 2;
-            regions.push(ClickRegion {
-                rect: Rect::new(rows[2].x, rows[2].y, half, 1),
-                target: ClickTarget::ProfitsPopupNo,
-            });
-            regions.push(ClickRegion {
-                rect: Rect::new(
-                    rows[2].x + half,
-                    rows[2].y,
-                    rows[2].width - half,
-                    1,
+            push_yes_no_regions(
+                regions,
+                crate::utils::render_buttons(
+                    frame,
+                    rows[2],
+                    &["No", "Yes"],
+                    Some(usize::from(*yes_focused)),
                 ),
-                target: ClickTarget::ProfitsPopupYes,
-            });
+            );
         }
         PopupKind::DeleteConfirm {
             row_idx: _,
@@ -1277,7 +1249,7 @@ fn render_popup(
             let text_len = "Delete row \"\"?".len() + name.chars().count();
             let (block, w) = crate::utils::titled_block(
                 "Delete Row",
-                (text_len as u16).max(YES_NO_W),
+                (text_len as u16).max(yes_no_width()),
             );
             let h: u16 = 5;
             let x = area.width.saturating_sub(w) / 2;
@@ -1308,40 +1280,15 @@ fn render_popup(
                 rows[0],
             );
 
-            let no_style = if !yes_focused {
-                Style::default().bg(Color::White).fg(Color::Black).bold()
-            } else {
-                Style::default()
-            };
-            let yes_style = if *yes_focused {
-                Style::default().bg(Color::White).fg(Color::Black).bold()
-            } else {
-                Style::default()
-            };
-            let buttons = Line::from(vec![
-                Span::styled(" No ", no_style),
-                Span::raw("  "),
-                Span::styled(" Yes ", yes_style),
-            ]);
-            frame.render_widget(
-                Paragraph::new(buttons).centered(),
-                rows[2],
-            );
-
-            let half = rows[2].width / 2;
-            regions.push(ClickRegion {
-                rect: Rect::new(rows[2].x, rows[2].y, half, 1),
-                target: ClickTarget::ProfitsPopupNo,
-            });
-            regions.push(ClickRegion {
-                rect: Rect::new(
-                    rows[2].x + half,
-                    rows[2].y,
-                    rows[2].width - half,
-                    1,
+            push_yes_no_regions(
+                regions,
+                crate::utils::render_buttons(
+                    frame,
+                    rows[2],
+                    &["No", "Yes"],
+                    Some(usize::from(*yes_focused)),
                 ),
-                target: ClickTarget::ProfitsPopupYes,
-            });
+            );
         }
         PopupKind::RestockWarning {
             missing,
@@ -1357,9 +1304,8 @@ fn render_popup(
             // Widest of the header, the bulleted commodities and the buttons —
             // the box is as wide as that and no wider.
             const HEADER: &str = "No supply on this island for:";
-            const BUTTONS_W: u16 = " Change Island ".len() as u16
-                + 2
-                + " Ocean-wide ".len() as u16;
+            let buttons_w =
+                crate::utils::buttons_width(&["Change Island", "Ocean-wide"]);
             let content_w = shown
                 .iter()
                 .map(|name| name.chars().count() + "  \u{2022} ".len())
@@ -1368,7 +1314,7 @@ fn render_popup(
                 .max(HEADER.len()) as u16;
             let (block, w) = crate::utils::titled_block(
                 "Restock Warning",
-                content_w.max(BUTTONS_W),
+                content_w.max(buttons_w),
             );
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
@@ -1408,41 +1354,17 @@ fn render_popup(
                 );
             }
 
-            let ocean_style = if *ocean_wide_focused {
-                Style::default().bg(Color::White).fg(Color::Black).bold()
-            } else {
-                Style::default()
-            };
-            let change_style = if !ocean_wide_focused {
-                Style::default().bg(Color::White).fg(Color::Black).bold()
-            } else {
-                Style::default()
-            };
-            let buttons = Line::from(vec![
-                Span::styled(" Change Island ", change_style),
-                Span::raw("  "),
-                Span::styled(" Ocean-wide ", ocean_style),
-            ]);
-            let btn_row = rows[rows.len() - 1];
-            frame.render_widget(
-                Paragraph::new(buttons).centered(),
-                btn_row,
-            );
-
-            let half = btn_row.width / 2;
-            regions.push(ClickRegion {
-                rect: Rect::new(btn_row.x, btn_row.y, half, 1),
-                target: ClickTarget::ProfitsPopupNo,
-            });
-            regions.push(ClickRegion {
-                rect: Rect::new(
-                    btn_row.x + half,
-                    btn_row.y,
-                    btn_row.width - half,
-                    1,
+            // "Change Island" takes the `No` target, being the choice that
+            // changes nothing but where the cursor is.
+            push_yes_no_regions(
+                regions,
+                crate::utils::render_buttons(
+                    frame,
+                    rows[rows.len() - 1],
+                    &["Change Island", "Ocean-wide"],
+                    Some(usize::from(*ocean_wide_focused)),
                 ),
-                target: ClickTarget::ProfitsPopupYes,
-            });
+            );
         }
         PopupKind::PriceBlock {
             need_buy,
@@ -1523,19 +1445,18 @@ fn render_popup(
                 frame.render_widget(Paragraph::new(line), rows[i]);
             }
 
-            let ok_style =
-                Style::default().bg(Color::White).fg(Color::Black).bold();
-            let btn_row = rows[rows.len() - 1];
-            frame.render_widget(
-                Paragraph::new(
-                    Line::from(Span::styled(" Ok ", ok_style)).centered(),
-                ),
-                btn_row,
-            );
-            regions.push(ClickRegion {
-                rect: btn_row,
-                target: ClickTarget::ProfitsPopupOk,
-            });
+            // One button, so it is the focused one.
+            for rect in crate::utils::render_buttons(
+                frame,
+                rows[rows.len() - 1],
+                &["Ok"],
+                Some(0),
+            ) {
+                regions.push(ClickRegion {
+                    rect,
+                    target: ClickTarget::ProfitsPopupOk,
+                });
+            }
         }
         PopupKind::ProfitResult(result) => {
             let bd = result.breakdown(show_co, show_donation);
@@ -1655,19 +1576,17 @@ fn render_popup(
                 layout[layout.len() - 2],
             );
 
-            let ok_style =
-                Style::default().bg(Color::White).fg(Color::Black).bold();
-            let ok_btn = Line::from(Span::styled(" Ok ", ok_style));
-            let ok_row = layout[layout.len() - 1];
-            frame.render_widget(
-                Paragraph::new(ok_btn).centered(),
-                ok_row,
-            );
-
-            regions.push(ClickRegion {
-                rect: ok_row,
-                target: ClickTarget::ProfitsPopupOk,
-            });
+            for rect in crate::utils::render_buttons(
+                frame,
+                layout[layout.len() - 1],
+                &["Ok"],
+                Some(0),
+            ) {
+                regions.push(ClickRegion {
+                    rect,
+                    target: ClickTarget::ProfitsPopupOk,
+                });
+            }
         }
     }
 }

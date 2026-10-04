@@ -641,30 +641,20 @@ fn render_reset_prompt(
             .centered(),
         rows[0],
     );
-    let btns = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-        .split(rows[2]);
-    let button = |label: &str, focused: bool| {
-        let style = if focused {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::Cyan)
-        };
-        Paragraph::new(Line::from(Span::styled(
-            format!("[ {label} ]"),
-            style,
-        )))
-        .centered()
-    };
-    frame.render_widget(button("Yes", yes), btns[0]);
-    frame.render_widget(button("No", !yes), btns[1]);
-    regions.push(ClickRegion {
-        rect: btns[0],
-        target: ClickTarget::DamageResetYes,
-    });
-    regions.push(ClickRegion {
-        rect: btns[1],
-        target: ClickTarget::DamageResetNo,
-    });
+    for (rect, target) in crate::utils::render_buttons(
+        frame,
+        rows[2],
+        &["Yes", "No"],
+        Some(usize::from(!yes)),
+    )
+    .into_iter()
+    .zip([ClickTarget::DamageResetYes, ClickTarget::DamageResetNo])
+    {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
 }
 
 /// Modal: "New Battle" — shows the foe (ship name, hull, and a note for a
@@ -709,8 +699,7 @@ fn render_battle_prompt(
     // A row only for what there is to draw in it.
     let note_h = u16::from(prompt.note.is_some());
     let status_h = u16::from(!status.is_empty());
-    const BUTTONS_W: u16 =
-        "[ Apply ]".len() as u16 + 2 + "[ Keep ]".len() as u16;
+    let buttons_w = crate::utils::buttons_width(&["Apply", "Keep"]);
     let content_w = (intercept.width() as u16)
         .max(
             prompt
@@ -719,7 +708,7 @@ fn render_battle_prompt(
                 .map_or(0, |n| n.chars().count() as u16),
         )
         .max(status.chars().count() as u16)
-        .max(BUTTONS_W);
+        .max(buttons_w);
     let (block, w) = crate::utils::titled_block("New Battle", content_w);
     let h = 1 /*intercepted by*/ + note_h + status_h + 1 /*spacer*/ + 1 /*buttons*/ + 2;
     let rect = Rect::new(
@@ -759,30 +748,22 @@ fn render_battle_prompt(
         rows[2],
     );
 
-    let btns = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-        .split(rows[4]);
-    let button = |label: &str, focused: bool| {
-        let style = if focused {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::Cyan)
-        };
-        Paragraph::new(Line::from(Span::styled(
-            format!("[ {label} ]"),
-            style,
-        )))
-        .centered()
-    };
-    frame.render_widget(button("Apply", prompt.apply), btns[0]);
-    frame.render_widget(button("Keep", !prompt.apply), btns[1]);
-    regions.push(ClickRegion {
-        rect: btns[0],
-        target: ClickTarget::DamageBattleApply,
-    });
-    regions.push(ClickRegion {
-        rect: btns[1],
-        target: ClickTarget::DamageBattleKeep,
-    });
+    for (rect, target) in crate::utils::render_buttons(
+        frame,
+        rows[4],
+        &["Apply", "Keep"],
+        Some(usize::from(!prompt.apply)),
+    )
+    .into_iter()
+    .zip([
+        ClickTarget::DamageBattleApply,
+        ClickTarget::DamageBattleKeep,
+    ]) {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
 }
 
 fn render_ship_popup(
@@ -794,7 +775,7 @@ fn render_ship_popup(
 
     let max_name_len = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
     let (block, w) =
-        crate::utils::titled_block("Select Ship", max_name_len as u16);
+        crate::utils::choice_block("Select Ship", max_name_len as u16);
     let h = SHIPS.len() as u16 + 2; // +2 borders
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;

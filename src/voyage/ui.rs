@@ -67,11 +67,16 @@ const CHART_TOOLTIPS: [&str; 3] = [
 /// + 1 padding each side + 5 content rows).
 const CHART_H: u16 = 9;
 
-/// Which button the save/discard prompt has focused.
+/// Rows a popup's Close button and the blank row above it take from the box's
+/// inside.
+const CLOSE_H: u16 = 2;
+
+/// Which button the save prompt has focused. Cancel comes first, being the
+/// choice that changes nothing.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SaveChoice {
+    Cancel,
     Save,
-    Discard,
 }
 
 /// Which control the Sea Battles popup has focused. The chain runs top→bottom,
@@ -383,7 +388,7 @@ pub fn render(
     // footer hint. The save hint is the widest chrome; reserve room for it
     // always so the width doesn't jump when the save prompt becomes
     // available.
-    const FOOTER_W: usize = 40; // "S  save voyage to history  ·  D  discard"
+    const FOOTER_W: usize = 26; // "S  save voyage to history"
     let content_w = {
         // The name + parenthesized hull now share one line, so measure them
         // together (the widest header line drives the panel width).
@@ -690,7 +695,7 @@ pub fn render(
     if view.saveable {
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                "S  save voyage to history  ·  D  discard",
+                "S  save voyage to history",
                 Style::default().fg(Color::Cyan),
             )))
             .centered(),
@@ -829,7 +834,7 @@ fn voyage_badge_span(badge: VoyageBadge) -> Option<(&'static str, Style)> {
     }
 }
 
-/// Modal: "Save this voyage to history, or discard it?" with two buttons.
+/// Modal: "Persist this run to your history?" with Cancel and Save.
 fn render_save_prompt(
     frame: &mut Frame,
     area: Rect,
@@ -872,37 +877,22 @@ fn render_save_prompt(
         rows[0],
     );
 
-    // Two side-by-side buttons.
-    let btns = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-        .split(rows[2]);
-    let button = |label: &str, focused: bool| {
-        let style = if focused {
-            Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-        } else {
-            Style::default().fg(Color::Cyan)
-        };
-        Paragraph::new(Line::from(Span::styled(
-            format!("[ {label} ]"),
-            style,
-        )))
-        .centered()
-    };
-    frame.render_widget(
-        button("Save", choice == SaveChoice::Save),
-        btns[0],
-    );
-    frame.render_widget(
-        button("Discard", choice == SaveChoice::Discard),
-        btns[1],
-    );
-    regions.push(ClickRegion {
-        rect: btns[0],
-        target: ClickTarget::VoyageSaveConfirm,
-    });
-    regions.push(ClickRegion {
-        rect: btns[1],
-        target: ClickTarget::VoyageSaveDiscard,
-    });
+    for (rect, target) in crate::utils::render_buttons(
+        frame,
+        rows[2],
+        &["Cancel", "Save"],
+        Some(usize::from(choice == SaveChoice::Save)),
+    )
+    .into_iter()
+    .zip([
+        ClickTarget::VoyageSaveCancel,
+        ClickTarget::VoyageSaveConfirm,
+    ]) {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
 }
 
 /// Colour for a battle outcome label.
@@ -1288,16 +1278,25 @@ fn render_chart_popup(
         rect: area,
         target: ClickTarget::VoyageChartClose,
     });
-    // The Ship Winrate matrix (chart 0) needs the whole 14×14 grid, so it takes
-    // as much of the screen as it can; the other charts stay in a tidy
-    // centered box.
-    let (cap_w, cap_h) = if idx == 0 {
-        (u16::MAX, u16::MAX)
-    } else {
-        (78, 20)
-    };
-    let w = area.width.saturating_sub(2).min(cap_w).max(24);
-    let h = area.height.saturating_sub(2).min(cap_h).max(6);
+    // Chart 0, the Ship Winrate matrix, has its own popup
+    // (`render_winrate_popup` above) and never arrives here.
+    let w = area.width.saturating_sub(2).min(78).max(24);
+    // What the frame costs the content: borders, the blank row the padding
+    // keeps at the top, and the blank + Close rows at the foot.
+    const FRAME_H: u16 = 2 + 1 + CLOSE_H;
+    // These charts draw a row per fight and a row per box beneath them, so the
+    // box is as tall as it has rows to show. A taller window is spent on more
+    // fights, not on blank space, which is why the lines are measured at the
+    // tallest the window allows and the box then shrinks to them.
+    let max_h = area.height.saturating_sub(2).max(6);
+    let lines = chart_lines(
+        idx,
+        data,
+        w.saturating_sub(crate::utils::BOX_MARGIN) as usize,
+        max_h.saturating_sub(FRAME_H) as usize,
+        true,
+    );
+    let h = (lines.len() as u16 + FRAME_H).clamp(6, max_h);
     let rect = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -1310,7 +1309,7 @@ fn render_chart_popup(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
         .title(title)
-        .padding(Padding::uniform(1));
+        .padding(Padding::new(1, 1, 1, 0));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
@@ -1321,16 +1320,7 @@ fn render_chart_popup(
         Constraint::Length(1),
     ])
     .split(inner);
-    frame.render_widget(
-        Paragraph::new(chart_lines(
-            idx,
-            data,
-            parts[0].width as usize,
-            parts[0].height as usize,
-            true,
-        )),
-        parts[0],
-    );
+    frame.render_widget(Paragraph::new(lines), parts[0]);
     crate::utils::render_close_button(frame, parts[2]);
     regions.push(ClickRegion {
         rect: parts[2],
@@ -1503,15 +1493,15 @@ fn render_winrate_popup(
         |r: usize, c: usize| wr.history.get(&(r, c)).and_then(|w| w.label());
     let (title, _) = offset_title(CHART_TITLES[0]);
 
+    // No bottom padding: the Close button is the last row, and a blank row
+    // under a button is room reserved for nothing.
     let make_block = |title: &str| {
         Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::White))
             .title(title.to_string())
-            .padding(Padding::uniform(1))
+            .padding(Padding::new(1, 1, 1, 0))
     };
-    // Rows the Close button and the blank above it take from the box's inside.
-    const CLOSE_H: u16 = 2;
 
     // Nothing to display → a small centered note.
     if wr.history.is_empty() && !show_voyage {
@@ -1523,7 +1513,7 @@ fn render_winrate_popup(
                 CHART_TITLES[0],
             ))
             .min(area.width.saturating_sub(2));
-        let h = (1 + CLOSE_H + 4).min(area.height.saturating_sub(2));
+        let h = (1 + CLOSE_H + 3).min(area.height.saturating_sub(2));
         let rect = Rect {
             x: area.x + area.width.saturating_sub(w) / 2,
             y: area.y + area.height.saturating_sub(h) / 2,
@@ -1591,7 +1581,7 @@ fn render_winrate_popup(
 
     // Size to content, leaving a 1-cell screen margin all around.
     let w = (content_w + 4).min(area.width.saturating_sub(2)).max(12);
-    let h = (content_h + CLOSE_H + 4)
+    let h = (content_h + CLOSE_H + 3)
         .min(area.height.saturating_sub(2))
         .max(6);
     let rect = Rect {

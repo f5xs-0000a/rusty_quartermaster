@@ -1045,23 +1045,18 @@ impl AppShell {
                 KeyCode::Esc => self.voyage_ui.prompt = None,
                 KeyCode::Left | KeyCode::Right => {
                     self.voyage_ui.prompt = Some(match choice {
-                        SaveChoice::Save => SaveChoice::Discard,
-                        SaveChoice::Discard => SaveChoice::Save,
+                        SaveChoice::Cancel => SaveChoice::Save,
+                        SaveChoice::Save => SaveChoice::Cancel,
                     });
                 }
                 KeyCode::Enter => {
-                    match choice {
-                        SaveChoice::Save => self.save_displayed_voyage(),
-                        SaveChoice::Discard => self.discard_displayed_voyage(),
+                    if choice == SaveChoice::Save {
+                        self.save_displayed_voyage();
                     }
                     self.voyage_ui.prompt = None;
                 }
                 KeyCode::Char('s' | 'S') => {
                     self.save_displayed_voyage();
-                    self.voyage_ui.prompt = None;
-                }
-                KeyCode::Char('d' | 'D') => {
-                    self.discard_displayed_voyage();
                     self.voyage_ui.prompt = None;
                 }
                 _ => {}
@@ -1073,12 +1068,6 @@ impl AppShell {
             KeyCode::Esc => InputResult::Exit,
             KeyCode::Char('s' | 'S') => {
                 self.open_voyage_save_prompt();
-                InputResult::Consumed
-            }
-            KeyCode::Char('d' | 'D') => {
-                if self.build_voyage_view().saveable {
-                    self.voyage_ui.prompt = Some(SaveChoice::Discard);
-                }
                 InputResult::Consumed
             }
             // ←/→ page across selectable voyages (current login's runs + past
@@ -1895,7 +1884,7 @@ impl AppShell {
     /// unsaved.
     fn open_voyage_save_prompt(&mut self) {
         if self.build_voyage_view().saveable {
-            self.voyage_ui.prompt = Some(crate::voyage::ui::SaveChoice::Save);
+            self.voyage_ui.prompt = Some(crate::voyage::ui::SaveChoice::Cancel);
         }
     }
 
@@ -2003,16 +1992,6 @@ impl AppShell {
         if let Some(path) = self.persistence_path.clone() {
             self.save_memorization();
             crate::persistence::save(&path, &self.persistence);
-        }
-    }
-
-    /// Dismiss the selected (finished) voyage without persisting it.
-    fn discard_displayed_voyage(&mut self) {
-        let Some(id) = self.selected_saveable_id() else {
-            return;
-        };
-        if let Some(voyage) = self.chatlog.voyage_by_id_mut(id) {
-            voyage.saved = true;
         }
     }
 
@@ -3390,10 +3369,6 @@ impl AppShell {
             ClickTarget::VoyageSaveOpen => self.open_voyage_save_prompt(),
             ClickTarget::VoyageSaveConfirm => {
                 self.save_displayed_voyage();
-                self.voyage_ui.prompt = None;
-            }
-            ClickTarget::VoyageSaveDiscard => {
-                self.discard_displayed_voyage();
                 self.voyage_ui.prompt = None;
             }
             ClickTarget::VoyageSaveCancel => {

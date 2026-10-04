@@ -2079,65 +2079,29 @@ fn render_per_fight_popup(
 
     // What this fight's graph shows — stepping between fights, and what the
     // x-axis measures — then Close on its own row below, as every popup has it.
-    let prev = "[ ← Prev ]";
     let axis = match popup.axis {
-        AxisMode::Time => "[ Axis: Time ]",
-        AxisMode::Event => "[ Axis: # KOs ]",
+        AxisMode::Time => "Axis: Time",
+        AxisMode::Event => "Axis: # KOs",
     };
-    let next = "[ Next → ]";
-    // Each cell is as wide as the label it holds, so none of them clips its
-    // closing bracket; the gaps between them share what is left.
-    let cells = Layout::horizontal([
-        Constraint::Length(prev.chars().count() as u16),
-        Constraint::Min(1),
-        Constraint::Length(axis.chars().count() as u16),
-        Constraint::Min(1),
-        Constraint::Length(next.chars().count() as u16),
-    ])
-    .flex(ratatui::layout::Flex::Center)
-    .split(rows[2]);
-    let nav_style = Style::default().bold();
-    let dim = Style::default().fg(Color::DarkGray);
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            prev,
-            if 0 < idx { nav_style } else { dim },
-        )),
-        cells[0],
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(axis, nav_style)),
-        cells[2],
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            next,
-            if idx + 1 < fights.len() {
-                nav_style
-            } else {
-                dim
-            },
-        )),
-        cells[4],
-    );
-    frame.render_widget(
-        Paragraph::new(Span::styled("[ Close ]", nav_style)).centered(),
-        rows[3],
-    );
+    for (rect, target) in crate::utils::render_buttons(
+        frame,
+        rows[2],
+        &["← Prev", axis, "Next →"],
+        None,
+    )
+    .into_iter()
+    .zip([
+        ClickTarget::JobberPerFightPrev,
+        ClickTarget::JobberPerFightAxisToggle,
+        ClickTarget::JobberPerFightNext,
+    ]) {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
     regions.push(ClickRegion {
-        rect: cells[0],
-        target: ClickTarget::JobberPerFightPrev,
-    });
-    regions.push(ClickRegion {
-        rect: cells[2],
-        target: ClickTarget::JobberPerFightAxisToggle,
-    });
-    regions.push(ClickRegion {
-        rect: cells[4],
-        target: ClickTarget::JobberPerFightNext,
-    });
-    regions.push(ClickRegion {
-        rect: rows[3],
+        rect: crate::utils::render_close_button(frame, rows[3]),
         target: ClickTarget::JobberPerFightClose,
     });
 }
@@ -3765,7 +3729,7 @@ fn render_ship_popup(
     let area = frame.area();
 
     let max_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
-    let (block, w) = crate::utils::titled_block("Select Ship", max_name as u16);
+    let (block, w) = crate::utils::choice_block("Select Ship", max_name as u16);
     let h = SHIPS.len() as u16 + 2; // +2 borders
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3810,7 +3774,7 @@ fn render_vessel_popup(
         .max()
         .unwrap_or(0)
         .max("No vessels".len());
-    let (block, w) = crate::utils::titled_block("Vessels", max_name as u16);
+    let (block, w) = crate::utils::choice_block("Vessels", max_name as u16);
     let h = (ordered.len() as u16).max(1) + 2;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3881,7 +3845,7 @@ fn render_voyage_popup(
         })
         .collect();
     let max_name = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
-    let (block, w) = crate::utils::titled_block("Voyage Type", max_name as u16);
+    let (block, w) = crate::utils::choice_block("Voyage Type", max_name as u16);
     let h = VOYAGE_TYPES.len() as u16 + 2;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3960,11 +3924,10 @@ fn render_pirate_popup(
     let screen = frame.area();
     let cached = cache.get_cached(&pp.name);
 
-    // Buttons line (always present); compute its width up front.
-    let see = "[ See Trophies ]";
-    let close = "[ Close ]";
-    const BTN_GAP: usize = 3;
-    let buttons_w = see.len() + BTN_GAP + close.len();
+    // Buttons line (always present); compute its width up front. Both are as
+    // wide as the longer label, with a gap between them and at each end.
+    const BUTTONS: [&str; 2] = ["See Trophies", "Close"];
+    let buttons_w = crate::utils::buttons_width(&BUTTONS) as usize;
 
     // --- Build the unboxed crew/flag columns (no header label). Each column's
     //     width is its widest line. ---
@@ -4210,43 +4173,23 @@ fn render_pirate_popup(
         Rect::new(sb_x, rows[4].y, sb_w, rows[4].height),
     );
 
-    // Buttons, centered; each gets a click region.
-    let see_style = button_style(page_focused, pp.button == 0);
-    let close_style = button_style(page_focused, pp.button == 1);
-    frame.render_widget(
-        Paragraph::new(
-            Line::from(vec![
-                Span::styled(see, see_style),
-                Span::raw(" ".repeat(BTN_GAP)),
-                Span::styled(close, close_style),
-            ])
-            .centered(),
-        ),
+    // Buttons; each gets a click region. The page's own focus decides whether
+    // either is marked, so a popup behind an unfocused page shows neither.
+    for (rect, target) in crate::utils::render_buttons(
+        frame,
         rows[6],
-    );
-    let start_x =
-        rows[6].x + rows[6].width.saturating_sub(buttons_w as u16) / 2;
-    regions.push(ClickRegion {
-        rect: Rect::new(start_x, rows[6].y, see.len() as u16, 1),
-        target: ClickTarget::JobberPirateSeeTrophies,
-    });
-    regions.push(ClickRegion {
-        rect: Rect::new(
-            start_x + (see.len() + BTN_GAP) as u16,
-            rows[6].y,
-            close.len() as u16,
-            1,
-        ),
-        target: ClickTarget::JobberPirateClose,
-    });
-}
-
-/// Button emphasis: highlighted when focused, bold otherwise.
-fn button_style(page_focused: bool, active: bool) -> Style {
-    if page_focused && active {
-        Style::default().bg(Color::White).fg(Color::Black).bold()
-    } else {
-        Style::default().bold()
+        &BUTTONS,
+        page_focused.then_some(pp.button),
+    )
+    .into_iter()
+    .zip([
+        ClickTarget::JobberPirateSeeTrophies,
+        ClickTarget::JobberPirateClose,
+    ]) {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
     }
 }
 
@@ -4378,7 +4321,36 @@ fn render_trophy_popup(
         c.trophies.sections.iter().any(|s| !s.trophies.is_empty())
     });
 
-    let box_w = 80u16.min(screen.width.max(1));
+    // The grid reflows into three columns of whatever width it is given, so it
+    // has no width of its own; what it must not be is wider than the names in
+    // it. Three columns of the longest name with their gaps is that width, and
+    // 80 columns is as far as it goes however long a trophy's name runs.
+    const GRID_GAP: u16 = 2;
+    let longest = cached
+        .map(|c| {
+            c.trophies
+                .sections
+                .iter()
+                .flat_map(|s| s.trophies.iter().map(|t| t.chars().count()))
+                .chain(
+                    c.trophies
+                        .sections
+                        .iter()
+                        .map(|s| s.category.chars().count()),
+                )
+                .max()
+                .unwrap_or(0) as u16
+        })
+        .unwrap_or(0);
+    let content_w = if has_trophies {
+        3 * longest + 2 * GRID_GAP
+    } else {
+        "Trophies not loaded yet.".len() as u16
+    };
+    let box_w = (content_w + crate::utils::BOX_MARGIN)
+        .max(offset_title_width("Trophies"))
+        .min(80)
+        .min(screen.width.max(1));
     let box_h = if has_trophies {
         screen
             .height

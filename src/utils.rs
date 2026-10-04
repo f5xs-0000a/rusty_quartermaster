@@ -295,6 +295,32 @@ pub fn titled_block(
     )
 }
 
+/// As [`titled_block`], for a popup the user picks a row out of: the labels are
+/// centered inside the box *as a block*, without being centered themselves.
+///
+/// A list is read down its left edge, so the words stay flush with one another
+/// and the whole column moves instead. What it is centered against is the slack
+/// the box has beyond the labels, which is usually the title's doing — a box
+/// held open by `Voyage Type` is wider than `Cursed Isles` needs.
+pub fn choice_block(
+    title: &'static str,
+    label_width: u16,
+) -> (ratatui::widgets::Block<'static>, u16) {
+    use ratatui::widgets::Padding;
+
+    let (block, width) = titled_block(title, label_width);
+    let slack = width.saturating_sub(BOX_MARGIN + label_width);
+    (
+        block.padding(Padding::new(
+            PADDING + slack / 2,
+            PADDING,
+            0,
+            0,
+        )),
+        width,
+    )
+}
+
 /// Draw the notice that stands in for something unusable until a prerequisite
 /// is met — a missing argument, a window too small — centered on both axes of
 /// `area` and word-wrapped to its width. Each entry is wrapped on its own, so a
@@ -356,31 +382,103 @@ pub fn render_page_notice(
     );
 }
 
-/// Draw the Close button a popup carries instead of telling the user that Esc
-/// shuts it: centered on the row it is given, which is the last row inside the
-/// box. Esc still works; what the rule objects to is spending a line saying so,
-/// when a button says it and can be clicked besides.
+/// Columns a button spends on the brackets that mark it as one, `"[ "` and
+/// `" ]"`.
+const BUTTON_BRACKETS: u16 = 4;
+
+/// Blank columns kept between two buttons, and at each end of their row.
+const BUTTON_GAP: u16 = 2;
+
+/// Columns a row of the given buttons needs: each of them as wide as the widest
+/// label, with a [`BUTTON_GAP`] between them and at both ends. A popup takes
+/// its width from this so its buttons are never the thing that gets squeezed.
+pub fn buttons_width(labels: &[&str]) -> u16 {
+    let n = labels.len() as u16;
+    if n == 0 {
+        return 0;
+    }
+    let label_w =
+        labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+    n * (label_w + BUTTON_BRACKETS) + (n + 1) * BUTTON_GAP
+}
+
+/// Draw a row of buttons and hand back each one's rect, in order, for the
+/// caller to hang a click region on. `focused` is the one the keyboard is
+/// resting on.
 ///
-/// The caller registers the click region, since only it knows what closing this
-/// popup means.
-pub fn render_close_button(
+/// Every label is padded to the widest of them, so the buttons in a row are all
+/// one width however long their words are; the gaps between them and at both
+/// ends of the row are equal, so the row reads as one group rather than as
+/// text that happens to be spaced out. A focused button is drawn in reverse,
+/// the same mark of "this is where you are" that the top bar and the table
+/// cursor use.
+pub fn render_buttons(
     frame: &mut ratatui::Frame,
     row: ratatui::layout::Rect,
-) {
+    labels: &[&str],
+    focused: Option<usize>,
+) -> Vec<ratatui::layout::Rect> {
     use ratatui::{
-        style::Style,
+        layout::Rect,
+        style::{Color, Style},
         text::{Line, Span},
         widgets::Paragraph,
     };
 
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "[ Close ]",
-            Style::default().bold(),
-        )))
-        .centered(),
-        row,
-    );
+    if labels.is_empty() || row.width == 0 {
+        return Vec::new();
+    }
+
+    let label_w =
+        labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
+    let n = labels.len() as u16;
+    // Too little room for the brackets and the words is a layout fault
+    // elsewhere; share out what there is rather than overflow the row.
+    let button_w = (label_w + BUTTON_BRACKETS).min(row.width / n);
+    // One gap more than there are buttons: between each pair, and at each end.
+    let free = row.width - button_w * n;
+    let gap = free / (n + 1);
+    let mut x = row.x + gap + (free - gap * (n + 1)) / 2;
+
+    let mut rects = Vec::with_capacity(labels.len());
+    for (i, label) in labels.iter().enumerate() {
+        let rect = Rect::new(x, row.y, button_w, 1);
+        let style = if focused == Some(i) {
+            Style::default().bg(Color::White).fg(Color::Black).bold()
+        } else {
+            Style::default()
+        };
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                format!(
+                    "[ {label:^width$} ]",
+                    width = label_w as usize
+                ),
+                style,
+            )))
+            .centered(),
+            rect,
+        );
+        rects.push(rect);
+        x += button_w + gap;
+    }
+    rects
+}
+
+/// Draw the lone Close button a popup carries instead of telling the user that
+/// Esc shuts it. Esc still works; what the rule objects to is spending a line
+/// saying so, when a button says it and can be clicked besides.
+///
+/// Returns the button's rect for the caller to register the click on, since
+/// only it knows what closing this popup means.
+pub fn render_close_button(
+    frame: &mut ratatui::Frame,
+    row: ratatui::layout::Rect,
+) -> ratatui::layout::Rect {
+    render_buttons(frame, row, &["Close"], None)
+        .first()
+        .copied()
+        .unwrap_or(row)
 }
 
 /// Rows a vertically scrollable list keeps before it stops reading as one.
