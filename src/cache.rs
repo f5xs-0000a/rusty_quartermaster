@@ -29,6 +29,10 @@ pub struct OceanCache {
     /// we don't re-query it next run. Each entry carries fetch timestamps.
     #[serde(default)]
     pub players: HashMap<String, CachedPirate>,
+    /// League points (islands included) the user has marked as memorized on
+    /// the Map page, as `(x, y)` map cells.
+    #[serde(default)]
+    pub memorized: BTreeSet<(u16, u16)>,
 }
 
 /// Learned NPC name-segment vocabulary, used to tell a **swabbie** from a

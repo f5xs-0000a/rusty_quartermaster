@@ -130,6 +130,12 @@ pub enum ClickTarget {
     /// The "Record" toggle for the currently-shown fight in the Sea Battles
     /// popup.
     VoyageBattlesRecord,
+    /// A league point or island drawn on the Map page; clicking it moves the
+    /// cursor there.
+    MapPoint {
+        x: u16,
+        y: u16,
+    },
 }
 
 #[derive(Clone)]

@@ -36,6 +36,7 @@ mod commodities;
 mod damage;
 mod hold;
 mod jobbers;
+mod map;
 mod ocean;
 mod pirate;
 mod profits;
@@ -324,6 +325,7 @@ async fn main() -> io::Result<()> {
     // session.
     shell.chatlog.name_segments = saved_name_segments;
     shell.cached_offers = this_ocean.market;
+    shell.map.memorized = this_ocean.memorized;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
     // Voyage history (per-human-behind-keyboard). Load it now so it's available
@@ -617,6 +619,7 @@ async fn main() -> io::Result<()> {
                 OceanCache {
                     market: shell.cached_offers,
                     players: shell.pirate_cache.fetched,
+                    memorized: shell.map.memorized,
                 },
             );
         }

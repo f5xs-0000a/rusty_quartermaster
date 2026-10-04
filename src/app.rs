@@ -31,6 +31,7 @@ use crate::{
         VOYAGE_TYPES,
         VoyageType,
     },
+    map::{MapApp, data::Map},
     ocean::Ocean,
     profits::ProfitsApp,
     utils::text_similarity,
@@ -46,6 +47,7 @@ pub enum AppId {
     Damage,
     Chatlog,
     Voyage,
+    Map,
     Exit,
 }
 
@@ -58,6 +60,7 @@ impl AppId {
             AppId::Damage => ("Damage", ""),
             AppId::Chatlog => ("Jobbers", ""),
             AppId::Voyage => ("Voyage", "Statistics"),
+            AppId::Map => ("Map", ""),
             AppId::Exit => ("Exit", ""),
         }
     }
@@ -68,6 +71,7 @@ pub const APP_LIST: &[AppId] = &[
     AppId::Damage,
     AppId::Chatlog,
     AppId::Voyage,
+    AppId::Map,
     AppId::Exit,
 ];
 
@@ -465,6 +469,7 @@ pub struct AppShell {
     pub pirate_cache: PirateCache,
     pub jobbers_ui: JobbersUi,
     pub voyage_ui: crate::voyage::ui::VoyageStatsUi,
+    pub map: MapApp,
     /// Persisted voyage history (loaded from / written to `voyages_path`).
     pub voyage_history: crate::voyage::persistence::SavedVoyages,
     /// Where voyage history lives on disk (set by `--voyages`).
@@ -491,6 +496,7 @@ impl AppShell {
             pirate_cache: PirateCache::new(),
             jobbers_ui: JobbersUi::default(),
             voyage_ui: crate::voyage::ui::VoyageStatsUi::default(),
+            map: MapApp::new(),
             voyage_history: crate::voyage::persistence::SavedVoyages::default(),
             voyages_path: None,
             click_regions: Vec::new(),
@@ -510,6 +516,11 @@ impl AppShell {
     /// archipelago restock filtering can resolve names.
     pub fn ocean_geo(&self) -> Option<&'static bare::Ocean> {
         self.ocean.and_then(|o| bare::BARE.ocean(o.name()))
+    }
+
+    /// The selected ocean's compiled-in map for the Map page, if any.
+    fn ocean_map(&self) -> Option<&'static Map> {
+        self.ocean.and_then(|o| Map::for_ocean(o.name()))
     }
 
     pub fn rebuild_island_list(&mut self) {
@@ -596,6 +607,18 @@ impl AppShell {
                     content_area,
                     &view,
                     &mut self.voyage_ui,
+                    content_focused,
+                    &mut self.click_regions,
+                );
+            }
+            AppId::Map => {
+                let map = self.ocean_map();
+                crate::map::ui::render(
+                    frame,
+                    content_area,
+                    &mut self.map,
+                    map,
+                    self.ocean.map(Ocean::name),
                     content_focused,
                     &mut self.click_regions,
                 );
@@ -713,6 +736,10 @@ impl AppShell {
             AppId::Damage => self.damage.handle_key(key),
             AppId::Chatlog => self.handle_jobbers_key(key),
             AppId::Voyage => self.handle_voyage_key(key),
+            AppId::Map => {
+                let map = self.ocean_map();
+                self.map.handle_key(key, map)
+            }
             // Handled above (Exit-app keys quit / return to the bar).
             AppId::Exit => InputResult::Consumed,
         };
@@ -756,6 +783,8 @@ impl AppShell {
                     || self.voyage_ui.chart_popup.is_some()
                     || self.voyage_ui.battles_popup.is_some()
             }
+            // The search prompt owns Esc while it is open.
+            AppId::Map => self.map.search.is_some(),
             AppId::Exit => false,
         }
     }
@@ -2832,6 +2861,13 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.profits.focus_input();
             }
+            ClickTarget::MapPoint {
+                x,
+                y,
+            } => {
+                self.global_focus = GlobalFocus::Content;
+                self.map.jump_to((x, y));
+            }
             ClickTarget::ProfitsTableCell {
                 row,
                 col,
@@ -3363,7 +3399,8 @@ impl AppShell {
                         self.voyage_ui.focus.saturating_add(1);
                 }
             }
-            AppId::Exit => {}
+            // The map follows the cursor, not the wheel.
+            AppId::Map | AppId::Exit => {}
         }
     }
 
