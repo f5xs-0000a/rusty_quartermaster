@@ -94,6 +94,8 @@ pub struct MapApp {
     pub memorized: BTreeSet<Point>,
     /// The open `/` island search, if any.
     pub search: Option<PromptField>,
+    /// Whether the `?` help popup is open.
+    pub help: bool,
 }
 
 impl Default for MapApp {
@@ -108,6 +110,7 @@ impl MapApp {
             cursor: None,
             memorized: BTreeSet::new(),
             search: None,
+            help: false,
         }
     }
 
@@ -194,11 +197,23 @@ impl MapApp {
         key: KeyEvent,
         map: Option<&'static Map>,
     ) -> InputResult {
+        // the help popup is modal: Esc, Enter or another ? dismisses it and
+        // everything else is swallowed
+        if self.help {
+            if matches!(
+                key.code,
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?')
+            ) {
+                self.help = false;
+            }
+            return InputResult::Consumed;
+        }
         if self.search.is_some() {
             return self.handle_search_key(key, map);
         }
         match key.code {
             KeyCode::Up | KeyCode::Esc => return InputResult::Exit,
+            KeyCode::Char('?') => self.help = true,
             KeyCode::Char('/') => {
                 self.search = Some(PromptField::new(
                     "Search",
@@ -396,6 +411,31 @@ mod tests {
             InputResult::Consumed
         ));
         assert!(app.search.is_none());
+    }
+
+    #[test]
+    fn help_is_modal_and_closes_on_question_mark_or_esc() {
+        let mut app = MapApp::new();
+        app.cursor_on(&MAP);
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help);
+        // movement and memorizing are swallowed while it is open
+        press(&mut app, KeyCode::Char('d'));
+        press(&mut app, KeyCode::Char(' '));
+        assert_eq!(app.cursor, Some((1, 1)));
+        assert!(app.memorized.is_empty());
+        // Up neither closes it nor leaves the page
+        let up = KeyEvent::new(KeyCode::Up, KeyModifiers::NONE);
+        assert!(matches!(
+            app.handle_key(up, Some(&MAP)),
+            InputResult::Consumed
+        ));
+        assert!(app.help);
+        press(&mut app, KeyCode::Char('?'));
+        assert!(!app.help);
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Esc);
+        assert!(!app.help);
     }
 
     #[test]

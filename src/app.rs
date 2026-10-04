@@ -783,8 +783,8 @@ impl AppShell {
                     || self.voyage_ui.chart_popup.is_some()
                     || self.voyage_ui.battles_popup.is_some()
             }
-            // The search prompt owns Esc while it is open.
-            AppId::Map => self.map.search.is_some(),
+            // The search prompt and the help popup own Esc while open.
+            AppId::Map => self.map.search.is_some() || self.map.help,
             AppId::Exit => false,
         }
     }
@@ -2867,6 +2867,9 @@ impl AppShell {
             } => {
                 self.global_focus = GlobalFocus::Content;
                 self.map.jump_to((x, y));
+            }
+            ClickTarget::MapHelpClose => {
+                self.map.help = false;
             }
             ClickTarget::ProfitsTableCell {
                 row,

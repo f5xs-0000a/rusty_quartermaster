@@ -136,6 +136,8 @@ pub enum ClickTarget {
         x: u16,
         y: u16,
     },
+    /// The backdrop behind the Map page's help popup; clicking it closes.
+    MapHelpClose,
 }
 
 #[derive(Clone)]

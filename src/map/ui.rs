@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Position, Rect},
     style::{Color, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, Padding, Paragraph},
 };
 
 use crate::{
@@ -285,13 +285,19 @@ pub fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // two one-line rows under the map: the cursor's point (or the search
+    // box) with the ocean at the right, then its leagues with the help hint
+    // at the right. Each side keeps its own width so the rows fit an
+    // 80-column terminal without the two halves running into each other.
     let rows = Layout::vertical([
-        Constraint::Min(0),    // the map
-        Constraint::Length(1), // status / search line
-        Constraint::Length(1), // key hints
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(inner);
 
+    let mut first: Line = Line::from("");
+    let mut second: Line = Line::from("");
     match (ocean, map) {
         (None, _) => {
             frame.render_widget(
@@ -310,9 +316,9 @@ pub fn render(
                 rows[0],
             );
         }
-        (Some(ocean), Some(map)) => {
+        (Some(_), Some(map)) => {
             draw_map(frame, rows[0], app, map, regions);
-            let line = match &app.search {
+            first = match &app.search {
                 Some(search) => {
                     let hit =
                         app.search_hit(map).map_or("no match", |p| p.name);
@@ -336,36 +342,44 @@ pub fn render(
                         ),
                     ])
                 }
-                None => status_line(app, map, ocean),
+                None => point_line(app, map),
             };
-            frame.render_widget(Paragraph::new(line), rows[1]);
+            second = leagues_line(app, map);
         }
     }
 
-    let mut hints: Vec<String> = MOVE_KEYS
-        .iter()
-        .map(|m| format!("{} {}", m.key, m.label))
-        .collect();
-    hints.push("Space memorize".to_owned());
-    hints.push("/ search".to_owned());
-    hints.push("Up top bar".to_owned());
-    frame.render_widget(
-        Paragraph::new(hints.join("  "))
-            .style(Style::default().fg(Color::DarkGray)),
-        rows[2],
+    let ocean_tag = Span::styled(
+        ocean.unwrap_or("").to_owned(),
+        Style::default().fg(Color::DarkGray),
     );
+    let help_tag = Span::styled(
+        "Press ? for Help",
+        Style::default().fg(Color::DarkGray),
+    );
+    for (row, left, right) in
+        [(rows[1], first, ocean_tag), (rows[2], second, help_tag)]
+    {
+        let cols = Layout::horizontal([
+            Constraint::Fill(1),
+            Constraint::Length(right.width() as u16 + 2),
+        ])
+        .split(row);
+        frame.render_widget(Paragraph::new(left), cols[0]);
+        frame.render_widget(
+            Paragraph::new(right).right_aligned(),
+            cols[1],
+        );
+    }
+
+    if app.help {
+        render_help(frame, area, regions);
+    }
 }
 
-/// The cursor's point: its name, memorized state, and the leagues leaving it.
-fn status_line(
-    app: &mut MapApp,
-    map: &'static Map,
-    ocean: &str,
-) -> Line<'static> {
+/// The cursor's point: its name, grid cell and memorized state.
+fn point_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
     let Some(p) = app.cursor_on(map) else {
-        return Line::from(format!(
-            "{ocean}: the map has no islands."
-        ));
+        return Line::from("The map has no islands.");
     };
     let name = map.island_at(p).map_or("Open sea", |i| i.name);
     let mark = if app.memorized.contains(&p) {
@@ -379,28 +393,144 @@ fn status_line(
             Style::default().fg(Color::DarkGray),
         )
     };
-    let leagues: Vec<String> = map
-        .leagues_at(p)
-        .map(|(heading, _, league)| {
-            let kind = if app.sailable(league) {
-                "memorized"
-            } else if league.solid {
-                "chart"
-            } else {
-                "no chart"
-            };
-            format!("{} ({kind})", heading.label())
-        })
-        .collect();
     Line::from(vec![
-        Span::styled(
-            format!("{ocean}: {name}"),
-            Style::default().bold(),
-        ),
+        Span::styled(name, Style::default().bold()),
         Span::raw(format!(" ({},{})  ", p.0, p.1)),
         mark,
-        Span::raw(format!("  |  {}", leagues.join(", "))),
     ])
+}
+
+/// The leagues leaving the cursor's point, each as its heading and the line
+/// glyph the map draws it with (so the legend in the help applies here too).
+fn leagues_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
+    let Some(p) = app.cursor_on(map) else {
+        return Line::from("");
+    };
+    let mut spans = Vec::new();
+    for (heading, _, league) in map.leagues_at(p) {
+        let (glyph, paint) = if app.sailable(league) {
+            ("━", Paint::Known)
+        } else if league.solid {
+            ("─", Paint::Solid)
+        } else {
+            ("┄", Paint::Dotted)
+        };
+        if !spans.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::raw(format!(
+            "{} ",
+            heading.label()
+        )));
+        spans.push(Span::styled(glyph, paint.style()));
+    }
+    Line::from(spans)
+}
+
+/// The `?` popup: the keys and the glyph legend. The backdrop is a click
+/// target so a click anywhere outside the box closes it; it is pushed after
+/// the page's own regions so it takes precedence over them.
+fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::MapHelpClose,
+    });
+
+    let key = |k: &str| Span::styled(k.to_owned(), Style::default().bold());
+    let dim = |s: &str| {
+        Span::styled(
+            s.to_owned(),
+            Style::default().fg(Color::DarkGray),
+        )
+    };
+    // the movement keys as they sit on the keyboard, three per row
+    let compass: Vec<Line> = MOVE_KEYS
+        .chunks(3)
+        .map(|row| {
+            let mut spans = vec![Span::raw("  ")];
+            for m in row {
+                spans.push(key(&m.key.to_string()));
+                spans.push(Span::raw(format!(" {:<5}", m.label)));
+            }
+            Line::from(spans)
+        })
+        .collect();
+    let mut lines = vec![Line::from(Span::styled(
+        "Sailing the cursor",
+        Style::default().bold(),
+    ))];
+    lines.extend(compass);
+    lines.extend([
+        Line::from(dim(
+            "  a/d/w/x with no league their way take the one diagonal on"
+        )),
+        Line::from(dim(
+            "  that side, and stay put when both diagonals exist."
+        )),
+        Line::from(""),
+        Line::from(vec![
+            key("Space"),
+            Span::raw("  mark the league point under the cursor as memorized"),
+        ]),
+        Line::from(vec![
+            key("/"),
+            Span::raw("      search for an island (Enter jumps, Esc cancels)"),
+        ]),
+        Line::from(vec![
+            key("click"),
+            Span::raw("  put the cursor on a league point"),
+        ]),
+        Line::from(vec![
+            key("Up"),
+            Span::raw("     back to the top bar"),
+        ]),
+        Line::from(vec![
+            key("?"),
+            Span::raw("      close this help"),
+        ]),
+        Line::from(""),
+        Line::from(Span::styled(
+            "Reading the map",
+            Style::default().bold(),
+        )),
+        Line::from(vec![
+            Span::styled("  ◇", Paint::Island.style()),
+            Span::raw(" island    "),
+            Span::styled("○", Paint::Point.style()),
+            Span::raw(" open-sea league point    "),
+            Span::styled("◆ ●", Paint::IslandKnown.style()),
+            Span::raw(" memorized"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ───", Paint::Solid.style()),
+            Span::raw(" chart can be bought    "),
+            Span::styled("┄┄┄", Paint::Dotted.style()),
+            Span::raw(" sail from memory"),
+        ]),
+        Line::from(vec![
+            Span::styled("  ━━━", Paint::Known.style()),
+            Span::raw(" both ends memorized: sailable from memory"),
+        ]),
+    ]);
+
+    let width = 66u16.min(area.width);
+    let height = (lines.len() as u16 + 2).min(area.height);
+    let popup = Rect::new(
+        area.x + (area.width - width) / 2,
+        area.y + (area.height - height) / 2,
+        width,
+        height,
+    );
+    frame.render_widget(Clear, popup);
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::White))
+                .title(offset_title("Help").0),
+        ),
+        popup,
+    );
 }
 
 /// Blit the part of the canvas around the cursor into `view`, with the cursor
