@@ -2,6 +2,27 @@ use ratatui::prelude::Rect;
 
 use crate::{damage::Side, jobbers::JobberPane};
 
+/// A view the user scrolls, named so that a click on its scrollbar can be
+/// routed back to whatever the view scrolls with — its own window for some, a
+/// cursor the window follows for others.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollView {
+    /// The Profits Inventory table. Follows the cell cursor.
+    ProfitsInventory,
+    /// One of the Jobbers pirate panes. Follows that pane's selection.
+    JobberPane(JobberPane),
+    /// The Jobbers Skill Leaderboard, whose columns share one window. Follows
+    /// the ranked selection.
+    JobberLeaderboard,
+    /// The skill tables in the pirate-stats popup. Keeps its own window.
+    JobberPirateSkills,
+    /// The category grid in the trophies popup. Keeps its own window.
+    JobberTrophies,
+    /// Everything under the Voyage Statistics page's pinned header. Keeps its
+    /// own window, which the focused stat or chart also nudges.
+    VoyageBody,
+}
+
 #[derive(Clone, Debug)]
 pub enum ClickTarget {
     SidebarItem(usize),
@@ -139,6 +160,16 @@ pub enum ClickTarget {
     },
     /// The backdrop behind the Map page's help popup; clicking it closes.
     MapHelpClose,
+    /// A view's scrollbar. The hit test hands back no geometry of its own, so
+    /// the bar carries the rect it was drawn into — the click's row within it
+    /// is the whole of what the click says — and `total`, the rows the view
+    /// held when it was drawn, which is what its last offset is counted
+    /// from.
+    Scrollbar {
+        view: ScrollView,
+        bar: Rect,
+        total: usize,
+    },
 }
 
 #[derive(Clone)]

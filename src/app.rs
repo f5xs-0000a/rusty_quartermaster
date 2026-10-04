@@ -2577,6 +2577,8 @@ impl AppShell {
             self.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: name.clone(),
                 button: 0,
+                offset: 0,
+                view_h: 0,
             });
         }
     }
@@ -2640,11 +2642,13 @@ impl AppShell {
         self.jobbers_ui.pirate_popup = Some(PiratePopup {
             name: name.clone(),
             button: 0,
+            offset: 0,
+            view_h: 0,
         });
     }
 
     /// Modal key handling for the pirate-stats popup: ←/→ toggle the two
-    /// buttons, Enter activates, Esc closes.
+    /// buttons, ↑/↓ scroll the skill tables, Enter activates, Esc closes.
     fn handle_pirate_popup_key(&mut self, key: KeyEvent) -> InputResult {
         let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() else {
             return InputResult::Consumed;
@@ -2653,6 +2657,16 @@ impl AppShell {
             KeyCode::Esc => self.jobbers_ui.pirate_popup = None,
             KeyCode::Left => pp.button = 0,
             KeyCode::Right => pp.button = 1,
+            KeyCode::Up => pp.offset = pp.offset.saturating_sub(1),
+            KeyCode::Down => pp.offset = pp.offset.saturating_add(1),
+            KeyCode::PageUp => {
+                let half = (pp.view_h / 2).max(1);
+                pp.offset = pp.offset.saturating_sub(half);
+            }
+            KeyCode::PageDown => {
+                let half = (pp.view_h / 2).max(1);
+                pp.offset = pp.offset.saturating_add(half);
+            }
             KeyCode::Enter => {
                 if pp.button == 0 {
                     self.open_trophy_popup();
@@ -2914,6 +2928,23 @@ impl AppShell {
                     mouse.column,
                     mouse.row,
                 ) {
+                    // A scrollbar is the one target whose answer depends on
+                    // where in it the click landed, so it is read here where
+                    // the row is still at hand.
+                    if let ClickTarget::Scrollbar {
+                        view,
+                        bar,
+                        total,
+                    } = target
+                    {
+                        self.scroll_bar(
+                            view,
+                            bar,
+                            total,
+                            crate::utils::scrollbar_hit(bar, mouse.row),
+                        );
+                        return;
+                    }
                     self.handle_click(target, tx);
                 }
             }
@@ -2977,6 +3008,83 @@ impl AppShell {
         }
     }
 
+    /// Answer a click (or a wheel notch) on a view's scrollbar. `bar` and
+    /// `total` are what the bar was drawn from; `hit` is what the click asked
+    /// for ([`crate::utils::scrollbar_hit`]).
+    ///
+    /// Two kinds of view answer it. A view that keeps its own window — the two
+    /// popups — takes the ask as the window's new first row. A view whose
+    /// window follows a cursor takes it as the cursor's new place and lets
+    /// the window come along, since there is nothing else the bar could
+    /// mean where the window is not the view's to set. Either way the view
+    /// is focused first: a cursor that moves out of sight has not visibly
+    /// moved at all.
+    fn scroll_bar(
+        &mut self,
+        view: clickmap::ScrollView,
+        bar: Rect,
+        total: usize,
+        hit: crate::utils::ScrollHit,
+    ) {
+        use clickmap::ScrollView;
+
+        match view {
+            ScrollView::JobberPirateSkills => {
+                let last = total.saturating_sub(bar.height as usize);
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    pp.offset = hit.resolve(pp.offset, last);
+                }
+            }
+            ScrollView::JobberTrophies => {
+                let last = total.saturating_sub(bar.height as usize);
+                if let Some(tp) = self.jobbers_ui.trophy_popup.as_mut() {
+                    tp.offset = hit.resolve(tp.offset, last);
+                }
+            }
+            ScrollView::JobberPane(pane) => {
+                let count = self.jobbers_pane_count(pane);
+                if count == 0 {
+                    return;
+                }
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = Self::pane_focus(pane);
+                let next = hit.resolve(self.jobbers_pane_sel(pane), count - 1);
+                *self.jobbers_pane_sel_mut(pane) = next;
+            }
+            ScrollView::JobberLeaderboard => {
+                let count = self.leaderboard_current_len();
+                if count == 0 {
+                    return;
+                }
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Leaderboard;
+                self.jobbers_ui.top_sel =
+                    hit.resolve(self.jobbers_ui.top_sel, count - 1);
+            }
+            ScrollView::ProfitsInventory => {
+                let count = self.profits.rows.len();
+                if count == 0 {
+                    return;
+                }
+                self.global_focus = GlobalFocus::Content;
+                self.profits.focus = crate::profits::Focus::Table;
+                let row = self.profits.table_state.selected().unwrap_or(0);
+                self.profits
+                    .table_state
+                    .select(Some(hit.resolve(row, count - 1)));
+            }
+            ScrollView::VoyageBody => {
+                let count = self.voyage_ui.focus_keys.len();
+                if count == 0 {
+                    return;
+                }
+                self.global_focus = GlobalFocus::Content;
+                self.voyage_ui.focus =
+                    hit.resolve(self.voyage_ui.focus, count - 1);
+            }
+        }
+    }
+
     fn handle_click(
         &mut self,
         target: ClickTarget,
@@ -3027,6 +3135,11 @@ impl AppShell {
             ClickTarget::MapHelpClose => {
                 self.map.help = false;
             }
+            // Read in `handle_mouse`, which still has the clicked row — the
+            // only thing a scrollbar click says.
+            ClickTarget::Scrollbar {
+                ..
+            } => {}
             ClickTarget::ProfitsTableCell {
                 row,
                 col,
@@ -3424,6 +3537,23 @@ impl AppShell {
     }
 
     fn handle_scroll(&mut self, delta: i32, col: u16, row: u16) {
+        // The wheel over a view's scrollbar is a notch of that view, whichever
+        // page the view belongs to.
+        if let Some(ClickTarget::Scrollbar {
+            view,
+            bar,
+            total,
+        }) = clickmap::hit_test(&self.click_regions, col, row)
+        {
+            self.scroll_bar(
+                view,
+                bar,
+                total,
+                crate::utils::ScrollHit::Step(delta.signum()),
+            );
+            return;
+        }
+
         match APP_LIST[self.sidebar_index] {
             AppId::Profits => {
                 if self.profits.focus == crate::profits::Focus::Table {
@@ -3495,8 +3625,13 @@ impl AppShell {
                     }
                     return;
                 }
-                // The pirate-stats popup has nothing to scroll.
-                if self.jobbers_ui.pirate_popup.is_some() {
+                // The pirate-stats popup scrolls its skill tables.
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    if delta < 0 {
+                        pp.offset = pp.offset.saturating_sub(1);
+                    } else {
+                        pp.offset = pp.offset.saturating_add(1);
+                    }
                     return;
                 }
                 // The wheel over the Skill Leaderboard moves its selection

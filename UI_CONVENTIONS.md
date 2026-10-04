@@ -219,7 +219,7 @@ Each page asks the question for itself, about the content it has in hand right
 now, rather than being held to one figure for the whole app. A window that fits
 the page the user is on draws it, even where another page would not have fit:
 the Damage grid is as wide as two ship names and the labels between them and so
-wants 54 columns, while Profits is usable in 48 and the Voyage panel in 42.
+wants 54 columns, while Profits is usable in 48 and the Voyage panel in 44.
 
 The top bar stays above the message, which is the point of putting the question
 in the page rather than in the shell — the pages that *do* fit are still one
@@ -295,6 +295,131 @@ not one of them, and the borders are on top of that again:
 **Where it has none** — the Damage calculator is one fixed grid — the test is
 simply clipping: if a widget's contents would be cut off, the terminal is too
 small. A page with nothing to scroll needs exactly the rows it draws.
+
+### A view that scrolls shows a bar
+
+A view the user scrolls keeps its two rightmost columns: one for the scrollbar,
+and the blank one that holds the contents off it, the same blank column Rule 2
+keeps between contents and a border. The bar is drawn there only while there is
+something to scroll — with every row of the view on show the two columns are the
+contents' to use, so a list that fits looks like any other widget and nothing
+offers to scroll what cannot.
+
+The columns are reserved in the widget's **width** whether or not the bar is up,
+so a widget sized to its contents does not change width the moment the bar
+appears. Content that reflows into the width it is handed — the trophy grid,
+three columns of whatever room there is — is laid out a second time once the bar
+turns out to be wanted. Laying it out narrower can only lengthen it, so a bar
+never un-needs itself and the second pass is the last.
+
+The bar spans the view, and says where in the list the window sits without the
+thumb having to be measured:
+
+| part | what it is |
+| ---- | ---------- |
+| top cell | `▲` while rows remain above, `┬` once the view is at the top |
+| bottom cell | `▼` while rows remain below, `┴` once it is at the foot |
+| thumb | `█`, as long a part of the track as the rows on show are of the whole |
+| track | `│` |
+
+The pirate popup's skill tables in an 80x24 terminal, which holds fifteen of
+their seventeen rows, the window at the top of the list:
+
+```
+│              Piracy Skills              ┬ │
+│ Sailing        Narrow        Able       █ │
+│ Carpentry      Broad         Proficient █ │
+│ Bilging        Solid         Respected  █ │
+...
+│ Blacksmithing  Expert        Master     │ │
+│                                         │ │
+│            Carousing Skills             ▼ │
+```
+
+The two arrows are the part worth having: a capped end means there is nothing
+that way, so a view can be read as scrolled-to-the-end without comparing the
+thumb against the track.
+
+### The bar answers the mouse
+
+The bar's own column is a click target — the blank one beside it is not, so a
+click meant for the text never lands on the bar.
+
+| where | what it does |
+| ----- | ------------ |
+| an arrow end (`▲`/`▼`) | one row that way |
+| a capped end (`┬`/`┴`) | nothing; there is nothing that way, and the glyph says so |
+| anywhere on the track | that far down the view: the track's first cell is the start of the list and its last cell the end |
+| the wheel, anywhere on the bar | one row, the same as an arrow |
+
+A click on the track is a jump to where it pointed rather than a page-step, so
+a long list is crossed in one click. The thumb is not corrected for its own
+length, which on the short tracks a four-row view gives would be noise.
+
+The thumb is not dragged. Nothing in the app is.
+
+### A view's window is either its own or its cursor's
+
+The bar reads the same for every view; what a view does with the ask depends on
+what moves its window.
+
+- **Its own window.** The two popups keep a scroll offset and nothing else
+  decides it, so the bar sets it outright.
+- **A cursor's.** The four page views have no independent window at all: the
+  Inventory, the panes and the Skill Leaderboard scroll to keep their selection
+  in sight, and the Voyage body scrolls to keep the focused stat or chart in
+  sight — each recomputed from that cursor every frame. The bar moves the cursor
+  and the window follows, which is the only thing it could mean. The wheel over
+  those views already works this way.
+
+A view of the second kind is focused before its cursor moves: a cursor that
+moves out of sight has not visibly moved at all.
+
+The consequence worth knowing: on a cursor-driven view the thumb lands near
+where it was pointed rather than exactly under the pointer, because the rows
+the thumb is measured in and the items the cursor counts are not the same
+thing — the Voyage body's focusables are a dozen stats spread over fifty rows.
+
+### Implementation
+
+`utils::render_scrollbar` draws the bar, registers its click region, and hands
+back the rect the contents may use — the whole of the area when there is nothing
+to scroll:
+
+```rust
+let body = render_scrollbar(
+    frame, regions, area, ScrollView::JobberTrophies, offset, lines.len(),
+);
+frame.render_widget(
+    Paragraph::new(lines.into_iter().skip(offset).take(view_h).collect::<Vec<_>>()),
+    body,
+);
+```
+
+It is called after whatever region the view claimed for itself, so the column
+answers to the bar rather than to the list behind it. `utils::scrollbar_hit`
+reads a click on it and `ScrollHit::resolve` turns the ask into a row, which
+`AppShell::scroll_bar` hands to the right view. A widget that sizes itself to its
+contents adds `utils::SCROLLBAR_W` — the bar's column and its blank — to the
+width it asks for. Where a layout must be settled before the bar can be drawn,
+`utils::scrolls` is the one place that answers whether the columns are spent.
+
+### Where this applies
+
+Six views scroll, and each has a bar:
+
+| view | what its window follows | state to read it in |
+| ---- | ----------------------- | ------------------- |
+| pirate popup, the skill tables | its own offset | `80x24-jobbers-popup-pirate-stats` (`120x40` is tall enough for all of them, and shows no bar) |
+| trophies popup, the category grid | its own offset | `80x24-jobbers-popup-trophy-list` |
+| Profits Inventory | the cell cursor | `120x40-profits-long-list` |
+| Jobbers panes | that pane's selection | `80x24-jobbers-long-roster` |
+| Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster` |
+| Voyage body | the focused stat or chart | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
+
+The Map page pans a canvas in both directions rather than windowing a list of
+rows, so it has none: a vertical bar would describe something the page does not
+have.
 
 ### The answer must not move as focus moves
 

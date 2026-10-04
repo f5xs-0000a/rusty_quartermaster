@@ -85,7 +85,9 @@ pub fn render(
     } else {
         (0, 3)
     };
-    // inter-column gaps + 2 borders + 2 horizontal padding.
+    // inter-column gaps + 2 borders + 2 horizontal padding, and the columns the
+    // scrollbar keeps: the commodity list is longer than any window over it, so
+    // the bar is all but always up.
     let table_width = item_width
         + RESTOCK_W
         + STOCK_W
@@ -93,7 +95,8 @@ pub fn render(
         + price_w
         + gaps * COL_GAP
         + 2
-        + 2;
+        + 2
+        + crate::utils::SCROLLBAR_W;
 
     // Label column shared by the Parameters and Hold Stats tables, and the
     // widest text the value side of a Parameters row will draw. Both are
@@ -501,6 +504,22 @@ fn render_inventory(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
+    // The window the rows scroll through: what is left under the header and its
+    // margin. The scrollbar's columns come off the room the table is laid out
+    // in, so its columns sit where they would without a bar.
+    let body = Rect {
+        y: inner.y + 2,
+        height: inner.height.saturating_sub(2),
+        ..inner
+    };
+    let table_w = inner.width.saturating_sub(
+        if crate::utils::scrolls(body.height, app.rows.len()) {
+            crate::utils::SCROLLBAR_W
+        } else {
+            0
+        },
+    );
+
     // Column widths never shrink, so the table has one intrinsic width.
     let col_ws: Vec<u16> = widths
         .iter()
@@ -527,28 +546,28 @@ fn render_inventory(
     // `columns_x` is where the table's left edge lands on screen, which the
     // click regions below are measured from. It sits left of `inner` while
     // scrolled.
-    let columns_x: i32 = if columns_width <= inner.width {
+    let columns_x: i32 = if columns_width <= table_w {
         app.hscroll = 0;
-        inner.x as i32 + (inner.width - columns_width) as i32 / 2
+        inner.x as i32 + (table_w - columns_width) as i32 / 2
     } else {
         // Too wide to show at once: keep the selected column in view and move
         // the window, never the column widths.
-        let max_scroll = columns_width - inner.width;
+        let max_scroll = columns_width - table_w;
         if let Some(col) = app.table_state.selected_column()
             && col < col_offsets.len()
         {
             let (start, width) = (col_offsets[col], col_ws[col]);
             if start < app.hscroll {
                 app.hscroll = start;
-            } else if app.hscroll + inner.width < start + width {
-                app.hscroll = start + width - inner.width;
+            } else if app.hscroll + table_w < start + width {
+                app.hscroll = start + width - table_w;
             }
         }
         app.hscroll = app.hscroll.min(max_scroll);
         inner.x as i32 - app.hscroll as i32
     };
 
-    if columns_width <= inner.width {
+    if columns_width <= table_w {
         let rect = Rect {
             x: columns_x as u16,
             y: inner.y,
@@ -572,7 +591,7 @@ fn render_inventory(
             &mut app.table_state,
         );
         for row in 0 .. inner.height {
-            for col in 0 .. inner.width {
+            for col in 0 .. table_w {
                 let src = Position::new(app.hscroll + col, row);
                 if let Some(cell) = canvas.cell(src).cloned()
                     && let Some(dst) = frame.buffer_mut().cell_mut(
@@ -585,11 +604,22 @@ fn render_inventory(
         }
     }
 
+    // The table settles its own window while it renders, so the bar is drawn
+    // from the offset it left behind rather than the one it was handed.
+    let scroll_offset = app.table_state.offset();
+    crate::utils::render_scrollbar(
+        frame,
+        regions,
+        body,
+        crate::clickmap::ScrollView::ProfitsInventory,
+        scroll_offset,
+        app.rows.len(),
+    );
+
     // Register click regions for the name + editable cells. The Sell/Buy
     // columns are only present (and clickable) when prices are entered
     // manually.
     let data_start_y = inner.y + 2; // header row + bottom_margin
-    let scroll_offset = app.table_state.offset();
     let visible_rows = inner.height.saturating_sub(2); // header + margin
     for vis_row in 0 .. visible_rows as usize {
         let data_row = scroll_offset + vis_row;
@@ -600,8 +630,8 @@ fn render_inventory(
             // A scrolled column can start left of the box; clip it to what is
             // on screen and drop it entirely once nothing is.
             let left = (columns_x + *at as i32).max(inner.x as i32);
-            let right = (columns_x + (*at + *w) as i32)
-                .min((inner.x + inner.width) as i32);
+            let right =
+                (columns_x + (*at + *w) as i32).min((inner.x + table_w) as i32);
             if right <= left {
                 continue;
             }

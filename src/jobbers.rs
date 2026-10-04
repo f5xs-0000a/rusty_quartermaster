@@ -755,13 +755,18 @@ pub struct PerFightPopup {
     pub axis: AxisMode,
 }
 
-/// State of the open pirate-stats popup: the pirate being viewed and which of
-/// its two buttons ([See Trophies] / [Close]) is focused.
+/// State of the open pirate-stats popup: the pirate being viewed, which of its
+/// two buttons ([See Trophies] / [Close]) is focused, and — for the skill
+/// tables, which are taller than a short window can hold — the vertical scroll
+/// offset (in rendered lines) and the last-rendered view height (so Page
+/// Up/Down can scroll by half a page).
 #[derive(Clone)]
 pub struct PiratePopup {
     pub name: String,
     /// 0 = See Trophies, 1 = Close.
     pub button: usize,
+    pub offset: usize,
+    pub view_h: usize,
 }
 
 /// State of the open trophies popup: whose trophies, the live search filter,
@@ -1296,8 +1301,12 @@ pub fn render(
         .map(|k| enthralled_ranked(state, k))
         .unwrap_or_default();
     let enthralled_cw = enthralled_col_width(&enthralled);
+    // Every pane's list scrolls, so each reserves the scrollbar's columns on
+    // top of its frame — the pane is then one width whether the roster is
+    // long enough for a bar or not.
     let pane_w = |cw: usize, title: &'static str| {
-        (cw as u16 + 4).max(offset_title_width(title))
+        (cw as u16 + crate::utils::BOX_MARGIN + crate::utils::SCROLLBAR_W)
+            .max(offset_title_width(title))
     };
     let aboard_w = pane_w(aboard_cw, "Aboard");
     let greedy_w = pane_w(greedy_cw, "Greedy");
@@ -1884,10 +1893,9 @@ pub fn render(
     }
 
     // The pirate-stats popup, and the trophies popup layered over it.
-    if ui.trophy_popup.is_none()
-        && let Some(pp) = ui.pirate_popup.clone()
-    {
-        render_pirate_popup(frame, &pp, cache, focused, regions);
+    let trophies_up = ui.trophy_popup.is_some();
+    if !trophies_up && let Some(pp) = ui.pirate_popup.as_mut() {
+        render_pirate_popup(frame, pp, cache, focused, regions);
     }
     if let Some(tp) = ui.trophy_popup.as_mut() {
         render_trophy_popup(frame, tp, cache, regions);
@@ -3225,13 +3233,22 @@ fn render_pane(
         *offset = max_off;
     }
 
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        inner,
+        crate::clickmap::ScrollView::JobberPane(pane),
+        *offset,
+        rows.len(),
+    );
+
     for (vis, (line, pidx)) in
         rows.iter().enumerate().skip(*offset).take(height)
     {
         let row_area = Rect::new(
-            inner.x,
-            inner.y + (vis - *offset) as u16,
-            inner.width,
+            body.x,
+            body.y + (vis - *offset) as u16,
+            body.width,
             1,
         );
         let is_sel = page_focused && active && *pidx == Some(sel);
@@ -3320,12 +3337,27 @@ fn render_aboard_pane(
         *offset = 0;
     }
 
-    let body_y = inner.y + header_h as u16;
+    // Only the name list scrolls, so the bar spans that window alone — neither
+    // the pinned header above it nor the footers below.
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        Rect::new(
+            inner.x,
+            inner.y + header_h as u16,
+            inner.width,
+            body_h as u16,
+        ),
+        crate::clickmap::ScrollView::JobberPane(JobberPane::Aboard),
+        *offset,
+        names.len(),
+    );
+
     for (vis, line) in names.iter().enumerate().skip(*offset).take(body_h) {
         let row_area = Rect::new(
-            inner.x,
-            body_y + (vis - *offset) as u16,
-            inner.width,
+            body.x,
+            body.y + (vis - *offset) as u16,
+            body.width,
             1,
         );
         let is_sel = page_focused && active && vis == sel;
@@ -3529,7 +3561,12 @@ fn top_panel_inner_width(columns: &[RankedColumn], show_codes: bool) -> u16 {
 fn top_panel_width(columns: &[RankedColumn]) -> u16 {
     // Floor so the title stays readable when no jobbers have fetched stats yet.
     const FLOOR: u16 = offset_title_width("Skill Leaderboard");
-    (top_panel_inner_width(columns, true) + 4).max(FLOOR)
+    // The ranking scrolls, so the scrollbar's columns are part of what the
+    // panel asks for whether the window is showing a bar or not.
+    (top_panel_inner_width(columns, true)
+        + crate::utils::BOX_MARGIN
+        + crate::utils::SCROLLBAR_W)
+        .max(FLOOR)
 }
 
 /// Build one Skill Leaderboard body row's spans (name + EEE/SSS codes /
@@ -3616,7 +3653,23 @@ fn render_top_panel(
     // and the merged-column marker — stay). The block width comes from the
     // natural (codes-shown) width, so this only triggers when the terminal
     // is too narrow.
-    let show_codes = top_panel_inner_width(columns, true) <= inner.width;
+    // Header pins to the top row; the rest is the scrollable body window. The
+    // bar's columns come off the grid's width before anything is laid out in
+    // it, since the columns cannot be placed twice.
+    let body_h = (inner.height as usize).saturating_sub(1);
+    let max_rows = columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
+    let grid = Rect {
+        width: inner.width.saturating_sub(
+            if crate::utils::scrolls(body_h as u16, max_rows) {
+                crate::utils::SCROLLBAR_W
+            } else {
+                0
+            },
+        ),
+        ..inner
+    };
+
+    let show_codes = top_panel_inner_width(columns, true) <= grid.width;
     let col_w: Vec<u16> = top_panel_col_widths(columns, show_codes);
 
     // Interleave a gap between each pair of columns, with equal slack on both
@@ -3632,10 +3685,7 @@ fn render_top_panel(
         constraints.push(Constraint::Length(*w));
     }
     constraints.push(Constraint::Fill(1));
-    let cols = Layout::horizontal(constraints).split(inner);
-
-    // Header pins to the top row; the rest is the scrollable body window.
-    let body_h = (inner.height as usize).saturating_sub(1);
+    let cols = Layout::horizontal(constraints).split(grid);
 
     // Clamp the cursor to the live shape, then nudge the shared window to keep
     // the selected rank visible (offset capped to the longest column so no
@@ -3647,7 +3697,6 @@ fn render_top_panel(
     if ui.top_sel >= cur_len {
         ui.top_sel = cur_len.saturating_sub(1);
     }
-    let max_rows = columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
     if body_h > 0 {
         if ui.top_sel < ui.top_offset {
             ui.top_offset = ui.top_sel;
@@ -3662,6 +3711,22 @@ fn render_top_panel(
         ui.top_offset = 0;
     }
     let offset = ui.top_offset;
+
+    // One bar for the whole ranking: the columns share a window, so a single
+    // position describes all of them. It spans the body, not the pinned header.
+    let _ = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        Rect::new(
+            inner.x,
+            inner.y + 1,
+            inner.width,
+            body_h as u16,
+        ),
+        crate::clickmap::ScrollView::JobberLeaderboard,
+        offset,
+        max_rows,
+    );
 
     for (ci, column) in columns.iter().enumerate() {
         // Columns are laid out as [Fill, col, gap, col, gap, …, Fill] — the
@@ -3913,10 +3978,11 @@ fn skill_row(
 }
 
 /// The pirate-stats popup: name, crew/flag boxes, three skill tables, and the
-/// [See Trophies] / [Close] buttons. Sized to its content.
+/// [See Trophies] / [Close] buttons. Sized to its content, with the skill
+/// tables scrolling when the window cannot hold all of them.
 fn render_pirate_popup(
     frame: &mut Frame,
-    pp: &PiratePopup,
+    pp: &mut PiratePopup,
     cache: &PirateCache,
     page_focused: bool,
     regions: &mut Vec<ClickRegion>,
@@ -4106,9 +4172,12 @@ fn render_pirate_popup(
         .max("No skills recorded.".len());
 
     // --- Geometry ---
+    // The skill tables scroll, so their section carries the scrollbar's column
+    // whether or not the window is short enough to need the bar: the popup is
+    // then the same width however tall the terminal is.
     let content_w = (pp.name.chars().count())
         .max(affil_w as usize)
-        .max(skills_block_w)
+        .max(skills_block_w + crate::utils::SCROLLBAR_W as usize)
         .max(buttons_w) as u16;
     let box_w = (content_w + 4).min(screen.width.max(1));
     // name + gap + affil + gap + skills + gap + buttons, plus borders(2).
@@ -4165,12 +4234,31 @@ fn render_pirate_popup(
         affil_cols[2],
     );
 
-    // Center the whole skills section within the popup width.
-    let sb_w = (skills_block_w as u16).min(rows[4].width);
-    let sb_x = rows[4].x + rows[4].width.saturating_sub(sb_w) / 2;
+    // The skill tables are the one part of the popup that scrolls, so a window
+    // too short for all of them shows a bar beside them rather than cutting
+    // them off. Clamp the offset to what is left to show, then center the
+    // section in the room the bar leaves.
+    pp.view_h = rows[4].height as usize;
+    pp.offset = pp.offset.min(skill_lines.len().saturating_sub(pp.view_h));
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        rows[4],
+        crate::clickmap::ScrollView::JobberPirateSkills,
+        pp.offset,
+        skill_lines.len(),
+    );
+    let sb_w = (skills_block_w as u16).min(body.width);
+    let sb_x = body.x + body.width.saturating_sub(sb_w) / 2;
     frame.render_widget(
-        Paragraph::new(skill_lines),
-        Rect::new(sb_x, rows[4].y, sb_w, rows[4].height),
+        Paragraph::new(
+            skill_lines
+                .into_iter()
+                .skip(pp.offset)
+                .take(pp.view_h)
+                .collect::<Vec<Line>>(),
+        ),
+        Rect::new(sb_x, body.y, sb_w, body.height),
     );
 
     // Buttons; each gets a click region. The page's own focus decides whether
@@ -4343,7 +4431,10 @@ fn render_trophy_popup(
         })
         .unwrap_or(0);
     let content_w = if has_trophies {
-        3 * longest + 2 * GRID_GAP
+        // The scrollbar's column is reserved whether or not the grid is long
+        // enough to need it, so the box does not change width as the user
+        // scrolls into the rows that call for one.
+        3 * longest + 2 * GRID_GAP + crate::utils::SCROLLBAR_W
     } else {
         "Trophies not loaded yet.".len() as u16
     };
@@ -4384,6 +4475,15 @@ fn render_trophy_popup(
     ])
     .split(inner);
 
+    // The whole popup is a scroll target so the wheel works anywhere over it.
+    // It goes in before the parts that answer to the mouse in their own right —
+    // the scrollbar and the Close button — so those win the reverse-iterating
+    // hit test where they overlap it.
+    regions.push(ClickRegion {
+        rect: popup,
+        target: ClickTarget::JobberTrophyArea,
+    });
+
     if has_trophies {
         // Search box (typed text shows live; the placeholder is muted).
         let search_line = if tp.search.is_empty() {
@@ -4405,67 +4505,82 @@ fn render_trophy_popup(
 
     crate::utils::render_close_button(frame, rows[3]);
 
-    // Build all visible category lines.
-    let inner_w = rows[1].width as usize;
-    let mut lines: Vec<Line> = Vec::new();
-    match cached {
-        None => {
-            lines.push(
-                Line::from(Span::styled(
-                    "Trophies not loaded yet.",
-                    Style::default().fg(Color::DarkGray),
-                ))
-                .centered(),
-            )
-        }
-        Some(c) => {
-            // Two blank lines separate one group from the next.
-            let mut first = true;
-            for section in &c.trophies.sections {
-                let sec = trophy_section_lines(section, &tp.search, inner_w);
-                if sec.is_empty() {
-                    continue;
-                }
-                if !first {
-                    lines.push(Line::from(""));
-                }
-                first = false;
-                lines.extend(sec);
-            }
-            if lines.is_empty() {
+    // All the category lines, laid out for a view `inner_w` columns wide.
+    let build = |inner_w: usize| {
+        let mut lines: Vec<Line> = Vec::new();
+        match cached {
+            None => {
                 lines.push(
                     Line::from(Span::styled(
-                        if has_trophies {
-                            "No matching trophies."
-                        } else {
-                            "No trophies."
-                        },
+                        "Trophies not loaded yet.",
                         Style::default().fg(Color::DarkGray),
                     ))
                     .centered(),
-                );
+                )
+            }
+            Some(c) => {
+                // Two blank lines separate one group from the next.
+                let mut first = true;
+                for section in &c.trophies.sections {
+                    let sec =
+                        trophy_section_lines(section, &tp.search, inner_w);
+                    if sec.is_empty() {
+                        continue;
+                    }
+                    if !first {
+                        lines.push(Line::from(""));
+                    }
+                    first = false;
+                    lines.extend(sec);
+                }
+                if lines.is_empty() {
+                    lines.push(
+                        Line::from(Span::styled(
+                            if has_trophies {
+                                "No matching trophies."
+                            } else {
+                                "No trophies."
+                            },
+                            Style::default().fg(Color::DarkGray),
+                        ))
+                        .centered(),
+                    );
+                }
             }
         }
-    }
+        lines
+    };
 
-    // Clamp scroll, then render the visible window. Record the view height so
-    // the key handler can scroll by half a page.
+    // Record the view height so the key handler can scroll by half a page.
     let view_h = rows[1].height as usize;
     tp.view_h = view_h;
+    // The grid reflows into whatever width it is given, so it is laid out again
+    // once the scrollbar's column turns out to be wanted. Laying it out one
+    // column narrower can only lengthen it, so a bar never un-needs itself.
+    let mut lines = build(rows[1].width as usize);
+    if view_h < lines.len() {
+        lines = build(
+            rows[1].width.saturating_sub(crate::utils::SCROLLBAR_W) as usize,
+        );
+    }
+
+    // Clamp scroll, then render the visible window beside its bar.
     let max_off = lines.len().saturating_sub(view_h);
     if tp.offset > max_off {
         tp.offset = max_off;
     }
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        rows[1],
+        crate::clickmap::ScrollView::JobberTrophies,
+        tp.offset,
+        lines.len(),
+    );
     let visible: Vec<Line> =
         lines.into_iter().skip(tp.offset).take(view_h).collect();
-    frame.render_widget(Paragraph::new(visible), rows[1]);
+    frame.render_widget(Paragraph::new(visible), body);
 
-    // The whole popup is a scroll target so the wheel works anywhere over it;
-    // pushed before the Close button so that button wins the hit test.
-    regions.push(ClickRegion {
-        rect: popup,
-        target: ClickTarget::JobberTrophyArea,
-    });
     regions.push(ClickRegion {
         rect: rows[3],
         target: ClickTarget::JobberTrophyClose,

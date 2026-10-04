@@ -458,6 +458,13 @@ fn open(shell: &mut AppShell, app: AppId, enter: bool) {
 /// Our own pirate, as the app learns it from `--user`.
 const ME: &str = "Playerone";
 
+/// Jobbers to send aboard on top of a run's own crew, enough of them that the
+/// panes and the Skill Leaderboard both have more rows than they can show.
+const LONG_ROSTER: [&str; 10] = [
+    "Matea", "Mateb", "Matec", "Mated", "Matee", "Matef", "Mateg", "Mateh",
+    "Matei", "Matej",
+];
+
 /// A full pillaging run: board, crew aboard, sail, three fights (win, loss,
 /// win) with loot and a greedy hit each, a plank, port, divvy.
 const PILLAGE: &[&str] = &[
@@ -616,6 +623,141 @@ fn feed(shell: &mut AppShell, lines: &[&str]) {
     }
 }
 
+/// Put `name` in the pirate cache as a fully-fetched pirate, so the popups
+/// that show a pirate's stats and trophies draw their contents instead of
+/// saying they are not loaded yet. The skills cover all three families and the
+/// trophies all three section shapes (two named groups and the ungrouped
+/// remainder), which is what makes these states show the scrolling that a real
+/// pirate's pages need.
+fn cache_pirate(shell: &mut AppShell, name: &str, shift: usize) {
+    use std::collections::HashMap;
+
+    use chrono::Utc;
+    use rusty_quartermaster::pirate::{
+        BasicInfo,
+        CachedPirate,
+        Experience,
+        Skill,
+        SkillRecord,
+        Standing,
+        Trophies,
+        TrophySection,
+        normalize_name,
+    };
+
+    // Each skill gets a different pair so no two rows read alike; the ladders
+    // are walked in step rather than being picked for any particular pirate.
+    // `shift` starts a pirate further along them, which is what ranks a roster
+    // of them against each other.
+    const LADDER: [(Experience, Standing); 6] = [
+        (Experience::Narrow, Standing::Able),
+        (Experience::Broad, Standing::Proficient),
+        (Experience::Solid, Standing::Respected),
+        (Experience::Expert, Standing::Master),
+        (Experience::Sublime, Standing::Legendary),
+        (
+            Experience::Transcendent,
+            Standing::Ultimate,
+        ),
+    ];
+    const SKILLS: [Skill; 12] = [
+        Skill::Sailing,
+        Skill::Carpentry,
+        Skill::Bilging,
+        Skill::Gunning,
+        Skill::TreasureHaul,
+        Skill::Swordfighting,
+        Skill::Distilling,
+        Skill::Alchemistry,
+        Skill::Shipwrightery,
+        Skill::Blacksmithing,
+        Skill::Drinking,
+        Skill::Poker,
+    ];
+    const TROPHIES: [(&str, &[&str]); 3] = [
+        (
+            "Sailing",
+            &[
+                "First Voyage Home",
+                "A Hundred Leagues",
+                "Sloop Sprint",
+                "Brigantine Brace",
+                "Galleon Gauntlet",
+                "Tide Turner",
+                "Longest Haul",
+                "Lost Then Found",
+                "Rigged in Full",
+                "Bilge Bailer",
+                "Patched Twice",
+                "Gunner's Eye",
+            ],
+        ),
+        (
+            "Carousing",
+            &[
+                "Table of Ten",
+                "Shuffled Deck",
+                "Double Dare",
+                "Last Call",
+                "Spades Sweep",
+                "Hearts Hoarder",
+            ],
+        ),
+        (
+            "",
+            &["Unlabelled Keepsake", "Odd Memento"],
+        ),
+    ];
+
+    let skills: HashMap<Skill, SkillRecord> = SKILLS
+        .iter()
+        .enumerate()
+        .map(|(i, &s)| {
+            let (experience, standing) = LADDER[(i + shift) % LADDER.len()];
+            (
+                s,
+                SkillRecord {
+                    experience,
+                    standing,
+                    archipelago: None,
+                },
+            )
+        })
+        .collect();
+    let entry = CachedPirate {
+        basic: BasicInfo {
+            name: name.to_owned(),
+            crew_rank: "Officer".to_owned(),
+            crew_role: None,
+            crew_name: "Test Crew".to_owned(),
+            flag_rank: "Royalty".to_owned(),
+            flag_name: "Example Flag".to_owned(),
+            reputation: HashMap::new(),
+            skills,
+        },
+        trophies: Trophies {
+            sections: TROPHIES
+                .iter()
+                .map(|(category, trophies)| {
+                    TrophySection {
+                        category: (*category).to_owned(),
+                        trophies: trophies
+                            .iter()
+                            .map(|t| (*t).to_owned())
+                            .collect(),
+                    }
+                })
+                .collect(),
+        },
+        basic_fetched_at: Utc::now(),
+        trophies_fetched_at: Utc::now(),
+    };
+    shell.pirate_cache.fetched.insert(
+        normalize_name(name).expect("a pirate name"),
+        entry,
+    );
+}
+
 /// The ocean the map states draw. Emerald unless `RQ_DUMP_OCEAN` says
 /// otherwise, matching the dump tests in `src/map/ui.rs`.
 fn dump_ocean() -> &'static Map {
@@ -731,6 +873,54 @@ fn profits_states(states: &mut Vec<State>) {
         move |shell| {
             populate(shell);
             shell.profits.focus = Focus::Button;
+        },
+    ));
+    // More commodities than any window over them: the Inventory is the one box
+    // on the page that scrolls, so this is where its scrollbar shows.
+    states.push(state(
+        "profits-long-list",
+        "Profits with more commodities than the Inventory can show",
+        |shell| {
+            shell.ocean = Some(Ocean::Emerald);
+            shell.query_market = true;
+            for (i, name) in [
+                "Sugar cane",
+                "Cocoa",
+                "Coffee",
+                "Tea",
+                "Madder",
+                "Indigo",
+                "Lobster",
+                "Swill",
+                "Grog",
+                "Nibs",
+                "Broad cloth",
+                "Fine cloth",
+                "Kelp",
+                "Lacquer",
+                "Nails",
+                "Oak",
+                "Pine",
+                "Sailcloth",
+                "Stone",
+                "Varnish",
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                shell.commodities.push(Commodity {
+                    id: i as u64 + 10,
+                    name: name.to_owned(),
+                });
+            }
+            for id in (1 ..= 5).chain(10 .. 30) {
+                let mut row = InventoryRow::new(id);
+                row.stock = (10 * id).to_string();
+                shell.profits.rows.push(row);
+            }
+            open(shell, AppId::Profits, true);
+            shell.profits.focus = Focus::Table;
+            shell.profits.table_state.select(Some(0));
         },
     ));
     // A table too wide for its box: the columns keep their widths and the
@@ -1042,6 +1232,23 @@ fn jobbers_states(states: &mut Vec<State>) {
         },
     ));
 
+    states.push(state(
+        "jobbers-long-roster",
+        "Jobbers with more aboard than the pane and the leaderboard can show",
+        |shell| {
+            feed(shell, PILLAGE);
+            for (i, name) in LONG_ROSTER.iter().enumerate() {
+                shell.chatlog.process_line(&format!(
+                    "[01:00:30] {name} has come aboard."
+                ));
+                // Stats are what the leaderboard ranks, so a roster without
+                // them would leave it empty however long the roster is.
+                cache_pirate(shell, name, i);
+            }
+            open(shell, AppId::Chatlog, true);
+        },
+    ));
+
     // -- popups --
     states.push(state(
         "jobbers-popup-vessel",
@@ -1080,6 +1287,23 @@ fn jobbers_states(states: &mut Vec<State>) {
             shell.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: "Matetwo".to_owned(),
                 button: 0,
+                offset: 0,
+                view_h: 0,
+            });
+        },
+    ));
+    states.push(state(
+        "jobbers-popup-pirate-stats",
+        "Jobbers, pirate stats popup with the stats fetched",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 0,
+                offset: 0,
+                view_h: 0,
             });
         },
     ));
@@ -1092,6 +1316,29 @@ fn jobbers_states(states: &mut Vec<State>) {
             shell.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: "Matetwo".to_owned(),
                 button: 1,
+                offset: 0,
+                view_h: 0,
+            });
+            shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
+                name: "Matetwo".to_owned(),
+                search: String::new(),
+                offset: 0,
+                view_h: 10,
+            });
+        },
+    ));
+    states.push(state(
+        "jobbers-popup-trophy-list",
+        "Jobbers, trophy browser with the trophies fetched",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 1,
+                offset: 0,
+                view_h: 0,
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),

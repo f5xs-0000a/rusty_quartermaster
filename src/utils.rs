@@ -488,6 +488,171 @@ pub fn render_close_button(
 /// pinned header and the borders are on top of these.
 pub const SCROLL_MIN_ROWS: u16 = 4;
 
+/// Columns a view the user scrolls keeps along its right edge for the
+/// scrollbar: the single column the bar is drawn in, and the blank one that
+/// holds the contents off it — the same blank column [`PADDING`] keeps between
+/// contents and a border. They are only spent while there is something to
+/// scroll; see [`render_scrollbar`].
+pub const SCROLLBAR_W: u16 = 1 + PADDING;
+
+/// Whether a view with `total` rows to show and `rows` of room must scroll, and
+/// so spends its [`SCROLLBAR_W`] columns on the bar. [`render_scrollbar`] asks
+/// this itself; a caller needs it only when the answer decides a layout it must
+/// settle before drawing.
+pub fn scrolls(rows: u16, total: usize) -> bool {
+    (rows as usize) < total
+}
+
+/// Draw the scrollbar of a view the user scrolls and hand back the part of
+/// `area` its contents may use. `total` is the rows the view holds in all;
+/// `area.height` is how many of them are on show, and `offset` is the first.
+///
+/// With all of them on show there is nothing to scroll, so no bar is drawn and
+/// the whole of `area` comes back: the [`SCROLLBAR_W`] columns are the
+/// contents' to use until the moment the bar wants them, and a list that fits
+/// looks like any other widget.
+///
+/// The bar spans the view. Each end carries an arrow while the view can still
+/// travel that way and flattens to a cap once it cannot, so the two ends say
+/// where in the list the window sits without the thumb having to be read. The
+/// thumb is the same part of the track that the rows on show are of the whole,
+/// which is what makes a window over thirty rows look unlike one over six.
+///
+/// The bar is a click target besides, named by `view` so the click can be
+/// routed back here; it is registered last, over whatever region the view
+/// itself claimed, so the column answers to the bar rather than to the list
+/// behind it.
+pub fn render_scrollbar(
+    frame: &mut ratatui::Frame,
+    regions: &mut Vec<crate::clickmap::ClickRegion>,
+    area: ratatui::layout::Rect,
+    view: crate::clickmap::ScrollView,
+    offset: usize,
+    total: usize,
+) -> ratatui::layout::Rect {
+    use ratatui::{
+        layout::Rect,
+        widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+    };
+
+    use crate::clickmap::{ClickRegion, ClickTarget};
+
+    if !scrolls(area.height, total) {
+        return area;
+    }
+    let rows = area.height as usize;
+    let bar = Rect {
+        x: area.x + area.width.saturating_sub(1),
+        width: 1,
+        ..area
+    };
+    regions.push(ClickRegion {
+        rect: bar,
+        target: ClickTarget::Scrollbar {
+            view,
+            bar,
+            total,
+        },
+    });
+    let max_offset = total - rows;
+    let offset = offset.min(max_offset);
+    // The state is given the offsets the window can rest at rather than the
+    // rows it holds, with the window's own length beside them. That is what
+    // makes the thumb `view / total` of the track and lands it against the
+    // track's far end at the foot of the list, instead of stopping a thumb's
+    // length short of it.
+    let mut state = ScrollbarState::new(max_offset + 1)
+        .position(offset)
+        .viewport_content_length(rows);
+    frame.render_stateful_widget(
+        Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(Some(if 0 < offset { "▲" } else { "┬" }))
+            .end_symbol(Some(
+                if offset < max_offset { "▼" } else { "┴" },
+            ))
+            .track_symbol(Some("│"))
+            .thumb_symbol("█"),
+        area,
+        &mut state,
+    );
+    Rect {
+        width: area.width.saturating_sub(SCROLLBAR_W),
+        ..area
+    }
+}
+
+/// What a click on a scrollbar asks of the view it belongs to. Which of the
+/// two it is depends only on where in the bar the click landed, so a view that
+/// keeps its own window and one whose window follows a cursor read the same
+/// click and answer it in their own terms (see [`ScrollHit::resolve`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollHit {
+    /// An end cell: one back (`-1`) or one on (`1`). A capped end asks all the
+    /// same — there is simply nothing that way to move to, and the clamp in
+    /// [`ScrollHit::resolve`] is what makes the ask a no-op.
+    Step(i32),
+    /// A click on the track, as how far down it the pointer was: `cell` of
+    /// `track` cells.
+    Jump {
+        cell: u16,
+        track: u16,
+    },
+}
+
+/// Read a click at `row` on the bar drawn in `bar` ([`render_scrollbar`] hands
+/// the rect to the click region it registers).
+pub fn scrollbar_hit(bar: ratatui::layout::Rect, row: u16) -> ScrollHit {
+    // The bar's first and last cells are its two arrows; the track is what lies
+    // between them.
+    let cell = row.saturating_sub(bar.y);
+    if cell == 0 {
+        return ScrollHit::Step(-1);
+    }
+    let track = bar.height.saturating_sub(2);
+    if track <= cell - 1 {
+        return ScrollHit::Step(1);
+    }
+    ScrollHit::Jump {
+        cell: cell - 1,
+        track,
+    }
+}
+
+impl ScrollHit {
+    /// Where the click puts a view that is at `current` and can go as far as
+    /// `last`. What those two count is the view's own business: a view that
+    /// keeps its own window passes its scroll offset and its last offset, while
+    /// one whose window follows a cursor passes the cursor and the last row —
+    /// the bar means "this far down" either way.
+    ///
+    /// A click lands the pointed-at part of the list under the pointer, near
+    /// enough: the thumb is not corrected for its own length, which on the
+    /// short tracks a four-row view gives would be noise.
+    pub fn resolve(self, current: usize, last: usize) -> usize {
+        match self {
+            Self::Step(by) => {
+                if by < 0 {
+                    current.saturating_sub(1)
+                } else {
+                    (current + 1).min(last)
+                }
+            }
+            Self::Jump {
+                cell,
+                track,
+            } => {
+                // Both ends of the track are reachable: the top cell is the
+                // start of the list and the bottom cell its end.
+                let steps = track.saturating_sub(1) as usize;
+                if steps == 0 {
+                    return current.min(last);
+                }
+                (cell as usize * last + steps / 2) / steps
+            }
+        }
+    }
+}
+
 /// Refuse to draw a page in less width than `needed`, drawing the notice saying
 /// so in its place. Returns whether it did, so a page that cannot narrow any
 /// further returns on `true`.
@@ -680,6 +845,158 @@ mod tests {
                 "              ",
             ],
         );
+    }
+
+    /// Render the scrollbar of a `width`-wide, 6-row view over `total` rows and
+    /// return its column, top to bottom, with the width the contents were left.
+    #[cfg(test)]
+    fn scrollbar_column(
+        width: u16,
+        offset: usize,
+        total: usize,
+    ) -> (Vec<String>, u16) {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        use crate::clickmap::ScrollView;
+
+        let mut content_w = width;
+        let mut regions = Vec::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, 6)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                content_w = render_scrollbar(
+                    frame,
+                    &mut regions,
+                    Rect::new(0, 0, width, 6),
+                    ScrollView::JobberTrophies,
+                    offset,
+                    total,
+                )
+                .width;
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer();
+        (
+            (0 .. 6)
+                .map(|y| buffer[(width - 1, y)].symbol().to_string())
+                .collect(),
+            content_w,
+        )
+    }
+
+    // Nothing to scroll is nothing to draw, and the column stays the
+    // contents'.
+    #[test]
+    fn a_view_that_fits_keeps_its_scrollbar_column() {
+        assert_eq!(
+            scrollbar_column(3, 0, 6),
+            (
+                vec![" "; 6].into_iter().map(String::from).collect(),
+                3
+            ),
+        );
+    }
+
+    // Half the rows on show, so the thumb is half the track; the end the view
+    // can still travel to carries the arrow and the other end is capped.
+    #[test]
+    fn a_scrollbar_points_the_way_the_view_can_travel() {
+        let thumb_at_top = ["┬", "█", "█", "│", "│", "▼"];
+        assert_eq!(
+            scrollbar_column(4, 0, 12),
+            (
+                thumb_at_top.iter().map(|s| s.to_string()).collect(),
+                // The bar's column and its blank are no longer the contents'.
+                4 - SCROLLBAR_W,
+            ),
+        );
+
+        let thumb_at_foot = ["▲", "│", "│", "█", "█", "┴"];
+        assert_eq!(
+            scrollbar_column(4, 6, 12).0,
+            thumb_at_foot
+                .iter()
+                .map(|s| s.to_string())
+                .collect::<Vec<_>>(),
+        );
+    }
+
+    // The bar answers the mouse on its own column, and nowhere else: the blank
+    // column beside it belongs to the contents.
+    #[test]
+    fn a_scrollbar_is_a_click_region_on_its_own_column() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        use crate::clickmap::{ClickTarget, ScrollView};
+
+        let mut regions = Vec::new();
+        let mut terminal =
+            Terminal::new(TestBackend::new(10, 6)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_scrollbar(
+                    frame,
+                    &mut regions,
+                    Rect::new(2, 0, 8, 6),
+                    ScrollView::JobberLeaderboard,
+                    0,
+                    12,
+                );
+            })
+            .expect("draw");
+
+        let [region] = regions.as_slice() else {
+            panic!(
+                "one region for the bar, got {}",
+                regions.len()
+            );
+        };
+        assert_eq!(region.rect, Rect::new(9, 0, 1, 6));
+        assert!(matches!(
+            region.target,
+            ClickTarget::Scrollbar {
+                view: ScrollView::JobberLeaderboard,
+                total: 12,
+                ..
+            },
+        ));
+    }
+
+    // A click reads as a step at the two ends and as a jump along the track,
+    // and the track's own ends reach the ends of the list.
+    #[test]
+    fn a_scrollbar_click_steps_at_the_ends_and_jumps_between_them() {
+        use ratatui::layout::Rect;
+
+        // Six cells: an arrow at each end, four of track between them.
+        let bar = Rect::new(9, 4, 1, 6);
+        assert_eq!(
+            scrollbar_hit(bar, 4),
+            ScrollHit::Step(-1)
+        );
+        assert_eq!(
+            scrollbar_hit(bar, 9),
+            ScrollHit::Step(1)
+        );
+        assert_eq!(
+            scrollbar_hit(bar, 5),
+            ScrollHit::Jump {
+                cell: 0,
+                track: 4,
+            },
+        );
+
+        // A step is one row, and stops at either end of the list.
+        assert_eq!(ScrollHit::Step(-1).resolve(3, 9), 2);
+        assert_eq!(ScrollHit::Step(-1).resolve(0, 9), 0);
+        assert_eq!(ScrollHit::Step(1).resolve(9, 9), 9);
+
+        // The track's first and last cells are the list's first and last rows,
+        // and a cell between them lands in proportion.
+        assert_eq!(scrollbar_hit(bar, 5).resolve(4, 9), 0);
+        assert_eq!(scrollbar_hit(bar, 8).resolve(4, 9), 9);
+        assert_eq!(scrollbar_hit(bar, 6).resolve(4, 9), 3);
     }
 
     #[test]

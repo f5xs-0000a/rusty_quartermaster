@@ -407,7 +407,13 @@ pub fn render(
                 .map(|s| s.chars().count())
                 .unwrap_or(0),
         );
-        built.natural_width().max(header_w).max(FOOTER_W)
+        // The body scrolls, so the scrollbar's columns are part of what the
+        // widest row needs — a stat row has nowhere to fold to.
+        built
+            .natural_width()
+            .saturating_add(crate::utils::SCROLLBAR_W as usize)
+            .max(header_w)
+            .max(FOOTER_W)
     };
 
     // Size to content (+2 for the borders) and center. A default floor keeps
@@ -561,9 +567,22 @@ pub fn render(
     };
 
     // Content geometry: stat lines, a 1-row gap, then the stacked chart boxes.
-    let n_lines = built.lines.len() as u16;
-    let charts_top = n_lines + 1;
-    let total_h = charts_top + n_charts as u16 * CHART_H;
+    let mut n_lines = built.lines.len() as u16;
+    let mut charts_top = n_lines + 1;
+    let mut total_h = charts_top + n_charts as u16 * CHART_H;
+
+    // The body is the page's one scrolling view, so it gives the scrollbar its
+    // columns and is laid out again in what is left — the trailing notes fold
+    // to the width, and folding them narrower can only lengthen the body,
+    // so this settles in one pass.
+    let mut body_w = body.width;
+    if crate::utils::scrolls(body.height, total_h as usize) {
+        body_w = body.width.saturating_sub(crate::utils::SCROLLBAR_W);
+        built.finalize(body_w as usize);
+        n_lines = built.lines.len() as u16;
+        charts_top = n_lines + 1;
+        total_h = charts_top + n_charts as u16 * CHART_H;
+    }
 
     // Row + height of the focused item, for auto-scroll.
     let (focus_row, focus_h) = match focused_chart {
@@ -596,14 +615,9 @@ pub fn render(
 
     // Render the whole scroll content into an offscreen canvas, then blit the
     // visible window — so partially-scrolled chart boxes clip cleanly.
-    let mut canvas = Buffer::empty(Rect::new(
-        0,
-        0,
-        body.width,
-        total_h.max(1),
-    ));
+    let mut canvas = Buffer::empty(Rect::new(0, 0, body_w, total_h.max(1)));
     Paragraph::new(built.lines).render(
-        Rect::new(0, 0, body.width, n_lines),
+        Rect::new(0, 0, body_w, n_lines),
         &mut canvas,
     );
     render_charts(
@@ -611,18 +625,26 @@ pub fn render(
         Rect::new(
             0,
             charts_top,
-            body.width,
+            body_w,
             n_charts as u16 * CHART_H,
         ),
         &view.charts,
         if focused { focused_chart } else { None },
+    );
+    crate::utils::render_scrollbar(
+        frame,
+        regions,
+        body,
+        crate::clickmap::ScrollView::VoyageBody,
+        ui.scroll as usize,
+        total_h as usize,
     );
     for row in 0 .. body.height {
         let src_y = ui.scroll + row;
         if src_y >= total_h {
             break;
         }
-        for col in 0 .. body.width {
+        for col in 0 .. body_w {
             if let Some(src) = canvas.cell(Position::new(col, src_y)).cloned()
                 && let Some(dst) = frame.buffer_mut().cell_mut(Position::new(
                     body.x + col,
@@ -643,7 +665,7 @@ pub fn render(
                 rect: Rect::new(
                     body.x,
                     body.y + (line - ui.scroll),
-                    body.width,
+                    body_w,
                     1,
                 ),
                 target: ClickTarget::VoyageStat {
@@ -661,7 +683,7 @@ pub fn render(
                 rect: Rect::new(
                     body.x,
                     body.y + (vis_top - ui.scroll),
-                    body.width,
+                    body_w,
                     vis_bot - vis_top,
                 ),
                 target: ClickTarget::VoyageChart {
