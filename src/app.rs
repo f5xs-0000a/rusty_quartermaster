@@ -608,11 +608,12 @@ impl AppShell {
 
         let area = frame.area();
 
-        // Layout tree: [top bar / content]. The full-width top bar reclaims the
-        // columns the old sidebar spent, so every page now gets all 80 columns.
-        // Pages own everything in their content area — the Jobbers page, for
-        // instance, draws its own tooltip inside its centered block rather than
-        // as a full-width strip here.
+        // Layout tree: [top bar / content]. The top bar spans the full
+        // terminal width; each page then centers its own fixed-width block in
+        // the content area rather than stretching to fill it. Pages own
+        // everything in their content area — the Jobbers page, for instance,
+        // draws its own tooltip inside its centered block rather than as a
+        // full-width strip here.
         let chunks = Layout::vertical([
             Constraint::Length(TOPBAR_HEIGHT),
             Constraint::Min(0),
