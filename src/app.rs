@@ -113,10 +113,9 @@ const TOPBAR_HEIGHT: u16 = 2;
 /// between its contents and its edge.
 const TOPBAR_PADDING: u16 = 1;
 
-/// Smallest terminal the app draws its pages in. Below this a page starts
+/// Shortest terminal the app draws its pages in. Below this a page starts
 /// dropping whole widgets rather than merely tightening, so it would misreport
 /// the state of things rather than look cramped.
-const MIN_WIDTH: u16 = 80;
 const MIN_HEIGHT: u16 = 24;
 
 /// Columns the top bar needs before a label would be clipped: every label with
@@ -654,7 +653,10 @@ impl AppShell {
 
         let area = frame.area();
 
-        if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        // The shell's own floor is the bar: narrower than that there is no way
+        // left to reach a page, so nothing is drawn but the notice. Whether the
+        // page that is open fits the remaining width is the page's own call.
+        if area.width < topbar_min_width() || area.height < MIN_HEIGHT {
             self.render_too_small(frame, area);
             return;
         }
@@ -759,9 +761,9 @@ impl AppShell {
     /// while the bar is focused the other slots sit a step up from the
     /// resting shade; once focus drops into an app those others fall back
     /// to the base shade.
-    /// A terminal too small for the app: nothing is drawn but a note asking
-    /// for more room. Drawing a page here would drop widgets silently, which
-    /// reads as the app being wrong rather than the window being small.
+    /// A terminal too small for the app at all: nothing is drawn but a note
+    /// asking for more room. Drawing a page here would drop widgets silently,
+    /// which reads as the app being wrong rather than the window being small.
     ///
     /// The bar survives as long as it fits whole, since it still says what the
     /// app is; once a label would be clipped it goes too, a clipped bar being
@@ -782,20 +784,14 @@ impl AppShell {
         };
 
         let detail = format!(
-            "Enlarge the window to at least {MIN_WIDTH}x{MIN_HEIGHT} (it is \
-             {}x{}).",
-            area.width, area.height,
+            "Enlarge the window to at least {}x{MIN_HEIGHT} (it is {}x{}).",
+            topbar_min_width(),
+            area.width,
+            area.height,
         );
-        // No border stands between the notice and the screen edge, so the blank
-        // column per side is taken here.
-        use crate::utils::PADDING;
-        crate::utils::render_notice(
+        crate::utils::render_page_notice(
             frame,
-            Rect {
-                x: body.x + PADDING.min(body.width),
-                width: body.width.saturating_sub(2 * PADDING),
-                ..body
-            },
+            body,
             &[
                 (
                     "Terminal too small",
@@ -3926,6 +3922,13 @@ mod topbar_tests {
         topbar_slots,
     };
 
+    /// The widest a page's own furniture may need. Each page decides for itself
+    /// whether the window is wide enough for what it is showing (see
+    /// [`crate::utils::too_narrow`]), so no gate in the app holds this figure;
+    /// the tests below do. Data a page is given can be longer than any width —
+    /// a pirate with a long name — and is not what this bounds.
+    const MIN_WIDTH: u16 = 80;
+
     /// Draw into a terminal of the given size and return the screen as text.
     fn screen(width: u16, height: u16) -> String {
         let mut shell = AppShell::new(Vec::new());
@@ -3988,9 +3991,36 @@ mod topbar_tests {
         }
     }
 
+    /// The shell's own floor, below which no page can be reached at all: too
+    /// short for any page, or too narrow for the bar that would let the user
+    /// leave the page they are on.
     #[test]
-    fn a_terminal_under_the_minimum_says_so_instead_of_drawing_a_page() {
-        let screen = screen(60, 20);
-        assert!(screen.contains("Terminal too small"));
+    fn a_terminal_under_the_shell_floor_says_so_instead_of_drawing_a_page() {
+        assert!(screen(60, 20).contains("Terminal too small"));
+        assert!(
+            screen(topbar_min_width() - 1, 40).contains("Terminal too small")
+        );
+    }
+
+    /// Each page decides for itself whether the window is wide enough, and
+    /// [`MIN_WIDTH`] is the ceiling those answers must stay under. Looking for
+    /// the refusal at exactly that width is what holds them to it.
+    #[test]
+    fn no_page_needs_more_width_than_the_ceiling() {
+        for (index, app) in APP_LIST.iter().enumerate() {
+            let mut shell = AppShell::new(Vec::new());
+            shell.sidebar_index = index;
+            let mut terminal = Terminal::new(TestBackend::new(MIN_WIDTH, 40))
+                .expect("terminal");
+            terminal.draw(|frame| shell.render(frame)).expect("draw");
+            // At this size the shell's own floor is met, so the notice could
+            // only have come from the page refusing the width.
+            assert!(
+                !format!("{}", terminal.backend())
+                    .contains("Terminal too small"),
+                "{} will not draw in {MIN_WIDTH} columns",
+                app.bar_lines().0,
+            );
+        }
     }
 }

@@ -155,6 +155,12 @@ pub fn render(
 ) {
     let (box_width, box_height) = calc_box_size(true);
 
+    // The grid is as wide as two ship names and the labels between them, with
+    // no shorter arrangement to fall back on.
+    if crate::utils::too_narrow(frame, area, box_width) {
+        return;
+    }
+
     let vchunks = Layout::vertical([
         Constraint::Fill(1),
         Constraint::Length(box_height),

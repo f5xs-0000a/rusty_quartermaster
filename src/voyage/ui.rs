@@ -349,17 +349,11 @@ pub fn render(
     regions: &mut Vec<ClickRegion>,
 ) {
     // Nothing to frame until a voyage exists, so the notice saying so stands in
-    // for the whole page rather than sitting inside an empty widget. Having no
-    // border to take them from, its blank columns come from `PADDING`.
+    // for the whole page rather than sitting inside an empty widget.
     if !view.has_voyage {
-        use crate::utils::PADDING;
-        crate::utils::render_notice(
+        crate::utils::render_page_notice(
             frame,
-            Rect {
-                x: full.x + PADDING.min(full.width),
-                width: full.width.saturating_sub(2 * PADDING),
-                ..full
-            },
+            full,
             &[
                 (
                     "No voyage tracked yet.",
@@ -411,10 +405,14 @@ pub fn render(
         built.natural_width().max(header_w).max(FOOTER_W)
     };
 
-    // Size to content (+2 for the borders) and center, never exceeding the
-    // area. A default floor keeps the panel a comfortable width on short
-    // content instead of hugging the text; wider content still expands past
-    // it.
+    // Size to content (+2 for the borders) and center. A default floor keeps
+    // the panel a comfortable width on short content instead of hugging the
+    // text; wider content still expands past it. Only the content is a
+    // requirement, so the floor gives way to a narrow window while the
+    // content refuses one.
+    if crate::utils::too_narrow(frame, full, (content_w + 2) as u16) {
+        return;
+    }
     const DEFAULT_W: u16 = 50; // total width incl. borders
     let width = ((content_w + 2) as u16)
         .max(DEFAULT_W)

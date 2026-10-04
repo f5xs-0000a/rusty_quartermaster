@@ -1113,17 +1113,11 @@ pub fn render(
     regions: &mut Vec<ClickRegion>,
 ) {
     // Nothing to frame without a log to read, so the notice saying so stands in
-    // for the whole page. Having no border to take them from, its blank columns
-    // come from `PADDING`.
+    // for the whole page.
     if !state.attached {
-        use crate::utils::PADDING;
-        crate::utils::render_notice(
+        crate::utils::render_page_notice(
             frame,
-            Rect {
-                x: area.x + PADDING.min(area.width),
-                width: area.width.saturating_sub(2 * PADDING),
-                ..area
-            },
+            area,
             &[(
                 "No chat log attached. Pass --chat-log <PATH> (and --user \
                  <NAME>) to monitor a game log.",
@@ -1625,7 +1619,11 @@ pub fn render(
     } else {
         voyage_w.max(offset_title_width("Coming Soon"))
     };
-    let block_w = block_w.min(area.width.max(1));
+    // The boxes are sized to their contents, so squeezing the block into a
+    // narrower window would clip names and tallies rather than tighten them.
+    if crate::utils::too_narrow(frame, area, block_w) {
+        return;
+    }
     let block = Rect::new(
         area.x + area.width.saturating_sub(block_w) / 2,
         area.y,

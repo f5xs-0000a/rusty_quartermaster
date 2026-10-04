@@ -85,23 +85,41 @@ pub fn render(
         + 2
         + 2;
 
-    // Label column shared by the Parameters and Hold Stats tables.
-    let label_width = app
-        .panel
+    // Label column shared by the Parameters and Hold Stats tables, and the
+    // widest text the value side of a Parameters row will draw. Both are
+    // measured over the rows actually on show, and the value side is measured
+    // rather than reserved: a placeholder is the prompt saying what the field
+    // wants, so clipping one costs more than widening the panel. The value
+    // floor is room to type into a field that is showing nothing.
+    let visible = app.visible_panels(shared.market_supported);
+    let label_width = visible
         .iter()
-        .map(|f| f.label.chars().count())
+        .map(|&i| app.panel[i].label.chars().count())
         .max()
         .unwrap_or(0)
         .max("Rum (Hold / Restock)".len()) as u16;
-    // label + 2 gap + min input(8) + 2 borders + 2 padding.
-    let params_width = label_width + 2 + 8 + 2 + 2;
+    let value_width = visible
+        .iter()
+        .map(|&i| field_text(app, shared, i).chars().count() as u16)
+        .max()
+        .unwrap_or(0)
+        .max(8);
+    // label + 2 gap + value + 2 borders + 2 padding.
+    let params_width = label_width + 2 + value_width + 2 + 2;
 
-    // One centered column width; every box is widened to it.
-    let content_width = table_width
-        .max(params_width)
+    // What the page cannot do without. The Inventory is absent from it because
+    // it scrolls: it may be wider than the window and still show every column,
+    // while a Parameters row has nowhere to scroll to.
+    let needed_width = params_width
         .max(offset_title_width("Parameters"))
-        .max(offset_title_width("Inventory"))
-        .min(area.width.max(1));
+        .max(offset_title_width("Inventory"));
+    if crate::utils::too_narrow(frame, area, needed_width) {
+        return;
+    }
+
+    // One centered column width; every box is widened to it, and the Inventory
+    // may still ask for more than the window has.
+    let content_width = table_width.max(needed_width).min(area.width);
 
     let hchunks = Layout::horizontal([
         Constraint::Fill(1),
@@ -112,10 +130,19 @@ pub fn render(
     let col = hchunks[1];
 
     // -- Vertical stack ----------------------------------------------------
-    let visible_panels = app.visible_panels(shared.market_supported).len();
-    let params_h = visible_panels as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
+    let params_h = visible.len() as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
     let stats_h = 1 + 2; // 1 row + borders
-    let search_h = 2 + 2; // input + suggestion + borders
+    // The suggestion row and the tooltip only take room when they have
+    // something to say. The Inventory is the one widget that grows into
+    // what the others leave, so a row reserved for nothing is a commodity
+    // row it loses.
+    let suggestion_h = u16::from(build_suggestion_line(app, shared).is_some());
+    let search_h = 1 /*input*/ + suggestion_h + 2 /*borders*/;
+    let tooltip_h = if build_tooltip(app, shared).is_some() {
+        2 // up to two lines once it wraps
+    } else {
+        0
+    };
 
     // Inventory is the topmost widget and takes the Fill slot so it scrolls;
     // the others stack below it at fixed heights, with the tooltip last.
@@ -124,7 +151,7 @@ pub fn render(
         Constraint::Length(search_h),
         Constraint::Length(stats_h),
         Constraint::Length(params_h),
-        Constraint::Length(2), // tooltip (up to two lines)
+        Constraint::Length(tooltip_h),
     ])
     .split(col);
 
@@ -225,19 +252,20 @@ fn render_parameters(
             Style::default()
         };
 
+        let text = field_text(app, shared, i);
         if is_place_field(i) {
             render_island_field(
                 frame,
                 field,
+                &text,
                 cols[2],
                 is_focused,
                 value_style,
                 shared,
             );
         } else if i == P_BOOTY_CHEST && field.value.is_empty() {
-            // Booty Chest: when blank, show the auto-deduced value as a dim
-            // placeholder. The calc uses it unless the user types an override.
-            let deduced = app.deduced_chest(shared).to_string();
+            // The deduced chest shows as a dim placeholder; the calc uses it
+            // unless the user types an override.
             let ph_style = if is_focused {
                 Style::default()
                     .fg(Color::DarkGray)
@@ -248,7 +276,8 @@ fn render_parameters(
             };
             frame.render_widget(
                 Paragraph::new(
-                    Line::from(Span::styled(deduced, ph_style)).right_aligned(),
+                    Line::from(Span::styled(text.as_ref(), ph_style))
+                        .right_aligned(),
                 ),
                 cols[2],
             );
@@ -627,9 +656,37 @@ fn render_search(
     }
 }
 
+/// The text a Parameters field draws on its value side: the value it was given,
+/// or the placeholder standing in for one it has not been given yet. Sizing the
+/// panel and drawing it both read this, so the panel is never sized to
+/// something other than what appears in it.
+fn field_text<'a>(
+    app: &'a ProfitsApp,
+    shared: &SharedState,
+    i: usize,
+) -> std::borrow::Cow<'a, str> {
+    use std::borrow::Cow;
+
+    let field = &app.panel[i];
+    if is_place_field(i) {
+        if shared.cached_offers.is_empty() {
+            return Cow::Borrowed("Query Market first");
+        }
+        if field.value.is_empty() {
+            return Cow::Borrowed("Ocean-wide");
+        }
+    } else if i == P_BOOTY_CHEST && field.value.is_empty() {
+        // Booty Chest: when blank, the auto-deduced value stands in as a dim
+        // placeholder. The calc uses it unless the user types an override.
+        return Cow::Owned(app.deduced_chest(shared).to_string());
+    }
+    Cow::Borrowed(&field.value)
+}
+
 fn render_island_field(
     frame: &mut Frame,
     field: &crate::utils::PromptField,
+    text: &str,
     area: Rect,
     is_focused: bool,
     value_style: Style,
@@ -643,11 +700,7 @@ fn render_island_field(
         };
         frame.render_widget(
             Paragraph::new(
-                Line::from(Span::styled(
-                    "Query Market first",
-                    btn_style,
-                ))
-                .right_aligned(),
+                Line::from(Span::styled(text, btn_style)).right_aligned(),
             ),
             area,
         );
@@ -665,8 +718,7 @@ fn render_island_field(
         };
         frame.render_widget(
             Paragraph::new(
-                Line::from(Span::styled("Ocean-wide", ph_style))
-                    .right_aligned(),
+                Line::from(Span::styled(text, ph_style)).right_aligned(),
             ),
             area,
         );

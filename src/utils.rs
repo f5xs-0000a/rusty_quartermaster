@@ -337,6 +337,69 @@ pub fn render_notice(
     frame.render_widget(Paragraph::new(lines).centered(), rect);
 }
 
+/// Draw a [`render_notice`] that stands in for a whole page rather than for one
+/// widget. With no border to take them from, the blank columns it keeps at its
+/// edges come from [`PADDING`].
+pub fn render_page_notice(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    paragraphs: &[(&str, ratatui::style::Style)],
+) {
+    render_notice(
+        frame,
+        ratatui::layout::Rect {
+            x: area.x + PADDING.min(area.width),
+            width: area.width.saturating_sub(2 * PADDING),
+            ..area
+        },
+        paragraphs,
+    );
+}
+
+/// Refuse to draw a page in less width than `needed`, drawing the notice saying
+/// so in its place. Returns whether it did, so a page that cannot narrow any
+/// further returns on `true`.
+///
+/// How much width is needed is the page's own business and moves with what it
+/// has to show, so each page weighs its own content here rather than being
+/// held to one figure for the whole app. A page that fits the window is drawn
+/// even when another page would not have fit, and the top bar stays above the
+/// notice so the pages that do fit are still reachable.
+pub fn too_narrow(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    needed: u16,
+) -> bool {
+    use ratatui::style::{Color, Style};
+
+    if needed <= area.width {
+        return false;
+    }
+
+    let detail = format!(
+        "Enlarge the window to at least {needed} columns (it is {}).",
+        area.width,
+    );
+    // The same heading the app uses when the window is too small for anything
+    // at all: to the user it is one condition, and what is lacking this
+    // time is the detail line's business.
+    render_page_notice(
+        frame,
+        area,
+        &[
+            (
+                "Terminal too small",
+                Style::default().bold(),
+            ),
+            (
+                &detail,
+                Style::default().fg(Color::DarkGray),
+            ),
+        ],
+    );
+    true
+}
+
 /// Word-wrap `text` to `width` columns, hard-breaking any single word longer
 /// than the line so a narrow column never overflows. Returns one `String` per
 /// line.

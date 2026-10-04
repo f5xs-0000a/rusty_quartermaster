@@ -203,33 +203,46 @@ settles that case.
 
 ## Rule 3: Too small a terminal shows a message, not the app
 
-Below the size the app needs, no page is drawn. A page squeezed past its
-minimum does not merely look cramped: it drops whole widgets, so it reports
-the state of things wrongly. A message saying to enlarge the window, centered
-on both axes, is drawn instead.
+Below the size needed, no page is drawn. A page squeezed past its minimum does
+not merely look cramped: it drops whole widgets, so it reports the state of
+things wrongly. A message saying to enlarge the window, centered on both axes,
+is drawn instead.
 
 ```
                      Terminal too small
-       Enlarge the window to at least 80x24 (it is 70x20).
+       Enlarge the window to at least 54 columns (it is 50).
 ```
 
-The top bar is held to its own, smaller, minimum. While the bar fits whole it
-stays, because it still says what the app is; once a label would be clipped
-the bar goes too, a clipped bar reading as broken rather than as small. So
-there are three sizes of window:
+### How wide is a page's own business
 
-| terminal                        | drawn                   |
-| ------------------------------- | ----------------------- |
-| at least the app's minimum      | the page                |
-| at least the bar's minimum      | the bar and the message |
-| smaller                         | the message alone       |
+Each page asks the question for itself, about the content it has in hand right
+now, rather than being held to one figure for the whole app. A window that fits
+the page the user is on draws it, even where another page would not have fit:
+the Damage grid is as wide as two ship names and the labels between them and so
+wants 54 columns, while Profits is usable in 48 and the Voyage panel in 42.
+
+The top bar stays above the message, which is the point of putting the question
+in the page rather than in the shell — the pages that *do* fit are still one
+keypress away.
+
+So the sizes of window are:
+
+| terminal                     | drawn                                     |
+| ---------------------------- | ----------------------------------------- |
+| at least this page's minimum | the page                                  |
+| at least the bar's minimum   | the bar, and the message where the page was|
+| smaller                      | the message alone                          |
+
+A page refuses only over what it cannot shrink or scroll out of. The Profits
+Inventory is absent from its own minimum for exactly that reason: a table wider
+than its box scrolls sideways and still reaches every column, so it raises no
+requirement. A `Restocking Place` row has nowhere to scroll to, so it does.
 
 ### The numbers
 
-The app's minimum is **80x24**, the conventional terminal floor.
-
-The top bar's minimum is the sum of every label's width with a blank column
-each side — the same padding Rule 2 gives a boxed widget:
+The shell's own floor is the **top bar**, below which no page can be reached at
+all. It is the sum of every label's width with a blank column each side — the
+same padding Rule 2 gives a boxed widget:
 
 ```
 topbar_min = Σ (label_width + 2 * TOPBAR_PADDING)
@@ -244,18 +257,15 @@ its label and padding first and any slack is shared out afterwards.
 ### Everything must work at 80 columns
 
 This is the half of the rule that constrains ordinary work rather than the
-degenerate case: a widget that cannot shrink to 80 columns is unfinished. The
-minimum is not an aspiration to render *something* at 80; it is where the app
-must be fully usable.
+degenerate case: **no page may need more than 80 columns** for its own
+furniture. The ceiling is not an aspiration to render *something* at 80; it is
+where every page must be fully usable, and
+`app::topbar_tests::no_page_needs_more_width_than_the_ceiling` holds each page
+to it.
 
-### Known gaps
-
-The app does not yet satisfy its own minimum:
-
-| page | fault at 80x24 |
-| ---- | -------------- |
-| Profits | the Inventory table collapses to its header, hiding every row the user entered; the four boxes below it take the height first |
-| Profits | `Restocking Place` and `Selling Place` show `Query Ma`, truncated — its block is a fixed 40 columns at every terminal width, too narrow for its own labels |
+What the ceiling does not bound is the data a page is handed — a pirate can
+have a longer name than any window — which is why a page that cannot scroll
+such content out of the way may still ask for more than 80 and say so.
 
 ## Rule 4: An unmet prerequisite is a centered, wrapped notice
 
@@ -351,7 +361,8 @@ from the text once folded, and the vertical centering needs that height.
 
 | notice | room |
 | ------ | ---- |
-| `Terminal too small` (Rule 3) | the page, unboxed |
+| `Terminal too small`, too small for any page (Rule 3) | the screen below the bar, unboxed |
+| `Terminal too small`, too narrow for this page (Rule 3) | the page, unboxed |
 | Voyage `No voyage tracked yet.` | the page, unboxed |
 | Jobbers `No chat log attached` | the page, unboxed |
 | Map `Select an ocean (--ocean)` | the Map box, above its two status rows |
