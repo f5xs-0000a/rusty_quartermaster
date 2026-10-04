@@ -295,15 +295,6 @@ impl VoyageType {
         }
     }
 
-    /// Whether Top Jobbers is the headline list that grows to fill the page —
-    /// and the Aboard/Planked panes below it are pinned to a short fixed
-    /// height — rather than the usual layout where the panes fill and Top
-    /// Jobbers is capped. Vampirates flips it: the ranked jobbers are the
-    /// main event.
-    pub fn top_jobbers_fills(self) -> bool {
-        matches!(self, VoyageType::Vampirates)
-    }
-
     /// The bottom panes this voyage type shows, in left-to-right order. Pillage
     /// gets all three; Atlantis and Cursed Isles drop Greedy. Unimplemented
     /// types get none (they render the "coming soon" placeholder instead).
@@ -1222,12 +1213,7 @@ pub fn render(
 
     // ---- Skill Leaderboard + panes sizing (only used when implemented) ----
     // The leaderboard ranks *everyone* aboard per skill (no truncation) so it
-    // can be scrolled through; what varies is the viewport height. Most
-    // voyage types cap it to a short window (the leaderboard size, default
-    // 5) and let the panes fill the page; Vampirates flips this
-    // (`top_jobbers_fills`) — the leaderboard is the page-filling headline
-    // and the panes are pinned short.
-    let top_jobbers_fills = ui.voyage_type.top_jobbers_fills();
+    // can be scrolled through; what varies is the viewport height.
     let top_columns = rank_columns(
         ui.voyage_type.top_jobbers(),
         &aboard_set,
@@ -1236,14 +1222,10 @@ pub fn render(
     );
     let total_rows =
         top_columns.iter().map(|c| c.rows.len()).max().unwrap_or(0);
-    // Viewport rows: the whole list when it fills the page, else a capped
-    // window (anything beyond scrolls). At least one row so the box never
-    // collapses flat.
-    let view_rows = if top_jobbers_fills {
-        total_rows
-    } else {
-        total_rows.min(ui.leaderboard_size.unwrap_or(5)).max(1)
-    };
+    // Viewport rows: a leaderboard shows its top few, so the window is capped
+    // whatever the voyage type and the rest of the ranking scrolls. At least
+    // one row so the box never collapses flat.
+    let view_rows = total_rows.min(ui.leaderboard_size.unwrap_or(5)).max(1);
     let top_h = view_rows as u16 + 3;
     let top_panel_w = top_panel_width(&top_columns);
 
@@ -1658,115 +1640,115 @@ pub fn render(
     };
     let tip_h = tooltip_lines.len() as u16;
 
-    // In Top-Jobbers-fills mode (Vampirates) the panes are pinned to a short
-    // fixed height instead of filling the page: at most PANE_BODY_CAP
-    // pirate rows, plus any footers (swabbies / dragoon tallies), plus
-    // borders. Otherwise they flex.
-    let pane_h = if top_jobbers_fills {
-        const PANE_BODY_CAP: usize = 5;
-        let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
-        let dragoon_footers = usize::from(ui.voyage_type.tracks_dragoons());
-        let body =
-            |names: usize, footers: usize| names.min(PANE_BODY_CAP) + footers;
-        let lines = panes
+    // Rows the panes come to. They share one height, so it must suit whichever
+    // of them is tallest. The Aboard pane pins a "Pirates (n):" header and its
+    // swabbie / dragoon footers around a scrolling name list, so those are
+    // counted apart from the list: `cap` bounds the list alone. Mirrors the
+    // rows `render_panes` builds.
+    let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
+    let pane_rows = |cap: usize| {
+        panes
             .iter()
             .map(|p| {
-                match p {
-                    // Aboard: a header line + names + swabbie/dragoon footers.
+                let (pinned, list) = match p {
                     JobberPane::Aboard => {
-                        body(
+                        (
+                            1 + usize::from(0 < swabbies)
+                                + usize::from(0 < dragoon_w),
                             aboard_set.len(),
-                            1 + usize::from(swabbies > 0) + dragoon_footers,
                         )
                     }
-                    JobberPane::Greedy => body(greedy.len(), 0),
-                    JobberPane::Planked => body(planked_n, 0),
-                    // Cursed Isles isn't a top-jobbers-fills type, so this is
-                    // unreachable here, but the match must
-                    // stay exhaustive.
-                    JobberPane::Enthralled => body(enthralled.len(), 0),
-                }
+                    JobberPane::Greedy => (0, greedy.len()),
+                    JobberPane::Planked => (0, planked_n),
+                    JobberPane::Enthralled => (0, enthralled.len()),
+                };
+                pinned + list.min(cap)
             })
             .max()
-            .unwrap_or(0);
-        lines as u16 + 2 // borders
-    } else {
-        0
+            .unwrap_or(0) as u16
+            + 2 // borders
     };
+    let pane_h = pane_rows(usize::MAX);
+    // The least the panes can be given: a list that fits whole needs only its
+    // own rows, while one that will scroll needs a scrollable view's worth of
+    // it on show.
+    let pane_min = pane_rows(crate::utils::SCROLL_MIN_ROWS as usize);
+    // The same floor for the Skill Leaderboard, whose header and borders are
+    // the 3 rows `top_h` adds to its ranking.
+    let top_min =
+        view_rows.min(crate::utils::SCROLL_MIN_ROWS as usize) as u16 + 3;
 
-    // Room the page must have. Its flexing row holds a boxed list the user
-    // scrolls — the panes, or the Skill Leaderboard on the voyage types that
-    // let it fill the page instead — so that row needs a scrollable view's
-    // worth of rows beneath the header pinned above them. The tooltip's
-    // rows are counted whether or not one is up, so what the page needs
-    // does not move as focus does.
+    // Room the page must have. Every box is as tall as its contents, so the sum
+    // of them is it, except where a list scrolls: there it is a scrollable
+    // view's worth of rows. The tooltip's rows are counted whether or not one
+    // is up, so what the page needs does not move as focus does.
     const TIP_RESERVE: u16 = 2;
-    let flex_h = 2 /*borders*/
-        + 1 /*pinned header*/
-        + crate::utils::SCROLL_MIN_ROWS;
-    let stacked_h = if side_by_side {
-        voyage_h + stats_h + flex_h
+    // Rows the boxes that cannot give way take between them.
+    let pinned_h = if side_by_side {
+        voyage_h + stats_h
     } else if implemented {
+        voyage_h + stats_h + fight_h + button_h
+    } else {
         voyage_h
-            + stats_h
-            + fight_h
-            + button_h
-            + flex_h
-            + if top_jobbers_fills { pane_h } else { top_h }
+    };
+    let stacked_h = if side_by_side {
+        // Vikings stands the leaderboard beside the panes, so the row they
+        // share suits whichever of them is taller.
+        pinned_h + top_min.max(pane_min)
+    } else if implemented {
+        pinned_h + top_min + pane_min
     } else {
         // Nothing to scroll on a voyage type we have not built yet: the
         // "Coming Soon" box is one line in a border.
-        voyage_h + 3
+        pinned_h + PLACEHOLDER_H
     };
     if crate::utils::too_short(frame, area, stacked_h + TIP_RESERVE) {
         return;
     }
 
+    // Nothing in the stack stretches to fill the page: each box takes the rows
+    // its contents come to and what is left over stays blank at the foot, so a
+    // pane holding three names is three names tall. Where they cannot all have
+    // that, the boxes whose lists scroll give way — first the panes, which hold
+    // the longer rosters, then the leaderboard — rather than the page dropping
+    // one of them.
+    let mut room = block.height.saturating_sub(pinned_h + tip_h);
+    let top_given = top_h.min(room.saturating_sub(pane_min));
+    room -= top_given;
+    let panes_given = pane_h.min(room);
+
     let rows = if side_by_side {
-        // Vikings: Voyage, stats, then one page-filling row that holds Top
-        // Jobbers beside the pane(s) (split horizontally at render
-        // time), then the tip.
+        // Vikings: Voyage, stats, then one row holding Top Jobbers beside the
+        // pane(s) (split horizontally at render time), then the tip.
         Layout::vertical([
             Constraint::Length(voyage_h),
             Constraint::Length(stats_h),
-            Constraint::Min(0),
+            Constraint::Length(top_h.max(pane_h).min(room + top_given)),
             Constraint::Length(tip_h),
         ])
+        .flex(ratatui::layout::Flex::Start)
         .split(block)
     } else if implemented {
         // The stats row sits between Voyage and Top Jobbers; it collapses to
-        // zero height (rendering nothing) on voyage types without a
-        // stats box. Which of Top Jobbers / the panes flexes to fill
-        // the page is voyage-type dependent: normally the panes fill;
-        // Vampirates makes Top Jobbers the page-filler and
-        // pins the panes to `pane_h` instead.
-        let (top_constraint, panes_constraint) = if top_jobbers_fills {
-            (
-                Constraint::Min(0),
-                Constraint::Length(pane_h),
-            )
-        } else {
-            (
-                Constraint::Length(top_h),
-                Constraint::Min(0),
-            )
-        };
+        // zero height (rendering nothing) on voyage types without a stats box.
         Layout::vertical([
             Constraint::Length(voyage_h),
             Constraint::Length(stats_h),
-            top_constraint,
+            Constraint::Length(top_given),
             Constraint::Length(fight_h),
             Constraint::Length(button_h),
-            panes_constraint,
+            Constraint::Length(panes_given),
             Constraint::Length(tip_h),
         ])
+        .flex(ratatui::layout::Flex::Start)
         .split(block)
     } else {
         Layout::vertical([
             Constraint::Length(voyage_h),
-            Constraint::Min(0),
+            Constraint::Length(PLACEHOLDER_H),
             Constraint::Length(tip_h),
         ])
+        .flex(ratatui::layout::Flex::Start)
         .split(block)
     };
 
@@ -2741,6 +2723,9 @@ fn render_skill_dist_popup(
 
 /// Placeholder shown in place of the Pillage-only Top Jobbers + panes when the
 /// selected voyage type isn't wired up yet.
+/// Rows [`render_placeholder`] draws in: its one line, and its border.
+const PLACEHOLDER_H: u16 = 3;
+
 fn render_placeholder(
     frame: &mut Frame,
     area: Rect,

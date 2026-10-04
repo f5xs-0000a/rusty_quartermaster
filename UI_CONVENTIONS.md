@@ -304,32 +304,55 @@ window past the page's requirement and the page would vanish under the user's
 hands — then come back when focus moved on. The same goes for the Search box's
 suggestion row.
 
-The spare rows are not wasted while the transients are empty: they go to the
-scrollable view, so an Inventory that is guaranteed four rows shows six when no
-tooltip is up. `profits::ui::inventory_tests::what_the_page_needs_does_not_move_with_the_focus`
+The spare rows are not wasted while the transients are empty. Where a page has
+one box that takes the slack, they go to it: the Profits Inventory is guaranteed
+four commodity rows and shows six when no tooltip is up.
+`profits::ui::inventory_tests::what_the_page_needs_does_not_move_with_the_focus`
 holds this.
 
 Content the *data* drives is a different matter and does move the requirement —
 a pirate boarding lengthens a pane, an understaffed ship adds a warning line —
-exactly as it moves the width a page needs under Rule 3.
+exactly as it moves the width a page needs under Rule 3. The four-row floor caps
+how far that can go: a pane needs its rows up to four of them and no more, since
+past four it scrolls.
+
+### A box is as tall as its contents
+
+Four rows is a floor, not an allowance to grow into. On the Jobbers page no box
+stretches to fill the window: each takes the rows its contents come to and
+whatever is left over stays blank at the foot of the page, so a pane holding
+three pirates is three pirates tall. Where they cannot all have that, the boxes
+whose lists scroll give way — the panes first, holding the longer rosters, then
+the Skill Leaderboard — rather than the page dropping one of them.
+
+The Skill Leaderboard is capped besides, at `--leaderboard-size` (default five):
+it is a leaderboard, so it shows its top few and the rest of the ranking
+scrolls. It is never the page's filler.
+
+Profits is the one page that still hands its slack to a single box, the
+Inventory, rather than leaving it blank.
 
 ### What the pages need
 
-In terminal rows, the two-row bar included:
+In terminal rows, the two-row bar included. The Jobbers figures are for the
+rosters in the gallery and grow with them, to the four-row cap:
 
 | page | rows | why |
 | ---- | ---- | --- |
 | Map | 10 | a four-row viewport, two status rows, its border |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
-| Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, four rows of panes |
-| Profits | 28 | four boxes stacked above the Inventory's eight rows |
-| Jobbers, Cursed Isles | 30 | the above plus the Fight Statistics box |
+| Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, the panes |
+| Jobbers, Atlantis | 23 | the above plus the Atlantis Stats box |
+| Jobbers, Vampirates | 26 | the Vampirates Stats box and the distribution button |
+| Jobbers, Vikings | 26 | leaderboard beside the panes, under its stats box |
+| Jobbers, Cursed Isles | 27 | the Fight Statistics box, the tallest of them |
+| Profits | 28 | four boxes stacked under the Inventory's eight rows |
 
 Unlike the 80-column ceiling of Rule 3, **no ceiling is set on height**. The
 consequence is deliberate and worth stating plainly: a conventional 80x24
-terminal is four rows too short for Profits, and shows the notice there while
-every other page draws.
+terminal is four rows too short for Profits, and two or three short of Jobbers
+on its longest voyage types, and shows the notice there while the rest draws.
 
 ## Rule 5: An unmet prerequisite is a centered, wrapped notice
 
