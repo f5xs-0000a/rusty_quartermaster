@@ -18,7 +18,10 @@
 //! (see `scripts/extract_map.py` for how a map file is produced), so nothing
 //! here is parsed at run time. A map file holds only the leagues the wiki's
 //! map draws, which are the charted ones; the leagues no chart follows are
-//! filled in from the geometry by `build.rs`.
+//! filled in from the geometry by `build.rs` and marked
+//! [`Chart::Nonexistent`]. The cursor sails those like any other, but the
+//! map is drawn as the wiki draws it, so they are left out of the drawing
+//! until both their ends are memorized.
 
 use std::collections::BTreeSet;
 
@@ -90,17 +93,26 @@ impl Place {
     }
 }
 
+/// How a league's chart can be had. The first two are the line styles the
+/// yppedia map draws; the third is a league it does not draw at all.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Chart {
+    /// Sold in game. Drawn as a solid line.
+    Sold,
+    /// Not sold anywhere: a chart for it drops as booty. Drawn dotted.
+    Booty,
+    /// There is none, because no charted route runs this way. The league is
+    /// sailable all the same, from memory of both its ends.
+    Nonexistent,
+}
+
 /// One league between two neighbouring points. Each league is listed once,
 /// from its western point, so `heading` is only ever `E`, `Se` or `Ne`.
-/// `solid` is the line style on the yppedia map: a solid league lies on a
-/// route whose chart is sold in game. A league that is not solid has no
-/// chart for sale - the chart drops as booty, and for a league no charted
-/// route covers there is no chart at all.
 pub struct League {
     pub x: u16,
     pub y: u16,
     pub heading: Heading,
-    pub solid: bool,
+    pub chart: Chart,
 }
 
 impl League {
@@ -211,7 +223,7 @@ pub static MAPS: &[Map] = include!(concat!(env!("OUT_DIR"), "/maps.rs"));
 
 #[cfg(test)]
 mod tests {
-    use super::{Heading, MAPS, Map};
+    use super::{Chart, Heading, MAPS, Map};
 
     /// Any two league points a single league apart can be sailed between, so
     /// the compiled graph joins them whether or not a chart does. The wiki's
@@ -309,6 +321,6 @@ mod tests {
             .neighbour((17, 50), Heading::Se)
             .expect("west and south-west approaches to Ashkelon Arch");
         assert_eq!(to, (18, 51));
-        assert!(!league.solid, "no chart is sold for it");
+        assert_eq!(league.chart, Chart::Nonexistent);
     }
 }

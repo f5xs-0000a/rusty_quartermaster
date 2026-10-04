@@ -304,19 +304,19 @@ mod tests {
                 x: 1,
                 y: 1,
                 heading: Heading::E,
-                solid: true,
+                chart: crate::map::data::Chart::Sold,
             },
             League {
                 x: 1,
                 y: 1,
                 heading: Heading::Se,
-                solid: false,
+                chart: crate::map::data::Chart::Booty,
             },
             League {
                 x: 2,
                 y: 2,
                 heading: Heading::Ne,
-                solid: true,
+                chart: crate::map::data::Chart::Sold,
             },
         ],
     };

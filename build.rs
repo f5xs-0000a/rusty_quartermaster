@@ -159,7 +159,7 @@ fn generate_maps() {
         // the wiki's map draws only the leagues a chart follows, so the drawn
         // ones are collected first and the rest of the graph derived from the
         // geometry afterwards
-        let mut leagues: BTreeMap<(u16, u16, usize), bool> = BTreeMap::new();
+        let mut leagues: BTreeMap<(u16, u16, usize), &str> = BTreeMap::new();
         let drawn = map["leagues"]
             .as_array()
             .unwrap_or_else(|| fail("missing array `leagues`"));
@@ -198,12 +198,12 @@ fn generate_maps() {
             let Some(to) = step((x, y), heading) else {
                 bad()
             };
-            let solid = match kind {
-                "solid" => true,
-                "dotted" => false,
+            let chart = match kind {
+                "solid" => "Sold",
+                "dotted" => "Booty",
                 _ => bad(),
             };
-            if leagues.insert((x, y, heading), solid).is_some() {
+            if leagues.insert((x, y, heading), chart).is_some() {
                 fail(&format!(
                     "league {spec:?} is listed twice"
                 ));
@@ -214,8 +214,8 @@ fn generate_maps() {
 
         // two league points a single league apart can be sailed between
         // whether or not a chart covers that route, so every such pair is a
-        // league; the wiki simply never draws the ones no chart follows. They
-        // are dotted, since no chart is sold for them.
+        // league; the wiki simply never draws the ones no chart follows, and
+        // neither does the Map page until both ends are memorized.
         let mut derived = Vec::new();
         for &at in &points {
             for (heading, &(spelling, ..)) in HEADINGS.iter().enumerate() {
@@ -237,7 +237,7 @@ fn generate_maps() {
         }
         let charted = leagues.len();
         for key in derived {
-            leagues.insert(key, false);
+            leagues.insert(key, "Nonexistent");
         }
 
         writeln!(
@@ -250,11 +250,11 @@ fn generate_maps() {
         writeln!(out, "        leagues: &[").unwrap();
         let mut by_row: Vec<_> = leagues.into_iter().collect();
         by_row.sort_by_key(|&((x, y, heading), _)| (y, x, heading));
-        for ((x, y, heading), solid) in by_row {
+        for ((x, y, heading), chart) in by_row {
             writeln!(
                 out,
                 "            League {{ x: {x}, y: {y}, heading: Heading::{}, \
-                 solid: {solid} }},",
+                 chart: Chart::{chart} }},",
                 HEADINGS[heading].1
             )
             .unwrap();

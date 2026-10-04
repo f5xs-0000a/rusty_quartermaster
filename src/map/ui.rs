@@ -19,7 +19,7 @@ use crate::{
     map::{
         MOVE_KEYS,
         MapApp,
-        data::{Heading, Map, Point},
+        data::{Chart, Heading, Map, Point},
     },
     utils::offset_title,
 };
@@ -44,8 +44,8 @@ const MARGIN_Y: usize = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Paint {
     Sea,
-    /// A league no chart is sold for: a chart for it drops as booty, and
-    /// some leagues have no chart at all.
+    /// A league whose chart is not sold: it drops as booty. A league with
+    /// no chart at all is not painted, only sailed.
     Dotted,
     /// A league on a route whose chart can be bought.
     Solid,
@@ -266,14 +266,16 @@ fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
     );
 
     for league in map.leagues {
-        let (a, b) = league.ends();
-        let paint = if app.sailable(league) {
-            Paint::Known
-        } else if league.solid {
-            Paint::Solid
-        } else {
-            Paint::Dotted
+        // the map is drawn as yppedia draws it, so a league no chart covers
+        // is left out: drawing every pair of adjacent points would clutter
+        // the sea. Memorizing both its ends brings it out.
+        let paint = match (app.sailable(league), league.chart) {
+            (true, _) => Paint::Known,
+            (false, Chart::Sold) => Paint::Solid,
+            (false, Chart::Booty) => Paint::Dotted,
+            (false, Chart::Nonexistent) => continue,
         };
+        let (a, b) = league.ends();
         let (ax, ay) = cell_of(a);
         let (bx, by) = cell_of(b);
         match league.heading {
@@ -694,18 +696,19 @@ fn point_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
 
 /// The leagues leaving the cursor's point, each as its heading and the line
 /// glyph the map draws it with (so the legend in the help applies here too).
+/// A league with no chart is listed as well, since the keys sail it, under a
+/// finer dash than the booty-chart dotted line.
 fn leagues_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
     let Some(p) = app.cursor_on(map) else {
         return Line::from("");
     };
     let mut spans = Vec::new();
     for (heading, _, league) in map.leagues_at(p) {
-        let (glyph, paint) = if app.sailable(league) {
-            ("━", Paint::Known)
-        } else if league.solid {
-            ("─", Paint::Solid)
-        } else {
-            ("┄", Paint::Dotted)
+        let (glyph, paint) = match (app.sailable(league), league.chart) {
+            (true, _) => ("━", Paint::Known),
+            (false, Chart::Sold) => ("─", Paint::Solid),
+            (false, Chart::Booty) => ("┄", Paint::Dotted),
+            (false, Chart::Nonexistent) => ("┈", Paint::Dotted),
         };
         if !spans.is_empty() {
             spans.push(Span::raw("  "));
@@ -800,15 +803,18 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             Span::styled("  ───", Paint::Solid.style()),
             Span::raw(" chart is sold    "),
             Span::styled("┄┄┄", Paint::Dotted.style()),
-            Span::raw(" chart is not sold"),
+            Span::raw(" chart drops as booty"),
         ]),
-        Line::from(dim(
-            "  an unsold chart drops as booty; some leagues have none."
-        )),
         Line::from(vec![
             Span::styled("  ━━━", Paint::Known.style()),
             Span::raw(" both ends memorized: sailable from memory"),
         ]),
+        Line::from(dim(
+            "  a league no chart covers is left off the map to keep it"
+        )),
+        Line::from(dim(
+            "  readable; the keys sail it, and the footer shows it as ┈."
+        )),
     ]);
 
     let width = 66u16.min(area.width);
@@ -1026,6 +1032,50 @@ mod tests {
         assert!(
             crowded.is_empty(),
             "cut or crowded labels: {crowded:?}"
+        );
+    }
+
+    /// The sea is drawn as yppedia draws it, so a league no chart covers is
+    /// absent from it - until both ends are memorized, when it comes out as
+    /// the sailable line. The two approaches to Ashkelon Arch, one from
+    /// Morannon Island and one from Kashgar Island, are such a pair.
+    #[test]
+    fn an_uncharted_league_is_drawn_once_both_its_ends_are_memorized() {
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let (west, south_west) = ((17, 50), (18, 51));
+        let (ax, ay) = cell_of(west);
+        let (bx, _) = cell_of(south_west);
+        // a diagonal's glyph sits in the row between its ends
+        let (gx, gy) = ((ax + bx) / 2, ay + 1);
+
+        let mut app = MapApp::new();
+        app.pirate = Some("Someone".to_owned());
+        assert_eq!(
+            build_canvas(map, &app).get(gx, gy),
+            Some((' ', Paint::Sea)),
+            "an uncharted league is not drawn"
+        );
+        app.memorized.insert(west);
+        app.memorized.insert(south_west);
+        assert_eq!(
+            build_canvas(map, &app).get(gx, gy),
+            Some(('╲', Paint::Known)),
+            "memorizing both ends brings it out"
+        );
+    }
+
+    /// The footer lists every league the keys can sail from the cursor,
+    /// uncharted ones included, so the controls and the drawing can differ.
+    #[test]
+    fn the_footer_lists_an_uncharted_league_the_map_leaves_out() {
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let mut app = MapApp::new();
+        app.jump_to((17, 50));
+        let footer = leagues_line(&mut app, map).to_string();
+        assert!(
+            footer.contains("SE ┈"),
+            "the uncharted league south-east of the Morannon approach: \
+             {footer}"
         );
     }
 
