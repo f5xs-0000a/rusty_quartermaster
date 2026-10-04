@@ -44,7 +44,8 @@ const MARGIN_Y: usize = 1;
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Paint {
     Sea,
-    /// A league on a route whose chart is not sold: it only drops as booty.
+    /// A league no chart is sold for: a chart for it drops as booty, and
+    /// some leagues have no chart at all.
     Dotted,
     /// A league on a route whose chart can be bought.
     Solid,
@@ -799,8 +800,11 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             Span::styled("  ───", Paint::Solid.style()),
             Span::raw(" chart is sold    "),
             Span::styled("┄┄┄", Paint::Dotted.style()),
-            Span::raw(" chart only drops as booty"),
+            Span::raw(" chart is not sold"),
         ]),
+        Line::from(dim(
+            "  an unsold chart drops as booty; some leagues have none."
+        )),
         Line::from(vec![
             Span::styled("  ━━━", Paint::Known.style()),
             Span::raw(" both ends memorized: sailable from memory"),
@@ -986,35 +990,43 @@ mod tests {
         assert_eq!(row(&canvas, 0), "○  Bar  ○     ");
     }
 
-    /// Reads the drawing the way a player would: every island's name must
-    /// appear whole somewhere on the Emerald canvas with two blank cells
-    /// on either side of it.
+    /// Reads the drawing the way a player would: on every ocean's canvas,
+    /// each island's name appears whole somewhere with two blank cells on
+    /// either side of it.
     #[test]
-    fn every_emerald_island_is_named_whole_with_room_around_it() {
-        let map = Map::for_ocean("Emerald").expect("Emerald map");
-        let canvas = build_canvas(map, &MapApp::new());
-        let rows: Vec<Vec<char>> =
-            canvas.dump().lines().map(|l| l.chars().collect()).collect();
-        for island in map.islands {
-            let label: Vec<char> = island_label(island.name).chars().collect();
-            let n = label.len();
-            let found = rows.iter().any(|r| {
-                (0 .. r.len().saturating_sub(n)).any(|x| {
-                    r[x .. x + n] == label[..]
-                        && r[x.saturating_sub(LABEL_GAP) .. x]
-                            .iter()
-                            .all(|c| *c == ' ')
-                        && r[x + n .. (x + n + LABEL_GAP).min(r.len())]
-                            .iter()
-                            .all(|c| *c == ' ')
-                })
-            });
-            assert!(
-                found,
-                "{} is cut or crowded",
-                island.name
-            );
+    fn every_island_is_named_whole_with_room_around_it() {
+        let mut crowded = Vec::new();
+        for map in crate::map::data::MAPS {
+            let canvas = build_canvas(map, &MapApp::new());
+            let rows: Vec<Vec<char>> =
+                canvas.dump().lines().map(|l| l.chars().collect()).collect();
+            for island in map.islands {
+                let label: Vec<char> =
+                    island_label(island.name).chars().collect();
+                let n = label.len();
+                let found = rows.iter().any(|r| {
+                    (0 .. r.len().saturating_sub(n)).any(|x| {
+                        r[x .. x + n] == label[..]
+                            && r[x.saturating_sub(LABEL_GAP) .. x]
+                                .iter()
+                                .all(|c| *c == ' ')
+                            && r[x + n .. (x + n + LABEL_GAP).min(r.len())]
+                                .iter()
+                                .all(|c| *c == ' ')
+                    })
+                });
+                if !found {
+                    crowded.push(format!(
+                        "{}: {}",
+                        map.ocean, island.name
+                    ));
+                }
+            }
         }
+        assert!(
+            crowded.is_empty(),
+            "cut or crowded labels: {crowded:?}"
+        );
     }
 
     #[test]
@@ -1029,23 +1041,19 @@ mod tests {
     }
 
     /// Prints the Map page as a 120x40 terminal would show it, with the
-    /// cursor on Cromwell Island:
+    /// cursor on the ocean's first island:
     /// `cargo test dump_map_page -- --ignored --nocapture`.
     #[test]
     #[ignore = "prints the rendered Map page for inspection"]
     fn dump_map_page() {
         use ratatui::{Terminal, backend::TestBackend};
 
-        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let map = dump_ocean();
         let mut app = MapApp::new();
-        let cromwell = map
-            .islands
-            .iter()
-            .find(|i| i.name == "Cromwell Island")
-            .expect("Cromwell on the map");
-        app.jump_to(cromwell.at());
+        let first = map.islands.first().expect("an island on the map");
+        app.jump_to(first.at());
         app.pirate = Some("Someone".to_owned());
-        app.memorized.insert(cromwell.at());
+        app.memorized.insert(first.at());
         let mut terminal =
             Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
         let mut regions = Vec::new();
@@ -1053,8 +1061,8 @@ mod tests {
             .draw(|frame| {
                 let ctx = OceanContext {
                     map: Some(map),
-                    geo: bare::BARE.ocean("Emerald"),
-                    ocean: Some("Emerald"),
+                    geo: bare::BARE.ocean(map.ocean),
+                    ocean: Some(map.ocean),
                     islands: None,
                     fetching_islands: true,
                 };
@@ -1160,14 +1168,20 @@ mod tests {
         assert!(!screen.contains("Memorizing needs a pirate:"));
     }
 
-    /// Prints the whole Emerald canvas, for eyeballing the drawing:
-    /// `cargo test dump_emerald_canvas -- --ignored --nocapture`.
+    /// Prints the whole canvas, for eyeballing the drawing:
+    /// `cargo test dump_map_canvas -- --ignored --nocapture`.
     #[test]
-    #[ignore = "prints the Emerald canvas for inspection"]
-    fn dump_emerald_canvas() {
-        let map = Map::for_ocean("Emerald").expect("Emerald map");
-        let canvas = build_canvas(map, &MapApp::new());
+    #[ignore = "prints the canvas for inspection"]
+    fn dump_map_canvas() {
+        let canvas = build_canvas(dump_ocean(), &MapApp::new());
         println!("{}", canvas.dump());
+    }
+
+    /// The ocean the dump tests draw: `RQ_DUMP_OCEAN`, or Emerald.
+    fn dump_ocean() -> &'static Map {
+        let name = std::env::var("RQ_DUMP_OCEAN")
+            .unwrap_or_else(|_| "Emerald".to_owned());
+        Map::for_ocean(&name).unwrap_or_else(|| panic!("{name} map"))
     }
 
     fn text(lines: &[Line]) -> Vec<String> {

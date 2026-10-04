@@ -1,0 +1,409 @@
+{
+  "ocean": "Obsidian",
+  "source": "https://yppedia.puzzlepirates.com/Template:Map:Obsidian_Ocean",
+  "islands": [
+    {
+      "name": "Holloway Isle",
+      "x": 13,
+      "y": 1
+    },
+    {
+      "name": "Ember Eye",
+      "x": 35,
+      "y": 1
+    },
+    {
+      "name": "Krakentoa Island",
+      "x": 10,
+      "y": 4
+    },
+    {
+      "name": "Leatherback Island",
+      "x": 16,
+      "y": 4
+    },
+    {
+      "name": "Hawksbill Island",
+      "x": 32,
+      "y": 4
+    },
+    {
+      "name": "Bogong Cove",
+      "x": 38,
+      "y": 4
+    },
+    {
+      "name": "Huracan Island",
+      "x": 13,
+      "y": 7
+    },
+    {
+      "name": "Wind Combs Island",
+      "x": 35,
+      "y": 7
+    },
+    {
+      "name": "Picklepine Ridge",
+      "x": 24,
+      "y": 8
+    },
+    {
+      "name": "Dingwall Island",
+      "x": 19,
+      "y": 13
+    },
+    {
+      "name": "Woodtick Island",
+      "x": 29,
+      "y": 13
+    },
+    {
+      "name": "Melanaster Island",
+      "x": 24,
+      "y": 14
+    },
+    {
+      "name": "Mitjana Island",
+      "x": 24,
+      "y": 18
+    },
+    {
+      "name": "Magpie Island",
+      "x": 19,
+      "y": 19
+    },
+    {
+      "name": "Loggerhead Island",
+      "x": 29,
+      "y": 19
+    },
+    {
+      "name": "Point Petrify",
+      "x": 5,
+      "y": 21
+    },
+    {
+      "name": "Devil's Heart",
+      "x": 11,
+      "y": 21
+    },
+    {
+      "name": "Cavum Ridge",
+      "x": 36,
+      "y": 22
+    },
+    {
+      "name": "Kingfisher Island",
+      "x": 42,
+      "y": 22
+    },
+    {
+      "name": "Nevermore Island",
+      "x": 2,
+      "y": 24
+    },
+    {
+      "name": "Night Harbour",
+      "x": 8,
+      "y": 24
+    },
+    {
+      "name": "Moonlight Cove",
+      "x": 14,
+      "y": 24
+    },
+    {
+      "name": "Triplet's Treasure",
+      "x": 24,
+      "y": 24
+    },
+    {
+      "name": "Pride Island",
+      "x": 33,
+      "y": 25
+    },
+    {
+      "name": "Lionhaven",
+      "x": 39,
+      "y": 25
+    },
+    {
+      "name": "Triumph Island",
+      "x": 45,
+      "y": 25
+    },
+    {
+      "name": "Flatback Rift",
+      "x": 5,
+      "y": 27
+    },
+    {
+      "name": "Whisper Island",
+      "x": 11,
+      "y": 27
+    },
+    {
+      "name": "Anole Garden",
+      "x": 36,
+      "y": 28
+    },
+    {
+      "name": "Ridley's Valor",
+      "x": 42,
+      "y": 28
+    },
+    {
+      "name": "Traveler's Rest",
+      "x": 24,
+      "y": 30
+    },
+    {
+      "name": "Pele Island",
+      "x": 21,
+      "y": 33
+    },
+    {
+      "name": "Green Oasis",
+      "x": 27,
+      "y": 33
+    },
+    {
+      "name": "Kreis Island",
+      "x": 24,
+      "y": 36
+    },
+    {
+      "name": "Port Venture",
+      "x": 24,
+      "y": 40
+    }
+  ],
+  "labels": [
+    {
+      "name": "Wild Western Seas",
+      "x": 5,
+      "y": 9
+    },
+    {
+      "name": "Wild Eastern Seas",
+      "x": 34,
+      "y": 9
+    },
+    {
+      "name": "Ye Bloody Bounding Main",
+      "x": 18,
+      "y": 16
+    },
+    {
+      "name": "Darkling Seas",
+      "x": 3,
+      "y": 19
+    },
+    {
+      "name": "Straits o' Defiance",
+      "x": 34,
+      "y": 20
+    },
+    {
+      "name": "Greywaters",
+      "x": 28,
+      "y": 36
+    }
+  ],
+  "leagues": [
+    "13,1 se dotted",
+    "35,1 se dotted",
+    "12,2 ne dotted",
+    "14,2 se dotted",
+    "34,2 ne dotted",
+    "36,2 se dotted",
+    "11,3 ne dotted",
+    "15,3 se dotted",
+    "33,3 ne dotted",
+    "37,3 se dotted",
+    "10,4 ne dotted",
+    "10,4 se dotted",
+    "32,4 ne dotted",
+    "32,4 se dotted",
+    "11,5 se dotted",
+    "15,5 ne dotted",
+    "33,5 se dotted",
+    "37,5 ne dotted",
+    "12,6 se dotted",
+    "14,6 ne dotted",
+    "34,6 se dotted",
+    "36,6 ne dotted",
+    "13,7 ne dotted",
+    "13,7 se dotted",
+    "35,7 ne dotted",
+    "14,8 se dotted",
+    "24,8 se dotted",
+    "34,8 ne dotted",
+    "15,9 se dotted",
+    "23,9 ne solid",
+    "23,9 se solid",
+    "25,9 se dotted",
+    "33,9 ne dotted",
+    "16,10 se dotted",
+    "22,10 ne dotted",
+    "26,10 se dotted",
+    "32,10 ne dotted",
+    "17,11 se dotted",
+    "21,11 ne dotted",
+    "23,11 ne solid",
+    "23,11 se solid",
+    "27,11 se dotted",
+    "31,11 ne dotted",
+    "18,12 se dotted",
+    "20,12 ne dotted",
+    "28,12 se dotted",
+    "30,12 ne dotted",
+    "19,13 e solid",
+    "19,13 ne dotted",
+    "21,13 se solid",
+    "23,13 ne solid",
+    "23,13 se solid",
+    "29,13 ne dotted",
+    "18,14 ne solid",
+    "18,14 se solid",
+    "22,14 e solid",
+    "24,14 e solid",
+    "26,14 e solid",
+    "28,14 ne solid",
+    "28,14 se solid",
+    "23,15 ne solid",
+    "23,15 se solid",
+    "18,16 ne solid",
+    "18,16 se solid",
+    "28,16 ne solid",
+    "28,16 se solid",
+    "23,17 ne solid",
+    "23,17 se solid",
+    "18,18 ne solid",
+    "18,18 se solid",
+    "28,18 ne solid",
+    "28,18 se solid",
+    "19,19 se solid",
+    "23,19 ne solid",
+    "23,19 se solid",
+    "29,19 se dotted",
+    "16,20 e dotted",
+    "18,20 ne dotted",
+    "20,20 se solid",
+    "28,20 ne solid",
+    "30,20 se dotted",
+    "5,21 e dotted",
+    "5,21 se solid",
+    "7,21 e dotted",
+    "9,21 e dotted",
+    "11,21 e dotted",
+    "11,21 se dotted",
+    "13,21 e dotted",
+    "15,21 ne dotted",
+    "21,21 se solid",
+    "23,21 ne solid",
+    "23,21 se solid",
+    "27,21 ne solid",
+    "31,21 e dotted",
+    "33,21 se dotted",
+    "4,22 ne dotted",
+    "6,22 se solid",
+    "10,22 ne solid",
+    "12,22 se dotted",
+    "22,22 se solid",
+    "26,22 ne solid",
+    "34,22 e dotted",
+    "36,22 e dotted",
+    "36,22 se solid",
+    "38,22 e dotted",
+    "40,22 e dotted",
+    "42,22 se dotted",
+    "3,23 ne dotted",
+    "7,23 se solid",
+    "9,23 ne solid",
+    "13,23 se dotted",
+    "23,23 ne solid",
+    "23,23 se solid",
+    "25,23 ne solid",
+    "35,23 ne dotted",
+    "37,23 se solid",
+    "41,23 ne solid",
+    "43,23 se dotted",
+    "2,24 ne dotted",
+    "2,24 se dotted",
+    "8,24 ne solid",
+    "8,24 se solid",
+    "24,24 e dotted",
+    "24,24 ne solid",
+    "26,24 se dotted",
+    "34,24 ne dotted",
+    "38,24 se solid",
+    "40,24 ne solid",
+    "44,24 se dotted",
+    "3,25 se dotted",
+    "7,25 ne solid",
+    "9,25 se solid",
+    "13,25 ne solid",
+    "21,25 e dotted",
+    "23,25 ne dotted",
+    "23,25 se dotted",
+    "27,25 se dotted",
+    "33,25 ne dotted",
+    "33,25 se solid",
+    "39,25 ne solid",
+    "39,25 se solid",
+    "4,26 se dotted",
+    "6,26 ne solid",
+    "10,26 se solid",
+    "12,26 ne solid",
+    "18,26 e dotted",
+    "20,26 ne dotted",
+    "28,26 e dotted",
+    "30,26 se dotted",
+    "34,26 se solid",
+    "38,26 ne solid",
+    "40,26 se solid",
+    "44,26 ne dotted",
+    "5,27 e solid",
+    "5,27 ne solid",
+    "7,27 e solid",
+    "9,27 e solid",
+    "11,27 e dotted",
+    "11,27 ne solid",
+    "13,27 e dotted",
+    "15,27 e dotted",
+    "17,27 ne dotted",
+    "23,27 ne dotted",
+    "23,27 se dotted",
+    "31,27 e dotted",
+    "33,27 se dotted",
+    "35,27 se solid",
+    "37,27 ne solid",
+    "41,27 se solid",
+    "43,27 ne dotted",
+    "34,28 e dotted",
+    "36,28 e solid",
+    "36,28 ne solid",
+    "38,28 e solid",
+    "40,28 e solid",
+    "42,28 ne dotted",
+    "23,29 ne dotted",
+    "23,29 se dotted",
+    "24,30 se dotted",
+    "23,31 ne dotted",
+    "25,31 se dotted",
+    "22,32 ne dotted",
+    "26,32 se dotted",
+    "21,33 ne dotted",
+    "21,33 se dotted",
+    "22,34 se dotted",
+    "26,34 ne dotted",
+    "23,35 se dotted",
+    "25,35 ne dotted",
+    "24,36 ne dotted",
+    "23,37 ne solid",
+    "23,37 se solid",
+    "23,39 ne solid",
+    "23,39 se solid"
+  ]
+}

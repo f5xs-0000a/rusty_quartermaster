@@ -9,9 +9,10 @@
 //! - **adjectives** / **swabbie names** — the seed NPC name vocabulary used to
 //!   tell a swabbie (`[adjective] [name]`) from a mercenary (`[name]
 //!   [epithet]`),
-//! - **oceans → archipelagos → islands** — the geography (currently only
-//!   Emerald and Meridian are filled in; the rest are placeholders to be
-//!   crawled from yppedia later).
+//! - **oceans → archipelagos → islands** — the geography of all seven live
+//!   oceans, crawled from yppedia. What an island's palace buys and what an
+//!   archipelago forages are known for some oceans only, and an empty list
+//!   there says nothing either way.
 //!
 //! This is the starting point for anything we persist: a first run with no
 //! `cache.json` seeds itself from here (see [`crate::cache::load`]).

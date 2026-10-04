@@ -31,6 +31,11 @@ game, a dotted one's chart is not sold and only drops as booty. Each league
 is emitted as
 `"x,y dir kind"` where `dir` is the heading from the named grid cell (`e`,
 `se`, `ne`) and `kind` is `solid` or `dotted`.
+
+The templates only draw the leagues that charted routes follow, so the file
+this writes is a transcript of the wiki and not the whole league graph: a pair
+of points a single league apart with no chart between them is sailable all the
+same, and `build.rs` fills those in from the geometry when it compiles the map.
 """
 
 import argparse
@@ -51,6 +56,12 @@ TILES = {
     "V": ("e", "solid"),
     "W": ("e", "dotted"),
 }
+
+
+def far(origin, heading):
+    """The point a league away from `origin` along `heading`."""
+    x, y = origin
+    return {"e": (x + 2, y), "se": (x + 1, y + 1), "ne": (x + 1, y - 1)}[heading]
 
 
 def style_px(style, key):
@@ -112,7 +123,9 @@ class MapParser(HTMLParser):
             name = re.sub(r"\s*\([^)]*\)\s*$", "", d["links"][0])
             if name.endswith(" Archipelago"):
                 self.labels.append({"name": name[: -len(" Archipelago")], "x": x, "y": y})
-            else:
+            elif not name.endswith(" Ocean"):
+                # some maps caption themselves with the ocean's own name,
+                # which is decoration rather than a place on the water
                 self.islands.append({"name": name, "x": x, "y": y})
         for t in d["tiles"]:
             if t not in TILES:
@@ -129,9 +142,9 @@ def extract(html):
         sys.exit("no islands found - is this a yppedia Template:Map page?")
     # every island must sit on a league endpoint, or the cursor can't reach it
     ends = set()
-    for (x, y), heading, _ in p.leagues:
-        ends.add((x, y))
-        ends.add({"e": (x + 2, y), "se": (x + 1, y + 1), "ne": (x + 1, y - 1)}[heading])
+    for origin, heading, _ in p.leagues:
+        ends.add(origin)
+        ends.add(far(origin, heading))
     stranded = [i["name"] for i in p.islands if (i["x"], i["y"]) not in ends]
     if stranded:
         print(f"warning: islands with no league: {stranded}", file=sys.stderr)
