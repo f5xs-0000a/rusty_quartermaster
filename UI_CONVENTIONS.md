@@ -198,7 +198,7 @@ was cut mid-word; sizing the box from the question fixed both faults at once.
 
 One thing padding did not fix: the Jobbers placeholder was pinned to the
 top-left of its box and ran off the right edge mid-sentence at 80 columns
-instead of wrapping, so padding it moved the cut one word earlier. Rule 4
+instead of wrapping, so padding it moved the cut one word earlier. Rule 5
 settles that case.
 
 ## Rule 3: Too small a terminal shows a message, not the app
@@ -267,7 +267,71 @@ What the ceiling does not bound is the data a page is handed — a pirate can
 have a longer name than any window — which is why a page that cannot scroll
 such content out of the way may still ask for more than 80 and say so.
 
-## Rule 4: An unmet prerequisite is a centered, wrapped notice
+## Rule 4: A scrollable view keeps four rows, and nothing else is clipped
+
+Height is asked of each page the same way width is, and answered by two tests.
+
+**Where the page has a view the user scrolls through** — a table, a ranked list,
+a panning chart — that view keeps at least **four of its own rows**. Fewer than
+four and there is too little of it on show to tell that it continues past the
+window: a list of thirty reads as a list of two, which misreports what is there
+rather than merely cramping it. If the window cannot give four, the terminal is
+too small.
+
+The four are the view's *own* rows. A pinned header does not scroll, so it is
+not one of them, and the borders are on top of that again:
+
+```
+┌─── Inventory ──────────┐
+│   Item  Restock  Stock │  <- header, pinned
+│                        │  <- its margin
+│   Rum       100    250 │  1
+│   Iron       50      0 │  2
+│   Hemp              80 │  3
+│   Sugar cane        12 │  4
+└────────────────────────┘     8 rows for 4 of list
+```
+
+**Where it has none** — the Damage calculator is one fixed grid — the test is
+simply clipping: if a widget's contents would be cut off, the terminal is too
+small. A page with nothing to scroll needs exactly the rows it draws.
+
+### The answer must not move as focus moves
+
+A page counts the rows its tooltip would take whether or not one is showing.
+Were it to count them only when one is up, resting on a field would push a tight
+window past the page's requirement and the page would vanish under the user's
+hands — then come back when focus moved on. The same goes for the Search box's
+suggestion row.
+
+The spare rows are not wasted while the transients are empty: they go to the
+scrollable view, so an Inventory that is guaranteed four rows shows six when no
+tooltip is up. `profits::ui::inventory_tests::what_the_page_needs_does_not_move_with_the_focus`
+holds this.
+
+Content the *data* drives is a different matter and does move the requirement —
+a pirate boarding lengthens a pane, an understaffed ship adds a warning line —
+exactly as it moves the width a page needs under Rule 3.
+
+### What the pages need
+
+In terminal rows, the two-row bar included:
+
+| page | rows | why |
+| ---- | ---- | --- |
+| Map | 10 | a four-row viewport, two status rows, its border |
+| Damage | 13 | the grid is one fixed block; nothing scrolls |
+| Voyage | 14 | pinned header and footer around a four-row body |
+| Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, four rows of panes |
+| Profits | 28 | four boxes stacked above the Inventory's eight rows |
+| Jobbers, Cursed Isles | 30 | the above plus the Fight Statistics box |
+
+Unlike the 80-column ceiling of Rule 3, **no ceiling is set on height**. The
+consequence is deliberate and worth stating plainly: a conventional 80x24
+terminal is four rows too short for Profits, and shows the notice there while
+every other page draws.
+
+## Rule 5: An unmet prerequisite is a centered, wrapped notice
 
 When something cannot be used until a prerequisite is met — an argument not
 passed, a window too small, an ocean not chosen — the text saying so is
@@ -362,7 +426,7 @@ from the text once folded, and the vertical centering needs that height.
 | notice | room |
 | ------ | ---- |
 | `Terminal too small`, too small for any page (Rule 3) | the screen below the bar, unboxed |
-| `Terminal too small`, too narrow for this page (Rule 3) | the page, unboxed |
+| `Terminal too small`, too small for this page (Rules 3 and 4) | the page, unboxed |
 | Voyage `No voyage tracked yet.` | the page, unboxed |
 | Jobbers `No chat log attached` | the page, unboxed |
 | Map `Select an ocean (--ocean)` | the Map box, above its two status rows |
@@ -381,7 +445,7 @@ Three things that read like notices are deliberately not ones:
   working content rather than a stand-in for it, and it stays on the row where
   its box plot would have been.
 
-## Rule 5: Table headers are centered
+## Rule 6: Table headers are centered
 
 A column header sits centered over its column, whatever the column's contents
 are aligned to.

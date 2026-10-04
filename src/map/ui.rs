@@ -363,6 +363,17 @@ pub fn render(
         islands,
         fetching_islands,
     } = ctx;
+    // The chart is a viewport onto a larger map: it pans rather than shrinks,
+    // so what it needs is a viewport worth sailing in, plus the two status
+    // rows under it and the box around them.
+    if crate::utils::too_short(
+        frame,
+        area,
+        crate::utils::SCROLL_MIN_ROWS + 2 + 2,
+    ) {
+        return;
+    }
+
     let border = if focused {
         Style::default().fg(Color::White)
     } else {

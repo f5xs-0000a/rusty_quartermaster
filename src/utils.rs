@@ -356,6 +356,13 @@ pub fn render_page_notice(
     );
 }
 
+/// Rows a vertically scrollable list keeps before it stops reading as one.
+/// Below this there is too little of the list on show to tell that it continues
+/// past the window, and a long list looks like a short one — which misreports
+/// what is there rather than merely cramping it. The rows are the list's own: a
+/// pinned header and the borders are on top of these.
+pub const SCROLL_MIN_ROWS: u16 = 4;
+
 /// Refuse to draw a page in less width than `needed`, drawing the notice saying
 /// so in its place. Returns whether it did, so a page that cannot narrow any
 /// further returns on `true`.
@@ -370,19 +377,59 @@ pub fn too_narrow(
     area: ratatui::layout::Rect,
     needed: u16,
 ) -> bool {
-    use ratatui::style::{Color, Style};
-
     if needed <= area.width {
         return false;
     }
-
-    let detail = format!(
-        "Enlarge the window to at least {needed} columns (it is {}).",
-        area.width,
+    refuse(
+        frame,
+        area,
+        &format!(
+            "Enlarge the window to at least {needed} columns (it is {}).",
+            area.width,
+        ),
     );
-    // The same heading the app uses when the window is too small for anything
-    // at all: to the user it is one condition, and what is lacking this
-    // time is the detail line's business.
+    true
+}
+
+/// Refuse to draw a page in less height than `needed`, drawing the notice
+/// saying so in its place. Returns whether it did, so a page that cannot
+/// shorten any further returns on `true`.
+///
+/// A page needs the height its widgets' contents need, and
+/// [`SCROLL_MIN_ROWS`] for each view the user scrolls through. What `needed`
+/// must not do is move as focus moves: a page counts the rows a tooltip would
+/// take whether or not one is showing, so that resting on a field cannot make
+/// the page it belongs to disappear.
+pub fn too_short(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    needed: u16,
+) -> bool {
+    if needed <= area.height {
+        return false;
+    }
+    refuse(
+        frame,
+        area,
+        &format!(
+            "Enlarge the window to at least {needed} rows (it is {}).",
+            area.height,
+        ),
+    );
+    true
+}
+
+/// The notice a page draws in its own place when the window cannot hold it.
+/// Whether the width or the height is lacking, the heading is the one the app
+/// uses when the window is too small for anything at all — to the user it is
+/// one condition, and which way it is short is the detail line's business.
+fn refuse(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    detail: &str,
+) {
+    use ratatui::style::{Color, Style};
+
     render_page_notice(
         frame,
         area,
@@ -392,12 +439,11 @@ pub fn too_narrow(
                 Style::default().bold(),
             ),
             (
-                &detail,
+                detail,
                 Style::default().fg(Color::DarkGray),
             ),
         ],
     );
-    true
 }
 
 /// Word-wrap `text` to `width` columns, hard-breaking any single word longer

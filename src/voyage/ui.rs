@@ -424,23 +424,12 @@ pub fn render(
         height: widget_area.height,
     };
 
-    let (title, _) = offset_title("Voyage Statistics");
-    let border = if focused {
-        Style::default().fg(Color::White)
-    } else {
-        Style::default().fg(Color::DarkGray)
-    };
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1))
-        .border_style(border)
-        .title(title);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
     // Pinned header (ship name / type / clock span), kept out of the scroll so
-    // it never disappears. The scroll body starts at "Sea Battles".
-    let iw = inner.width as usize;
+    // it never disappears. The scroll body starts at "Sea Battles". It is built
+    // before the box is drawn so its height can be weighed against the room
+    // there is, which is also why its width comes from the box's margin rather
+    // than from a box not yet made.
+    let iw = width.saturating_sub(crate::utils::BOX_MARGIN) as usize;
     // Ship name (bold) with its hull in parentheses on one centered line, e.g.
     // "Test Vessel (Sloop)". The second line is the run's clock span. An
     // unknown hull reads as a dimmed, italic placeholder in the parentheses.
@@ -490,6 +479,37 @@ pub fn render(
     // (Sea Battles + stats + charts), then a pinned footer.
     let show_pager = view.page_count > 1;
     let pager_h = if show_pager { 1 } else { 0 };
+
+    // The body is one scroll region, so what the page needs is a scrollable
+    // view's worth of rows beneath everything pinned around it: the pager, the
+    // header, the footer, the borders, and the tooltip strip already set aside.
+    if crate::utils::too_short(
+        frame,
+        full,
+        2 /*borders*/
+            + pager_h
+            + header_h
+            + crate::utils::SCROLL_MIN_ROWS
+            + 1 /*footer*/
+            + tip_area.height,
+    ) {
+        return;
+    }
+
+    let (title, _) = offset_title("Voyage Statistics");
+    let border = if focused {
+        Style::default().fg(Color::White)
+    } else {
+        Style::default().fg(Color::DarkGray)
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .border_style(border)
+        .title(title);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
     let parts = Layout::vertical([
         Constraint::Length(pager_h),
         Constraint::Length(header_h),

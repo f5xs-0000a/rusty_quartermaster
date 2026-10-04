@@ -156,8 +156,11 @@ pub fn render(
     let (box_width, box_height) = calc_box_size(true);
 
     // The grid is as wide as two ship names and the labels between them, with
-    // no shorter arrangement to fall back on.
-    if crate::utils::too_narrow(frame, area, box_width) {
+    // no shorter arrangement to fall back on. Nothing on the page scrolls, so
+    // the rows it needs are simply the ones it draws: the grid and its hint.
+    if crate::utils::too_narrow(frame, area, box_width)
+        || crate::utils::too_short(frame, area, box_height + 1)
+    {
         return;
     }
 

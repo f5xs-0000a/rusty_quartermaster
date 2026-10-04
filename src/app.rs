@@ -113,10 +113,11 @@ const TOPBAR_HEIGHT: u16 = 2;
 /// between its contents and its edge.
 const TOPBAR_PADDING: u16 = 1;
 
-/// Shortest terminal the app draws its pages in. Below this a page starts
-/// dropping whole widgets rather than merely tightening, so it would misreport
-/// the state of things rather than look cramped.
-const MIN_HEIGHT: u16 = 24;
+/// Shortest terminal that can hold the bar and a page at all. Whether the page
+/// that is open fits the rows left over is its own call (see
+/// [`crate::utils::too_short`]); this is only the floor below which there is no
+/// room to say so.
+const MIN_HEIGHT: u16 = TOPBAR_HEIGHT + 1;
 
 /// Columns the top bar needs before a label would be clipped: every label with
 /// its padding. Slots are allowed to differ in width; a label is never clipped
@@ -653,9 +654,10 @@ impl AppShell {
 
         let area = frame.area();
 
-        // The shell's own floor is the bar: narrower than that there is no way
-        // left to reach a page, so nothing is drawn but the notice. Whether the
-        // page that is open fits the remaining width is the page's own call.
+        // The shell's own floor is the bar and a row to draw a page in: short
+        // or narrow of that there is no way left to reach a page at
+        // all, so nothing is drawn but the notice. Whether the page
+        // that is open fits the room left over is the page's own call.
         if area.width < topbar_min_width() || area.height < MIN_HEIGHT {
             self.render_too_small(frame, area);
             return;
@@ -789,6 +791,7 @@ impl AppShell {
             area.width,
             area.height,
         );
+        // Unlike a page's own refusal, this one cannot count on a bar above it.
         crate::utils::render_page_notice(
             frame,
             body,

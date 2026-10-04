@@ -1694,6 +1694,34 @@ pub fn render(
         0
     };
 
+    // Room the page must have. Its flexing row holds a boxed list the user
+    // scrolls — the panes, or the Skill Leaderboard on the voyage types that
+    // let it fill the page instead — so that row needs a scrollable view's
+    // worth of rows beneath the header pinned above them. The tooltip's
+    // rows are counted whether or not one is up, so what the page needs
+    // does not move as focus does.
+    const TIP_RESERVE: u16 = 2;
+    let flex_h = 2 /*borders*/
+        + 1 /*pinned header*/
+        + crate::utils::SCROLL_MIN_ROWS;
+    let stacked_h = if side_by_side {
+        voyage_h + stats_h + flex_h
+    } else if implemented {
+        voyage_h
+            + stats_h
+            + fight_h
+            + button_h
+            + flex_h
+            + if top_jobbers_fills { pane_h } else { top_h }
+    } else {
+        // Nothing to scroll on a voyage type we have not built yet: the
+        // "Coming Soon" box is one line in a border.
+        voyage_h + 3
+    };
+    if crate::utils::too_short(frame, area, stacked_h + TIP_RESERVE) {
+        return;
+    }
+
     let rows = if side_by_side {
         // Vikings: Voyage, stats, then one page-filling row that holds Top
         // Jobbers beside the pane(s) (split horizontally at render

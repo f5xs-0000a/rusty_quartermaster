@@ -45,6 +45,10 @@ const SELL_W: u16 = 10; // "Sell Price"
 const BUY_W: u16 = 9; // "Buy Price"
 const COL_GAP: u16 = 2; // spacing between inventory columns
 
+/// Rows the page-wide tooltip takes while it has something to say: enough for
+/// it to wrap once.
+const TOOLTIP_H: u16 = 2;
+
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -139,10 +143,28 @@ pub fn render(
     let suggestion_h = u16::from(build_suggestion_line(app, shared).is_some());
     let search_h = 1 /*input*/ + suggestion_h + 2 /*borders*/;
     let tooltip_h = if build_tooltip(app, shared).is_some() {
-        2 // up to two lines once it wraps
+        TOOLTIP_H // up to two lines once it wraps
     } else {
         0
     };
+
+    // Room the page must have, counting the rows the suggestion and the tooltip
+    // take when they have something to say even while they have not: what the
+    // page needs cannot move as focus moves, or resting on a field would make
+    // the page disappear. The Inventory keeps a scrollable view's worth of
+    // commodities under its header, which is what the spare rows go to when the
+    // transient ones are empty.
+    let inventory_h = 2 /*borders*/
+        + 2 /*header and its blank*/
+        + crate::utils::SCROLL_MIN_ROWS;
+    let needed_height = inventory_h
+        + 1 /*input*/ + 1 /*suggestion*/ + 2 /*borders*/
+        + stats_h
+        + params_h
+        + TOOLTIP_H;
+    if crate::utils::too_short(frame, area, needed_height) {
+        return;
+    }
 
     // Inventory is the topmost widget and takes the Fill slot so it scrolls;
     // the others stack below it at fixed heights, with the tooltip last.
@@ -1632,7 +1654,7 @@ fn render_popup(
 mod inventory_tests {
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
-    use super::{InventoryRow, ProfitsApp, render};
+    use super::{Focus, InventoryRow, P_RESTOCK_RATE, ProfitsApp, render};
     use crate::{
         api::Commodity,
         app::SharedState,
@@ -1642,6 +1664,17 @@ mod inventory_tests {
     /// Render the Profits page and hand back the cell click regions, the
     /// area drawn into, and the screen as text.
     fn draw(names: &[&str], width: u16) -> (Vec<ClickRegion>, Rect, String) {
+        draw_at(names, width, 40, Focus::Table)
+    }
+
+    /// As [`draw`], in a terminal of the given size and with `focus` where the
+    /// caller wants it.
+    fn draw_at(
+        names: &[&str],
+        width: u16,
+        height: u16,
+        focus: Focus,
+    ) -> (Vec<ClickRegion>, Rect, String) {
         let commodities: Vec<Commodity> = names
             .iter()
             .enumerate()
@@ -1658,11 +1691,12 @@ mod inventory_tests {
         }
         app.table_state.select(Some(0));
         app.table_state.select_column(Some(0));
+        app.focus = focus;
 
         let mut regions = Vec::new();
         let mut terminal =
-            Terminal::new(TestBackend::new(width, 40)).expect("terminal");
-        let area = Rect::new(0, 0, width, 40);
+            Terminal::new(TestBackend::new(width, height)).expect("terminal");
+        let area = Rect::new(0, 0, width, height);
         terminal
             .draw(|frame| {
                 let shared = SharedState {
@@ -1711,6 +1745,29 @@ mod inventory_tests {
     /// Just the rendered screen.
     fn screen_of(names: &[&str], width: u16) -> String {
         draw(names, width).2
+    }
+
+    /// What the page needs of the window cannot move as focus moves: resting on
+    /// a field raises a tooltip, and a page that only counted those rows while
+    /// one was up would disappear under the user's hands.
+    ///
+    /// Without Market the panel shows three fields, so the page needs 24
+    /// rows: 8 for the Inventory, 4 for the Search, 3 for the Hold Stats, 7 for
+    /// the Parameters and 2 for the tooltip.
+    #[test]
+    fn what_the_page_needs_does_not_move_with_the_focus() {
+        for (height, fits) in [(23, false), (24, true)] {
+            // The table carries no tooltip; a panel field does.
+            for focus in [Focus::Table, Focus::Panel(P_RESTOCK_RATE)] {
+                let screen = draw_at(&["Rum"], 80, height, focus).2;
+                assert_eq!(
+                    !screen.contains("Terminal too small"),
+                    fits,
+                    "{height} rows should {} the page",
+                    if fits { "draw" } else { "refuse" },
+                );
+            }
+        }
     }
 
     /// A cell you cannot see is a cell you must not be able to click, however
