@@ -71,6 +71,8 @@ pub enum ClickTarget {
     JobberPirateSeeTrophies,
     JobberPirateClose,
     JobberTrophyArea,
+    /// The Trophies popup's Close button.
+    JobberTrophyClose,
     /// The "View Skill Distribution" button (Vampirates).
     JobberSkillDistButton,
     /// A cell in the skill-distribution scatterplot, `(treasure_haul,

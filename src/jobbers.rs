@@ -1995,7 +1995,11 @@ fn render_per_fight_popup(
     const PLOT_H: usize = 9;
     let popup_w = 72u16.min(area.width.max(1));
     let popup_h = (
-        PLOT_H as u16 + 2 /*axis*/ + 2 /*header+controls*/ + 2
+        PLOT_H as u16
+            + 2 /*axis*/
+            + 1 /*header*/
+            + 2 /*the two button rows*/
+            + 2
         // borders
     )
     .min(area.height.max(1));
@@ -2049,8 +2053,8 @@ fn render_per_fight_popup(
     let rows = Layout::vertical([
         Constraint::Length(1),                 // header
         Constraint::Length(PLOT_H as u16 + 2), // chart + axis
-        Constraint::Length(1),                 // controls
-        Constraint::Min(0),
+        Constraint::Length(1),                 // the fight's own controls
+        Constraint::Length(1),                 // Close
     ])
     .split(inner);
     frame.render_widget(
@@ -2073,38 +2077,36 @@ fn render_per_fight_popup(
     );
     frame.render_widget(Paragraph::new(chart), rows[1]);
 
-    // Controls row: ◀ prev | Axis: Time/KOs | next ▶ | Close.
-    let prev = "◀ Prev";
-    let next = "Next ▶";
-    let axis_lbl = match popup.axis {
-        AxisMode::Time => "Axis: Time",
-        AxisMode::Event => "Axis: # KOs",
+    // What this fight's graph shows — stepping between fights, and what the
+    // x-axis measures — then Close on its own row below, as every popup has it.
+    let prev = "[ ← Prev ]";
+    let axis = match popup.axis {
+        AxisMode::Time => "[ Axis: Time ]",
+        AxisMode::Event => "[ Axis: # KOs ]",
     };
-    let close = "[ Close ]";
+    let next = "[ Next → ]";
+    // Each cell is as wide as the label it holds, so none of them clips its
+    // closing bracket; the gaps between them share what is left.
     let cells = Layout::horizontal([
-        Constraint::Length(prev.len() as u16 + 2),
-        Constraint::Min(0),
-        Constraint::Length(axis_lbl.len() as u16 + 2),
-        Constraint::Min(0),
-        Constraint::Length(next.len() as u16 + 2),
-        Constraint::Length(close.len() as u16 + 2),
+        Constraint::Length(prev.chars().count() as u16),
+        Constraint::Min(1),
+        Constraint::Length(axis.chars().count() as u16),
+        Constraint::Min(1),
+        Constraint::Length(next.chars().count() as u16),
     ])
+    .flex(ratatui::layout::Flex::Center)
     .split(rows[2]);
     let nav_style = Style::default().bold();
     let dim = Style::default().fg(Color::DarkGray);
     frame.render_widget(
         Paragraph::new(Span::styled(
             prev,
-            if idx > 0 { nav_style } else { dim },
+            if 0 < idx { nav_style } else { dim },
         )),
         cells[0],
     );
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            format!("[ {axis_lbl} ]"),
-            nav_style,
-        ))
-        .centered(),
+        Paragraph::new(Span::styled(axis, nav_style)),
         cells[2],
     );
     frame.render_widget(
@@ -2115,13 +2117,12 @@ fn render_per_fight_popup(
             } else {
                 dim
             },
-        ))
-        .right_aligned(),
+        )),
         cells[4],
     );
     frame.render_widget(
-        Paragraph::new(Span::styled(close, nav_style)).right_aligned(),
-        cells[5],
+        Paragraph::new(Span::styled("[ Close ]", nav_style)).centered(),
+        rows[3],
     );
     regions.push(ClickRegion {
         rect: cells[0],
@@ -2136,7 +2137,7 @@ fn render_per_fight_popup(
         target: ClickTarget::JobberPerFightNext,
     });
     regions.push(ClickRegion {
-        rect: cells[5],
+        rect: rows[3],
         target: ClickTarget::JobberPerFightClose,
     });
 }
@@ -2510,15 +2511,13 @@ fn render_skill_dist_popup(
     // Detail panel: a centered 3-line header naming the cursor cell's
     // standings, then the jobbers there (names only — their standings are
     // the cell itself).
-    let header = [
-        format!(
-            "{} jobber{} here with",
-            here.len(),
-            if here.len() == 1 { "" } else { "s" }
-        ),
-        format!("{carp_standing} Carpentry and"),
-        format!("{th_standing} Treasure Haul"),
-    ];
+    let count_line = format!(
+        "{} jobber{} here with",
+        here.len(),
+        if here.len() == 1 { "" } else { "s" }
+    );
+    /// The count, then a line naming each of the cell's two standings.
+    const HEADER_H: u16 = 3;
     let name_w = here
         .iter()
         .map(|e| e.name.chars().count())
@@ -2553,7 +2552,7 @@ fn render_skill_dist_popup(
 
     let inner_w = plot_w + 2 + detail_w; // 2-col gap between plot and detail
     // detail = 3 header lines + blank + names + (blank + wrapped note).
-    let mut detail_h = header.len() as u16 + 1 + here.len() as u16;
+    let mut detail_h = HEADER_H + 1 + here.len() as u16;
     if !note_lines.is_empty() {
         detail_h += 1 + note_lines.len() as u16;
     }
@@ -2611,12 +2610,23 @@ fn render_skill_dist_popup(
         Rect::new(grid_x, plot.y, cols_w, 1),
     );
 
+    // Every standing on the axes is emphasised but Able, which is the floor
+    // every pirate starts on and so says nothing about them.
+    let axis_style = |s: Standing| {
+        if s == Standing::Able {
+            Style::default()
+        } else {
+            Style::default().bold()
+        }
+    };
+
     let header_y = plot.y + 1;
     for c in 0 .. 9u16 {
+        let standing = STANDINGS[c as usize];
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                standing_abbr(STANDINGS[c as usize]),
-                Style::default().bold(),
+                standing_abbr(standing),
+                axis_style(standing),
             )))
             .centered(),
             Rect::new(grid_x + c * CELL_W, header_y, CELL_W, 1),
@@ -2636,12 +2646,16 @@ fn render_skill_dist_popup(
             ))),
             Rect::new(plot.x, grid_y + r, 1, 1),
         );
-        // Row label (Carpentry standing).
+        // Row label (Carpentry standing), the gutter rule left unemphasised.
+        let standing = STANDINGS[carp as usize];
         frame.render_widget(
-            Paragraph::new(Line::from(format!(
-                "{:>3}│",
-                standing_abbr(STANDINGS[carp as usize])
-            ))),
+            Paragraph::new(Line::from(vec![
+                Span::styled(
+                    format!("{:>3}", standing_abbr(standing)),
+                    axis_style(standing),
+                ),
+                Span::raw("│"),
+            ])),
             Rect::new(plot.x + VAXIS_W, grid_y + r, GUT, 1),
         );
         for c in 0 .. 9u16 {
@@ -2684,23 +2698,33 @@ fn render_skill_dist_popup(
     // ---- detail panel: centered header naming the cell's standings, then the
     //      jobbers there (names only — their standings are the cell itself).
     // ----
-    // Line 0 is the count; lines 1–2 carry the standings, emphasised by tier.
+    // Line 0 is the count; lines 1-2 name the cell's two standings. Each reads
+    // as one phrase — the skill in italics with its standing emphasised inside
+    // it — and the "and" joining them belongs to neither, so it stays plain.
+    let phrase = |standing: Standing, skill: &'static str| {
+        let italic = Style::default().italic();
+        vec![
+            Span::styled(
+                standing.to_string(),
+                if standing == Standing::Able {
+                    italic
+                } else {
+                    italic.bold()
+                },
+            ),
+            Span::styled(format!(" {skill}"), italic),
+        ]
+    };
+    let mut carp_line = phrase(carp_standing, "Carpentry");
+    carp_line.push(Span::raw(" and"));
     let mut lines: Vec<Line> = vec![
         Line::from(Span::styled(
-            header[0].clone(),
+            count_line,
             Style::default().bold(),
         ))
         .centered(),
-        Line::from(Span::styled(
-            header[1].clone(),
-            standing_style(carp_standing),
-        ))
-        .centered(),
-        Line::from(Span::styled(
-            header[2].clone(),
-            standing_style(th_standing),
-        ))
-        .centered(),
+        Line::from(carp_line).centered(),
+        Line::from(phrase(th_standing, "Treasure Haul")).centered(),
         Line::from(""),
     ];
     for e in &here {
@@ -3741,8 +3765,7 @@ fn render_ship_popup(
     let area = frame.area();
 
     let max_name = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
-    // +2 borders +2 padding +2 highlight symbol.
-    let w = max_name as u16 + 6;
+    let (block, w) = crate::utils::titled_block("Select Ship", max_name as u16);
     let h = SHIPS.len() as u16 + 2; // +2 borders
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3753,14 +3776,8 @@ fn render_ship_popup(
     let items: Vec<ListItem> =
         SHIPS.iter().map(|s| ListItem::new(s.name)).collect();
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Select Ship").0),
-        )
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
-        .highlight_symbol("> ");
+        .block(block)
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
 
     let mut state = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, popup_area, &mut state);
@@ -3793,7 +3810,7 @@ fn render_vessel_popup(
         .max()
         .unwrap_or(0)
         .max("No vessels".len());
-    let w = max_name as u16 + 6; // +2 borders +2 padding +2 highlight symbol.
+    let (block, w) = crate::utils::titled_block("Vessels", max_name as u16);
     let h = (ordered.len() as u16).max(1) + 2;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3827,14 +3844,8 @@ fn render_vessel_popup(
             .collect()
     };
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Vessels").0),
-        )
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
-        .highlight_symbol("> ");
+        .block(block)
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
 
     let mut st = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, popup_area, &mut st);
@@ -3870,10 +3881,7 @@ fn render_voyage_popup(
         })
         .collect();
     let max_name = labels.iter().map(|s| s.chars().count()).max().unwrap_or(0);
-    // The contents are the longest label plus the two columns the selection
-    // marker takes; the border and its padding come from `titled_block`.
-    let (block, w) =
-        crate::utils::titled_block("Voyage Type", max_name as u16 + 2);
+    let (block, w) = crate::utils::titled_block("Voyage Type", max_name as u16);
     let h = VOYAGE_TYPES.len() as u16 + 2;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -3895,8 +3903,7 @@ fn render_voyage_popup(
         .collect();
     let list = List::new(items)
         .block(block)
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
-        .highlight_symbol("> ");
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
 
     let mut st = ListState::default().with_selected(Some(selected));
     frame.render_stateful_widget(list, popup_area, &mut st);
@@ -4361,12 +4368,30 @@ fn render_trophy_popup(
     regions: &mut Vec<ClickRegion>,
 ) {
     let screen = frame.area();
+
+    // With no trophies to sift through there is nothing for a search box to do,
+    // and nothing to scroll either: the popup is then as tall as the one line
+    // it has to say. A search that merely matches nothing keeps its box,
+    // since the user needs it to clear the filter.
+    let cached = cache.get_cached(&tp.name);
+    let has_trophies = cached.is_some_and(|c| {
+        c.trophies.sections.iter().any(|s| !s.trophies.is_empty())
+    });
+
     let box_w = 80u16.min(screen.width.max(1));
-    let box_h = screen
-        .height
-        .saturating_sub(2)
-        .max(3)
-        .min(screen.height.max(1));
+    let box_h = if has_trophies {
+        screen
+            .height
+            .saturating_sub(2)
+            .max(3)
+            .min(screen.height.max(1))
+    } else {
+        (
+            1 /*notice*/ + 1 /*blank*/ + 1 /*Close*/ + 2
+            // borders
+        )
+        .min(screen.height.max(1))
+    };
     let x = screen.x + screen.width.saturating_sub(box_w) / 2;
     let y = screen.y + screen.height.saturating_sub(box_h) / 2;
     let popup = Rect::new(x, y, box_w, box_h);
@@ -4380,32 +4405,38 @@ fn render_trophy_popup(
     frame.render_widget(block, popup);
 
     let rows = Layout::vertical([
-        Constraint::Length(1), // search
-        Constraint::Min(0),    // scroll area
+        Constraint::Length(u16::from(has_trophies)), // search
+        Constraint::Min(0),                          // scroll area
+        Constraint::Length(1),                       // blank
+        Constraint::Length(1),                       // Close
     ])
     .split(inner);
 
-    // Search box (typed text shows live; the placeholder is muted).
-    let search_line = if tp.search.is_empty() {
-        Line::from(vec![
-            Span::styled("Search: ", Style::default().bold()),
-            Span::styled(
-                "type to filter…",
-                Style::default().fg(Color::DarkGray).italic(),
-            ),
-        ])
-    } else {
-        Line::from(vec![
-            Span::styled("Search: ", Style::default().bold()),
-            Span::raw(tp.search.clone()),
-        ])
-    };
-    frame.render_widget(Paragraph::new(search_line), rows[0]);
+    if has_trophies {
+        // Search box (typed text shows live; the placeholder is muted).
+        let search_line = if tp.search.is_empty() {
+            Line::from(vec![
+                Span::styled("Search: ", Style::default().bold()),
+                Span::styled(
+                    "type to filter…",
+                    Style::default().fg(Color::DarkGray).italic(),
+                ),
+            ])
+        } else {
+            Line::from(vec![
+                Span::styled("Search: ", Style::default().bold()),
+                Span::raw(tp.search.clone()),
+            ])
+        };
+        frame.render_widget(Paragraph::new(search_line), rows[0]);
+    }
+
+    crate::utils::render_close_button(frame, rows[3]);
 
     // Build all visible category lines.
     let inner_w = rows[1].width as usize;
     let mut lines: Vec<Line> = Vec::new();
-    match cache.get_cached(&tp.name) {
+    match cached {
         None => {
             lines.push(
                 Line::from(Span::styled(
@@ -4432,7 +4463,11 @@ fn render_trophy_popup(
             if lines.is_empty() {
                 lines.push(
                     Line::from(Span::styled(
-                        "No matching trophies.",
+                        if has_trophies {
+                            "No matching trophies."
+                        } else {
+                            "No trophies."
+                        },
                         Style::default().fg(Color::DarkGray),
                     ))
                     .centered(),
@@ -4453,10 +4488,15 @@ fn render_trophy_popup(
         lines.into_iter().skip(tp.offset).take(view_h).collect();
     frame.render_widget(Paragraph::new(visible), rows[1]);
 
-    // The whole popup is a scroll target so the wheel works anywhere over it.
+    // The whole popup is a scroll target so the wheel works anywhere over it;
+    // pushed before the Close button so that button wins the hit test.
     regions.push(ClickRegion {
         rect: popup,
         target: ClickTarget::JobberTrophyArea,
+    });
+    regions.push(ClickRegion {
+        rect: rows[3],
+        target: ClickTarget::JobberTrophyClose,
     });
 }
 

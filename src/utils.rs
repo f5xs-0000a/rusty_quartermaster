@@ -356,6 +356,33 @@ pub fn render_page_notice(
     );
 }
 
+/// Draw the Close button a popup carries instead of telling the user that Esc
+/// shuts it: centered on the row it is given, which is the last row inside the
+/// box. Esc still works; what the rule objects to is spending a line saying so,
+/// when a button says it and can be clicked besides.
+///
+/// The caller registers the click region, since only it knows what closing this
+/// popup means.
+pub fn render_close_button(
+    frame: &mut ratatui::Frame,
+    row: ratatui::layout::Rect,
+) {
+    use ratatui::{
+        style::Style,
+        text::{Line, Span},
+        widgets::Paragraph,
+    };
+
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            "[ Close ]",
+            Style::default().bold(),
+        )))
+        .centered(),
+        row,
+    );
+}
+
 /// Rows a vertically scrollable list keeps before it stops reading as one.
 /// Below this there is too little of the list on show to tell that it continues
 /// past the window, and a long list looks like a short one — which misreports

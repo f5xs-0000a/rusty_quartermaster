@@ -678,54 +678,18 @@ fn render_battle_prompt(
     regions: &mut Vec<ClickRegion>,
 ) {
     let area = frame.area();
-    let (w, h) = (46u16, 8u16);
-    let rect = Rect::new(
-        area.x + area.width.saturating_sub(w) / 2,
-        area.y + area.height.saturating_sub(h) / 2,
-        w.min(area.width),
-        h.min(area.height),
-    );
-    frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White))
-        .title(offset_title("New battle").0);
-    let inner = block.inner(rect);
-    frame.render_widget(block, rect);
 
-    let rows = Layout::vertical([
-        Constraint::Length(1), // ship name
-        Constraint::Length(1), // hull
-        Constraint::Length(1), // note
-        Constraint::Length(1), // staging status
-        Constraint::Length(1), // spacer
-        Constraint::Min(0),    // buttons
-    ])
-    .split(inner);
-
+    // Who we ran into, as the log reports it: the hull, then the vessel's name.
+    // Both are underlined, being the two things the user has to recognize.
     let field = Style::default().fg(Color::Gray);
     let name = prompt.ship_name.as_deref().unwrap_or("unknown");
-    frame.render_widget(
-        Paragraph::new(format!("Ship: {name}"))
-            .style(field)
-            .centered(),
-        rows[0],
-    );
     let hull = prompt.foe_ship.map(|i| SHIPS[i].name).unwrap_or("unknown");
-    frame.render_widget(
-        Paragraph::new(format!("Hull: {hull}"))
-            .style(field)
-            .centered(),
-        rows[1],
-    );
-    if let Some(note) = prompt.note.as_deref() {
-        frame.render_widget(
-            Paragraph::new(note)
-                .style(Style::default().fg(Color::Magenta).bold())
-                .centered(),
-            rows[2],
-        );
-    }
+    let intercept = Line::from(vec![
+        Span::styled("Intercepted by ", field),
+        Span::styled(hull, field.underlined()),
+        Span::raw(" "),
+        Span::styled(name, field.underlined()),
+    ]);
 
     // Tell the user whether clearing the current tally loses anything.
     let (status, status_style) = if prompt.prev_saved {
@@ -741,13 +705,62 @@ fn render_battle_prompt(
     } else {
         ("", Style::default())
     };
+
+    // A row only for what there is to draw in it.
+    let note_h = u16::from(prompt.note.is_some());
+    let status_h = u16::from(!status.is_empty());
+    const BUTTONS_W: u16 =
+        "[ Apply ]".len() as u16 + 2 + "[ Keep ]".len() as u16;
+    let content_w = (intercept.width() as u16)
+        .max(
+            prompt
+                .note
+                .as_deref()
+                .map_or(0, |n| n.chars().count() as u16),
+        )
+        .max(status.chars().count() as u16)
+        .max(BUTTONS_W);
+    let (block, w) = crate::utils::titled_block("New battle", content_w);
+    let h = 1 /*intercepted by*/ + note_h + status_h + 1 /*spacer*/ + 1 /*buttons*/ + 2;
+    let rect = Rect::new(
+        area.x + area.width.saturating_sub(w) / 2,
+        area.y + area.height.saturating_sub(h) / 2,
+        w.min(area.width),
+        h.min(area.height),
+    );
+    frame.render_widget(Clear, rect);
+    let block = block.border_style(Style::default().fg(Color::White));
+    let inner = block.inner(rect);
+    frame.render_widget(block, rect);
+
+    let rows = Layout::vertical([
+        Constraint::Length(1), // intercepted by
+        Constraint::Length(note_h),
+        Constraint::Length(status_h),
+        Constraint::Length(1), // spacer
+        Constraint::Length(1), // buttons
+    ])
+    .split(inner);
+
+    frame.render_widget(
+        Paragraph::new(intercept).centered(),
+        rows[0],
+    );
+    if let Some(note) = prompt.note.as_deref() {
+        frame.render_widget(
+            Paragraph::new(note)
+                .style(Style::default().fg(Color::Magenta).bold())
+                .centered(),
+            rows[1],
+        );
+    }
     frame.render_widget(
         Paragraph::new(status).style(status_style).centered(),
-        rows[3],
+        rows[2],
     );
 
     let btns = Layout::horizontal([Constraint::Fill(1), Constraint::Fill(1)])
-        .split(rows[5]);
+        .split(rows[4]);
     let button = |label: &str, focused: bool| {
         let style = if focused {
             Style::default().fg(Color::Black).bg(Color::Cyan).bold()
@@ -780,8 +793,8 @@ fn render_ship_popup(
     let area = frame.area();
 
     let max_name_len = SHIPS.iter().map(|s| s.name.len()).max().unwrap_or(0);
-    // +2 borders +2 padding +2 highlight symbol
-    let w = max_name_len as u16 + 6;
+    let (block, w) =
+        crate::utils::titled_block("Select Ship", max_name_len as u16);
     let h = SHIPS.len() as u16 + 2; // +2 borders
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
@@ -793,14 +806,8 @@ fn render_ship_popup(
         SHIPS.iter().map(|ship| ListItem::new(ship.name)).collect();
 
     let list = List::new(items)
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Select Ship").0),
-        )
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
-        .highlight_symbol("> ");
+        .block(block)
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
 
     let mut state = ListState::default().with_selected(Some(popup.selected));
     frame.render_stateful_widget(list, popup_area, &mut state);

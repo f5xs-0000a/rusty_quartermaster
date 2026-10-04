@@ -927,7 +927,7 @@ fn damage_states(states: &mut Vec<State>) {
             shell.damage.battle_prompt = Some(BattlePrompt {
                 ship_name: Some("Modest Sild".to_owned()),
                 foe_ship: Some(4),
-                note: Some("Previous fight was saved.".to_owned()),
+                note: None,
                 prev_saved: true,
                 apply: true,
             });

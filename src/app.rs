@@ -3319,10 +3319,13 @@ impl AppShell {
             ClickTarget::JobberPirateClose => {
                 self.jobbers_ui.pirate_popup = None;
             }
-            // The trophies popup is keyboard-driven; a click on it is a no-op
-            // (it exists only so the scroll wheel has a target
-            // there).
+            // A click on the body of the trophies popup is a no-op (the region
+            // exists only so the scroll wheel has a target there); its Close
+            // button is the one part of it that answers to the mouse.
             ClickTarget::JobberTrophyArea => {}
+            ClickTarget::JobberTrophyClose => {
+                self.jobbers_ui.trophy_popup = None;
+            }
             ClickTarget::JobberSkillDistButton => self.open_skill_dist_popup(),
             // Clicking a cell parks the cursor there (same as hovering it).
             ClickTarget::JobberSkillDistCell {

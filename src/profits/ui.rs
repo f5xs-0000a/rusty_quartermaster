@@ -49,6 +49,10 @@ const COL_GAP: u16 = 2; // spacing between inventory columns
 /// it to wrap once.
 const TOOLTIP_H: u16 = 2;
 
+/// Columns a ` No `/` Yes ` button row spends, the two blank columns between
+/// them included. A confirm popup is never narrower than its own buttons.
+const YES_NO_W: u16 = 11;
+
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -1191,17 +1195,19 @@ fn render_popup(
         PopupKind::ReQueryConfirm {
             yes_focused,
         } => {
-            let w: u16 = 40;
-            let h: u16 = 6;
+            // The caveat belongs to the question, so it shares its line.
+            const QUESTION: &str = "Re-query market prices?";
+            const CAVEAT: &str = "This may take some time.";
+            let (block, w) = crate::utils::titled_block(
+                "Re-query?",
+                ((QUESTION.len() + 1 + CAVEAT.len()) as u16).max(YES_NO_W),
+            );
+            let h: u16 = 5;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
             let popup_area = Rect::new(x, y, w, h);
 
             frame.render_widget(Clear, popup_area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Re-query?").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -1209,20 +1215,20 @@ fn render_popup(
                 Constraint::Length(1),
                 Constraint::Length(1),
                 Constraint::Length(1),
-                Constraint::Length(1),
             ])
             .split(inner);
 
             frame.render_widget(
-                Paragraph::new("Re-query market prices?"),
+                Paragraph::new(Line::from(vec![
+                    Span::raw(QUESTION),
+                    Span::raw(" "),
+                    Span::styled(
+                        CAVEAT,
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]))
+                .centered(),
                 rows[0],
-            );
-            frame.render_widget(
-                Paragraph::new(Span::styled(
-                    "This may take some time.",
-                    Style::default().fg(Color::DarkGray),
-                )),
-                rows[1],
             );
 
             let no_style = if !yes_focused {
@@ -1242,20 +1248,20 @@ fn render_popup(
             ]);
             frame.render_widget(
                 Paragraph::new(buttons).centered(),
-                rows[3],
+                rows[2],
             );
 
             // Register popup button regions (split button row in half)
-            let half = rows[3].width / 2;
+            let half = rows[2].width / 2;
             regions.push(ClickRegion {
-                rect: Rect::new(rows[3].x, rows[3].y, half, 1),
+                rect: Rect::new(rows[2].x, rows[2].y, half, 1),
                 target: ClickTarget::ProfitsPopupNo,
             });
             regions.push(ClickRegion {
                 rect: Rect::new(
-                    rows[3].x + half,
-                    rows[3].y,
-                    rows[3].width - half,
+                    rows[2].x + half,
+                    rows[2].y,
+                    rows[2].width - half,
                     1,
                 ),
                 target: ClickTarget::ProfitsPopupYes,
@@ -1266,18 +1272,19 @@ fn render_popup(
             name,
             yes_focused,
         } => {
-            let text_len = "Delete row \"\"?".len() + name.len();
-            let w: u16 = (text_len as u16 + 6).max(22);
+            // As wide as the longer of the question and the buttons, and no
+            // wider.
+            let text_len = "Delete row \"\"?".len() + name.chars().count();
+            let (block, w) = crate::utils::titled_block(
+                "Delete row",
+                (text_len as u16).max(YES_NO_W),
+            );
             let h: u16 = 5;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
             let popup_area = Rect::new(x, y, w, h);
 
             frame.render_widget(Clear, popup_area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Delete row").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -1296,7 +1303,10 @@ fn render_popup(
                 ),
                 Span::raw("\"?"),
             ]);
-            frame.render_widget(Paragraph::new(prompt), rows[0]);
+            frame.render_widget(
+                Paragraph::new(prompt).centered(),
+                rows[0],
+            );
 
             let no_style = if !yes_focused {
                 Style::default().bg(Color::White).fg(Color::Black).bold()
@@ -1344,16 +1354,27 @@ fn render_popup(
 
             let list_lines = shown.len() + if 0 < extra { 1 } else { 0 };
             let h: u16 = (3 + list_lines + 2) as u16;
-            let w: u16 = 46;
+            // Widest of the header, the bulleted commodities and the buttons —
+            // the box is as wide as that and no wider.
+            const HEADER: &str = "No supply on this island for:";
+            const BUTTONS_W: u16 = " Change Island ".len() as u16
+                + 2
+                + " Ocean-wide ".len() as u16;
+            let content_w = shown
+                .iter()
+                .map(|name| name.chars().count() + "  \u{2022} ".len())
+                .max()
+                .unwrap_or(0)
+                .max(HEADER.len()) as u16;
+            let (block, w) = crate::utils::titled_block(
+                "Restock warning",
+                content_w.max(BUTTONS_W),
+            );
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
             let popup_area = Rect::new(x, y, w, h);
 
             frame.render_widget(Clear, popup_area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Restock warning").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 
@@ -1367,10 +1388,7 @@ fn render_popup(
 
             let rows = Layout::vertical(constraints).split(inner);
 
-            frame.render_widget(
-                Paragraph::new("No supply on this island for:"),
-                rows[0],
-            );
+            frame.render_widget(Paragraph::new(HEADER), rows[0]);
             for (i, name) in shown.iter().enumerate() {
                 frame.render_widget(
                     Paragraph::new(Span::styled(
@@ -1437,13 +1455,20 @@ fn render_popup(
             )];
 
             let section = |lines: &mut Vec<Line>,
-                           title: &'static str,
+                           field: &'static str,
+                           whose: &'static str,
                            items: &[String]| {
                 lines.push(Line::from(""));
-                lines.push(Line::from(Span::styled(
-                    title,
-                    Style::default().bold(),
-                )));
+                // The field's own name, underlined, so it reads as the column
+                // the user has to go and fill in.
+                lines.push(Line::from(vec![
+                    Span::styled("Need a ", Style::default().bold()),
+                    Span::styled(
+                        field,
+                        Style::default().bold().underlined(),
+                    ),
+                    Span::styled(whose, Style::default().bold()),
+                ]));
                 for name in items.iter().take(CAP) {
                     lines.push(Line::from(Span::styled(
                         format!("  \u{2022} {name}"),
@@ -1461,33 +1486,30 @@ fn render_popup(
             if !need_buy.is_empty() {
                 section(
                     &mut lines,
-                    "Need a Buy Price (to restock):",
+                    "Buy Price",
+                    " (to restock):",
                     need_buy,
                 );
             }
             if !need_sell.is_empty() {
                 section(
                     &mut lines,
-                    "Need a Sell Price (for excess):",
+                    "Sell Price",
+                    " (for excess):",
                     need_sell,
                 );
             }
 
             let content_w =
                 lines.iter().map(|l| l.width()).max().unwrap_or(0) as u16;
-            let w: u16 = (content_w + 4)
-                .max(offset_title_width("Prices needed"))
-                .max(30);
+            let (block, w) =
+                crate::utils::titled_block("Prices needed", content_w);
             let h: u16 = lines.len() as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
             let x = area.width.saturating_sub(w) / 2;
             let y = area.height.saturating_sub(h) / 2;
             let popup_area = Rect::new(x, y, w, h);
 
             frame.render_widget(Clear, popup_area);
-            let block = Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .title(offset_title("Prices needed").0);
             let inner = block.inner(popup_area);
             frame.render_widget(block, popup_area);
 

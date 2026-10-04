@@ -842,8 +842,10 @@ fn render_save_prompt(
         target: ClickTarget::VoyageSaveCancel,
     });
 
-    let w = 44.min(area.width);
-    let h = 7.min(area.height);
+    const PROMPT: &str = "Persist this run to your history?";
+    // The prompt, a blank, and the buttons, inside a padded border.
+    let w = (PROMPT.len() as u16 + 4).min(area.width);
+    let h = (3 + 2).min(area.height);
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + (area.height.saturating_sub(h)) / 2,
@@ -862,12 +864,11 @@ fn render_save_prompt(
         Constraint::Length(1), // prompt
         Constraint::Length(1), // spacer
         Constraint::Length(1), // buttons
-        Constraint::Min(0),    // hint
     ])
     .split(inner);
 
     frame.render_widget(
-        Paragraph::new("Persist this run to your history?").centered(),
+        Paragraph::new(PROMPT).centered(),
         rows[0],
     );
 
@@ -902,15 +903,6 @@ fn render_save_prompt(
         rect: btns[1],
         target: ClickTarget::VoyageSaveDiscard,
     });
-
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            "←/→ select · Enter confirm · Esc cancel",
-            Style::default().fg(Color::DarkGray),
-        )))
-        .centered(),
-        rows[3],
-    );
 }
 
 /// Colour for a battle outcome label.
@@ -1318,20 +1310,32 @@ fn render_chart_popup(
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::White))
         .title(title)
-        .title_bottom(Line::from(" Esc to close ").right_aligned())
         .padding(Padding::uniform(1));
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
+
+    // The chart, then a blank row and the Close button on the last row.
+    let parts = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .split(inner);
     frame.render_widget(
         Paragraph::new(chart_lines(
             idx,
             data,
-            inner.width as usize,
-            inner.height as usize,
+            parts[0].width as usize,
+            parts[0].height as usize,
             true,
         )),
-        inner,
+        parts[0],
     );
+    crate::utils::render_close_button(frame, parts[2]);
+    regions.push(ClickRegion {
+        rect: parts[2],
+        target: ClickTarget::VoyageChartClose,
+    });
 }
 
 /// Build the lines for chart `idx`, fitting `width`×`height` (used at both
@@ -1504,14 +1508,22 @@ fn render_winrate_popup(
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::White))
             .title(title.to_string())
-            .title_bottom(Line::from(" Esc to close ").right_aligned())
             .padding(Padding::uniform(1))
     };
+    // Rows the Close button and the blank above it take from the box's inside.
+    const CLOSE_H: u16 = 2;
 
     // Nothing to display → a small centered note.
     if wr.history.is_empty() && !show_voyage {
-        let w = 34u16.min(area.width.saturating_sub(2)).max(10);
-        let h = 5u16.min(area.height.saturating_sub(2)).max(3);
+        // One line to say, so the box is one line tall, its Close row and the
+        // frame's own margins aside.
+        const NOTE: &str = "No sea battles recorded yet";
+        let w = (NOTE.len() as u16 + 4)
+            .max(crate::utils::offset_title_width(
+                CHART_TITLES[0],
+            ))
+            .min(area.width.saturating_sub(2));
+        let h = (1 + CLOSE_H + 4).min(area.height.saturating_sub(2));
         let rect = Rect {
             x: area.x + area.width.saturating_sub(w) / 2,
             y: area.y + area.height.saturating_sub(h) / 2,
@@ -1522,12 +1534,25 @@ fn render_winrate_popup(
         let block = make_block(&title);
         let inner = block.inner(rect);
         frame.render_widget(block, rect);
+        let parts =
+            Layout::vertical([Constraint::Min(0), Constraint::Length(CLOSE_H)])
+                .split(inner);
         frame.render_widget(
-            Paragraph::new("No sea battles recorded yet")
+            Paragraph::new(NOTE)
                 .style(Style::default().fg(Color::DarkGray).italic())
                 .centered(),
-            inner,
+            parts[0],
         );
+        let close = Rect {
+            y: parts[1].y + parts[1].height.saturating_sub(1),
+            height: 1,
+            ..parts[1]
+        };
+        crate::utils::render_close_button(frame, close);
+        regions.push(ClickRegion {
+            rect: close,
+            target: ClickTarget::VoyageChartClose,
+        });
         return;
     }
 
@@ -1566,7 +1591,9 @@ fn render_winrate_popup(
 
     // Size to content, leaving a 1-cell screen margin all around.
     let w = (content_w + 4).min(area.width.saturating_sub(2)).max(12);
-    let h = (content_h + 4).min(area.height.saturating_sub(2)).max(6);
+    let h = (content_h + CLOSE_H + 4)
+        .min(area.height.saturating_sub(2))
+        .max(6);
     let rect = Rect {
         x: area.x + area.width.saturating_sub(w) / 2,
         y: area.y + area.height.saturating_sub(h) / 2,
@@ -1575,8 +1602,25 @@ fn render_winrate_popup(
     };
     frame.render_widget(Clear, rect);
     let block = make_block(&title);
-    let inner = block.inner(rect);
+    let outer_inner = block.inner(rect);
     frame.render_widget(block, rect);
+    // The grid keeps everything but the Close row at the foot.
+    let parts = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(CLOSE_H.min(outer_inner.height)),
+    ])
+    .split(outer_inner);
+    let inner = parts[0];
+    let close = Rect {
+        y: parts[1].y + parts[1].height.saturating_sub(1),
+        height: 1,
+        ..parts[1]
+    };
+    crate::utils::render_close_button(frame, close);
+    regions.push(ClickRegion {
+        rect: close,
+        target: ClickTarget::VoyageChartClose,
+    });
 
     let hl = Style::default().bg(Color::White).fg(Color::Black).bold();
     let bold = Style::default().bold();
@@ -1807,6 +1851,10 @@ fn signed_bars_with_boxes(
                 style,
             )));
         } else if let Some(note) = &b.empty_note {
+            // A blank row above it, so the note reads as standing in for the
+            // box that is missing rather than as a caption on the
+            // row above.
+            lines.push(Line::from(""));
             lines.push(centered_line(
                 note.clone(),
                 width,

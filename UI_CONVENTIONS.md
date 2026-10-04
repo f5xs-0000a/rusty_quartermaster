@@ -509,3 +509,116 @@ The app has five column-bearing widgets, and only one is a ratatui `Table`:
 
 All but the Inventory already centered their headers; it is the only one the
 rule changed.
+
+## Rule 7: Popups are small, centered, and carry their own way out
+
+A popup takes the screen away from the page under it, so it earns that by being
+no bigger than what it has to say, and by saying plainly how to be rid of it.
+
+### As small as its contents
+
+A popup is sized from its contents, not from the window: the widest of its
+text, its list and its buttons, plus the frame Rules 1 and 2 ask for.
+
+```
+┌─── Restock warning ───────────┐      ┌─── Restock warning ────────────────────────┐
+│ No supply on this island for: │      │ No supply on this island for:              │
+│   • Hemp                      │      │   • Hemp                                   │
+│   • Cloth                     │      │   • Cloth                                  │
+│                               │      │                                            │
+│  Change Island    Ocean-wide  │      │         Change Island    Ocean-wide        │
+└───────────────────────────────┘      └────────────────────────────────────────────┘
+          sized to content                     44 columns, because 44 was typed
+```
+
+A row nothing is drawn into is not reserved either — the `New battle` prompt has
+a line for a noteworthy foe and shows it only when there is one.
+
+The exception is content with no size of its own. A chart or a grid scales to
+the room it is given, so those popups may fill the screen; what may not happen
+is a popup of fixed text sitting in a box wider than the text.
+
+### A single-line body is centered
+
+Where the body is one line, it is centered over the buttons beneath it, matching
+how they are centered themselves:
+
+```
+┌─── Delete row ────┐
+│ Delete row "Rum"? │
+│                   │
+│     No    Yes     │
+└───────────────────┘
+```
+
+A caveat that belongs to the question shares its line rather than taking
+another: `Re-query market prices? This may take some time.` is one body line,
+the caveat dimmed, and so it is centered too.
+
+A body of several lines is laid out on its own terms — a bulleted list reads
+down a left edge, so it is left-aligned and the rule does not touch it.
+
+### Esc is not worth a line
+
+No popup spends a line, or a corner of its border, saying that Esc closes it.
+Esc still closes it. In place of that, a popup the user can dismiss carries a
+**Close button, centered on its own last row**, which can also be clicked:
+
+```
+┌─── Ship Winrate ────────────┐
+│ No sea battles recorded yet │
+│                             │
+│          [ Close ]          │
+└─────────────────────────────┘
+```
+
+Hints the user cannot act on wrongly are not worth a line either. The Save
+voyage prompt said `←/→ select · Enter confirm · Esc cancel` under two visible
+buttons, which is three facts the buttons already carry.
+
+Take the button from `utils::render_close_button` so every popup's reads the
+same; the caller registers its click region, since only it knows what closing
+means.
+
+### Two rows of buttons where a popup has its own controls
+
+A popup that does something besides open and close puts those controls on their
+own row and keeps Close beneath them, so the way out is always in the same
+place:
+
+```
+│       0:00                                                      0:15 │
+│ [ ← Prev ]                 [ Axis: Time ]                 [ Next → ] │
+│                               [ Close ]                              │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+Every one of those is clickable, which is why they are buttons in the frame
+rather than a hint line below it. A cell holding a button is as wide as the
+button's whole label, brackets included — the Axis cell was two columns short
+and dropped its closing `]`.
+
+### A choice is shown by highlight alone
+
+A vertical list the user picks from marks the selected row by highlighting it,
+with no `> ` prefix:
+
+```
+┌─── Voyage Type ───┐          ┌─── Voyage Type ───┐
+│ Pillage           │          │   Pillage         │
+│ Atlantis          │          │   Atlantis        │
+│ Cursed Isles      │ ← hl     │ > Cursed Isles    │ ← hl
+│ Vampirates        │          │   Vampirates      │
+└───────────────────┘          └───────────────────┘
+```
+
+The highlight already says which row it is, and it says so in a way the marker
+cannot: it survives the row being read at a glance. Dropping the marker also
+narrows the box by the two columns it held.
+
+### Nothing to search is nothing to show
+
+A control that cannot do anything is not drawn. The Trophies popup hides its
+search box when the pirate has no trophies, or none fetched yet, and shrinks to
+the one line it has to say — but it keeps the box when a *filter* matches
+nothing, since clearing the filter is what the user needs it for.
