@@ -257,3 +257,45 @@ The app does not yet satisfy its own minimum:
 | Profits | the Inventory table collapses to its header, hiding every row the user entered; the four boxes below it take the height first |
 | Profits | `Restocking Place` and `Selling Place` show `Query Ma`, truncated — its block is a fixed 40 columns at every terminal width, too narrow for its own labels |
 | Jobbers | the placeholder runs off the right edge instead of wrapping |
+
+## Rule 5: Table headers are centered
+
+A column header sits centered over its column, whatever the column's contents
+are aligned to.
+
+The alignment only shows when a column is wider than its own header, which is
+the case worth getting right: a column sized to its widest value leaves a
+short header stranded at one end, reading as though it belongs to whatever is
+beside it rather than to the column it names.
+
+```
+          Item                 Restock  Stock  Booty
+Fine enchanted midnight broadcloth  …
+```
+
+not
+
+```
+Item                                 Restock  Stock  Booty
+Fine enchanted midnight broadcloth  …
+```
+
+Headers are centered independently of the cells below them. The Inventory's
+numeric cells are right-aligned under centered headers, which is intended: a
+column of figures reads down its right edge, while the header names the whole
+column.
+
+### Where this applies
+
+The app has five column-bearing widgets, and only one is a ratatui `Table`:
+
+| widget | columns built by |
+| ------ | ---------------- |
+| Profits Inventory | `Table` |
+| Jobbers Skill Leaderboard | per-column rects |
+| Voyage Ship Winrate matrix | a drawn grid |
+| Jobbers skill distribution | a drawn grid |
+| Damage calculator | three columns, whose centre column is row labels rather than headers |
+
+All but the Inventory already centered their headers; it is the only one the
+rule changed.

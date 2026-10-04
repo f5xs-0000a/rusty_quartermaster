@@ -376,9 +376,17 @@ fn render_inventory(
         header_cells.push("Sell Price");
         header_cells.push("Buy Price");
     }
-    let header = Row::new(header_cells)
-        .style(Style::default().bold())
-        .bottom_margin(1);
+    // Headers sit centered over their columns. For the numeric columns, whose
+    // width is their header's own length, this changes nothing; the Item
+    // column is as wide as the longest name, and its header would otherwise
+    // drift to the far left of it.
+    let header = Row::new(
+        header_cells
+            .into_iter()
+            .map(|cell| Cell::new(Line::from(cell).centered())),
+    )
+    .style(Style::default().bold())
+    .bottom_margin(1);
 
     let rows: Vec<Row> = app
         .rows
@@ -1579,8 +1587,9 @@ mod inventory_tests {
         clickmap::{ClickRegion, ClickTarget},
     };
 
-    /// Render the Profits page and hand back the cell click regions.
-    fn cells(names: &[&str], width: u16) -> (Vec<ClickRegion>, Rect) {
+    /// Render the Profits page and hand back the cell click regions, the
+    /// area drawn into, and the screen as text.
+    fn draw(names: &[&str], width: u16) -> (Vec<ClickRegion>, Rect, String) {
         let commodities: Vec<Commodity> = names
             .iter()
             .enumerate()
@@ -1634,7 +1643,22 @@ mod inventory_tests {
                 )
             })
             .collect();
+        (
+            cells,
+            area,
+            format!("{}", terminal.backend()),
+        )
+    }
+
+    /// Just the cell click regions and the area they were measured in.
+    fn cells(names: &[&str], width: u16) -> (Vec<ClickRegion>, Rect) {
+        let (cells, area, _) = draw(names, width);
         (cells, area)
+    }
+
+    /// Just the rendered screen.
+    fn screen_of(names: &[&str], width: u16) -> String {
+        draw(names, width).2
     }
 
     /// A cell you cannot see is a cell you must not be able to click, however
@@ -1663,6 +1687,30 @@ mod inventory_tests {
                 );
             }
         }
+    }
+
+    /// A header belongs over its column, not at the far left of it: the Item
+    /// column is as wide as the longest name, so a left-aligned header would
+    /// drift away from the column it names.
+    #[test]
+    fn a_header_is_centered_over_its_column() {
+        let names = ["Fine enchanted midnight broadcloth", "Rum"];
+        let screen = screen_of(&names, 120);
+        let header = screen
+            .lines()
+            .find(|l| l.contains("Item"))
+            .expect("a header row");
+        let data = screen
+            .lines()
+            .find(|l| l.contains(names[0]))
+            .expect("a data row");
+        let head_x = header.find("Item").expect("Item");
+        let name_x = data.find(names[0]).expect("the name");
+        assert!(
+            name_x < head_x,
+            "header at {head_x} is not centered over a column starting at \
+             {name_x}",
+        );
     }
 
     /// The table is centered when it is narrower than its box, so the first
