@@ -184,6 +184,9 @@ impl Canvas {
 /// Blank cells kept between a label and anything drawn beside it on its row.
 const LABEL_GAP: usize = 2;
 
+/// Cells a point's click box extends past its glyph on each side.
+const CLICK_REACH: usize = 1;
+
 /// Candidate top-left cells for an `n`-cell label of the point at `(cx,
 /// cy)`, in order of preference: beside the point on its own row (right,
 /// then left, each sliding a few cells further out), then the rows just
@@ -782,22 +785,36 @@ fn draw_map(
         }
     }
 
+    // each point's click box reaches one cell past its glyph on every side,
+    // clipped to the viewport; points are at least four cells apart along
+    // either axis, so the boxes never overlap
+    let viewport = Rect::new(
+        ox as u16, oy as u16, vw as u16, vh as u16,
+    );
     for p in map.points() {
         let (px, py) = cell_of(p);
-        if ox <= px && px < ox + vw && oy <= py && py < oy + vh {
-            regions.push(ClickRegion {
-                rect: Rect::new(
-                    view.x + (px - ox) as u16,
-                    view.y + (py - oy) as u16,
-                    1,
-                    1,
-                ),
-                target: ClickTarget::MapPoint {
-                    x: p.0,
-                    y: p.1,
-                },
-            });
+        let around = Rect::new(
+            px.saturating_sub(CLICK_REACH) as u16,
+            py.saturating_sub(CLICK_REACH) as u16,
+            (2 * CLICK_REACH + 1) as u16,
+            (2 * CLICK_REACH + 1) as u16,
+        )
+        .intersection(viewport);
+        if around.is_empty() {
+            continue;
         }
+        regions.push(ClickRegion {
+            rect: Rect::new(
+                view.x + around.x - viewport.x,
+                view.y + around.y - viewport.y,
+                around.width,
+                around.height,
+            ),
+            target: ClickTarget::MapPoint {
+                x: p.0,
+                y: p.1,
+            },
+        });
     }
 }
 
@@ -940,6 +957,52 @@ mod tests {
             })
             .expect("draw");
         println!("{}", terminal.backend());
+    }
+
+    #[test]
+    fn click_boxes_reach_around_each_point_without_overlapping() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let mut app = MapApp::new();
+        app.cursor_on(map);
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
+        let mut regions = Vec::new();
+        terminal
+            .draw(|frame| {
+                let ctx = OceanContext {
+                    map: Some(map),
+                    geo: None,
+                    ocean: Some("Emerald"),
+                };
+                render(
+                    frame,
+                    frame.area(),
+                    &mut app,
+                    ctx,
+                    true,
+                    &mut regions,
+                );
+            })
+            .expect("draw");
+        let boxes: Vec<Rect> = regions
+            .iter()
+            .filter(|r| matches!(r.target, ClickTarget::MapPoint { .. }))
+            .map(|r| r.rect)
+            .collect();
+        assert!(!boxes.is_empty());
+        // a box away from the edges is three cells each way, and no two
+        // boxes share a cell
+        assert!(boxes.iter().any(|b| b.width == 3 && b.height == 3));
+        for (i, a) in boxes.iter().enumerate() {
+            for b in &boxes[i + 1 ..] {
+                assert!(
+                    a.intersection(*b).is_empty(),
+                    "{a:?} overlaps {b:?}"
+                );
+            }
+        }
     }
 
     /// Prints the whole Emerald canvas, for eyeballing the drawing:
