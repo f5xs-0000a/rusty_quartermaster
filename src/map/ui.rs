@@ -15,6 +15,7 @@ use ratatui::{
 use crate::{
     bare,
     clickmap::{ClickRegion, ClickTarget},
+    islands::CachedIslands,
     map::{
         MOVE_KEYS,
         MapApp,
@@ -148,12 +149,26 @@ impl Canvas {
         (lo .. hi).all(|i| self.is_free(i, y))
     }
 
-    /// Place `text` for the point at `(cx, cy)` in the first spot of
-    /// [`label_spots`] where it fits whole, keeping clear of every drawn
-    /// glyph, the point's own included. With no such spot, the longest
-    /// head of the name (three characters or more) that fits anywhere is
-    /// written instead so the island stays findable. Returns whether the
-    /// whole name was placed.
+    /// The cheapest spot of [`label_spots`] where an `n`-cell label of the
+    /// point at `(cx, cy)` fits, keeping clear of every drawn glyph, the
+    /// point's own included.
+    fn best_spot(
+        &self,
+        cx: usize,
+        cy: usize,
+        n: usize,
+    ) -> Option<(usize, usize)> {
+        label_spots(cx, cy, n)
+            .filter(|&(x, y, _)| self.fits(x, y, n))
+            .min_by_key(|&(_, _, cost)| cost)
+            .map(|(x, y, _)| (x, y))
+    }
+
+    /// Place `text` for the point at `(cx, cy)` in the spot that keeps it
+    /// nearest the point. With no spot for the whole name, the longest
+    /// head of it (three characters or more) that fits anywhere is written
+    /// instead so the island stays findable. Returns whether the whole
+    /// name was placed.
     fn label(
         &mut self,
         cx: usize,
@@ -162,19 +177,15 @@ impl Canvas {
         paint: Paint,
     ) -> bool {
         let n = text.chars().count();
-        for (x, y) in label_spots(cx, cy, n) {
-            if self.fits(x, y, n) {
-                self.write(x, y, text, paint);
-                return true;
-            }
+        if let Some((x, y)) = self.best_spot(cx, cy, n) {
+            self.write(x, y, text, paint);
+            return true;
         }
         for len in (3 .. n).rev() {
-            for (x, y) in label_spots(cx, cy, len) {
-                if self.fits(x, y, len) {
-                    let head: String = text.chars().take(len).collect();
-                    self.write(x, y, &head, paint);
-                    return false;
-                }
+            if let Some((x, y)) = self.best_spot(cx, cy, len) {
+                let head: String = text.chars().take(len).collect();
+                self.write(x, y, &head, paint);
+                return false;
             }
         }
         false
@@ -187,33 +198,49 @@ const LABEL_GAP: usize = 2;
 /// Cells a point's click box extends past its glyph on each side.
 const CLICK_REACH: usize = 1;
 
+/// What a label's placement costs, in cells of drift from its point: a row
+/// step counts this much sideways drift, so a label goes to the row above
+/// or below only when sliding along the nearer row would carry it further
+/// from the point than that.
+const ROW_STEP_COST: usize = 3;
+
 /// Candidate top-left cells for an `n`-cell label of the point at `(cx,
-/// cy)`, in order of preference: beside the point on its own row (right,
-/// then left, each sliding a few cells further out), then the rows just
-/// below and above, then two rows out, each starting centred on the point
-/// and sliding alternately left and right until the label has cleared the
-/// point entirely. Spots off the top or left edge are skipped.
+/// cy)`, each with its cost: beside the point on its own row (right or
+/// left, sliding up to four cells further out), and on the rows one and
+/// two steps above and below, centred on the point and sliding either way
+/// until the label has cleared it. Sitting right beside the point is the
+/// cheapest spot, then a centred spot on the next row, then the rest by
+/// drift. Spots off the top or left edge are skipped; ties go to the
+/// earlier candidate (right before left, below before above).
 fn label_spots(
     cx: usize,
     cy: usize,
     n: usize,
-) -> impl Iterator<Item = (usize, usize)> {
+) -> impl Iterator<Item = (usize, usize, usize)> {
     let (cx, cy, n) = (cx as isize, cy as isize, n as isize);
     let gap = LABEL_GAP as isize;
     let beside = (0 ..= 4).flat_map(move |slide| {
-        [(cx + 1 + gap + slide, cy), (cx - gap - n - slide, cy)]
+        let cost = 2 + slide as usize;
+        [
+            (cx + 1 + gap + slide, cy, cost),
+            (cx - gap - n - slide, cy, cost),
+        ]
     });
-    let rows = [cy + 1, cy - 1, cy + 2, cy - 2];
-    let around = rows.into_iter().flat_map(move |y| {
+    let rows = [(cy + 1, 1), (cy - 1, 1), (cy + 2, 2), (cy - 2, 2)];
+    let around = rows.into_iter().flat_map(move |(y, steps)| {
         let centred = cx - n / 2;
-        std::iter::once((centred, y)).chain((1 ..= n).flat_map(move |slide| {
-            [(centred - slide, y), (centred + slide, y)]
-        }))
+        let base = ROW_STEP_COST * steps;
+        std::iter::once((centred, y, base)).chain((1 ..= n).flat_map(
+            move |slide| {
+                let cost = base + slide as usize;
+                [(centred - slide, y, cost), (centred + slide, y, cost)]
+            },
+        ))
     });
     beside
         .chain(around)
-        .filter(|&(x, y)| 0 <= x && 0 <= y)
-        .map(|(x, y)| (x as usize, y as usize))
+        .filter(|&(x, y, _)| 0 <= x && 0 <= y)
+        .map(|(x, y, cost)| (x as usize, y as usize, cost))
 }
 
 /// Canvas cell of a grid point.
@@ -307,18 +334,22 @@ fn origin(focus: usize, len: usize, total: usize) -> usize {
 }
 
 /// What the page knows about the selected ocean: its compiled-in map, its
-/// geography, and its name. Any of them may be missing.
-pub struct OceanContext {
+/// geography, its name, and yoweb's island list. Any of them may be
+/// missing.
+pub struct OceanContext<'a> {
     pub map: Option<&'static Map>,
     pub geo: Option<&'static bare::Ocean>,
     pub ocean: Option<&'static str>,
+    pub islands: Option<&'a CachedIslands>,
+    /// Whether the island list is being fetched right now.
+    pub fetching_islands: bool,
 }
 
 pub fn render(
     frame: &mut Frame,
     area: Rect,
     app: &mut MapApp,
-    ctx: OceanContext,
+    ctx: OceanContext<'_>,
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
@@ -326,6 +357,8 @@ pub fn render(
         map,
         geo,
         ocean,
+        islands,
+        fetching_islands,
     } = ctx;
     let border = if focused {
         Style::default().fg(Color::White)
@@ -345,7 +378,12 @@ pub fn render(
         (area, None)
     };
     if let (Some(side), Some(map)) = (side, map) {
-        render_metadata(frame, side, app, map, geo, border);
+        let sources = Sources {
+            geo,
+            islands,
+            fetching_islands,
+        };
+        render_metadata(frame, side, app, map, sources, border);
     }
     let area = map_area;
 
@@ -450,12 +488,20 @@ pub fn render(
 
 /// The metadata column: what the geography knows about the island under
 /// the cursor, with the memorized league-point tally pinned at the bottom.
+/// Where the metadata column's facts come from: the compiled-in geography
+/// and yoweb's island list, with whether the latter is on its way.
+struct Sources<'a> {
+    geo: Option<&'static bare::Ocean>,
+    islands: Option<&'a CachedIslands>,
+    fetching_islands: bool,
+}
+
 fn render_metadata(
     frame: &mut Frame,
     area: Rect,
     app: &mut MapApp,
     map: &'static Map,
-    geo: Option<&'static bare::Ocean>,
+    sources: Sources<'_>,
     border: Style,
 ) {
     let block = Block::default()
@@ -466,12 +512,23 @@ fn render_metadata(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(2)])
-        .split(inner);
+    let rows = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(1),
+        Constraint::Length(2),
+    ])
+    .split(inner);
     if let Some(p) = app.cursor_on(map) {
         frame.render_widget(
-            Paragraph::new(metadata_lines(app, map, geo, p)),
+            Paragraph::new(metadata_lines(app, map, &sources, p)),
             rows[0],
+        );
+    }
+    if sources.fetching_islands {
+        frame.render_widget(
+            Paragraph::new("Fetching island info...")
+                .style(Style::default().fg(Color::DarkGray)),
+            rows[1],
         );
     }
     let (known, total) = memorized_tally(app, map);
@@ -490,7 +547,7 @@ fn render_metadata(
                 "{known} / {total}  ({percent:.1}%)"
             )),
         ]),
-        rows[1],
+        rows[2],
     );
 }
 
@@ -508,7 +565,7 @@ fn memorized_tally(app: &MapApp, map: &Map) -> (usize, usize) {
 fn metadata_lines(
     app: &MapApp,
     map: &'static Map,
-    geo: Option<&'static bare::Ocean>,
+    sources: &Sources<'_>,
     p: Point,
 ) -> Vec<Line<'static>> {
     let bold = |s: String| Span::styled(s, Style::default().bold());
@@ -536,7 +593,8 @@ fn metadata_lines(
         ];
     };
     let mut lines = vec![Line::from(bold(island.name.to_owned()))];
-    let Some((arch, info)) = geo.and_then(|g| g.island(island.name)) else {
+    let Some((arch, info)) = sources.geo.and_then(|g| g.island(island.name))
+    else {
         lines.push(Line::from(memorized));
         lines.push(Line::from(""));
         lines.push(Line::from(dim(
@@ -551,40 +609,41 @@ fn metadata_lines(
     )));
     lines.push(Line::from(memorized));
 
-    let mut section =
-        |title: &'static str, items: Vec<String>, none: &'static str| {
-            lines.push(Line::from(""));
-            lines.push(Line::from(bold(title.to_owned())));
-            if items.is_empty() {
-                lines.push(Line::from(dim(none)));
-            }
-            for item in items {
-                lines.push(Line::from(format!("  {item}")));
-            }
-        };
-    section(
-        "Produces",
-        info.spawns.clone(),
-        "  nothing recorded",
-    );
-    section(
-        "Forage",
-        arch.forageables.clone(),
-        "  nothing recorded",
-    );
-    // a known purchase is the only gem fact worth stating; not knowing of
-    // one is not the same as knowing there is none, so nothing is shown
-    // otherwise
-    if !info.buys_gems.is_empty() {
-        section(
-            "Buys gems",
-            info.buys_gems
-                .iter()
-                .map(|g| format!("{g} at {} PoE", bare::GEM_BUY_PRICE))
-                .collect(),
-            "",
-        );
+    // every fact below is shown only once it is known: a section that has
+    // nothing to say is left out rather than saying so
+    let mut section = |title: &'static str, items: Vec<String>| {
+        if items.is_empty() {
+            return;
+        }
+        lines.push(Line::from(""));
+        lines.push(Line::from(bold(title.to_owned())));
+        for item in items {
+            lines.push(Line::from(format!("  {item}")));
+        }
+    };
+    // what yoweb says about the island, once its list has been fetched
+    if let Some(yoweb) = sources.islands.and_then(|c| c.get(island.name)) {
+        let mut facts = Vec::new();
+        if let Some(governor) = &yoweb.governor {
+            facts.push(format!("Governor  {governor}"));
+        }
+        if let Some(flag) = &yoweb.flag {
+            facts.push(format!("Ruled by  {flag}"));
+        }
+        if let Some(tax) = yoweb.property_tax {
+            facts.push(format!("Property tax  {tax}%"));
+        }
+        section("Colony", facts);
+        section("Exports", yoweb.exports.clone());
     }
+    section("Forage", arch.forageables.clone());
+    section(
+        "Buys gems",
+        info.buys_gems
+            .iter()
+            .map(|g| format!("{g} at {} PoE", bare::GEM_BUY_PRICE))
+            .collect(),
+    );
     lines
 }
 
@@ -843,20 +902,47 @@ mod tests {
     }
 
     #[test]
-    fn a_boxed_in_label_slides_along_the_row_below() {
-        // an island with full-length leagues east and west and a diagonal
-        // leaving it south-east
+    fn a_boxed_in_label_takes_the_nearest_free_row() {
+        // an island with full-length leagues east and west, diagonals
+        // leaving it both ways below, and a clear row above
+        let mut canvas = Canvas::new(30, 4);
+        canvas.put(12, 2, '◇', Paint::Island);
+        for x in (5 .. 12).chain(13 .. 20) {
+            canvas.put(x, 2, '─', Paint::Solid);
+        }
+        canvas.put(10, 3, '╱', Paint::Solid);
+        canvas.put(14, 3, '╲', Paint::Solid);
+        assert!(canvas.label(12, 2, "Barbary", Paint::Name));
+        // below would have to slide nine cells to clear the diagonals;
+        // centred above is nearer
+        assert_eq!(
+            row(&canvas, 1),
+            "         Barbary              "
+        );
+        assert_eq!(
+            row(&canvas, 3),
+            "          ╱   ╲               "
+        );
+    }
+
+    #[test]
+    fn a_small_slide_on_the_nearer_row_beats_moving_a_row_away() {
         let mut canvas = Canvas::new(30, 3);
         canvas.put(12, 1, '◇', Paint::Island);
         for x in (5 .. 12).chain(13 .. 20) {
             canvas.put(x, 1, '─', Paint::Solid);
         }
-        canvas.put(14, 2, '╲', Paint::Solid);
+        // the row above is taken by another league, and one diagonal sits
+        // just right of centre below: a two-cell slide left on that row
+        // is the nearest spot left
+        for x in 4 .. 21 {
+            canvas.put(x, 0, '─', Paint::Solid);
+        }
+        canvas.put(16, 2, '╲', Paint::Solid);
         assert!(canvas.label(12, 1, "Barbary", Paint::Name));
-        // centred below would touch the diagonal; sliding left clears it
         assert_eq!(
             row(&canvas, 2),
-            "     Barbary  ╲               "
+            "       Barbary  ╲             "
         );
     }
 
@@ -945,6 +1031,8 @@ mod tests {
                     map: Some(map),
                     geo: bare::BARE.ocean("Emerald"),
                     ocean: Some("Emerald"),
+                    islands: None,
+                    fetching_islands: true,
                 };
                 render(
                     frame,
@@ -975,6 +1063,8 @@ mod tests {
                     map: Some(map),
                     geo: None,
                     ocean: Some("Emerald"),
+                    islands: None,
+                    fetching_islands: false,
                 };
                 render(
                     frame,
@@ -1019,48 +1109,96 @@ mod tests {
         lines.iter().map(|l| l.to_string()).collect()
     }
 
+    fn island(map: &'static Map, name: &str) -> Point {
+        map.islands
+            .iter()
+            .find(|i| i.name == name)
+            .unwrap_or_else(|| panic!("{name} on the map"))
+            .at()
+    }
+
     #[test]
     fn metadata_reads_the_island_out_of_the_geography() {
         let map = Map::for_ocean("Emerald").expect("Emerald map");
-        let geo = bare::BARE.ocean("Emerald");
+        let sources = Sources {
+            geo: bare::BARE.ocean("Emerald"),
+            islands: None,
+            fetching_islands: false,
+        };
         let mut app = MapApp::new();
-        let cromwell = map
-            .islands
-            .iter()
-            .find(|i| i.name == "Cromwell Island")
-            .expect("Cromwell on the map");
-        app.memorized.insert(cromwell.at());
+        let cromwell = island(map, "Cromwell Island");
+        app.memorized.insert(cromwell);
         let lines = text(&metadata_lines(
-            &app,
-            map,
-            geo,
-            cromwell.at(),
+            &app, map, &sources, cromwell,
         ));
         assert_eq!(lines[0], "Cromwell Island");
         assert_eq!(lines[1], "outpost, colonized");
         assert_eq!(lines[2], "Memorized");
-        assert!(lines.contains(&"Produces".to_owned()));
-        assert!(lines.contains(&"  Sugar cane".to_owned()));
         assert!(lines.contains(&"Forage".to_owned()));
-        // no purchase is known for Cromwell, so gems go unmentioned
+        // nothing from yoweb has been fetched, and no purchase is known for
+        // Cromwell: neither is mentioned
+        assert!(!lines.contains(&"Colony".to_owned()));
+        assert!(!lines.contains(&"Exports".to_owned()));
         assert!(!lines.contains(&"Buys gems".to_owned()));
         // Alkaid is amber's destination
-        let alkaid = map
-            .islands
-            .iter()
-            .find(|i| i.name == "Alkaid Island")
-            .expect("Alkaid on the map");
+        let alkaid = island(map, "Alkaid Island");
         let lines = text(&metadata_lines(
-            &app,
-            map,
-            geo,
-            alkaid.at(),
+            &app, map, &sources, alkaid,
         ));
         assert!(lines.contains(&"Buys gems".to_owned()));
         assert!(lines.contains(&"  Amber at 1000 PoE".to_owned()));
         // open sea has no island data, only a name and the mark
-        let sea = text(&metadata_lines(&app, map, geo, (2, 9)));
+        let sea = text(&metadata_lines(
+            &app,
+            map,
+            &sources,
+            (2, 9),
+        ));
         assert_eq!(sea, ["Open sea (2,9)", "Not memorized"]);
+    }
+
+    #[test]
+    fn metadata_shows_yoweb_facts_once_the_island_list_is_in() {
+        use crate::islands::{CachedIslands, IslandInfo};
+
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let list = CachedIslands {
+            fetched_at: chrono::Utc::now(),
+            islands: vec![IslandInfo {
+                name: "Cromwell Island".to_owned(),
+                governor: Some("Someone".to_owned()),
+                flag: Some("Some Flag".to_owned()),
+                property_tax: Some(15),
+                exports: vec!["Hemp".to_owned(), "Iron".to_owned()],
+            }],
+        };
+        let sources = Sources {
+            geo: bare::BARE.ocean("Emerald"),
+            islands: Some(&list),
+            fetching_islands: false,
+        };
+        let app = MapApp::new();
+        let lines = text(&metadata_lines(
+            &app,
+            map,
+            &sources,
+            island(map, "Cromwell Island"),
+        ));
+        assert!(lines.contains(&"Colony".to_owned()));
+        assert!(lines.contains(&"  Governor  Someone".to_owned()));
+        assert!(lines.contains(&"  Ruled by  Some Flag".to_owned()));
+        assert!(lines.contains(&"  Property tax  15%".to_owned()));
+        assert!(lines.contains(&"Exports".to_owned()));
+        assert!(lines.contains(&"  Hemp".to_owned()));
+        // an island yoweb does not list gets none of those lines
+        let lines = text(&metadata_lines(
+            &app,
+            map,
+            &sources,
+            island(map, "Alkaid Island"),
+        ));
+        assert!(!lines.contains(&"Colony".to_owned()));
+        assert!(!lines.contains(&"Exports".to_owned()));
     }
 
     #[test]

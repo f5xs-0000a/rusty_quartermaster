@@ -33,6 +33,10 @@ pub struct OceanCache {
     /// the Map page, as `(x, y)` map cells.
     #[serde(default)]
     pub memorized: BTreeSet<(u16, u16)>,
+    /// Yoweb's list of the ocean's colonized islands (governor, flag, tax,
+    /// exports), with its fetch time; `None` until first fetched.
+    #[serde(default)]
+    pub islands: Option<crate::islands::CachedIslands>,
 }
 
 /// Learned NPC name-segment vocabulary, used to tell a **swabbie** from a

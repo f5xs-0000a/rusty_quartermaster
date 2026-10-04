@@ -470,6 +470,12 @@ pub struct AppShell {
     pub jobbers_ui: JobbersUi,
     pub voyage_ui: crate::voyage::ui::VoyageStatsUi,
     pub map: MapApp,
+    /// Yoweb's list of the selected ocean's colonized islands, from the
+    /// cache or this run's fetch; `None` until first fetched.
+    pub islands: Option<crate::islands::CachedIslands>,
+    /// Whether the Map page has asked for the island list and the fetch has
+    /// not come back yet (the event loop runs it).
+    pub island_list_wanted: bool,
     /// Persisted voyage history (loaded from / written to `voyages_path`).
     pub voyage_history: crate::voyage::persistence::SavedVoyages,
     /// Where voyage history lives on disk (set by `--voyages`).
@@ -497,6 +503,8 @@ impl AppShell {
             jobbers_ui: JobbersUi::default(),
             voyage_ui: crate::voyage::ui::VoyageStatsUi::default(),
             map: MapApp::new(),
+            islands: None,
+            island_list_wanted: false,
             voyage_history: crate::voyage::persistence::SavedVoyages::default(),
             voyages_path: None,
             click_regions: Vec::new(),
@@ -521,6 +529,33 @@ impl AppShell {
     /// The selected ocean's compiled-in map for the Map page, if any.
     fn ocean_map(&self) -> Option<&'static Map> {
         self.ocean.and_then(|o| Map::for_ocean(o.name()))
+    }
+
+    /// The Map page was opened: ask for the ocean's island list if it has
+    /// never been fetched or has gone stale. Nothing is fetched at startup;
+    /// opening the page is the trigger, and a failed fetch is retried the
+    /// next time it is opened.
+    fn open_map(&mut self) {
+        if self.ocean.is_some()
+            && self
+                .islands
+                .as_ref()
+                .is_none_or(|c| c.is_stale(chrono::Utc::now()))
+        {
+            self.island_list_wanted = true;
+        }
+    }
+
+    /// Fold a finished island-list fetch into the shell.
+    pub fn apply_island_list(
+        &mut self,
+        result: Result<crate::islands::CachedIslands, String>,
+    ) {
+        self.island_list_wanted = false;
+        match result {
+            Ok(list) => self.islands = Some(list),
+            Err(e) => crate::diag!("warning: island list: {e}"),
+        }
     }
 
     pub fn rebuild_island_list(&mut self) {
@@ -616,6 +651,8 @@ impl AppShell {
                     map: self.ocean_map(),
                     geo: self.ocean_geo(),
                     ocean: self.ocean.map(Ocean::name),
+                    islands: self.islands.as_ref(),
+                    fetching_islands: self.island_list_wanted,
                 };
                 crate::map::ui::render(
                     frame,
@@ -827,6 +864,10 @@ impl AppShell {
             KeyCode::Down if !on_exit => self.enter_app(),
             _ => {}
         }
+        // Landing on Map shows the page, which counts as opening it.
+        if APP_LIST[self.sidebar_index] == AppId::Map {
+            self.open_map();
+        }
         false
     }
 
@@ -839,6 +880,9 @@ impl AppShell {
         // Entering Profits lands on the topmost widget — the inventory table
         // (or the search box when the inventory is empty).
         self.profits.focus_table_top();
+        if APP_LIST[self.sidebar_index] == AppId::Map {
+            self.open_map();
+        }
     }
 
     /// Voyage Statistics keys. With the save/discard prompt open it's modal

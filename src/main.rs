@@ -35,6 +35,7 @@ mod clickmap;
 mod commodities;
 mod damage;
 mod hold;
+mod islands;
 mod jobbers;
 mod map;
 mod ocean;
@@ -326,6 +327,7 @@ async fn main() -> io::Result<()> {
     shell.chatlog.name_segments = saved_name_segments;
     shell.cached_offers = this_ocean.market;
     shell.map.memorized = this_ocean.memorized;
+    shell.islands = this_ocean.islands;
     shell.ocean = ocean;
     shell.query_market = args.query_market;
     // Voyage history (per-human-behind-keyboard). Load it now so it's available
@@ -446,6 +448,14 @@ async fn main() -> io::Result<()> {
         tokio::task::JoinHandle<()>,
     )> = None;
 
+    // -- The ocean's island list (yoweb), fetched when the Map page asks --
+    // One fetch at a time, through the same puzzlepirates throttle as the
+    // pirate pages, so the two never race the server.
+    let (island_tx, mut island_rx) = tokio::sync::mpsc::unbounded_channel::<
+        Result<islands::CachedIslands, String>,
+    >();
+    let mut island_fetch: Option<tokio::task::JoinHandle<()>> = None;
+
     // -- Terminal setup --
     // Once the alternate screen is up, stderr still points at this terminal, so
     // any stray `eprintln!` (notably the best-effort save messages) paints
@@ -493,6 +503,23 @@ async fn main() -> io::Result<()> {
                 current_fetch = None;
             }
             shell.pirate_cache.apply_update(norm, update);
+        }
+
+        while let Ok(result) = island_rx.try_recv() {
+            island_fetch = None;
+            shell.apply_island_list(result);
+        }
+        if shell.island_list_wanted
+            && island_fetch.is_none()
+            && let Some(island_ocean) = ocean
+        {
+            let tx = island_tx.clone();
+            let client = pirate_client.clone();
+            island_fetch = Some(tokio::spawn(async move {
+                let result =
+                    islands::fetch_island_list(&client, island_ocean).await;
+                let _ = tx.send(result);
+            }));
         }
 
         // Drive the single fetch worker. yoweb is per-ocean, so this only runs
@@ -620,6 +647,7 @@ async fn main() -> io::Result<()> {
                     market: shell.cached_offers,
                     players: shell.pirate_cache.fetched,
                     memorized: shell.map.memorized,
+                    islands: shell.islands,
                 },
             );
         }

@@ -84,11 +84,6 @@ pub struct Island {
     pub name: String,
     pub size: Size,
     pub status: Status,
-    /// Commodities this island spawns in its natural-resource stalls, in
-    /// yppedia's listed order. Empty for islands whose spawns haven't been
-    /// crawled yet, so absence in JSON deserializes cleanly.
-    #[serde(default)]
-    pub spawns: Vec<String>,
     /// Gems this island's palace buys at [`GEM_BUY_PRICE`], from yppedia's
     /// gem price guide (see `scripts/extract_gems.py`). Empty means no
     /// purchase is known, not that none exists, so absence in JSON
@@ -103,8 +98,9 @@ pub struct Archipelago {
     pub name: String,
     /// Commodities forageable anywhere in this archipelago, in yppedia's
     /// listed order. Foraging yield is an archipelago-wide property,
-    /// distinct from an island's own [`Island::spawns`]. Empty when not
-    /// yet crawled, so absence in JSON deserializes cleanly.
+    /// distinct from what an island exports (which yoweb reports at run
+    /// time, see [`crate::islands`]). Empty when not yet crawled, so
+    /// absence in JSON deserializes cleanly.
     #[serde(default)]
     pub forageables: Vec<String>,
     pub islands: Vec<Island>,
@@ -218,7 +214,7 @@ mod tests {
     }
 
     #[test]
-    fn spawns_and_forageables_are_seeded() {
+    fn forageables_are_seeded() {
         let emerald = BARE
             .oceans
             .iter()
@@ -233,16 +229,6 @@ mod tests {
         assert_eq!(
             gull.forageables,
             ["Limes", "Passion fruit"]
-        );
-        // Spawns are per-island natural resources.
-        let hook = gull
-            .islands
-            .iter()
-            .find(|i| i.name == "Hook Shelf")
-            .expect("Hook Shelf present");
-        assert_eq!(
-            hook.spawns,
-            ["Hemp", "Pokeweed berries", "Stone"]
         );
     }
 
