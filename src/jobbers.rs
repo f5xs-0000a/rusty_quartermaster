@@ -1112,19 +1112,24 @@ pub fn render(
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
+    // Nothing to frame without a log to read, so the notice saying so stands in
+    // for the whole page. Having no border to take them from, its blank columns
+    // come from `PADDING`.
     if !state.attached {
-        let msg = Paragraph::new(
-            "No chat log attached. Pass --chat-log <PATH> (and --user <NAME>) \
-             to monitor a game log.",
-        )
-        .block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .border_style(border_style(focused))
-                .title(offset_title("Vessel's Jobbers").0),
+        use crate::utils::PADDING;
+        crate::utils::render_notice(
+            frame,
+            Rect {
+                x: area.x + PADDING.min(area.width),
+                width: area.width.saturating_sub(2 * PADDING),
+                ..area
+            },
+            &[(
+                "No chat log attached. Pass --chat-log <PATH> (and --user \
+                 <NAME>) to monitor a game log.",
+                Style::default(),
+            )],
         );
-        frame.render_widget(msg, area);
         return;
     }
 

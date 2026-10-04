@@ -413,20 +413,24 @@ pub fn render(
     let mut second: Line = Line::from("");
     match (ocean, map) {
         (None, _) => {
-            frame.render_widget(
-                Paragraph::new("Select an ocean (--ocean) to see its map.")
-                    .centered(),
+            crate::utils::render_notice(
+                frame,
                 rows[0],
+                &[(
+                    "Select an ocean (--ocean) to see its map.",
+                    Style::default(),
+                )],
             );
         }
         (Some(ocean), None) => {
-            frame.render_widget(
-                Paragraph::new(format!(
-                    "No map for {ocean} yet. See scripts/extract_map.py to \
-                     add one."
-                ))
-                .centered(),
+            let msg = format!(
+                "No map for {ocean} yet. See scripts/extract_map.py to add \
+                 one."
+            );
+            crate::utils::render_notice(
+                frame,
                 rows[0],
+                &[(&msg, Style::default())],
             );
         }
         (Some(_), Some(map)) => {

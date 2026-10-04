@@ -781,37 +781,32 @@ impl AppShell {
             area
         };
 
-        // Wrap by hand so the message can be centered on both axes: its height
-        // isn't known until it has been folded to the width.
-        let width = body.width.saturating_sub(2 * TOPBAR_PADDING);
-        let mut lines: Vec<Line> = Vec::new();
-        for (text, style) in [
-            (
-                "Terminal too small".to_owned(),
-                Style::default().bold(),
-            ),
-            (
-                format!(
-                    "Enlarge the window to at least {MIN_WIDTH}x{MIN_HEIGHT} \
-                     (it is {}x{}).",
-                    area.width, area.height,
+        let detail = format!(
+            "Enlarge the window to at least {MIN_WIDTH}x{MIN_HEIGHT} (it is \
+             {}x{}).",
+            area.width, area.height,
+        );
+        // No border stands between the notice and the screen edge, so the blank
+        // column per side is taken here.
+        use crate::utils::PADDING;
+        crate::utils::render_notice(
+            frame,
+            Rect {
+                x: body.x + PADDING.min(body.width),
+                width: body.width.saturating_sub(2 * PADDING),
+                ..body
+            },
+            &[
+                (
+                    "Terminal too small",
+                    Style::default().bold(),
                 ),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ] {
-            for line in crate::utils::wrap_words(&text, width as usize) {
-                lines.push(Line::from(Span::styled(line, style)));
-            }
-        }
-
-        let height = (lines.len() as u16).min(body.height);
-        let rect = Rect {
-            x: body.x + TOPBAR_PADDING.min(body.width),
-            y: body.y + body.height.saturating_sub(height) / 2,
-            width,
-            height,
-        };
-        frame.render_widget(Paragraph::new(lines).centered(), rect);
+                (
+                    &detail,
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+        );
     }
 
     fn render_topbar(&mut self, frame: &mut Frame, area: Rect) {

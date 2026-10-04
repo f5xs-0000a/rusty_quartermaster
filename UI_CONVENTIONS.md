@@ -196,10 +196,10 @@ placeholder. The Damage reset prompt was also a clipping bug rather than only
 an aesthetic one — its question is 37 columns and its box was 32, so the text
 was cut mid-word; sizing the box from the question fixed both faults at once.
 
-One thing padding did not fix: the Jobbers placeholder is pinned to the
-top-left of its box and runs off the right edge mid-sentence at 80 columns
-instead of wrapping, so padding it moved the cut one word earlier. How
-placeholders should behave is not settled here yet.
+One thing padding did not fix: the Jobbers placeholder was pinned to the
+top-left of its box and ran off the right edge mid-sentence at 80 columns
+instead of wrapping, so padding it moved the cut one word earlier. Rule 4
+settles that case.
 
 ## Rule 3: Too small a terminal shows a message, not the app
 
@@ -256,7 +256,119 @@ The app does not yet satisfy its own minimum:
 | ---- | -------------- |
 | Profits | the Inventory table collapses to its header, hiding every row the user entered; the four boxes below it take the height first |
 | Profits | `Restocking Place` and `Selling Place` show `Query Ma`, truncated — its block is a fixed 40 columns at every terminal width, too narrow for its own labels |
-| Jobbers | the placeholder runs off the right edge instead of wrapping |
+
+## Rule 4: An unmet prerequisite is a centered, wrapped notice
+
+When something cannot be used until a prerequisite is met — an argument not
+passed, a window too small, an ocean not chosen — the text saying so is
+**centered on both axes** of the room it stands in and **word-wrapped** to that
+room's width.
+
+The Jobbers page with no chat log attached, at 80 columns:
+
+```
+    Profits       Damage        Jobbers        Voyage          Map      Exit
+                                             Statistics
+
+
+  No chat log attached. Pass --chat-log <PATH> (and --user <NAME>) to monitor a
+                                    game log.
+
+
+```
+
+Both halves earn their place. Centering is what distinguishes the notice from
+content: text pinned to the top-left reads as the first row of something, as
+though more were to follow, while a block in the middle of an otherwise empty
+space reads as the whole of what there is to say. Wrapping is what keeps the
+sentence whole; a notice is the one thing on screen that must be read in full, so
+it is the worst possible thing to truncate.
+
+### How much room the notice gets
+
+That depends on whether the thing it replaces had a border:
+
+| the notice stands in for | drawn |
+| ------------------------ | ----- |
+| one widget with visible box bounds | inside those bounds, which are still drawn |
+| the whole page | no box, but still a blank column each side |
+
+A widget keeps its frame because the frame is what says *which* widget is
+unavailable, while the rest of the page carries on around it; the title stays
+legible and the page's layout does not shift. A page-wide notice has no frame to
+inherit, so it takes Rule 2's blank column directly against the screen edge.
+
+A page whose whole content is one widget takes the second case, not the first. A
+frame there would enclose nothing but the notice — a rectangle sized to its own
+message, reading as a stray panel rather than as the page — and its title would
+name a widget that is not being shown. Both Jobbers and Voyage Statistics are
+such pages, so neither draws a box while its prerequisite is unmet.
+
+That leaves the boxed case for a widget that is genuinely one part of a page: the
+Map, whose two status rows stay put below it and whose metadata column stays
+beside it at width.
+
+### Implementation
+
+`utils::render_notice` does all three things — fold, centre, centre — so a
+notice is one call:
+
+```rust
+// Page-wide: no border, so the blank columns are taken here.
+render_notice(
+    frame,
+    Rect {
+        x: area.x + PADDING.min(area.width),
+        width: area.width.saturating_sub(2 * PADDING),
+        ..area
+    },
+    &[(MESSAGE, Style::default())],
+);
+
+// Inside a widget: the block's own padding supplies them.
+render_notice(frame, block.inner(area), &[(MESSAGE, Style::default())]);
+```
+
+It takes the rect the text may fill, not the widget's outer rect, because the
+blank columns come from two different places in the two cases above. For a boxed
+widget that rect is `block.inner(area)`, whose padding Rule 2 already applied;
+for a page-wide notice the caller insets by `utils::PADDING` itself.
+
+Entries are wrapped one at a time, so a heading and the detail under it can be
+styled apart:
+
+```rust
+render_notice(frame, rect, &[
+    ("Terminal too small", Style::default().bold()),
+    (&detail, Style::default().fg(Color::DarkGray)),
+]);
+```
+
+The folding has to happen here rather than in `Wrap`: the notice's height follows
+from the text once folded, and the vertical centering needs that height.
+
+### Where this applies
+
+| notice | room |
+| ------ | ---- |
+| `Terminal too small` (Rule 3) | the page, unboxed |
+| Voyage `No voyage tracked yet.` | the page, unboxed |
+| Jobbers `No chat log attached` | the page, unboxed |
+| Map `Select an ocean (--ocean)` | the Map box, above its two status rows |
+| Map `No map for <ocean> yet` | the same |
+
+Three things that read like notices are deliberately not ones:
+
+- `Fetching island info...` is progress, not a prerequisite — it resolves on its
+  own, and moving it would make the metadata column jump.
+- `Query Market first` and `Ocean-wide` in the Profits parameter panel are field
+  placeholders. They occupy a single row of a laid-out form, where there is no
+  second axis to centre on, and they are right-aligned with the values they
+  stand in for.
+- `Select ship hull first to show historical.` replaces one row of the Voyage
+  chart stack. The rest of the chart is still usable, so it is a note inside
+  working content rather than a stand-in for it, and it stays on the row where
+  its box plot would have been.
 
 ## Rule 5: Table headers are centered
 

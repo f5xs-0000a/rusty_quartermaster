@@ -265,8 +265,10 @@ pub const fn offset_title_width(title: &'static str) -> u16 {
 /// each side, the blanks holding the contents off the border.
 pub const BOX_MARGIN: u16 = 2 * (1 + PADDING);
 
-/// Blank columns between a widget's border and its contents, on each side.
-const PADDING: u16 = 1;
+/// Blank columns between a widget's border and its contents, on each side. A
+/// widget with no border keeps the same blank columns at the edges of the room
+/// it was given.
+pub const PADDING: u16 = 1;
 
 /// A bordered, padded block titled in the house style, together with the width
 /// the widget must not go below.
@@ -291,6 +293,48 @@ pub fn titled_block(
             .title(offset_title(title).0),
         (content_width + BOX_MARGIN).max(offset_title_width(title)),
     )
+}
+
+/// Draw the notice that stands in for something unusable until a prerequisite
+/// is met — a missing argument, a window too small — centered on both axes of
+/// `area` and word-wrapped to its width. Each entry is wrapped on its own, so a
+/// heading and the detail beneath it can carry different styles.
+///
+/// `area` is the room the text may fill, already holding the blank column per
+/// side that the notice keeps at its edges: a boxed widget has it from
+/// [`titled_block`]'s padding and passes `block.inner(area)`, while a notice
+/// standing in for a whole page has no border to take it from and insets by
+/// [`PADDING`] itself.
+///
+/// Folding the text here rather than leaving it to `Wrap` is what allows the
+/// vertical centering: the height follows from the text once it is folded to
+/// the width, and is not known before.
+pub fn render_notice(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    paragraphs: &[(&str, ratatui::style::Style)],
+) {
+    use ratatui::{
+        text::{Line, Span},
+        widgets::Paragraph,
+    };
+
+    let lines = paragraphs
+        .iter()
+        .flat_map(|(text, style)| {
+            wrap_words(text, area.width as usize)
+                .into_iter()
+                .map(|line| Line::from(Span::styled(line, *style)))
+        })
+        .collect::<Vec<_>>();
+
+    let height = (lines.len() as u16).min(area.height);
+    let rect = ratatui::layout::Rect {
+        y: area.y + area.height.saturating_sub(height) / 2,
+        height,
+        ..area
+    };
+    frame.render_widget(Paragraph::new(lines).centered(), rect);
 }
 
 /// Word-wrap `text` to `width` columns, hard-breaking any single word longer
@@ -355,6 +399,52 @@ mod tests {
         assert_eq!(
             wrap_words("Understaffed.", 5),
             vec!["Under", "staff", "ed."]
+        );
+    }
+
+    // A notice sits in the middle of the room it was given on both axes, folded
+    // to that room's width.
+    #[test]
+    fn notice_is_centered_on_both_axes() {
+        use ratatui::{
+            Terminal,
+            backend::TestBackend,
+            layout::Rect,
+            style::Style,
+        };
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(14, 5)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                // One blank column each side of a 14-column screen.
+                render_notice(
+                    frame,
+                    Rect::new(PADDING, 0, 14 - 2 * PADDING, 5),
+                    &[("one two three four", Style::default())],
+                );
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rows = (0 .. buffer.area.height)
+            .map(|y| {
+                (0 .. buffer.area.width)
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            rows,
+            [
+                "              ",
+                // An odd remainder goes to the left of the line.
+                "    one two   ",
+                "  three four  ",
+                "              ",
+                "              ",
+            ],
         );
     }
 

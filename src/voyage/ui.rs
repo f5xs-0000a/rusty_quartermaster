@@ -348,6 +348,32 @@ pub fn render(
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
+    // Nothing to frame until a voyage exists, so the notice saying so stands in
+    // for the whole page rather than sitting inside an empty widget. Having no
+    // border to take them from, its blank columns come from `PADDING`.
+    if !view.has_voyage {
+        use crate::utils::PADDING;
+        crate::utils::render_notice(
+            frame,
+            Rect {
+                x: full.x + PADDING.min(full.width),
+                width: full.width.saturating_sub(2 * PADDING),
+                ..full
+            },
+            &[
+                (
+                    "No voyage tracked yet.",
+                    Style::default().bold(),
+                ),
+                (
+                    "Set sail on a vessel to begin recording stats.",
+                    Style::default().fg(Color::DarkGray),
+                ),
+            ],
+        );
+        return;
+    }
+
     // Reserve a tooltip strip below the widget (focus-bound, full content
     // width).
     let outer = Layout::vertical([Constraint::Min(0), Constraint::Length(2)])
@@ -364,10 +390,7 @@ pub fn render(
     // always so the width doesn't jump when the save prompt becomes
     // available.
     const FOOTER_W: usize = 40; // "S  save voyage to history  ·  D  discard"
-    const NO_VOYAGE_TITLE: &str = "No voyage tracked yet.";
-    const NO_VOYAGE_HINT: &str =
-        "Set sail on a vessel to begin recording stats.";
-    let content_w = if view.has_voyage {
+    let content_w = {
         // The name + parenthesized hull now share one line, so measure them
         // together (the widest header line drives the panel width).
         let title_w = view
@@ -386,8 +409,6 @@ pub fn render(
                 .unwrap_or(0),
         );
         built.natural_width().max(header_w).max(FOOTER_W)
-    } else {
-        NO_VOYAGE_HINT.chars().count()
     };
 
     // Size to content (+2 for the borders) and center, never exceeding the
@@ -418,23 +439,6 @@ pub fn render(
         .title(title);
     let inner = block.inner(area);
     frame.render_widget(block, area);
-
-    if !view.has_voyage {
-        let para = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(Span::styled(
-                NO_VOYAGE_TITLE,
-                Style::default().bold(),
-            )),
-            Line::from(Span::styled(
-                NO_VOYAGE_HINT,
-                Style::default().fg(Color::DarkGray),
-            )),
-        ])
-        .centered();
-        frame.render_widget(para, inner);
-        return;
-    }
 
     // Pinned header (ship name / type / clock span), kept out of the scroll so
     // it never disappears. The scroll body starts at "Sea Battles".
