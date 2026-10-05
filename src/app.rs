@@ -1017,14 +1017,14 @@ impl AppShell {
         }
     }
 
-    /// Voyage Statistics keys. With the save/discard prompt open it's modal
-    /// (←/→ select, Enter confirm, S/D shortcut, Esc cancel). Otherwise: Esc
-    /// returns to the bar, ↑/↓ (and PageUp/Down) move focus through the stat
-    /// numbers and then the charts (the focused item's tooltip shows below the
-    /// widget), Enter enlarges the focused chart, S/D open the save/discard
-    /// prompt.
+    /// Voyage Statistics keys. With the save prompt open it's modal (↑/↓ move
+    /// between its checkboxes and its buttons, ←/→ pick a button, Space or
+    /// Enter flips the focused box, S saves outright, Esc cancels). Otherwise:
+    /// Esc returns to the bar, ↑/↓ (and PageUp/Down) move focus through the
+    /// stat numbers and then the charts (the focused item's tooltip shows below
+    /// the widget), Enter enlarges the focused chart, S opens the save prompt.
     fn handle_voyage_key(&mut self, key: KeyEvent) -> InputResult {
-        use crate::voyage::ui::SaveChoice;
+        use crate::voyage::ui::SaveFocus;
 
         // The Sea Battles popup is modal: it owns all keys until dismissed.
         if self.voyage_ui.battles_popup.is_some() {
@@ -1040,27 +1040,62 @@ impl AppShell {
             return InputResult::Consumed;
         }
 
-        if let Some(choice) = self.voyage_ui.prompt {
+        if let Some(mut prompt) = self.voyage_ui.prompt {
             match key.code {
-                KeyCode::Esc => self.voyage_ui.prompt = None,
+                KeyCode::Esc => {
+                    self.voyage_ui.prompt = None;
+                    return InputResult::Consumed;
+                }
+                KeyCode::Up | KeyCode::Down => {
+                    prompt.step(key.code == KeyCode::Down);
+                    // The window goes back to following the focus the moment
+                    // the focus moves.
+                    prompt.pan = None;
+                }
+                // The figures answer nothing, so they are not in the focus
+                // chain; reading past the box they sit under moves the window
+                // itself.
+                KeyCode::PageUp | KeyCode::PageDown => {
+                    prompt.page(key.code == KeyCode::PageDown);
+                }
+                // The two buttons share a row, so ←/→ walks it; a checkbox row
+                // has nothing to either side of it.
                 KeyCode::Left | KeyCode::Right => {
-                    self.voyage_ui.prompt = Some(match choice {
-                        SaveChoice::Cancel => SaveChoice::Save,
-                        SaveChoice::Save => SaveChoice::Cancel,
-                    });
+                    prompt.focus = match prompt.focus {
+                        SaveFocus::Cancel => SaveFocus::Save,
+                        SaveFocus::Save => SaveFocus::Cancel,
+                        part => part,
+                    };
+                }
+                KeyCode::Char(' ') => {
+                    if let SaveFocus::Part(i) = prompt.focus {
+                        prompt.toggle(i);
+                    }
                 }
                 KeyCode::Enter => {
-                    if choice == SaveChoice::Save {
-                        self.save_displayed_voyage();
+                    match prompt.focus {
+                        SaveFocus::Part(i) => prompt.toggle(i),
+                        SaveFocus::Cancel => {
+                            self.voyage_ui.prompt = None;
+                            return InputResult::Consumed;
+                        }
+                        SaveFocus::Save => {
+                            self.save_displayed_voyage(prompt.parts);
+                            self.voyage_ui.prompt = None;
+                            return InputResult::Consumed;
+                        }
                     }
-                    self.voyage_ui.prompt = None;
                 }
+                // S saves what the boxes currently say, from anywhere in the
+                // prompt — the key that opened it also closes it.
                 KeyCode::Char('s' | 'S') => {
-                    self.save_displayed_voyage();
+                    self.save_displayed_voyage(prompt.parts);
                     self.voyage_ui.prompt = None;
+                    return InputResult::Consumed;
                 }
                 _ => {}
             }
+            self.voyage_ui.prompt = Some(prompt);
             return InputResult::Consumed;
         }
 
@@ -1290,7 +1325,7 @@ impl AppShell {
             battles: Vec::new(),
             divvied: false,
             booty_chest: None,
-            booty_goods: Vec::new(),
+            booty_goods: None,
         }
     }
 
@@ -1811,7 +1846,9 @@ impl AppShell {
             let booty = self.current_booty_snapshot();
             if let Some(voy) = self.chatlog.current_pillage_voyage_mut() {
                 voy.booty_chest = booty.chest;
-                voy.booty_goods = booty.goods;
+                // the divvy is the reading, so an empty column records as
+                // empty rather than as nothing read
+                voy.booty_goods = Some(booty.goods);
             }
         }
     }
@@ -1890,11 +1927,13 @@ impl AppShell {
             .or_else(|| self.chatlog.vessels_by_recency().into_iter().next())
     }
 
-    /// Open the save/discard prompt if the displayed run is finished and
-    /// unsaved.
+    /// Open the save prompt if the displayed run is finished and unsaved. It
+    /// opens with every part ticked, so declining one is a decision made about
+    /// that run rather than a setting carried over from the last.
     fn open_voyage_save_prompt(&mut self) {
         if self.build_voyage_view().saveable {
-            self.voyage_ui.prompt = Some(crate::voyage::ui::SaveChoice::Cancel);
+            self.voyage_ui.prompt =
+                Some(crate::voyage::ui::SavePrompt::default());
         }
     }
 
@@ -1937,8 +1976,13 @@ impl AppShell {
     }
 
     /// Persist the displayed (finished) voyage to history + disk, and mark it
-    /// saved so it isn't offered again.
-    fn save_displayed_voyage(&mut self) {
+    /// saved so it isn't offered again. `parts` is what the save prompt was
+    /// left holding; a part it declines is written as absent rather than as
+    /// empty.
+    fn save_displayed_voyage(
+        &mut self,
+        parts: crate::voyage::persistence::SaveParts,
+    ) {
         // Only the *selected* current-login run, and only if it's finished and
         // unsaved, can be persisted.
         let Some(id) = self.selected_saveable_id() else {
@@ -1976,10 +2020,7 @@ impl AppShell {
             }
             // Snapshot consumption now — the Profits stock delta can't be
             // reconstructed once the hold is restocked.
-            // TODO: prompt the user whether to record the inventory/consumption
-            // for this voyage before storing it. `SavedVoyage.consumption` is
-            // already nullable for exactly this — pass `None` when they
-            // decline. For now we always record it.
+            // Whether it reaches the file is `parts`' call.
             let consumption = crate::voyage::stats::consumption_stats(
                 voyage,
                 &self.profits.rows,
@@ -1990,6 +2031,7 @@ impl AppShell {
                 Some(&vessel_name),
                 ship_type.as_deref(),
                 Some(&consumption),
+                parts,
                 confirmed,
             );
             voyage.saved = true;
@@ -3120,6 +3162,13 @@ impl AppShell {
                     hit.resolve(self.voyage_ui.scroll as usize, last) as u16,
                 );
             }
+            ScrollView::VoyageSavePrompt => {
+                let last = total.saturating_sub(bar.height as usize);
+                if let Some(prompt) = self.voyage_ui.prompt.as_mut() {
+                    prompt.pan =
+                        Some(hit.resolve(prompt.scroll as usize, last) as u16);
+                }
+            }
             // The chart's bars pan it, which parts the window from the cursor
             // until a point is selected again. The window is the bar's own to
             // set: its cells are canvas cells, so the last offset falls out of
@@ -3572,11 +3621,23 @@ impl AppShell {
             ClickTarget::VoyageNext => self.nav_voyage(1),
             ClickTarget::VoyageSaveOpen => self.open_voyage_save_prompt(),
             ClickTarget::VoyageSaveConfirm => {
-                self.save_displayed_voyage();
+                if let Some(prompt) = self.voyage_ui.prompt {
+                    self.save_displayed_voyage(prompt.parts);
+                }
                 self.voyage_ui.prompt = None;
             }
             ClickTarget::VoyageSaveCancel => {
                 self.voyage_ui.prompt = None;
+            }
+            // A clicked box takes the focus with it, so the keyboard carries on
+            // from where the pointer left off.
+            ClickTarget::VoyageSavePart {
+                idx,
+            } => {
+                if let Some(prompt) = self.voyage_ui.prompt.as_mut() {
+                    prompt.focus = crate::voyage::ui::SaveFocus::Part(idx);
+                    prompt.toggle(idx);
+                }
             }
             ClickTarget::VoyageStat {
                 idx,
@@ -3777,6 +3838,16 @@ impl AppShell {
                 self.jobbers_pane_select_delta(pane, delta.signum());
             }
             AppId::Voyage => {
+                // While the save prompt is open the wheel belongs to it: the
+                // page's focus is not what the user is looking at.
+                if let Some(prompt) = self.voyage_ui.prompt.as_mut() {
+                    let here = prompt.pan.unwrap_or(prompt.scroll);
+                    prompt.pan = Some(match delta < 0 {
+                        true => here.saturating_sub(1),
+                        false => here.saturating_add(1),
+                    });
+                    return;
+                }
                 let focus = self.voyage_ui.focus;
                 self.voyage_focus(
                     if delta < 0 {

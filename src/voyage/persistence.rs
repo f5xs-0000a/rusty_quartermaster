@@ -1,8 +1,9 @@
 //! The persisted form of a completed voyage.
 //!
 //! This is the **only** path from the in-RAM [`crate::voyage::Voyage`] data to
-//! disk — written when the user confirms via the save/discard prompt, never
-//! automatically. These land in the persistence file's voyage history (see
+//! disk — written when the user confirms via the save prompt, never
+//! automatically, and only the parts of a run that prompt agreed to keep (see
+//! [`SaveParts`]). These land in the persistence file's voyage history (see
 //! [`crate::persistence`]), which is **per-user-behind-keyboard**: one human's
 //! voyages across all their pirates.
 //!
@@ -228,6 +229,51 @@ pub struct BootySnapshot {
     pub goods: Vec<(String, u64)>,
 }
 
+/// Which parts of a run the user agreed to keep, as the save prompt left them.
+/// A declined part is written as absent rather than as empty, so a reloaded
+/// voyage never reads as a run that fought nothing or won nothing when the
+/// truth is that we were told not to record it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct SaveParts {
+    /// The per-fight records. The damage snapshots and melee timelines are
+    /// part of a fight's record, so they go when it does.
+    pub engagements: bool,
+    /// Each recorded fight's Damage-calculator snapshot.
+    pub damage: bool,
+    /// Each fight's side-tagged elimination timeline and headcount baseline.
+    pub melee: bool,
+    /// The whole-voyage cannonball / rum / rum spice totals.
+    pub consumption: bool,
+    /// The booty: the chest's PoE and the Booty-column goods.
+    pub booty: bool,
+}
+
+impl Default for SaveParts {
+    /// Everything is kept; declining a part is the deliberate act.
+    fn default() -> Self {
+        SaveParts {
+            engagements: true,
+            damage: true,
+            melee: true,
+            consumption: true,
+            booty: true,
+        }
+    }
+}
+
+impl SaveParts {
+    /// Whether the Damage snapshots are written. They belong to a fight's
+    /// record and cannot outlive it.
+    pub fn writes_damage(&self) -> bool {
+        self.engagements && self.damage
+    }
+
+    /// Whether the melee timelines are written, on the same terms.
+    pub fn writes_melee(&self) -> bool {
+        self.engagements && self.melee
+    }
+}
+
 /// One persisted voyage.
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedVoyage {
@@ -273,12 +319,13 @@ pub struct SavedVoyage {
     #[serde(default)]
     pub booty_chest: Option<u64>,
     /// Goods won this voyage, from the Profits "Booty" column only. One entry
-    /// per commodity with a non-zero booty quantity; empty for older
-    /// history or a blank Booty column. Per-voyage — the log can't
-    /// attribute goods to individual battles (that split is shown only
-    /// in-game).
+    /// per commodity with a non-zero booty quantity. `None` means no booty
+    /// was recorded at all (older history, or a run whose goods we don't
+    /// stand behind), which an empty list does not: that says the column was
+    /// read and held nothing. Per-voyage — the log can't attribute goods to
+    /// individual battles (that split is shown only in-game).
     #[serde(default)]
-    pub booty_goods: Vec<SavedBootyGood>,
+    pub booty_goods: Option<Vec<SavedBootyGood>>,
     #[serde(default)]
     pub battles: Vec<SavedBattle>,
 }
@@ -321,18 +368,18 @@ fn saved_team(t: &TeamSide) -> SavedTeam {
 /// average crew) are computed now, while the run is finalized. `consumption` is
 /// snapshotted from the live Profits state by the caller (the delta is gone
 /// once the hold is restocked); the booty (chest + goods) was already frozen
-/// onto the voyage at its divvy. `self_confirmed` masks unconfirmed win/loss
-/// verdicts (and their PoE sign) to "unknown" — see [`effective_outcome`].
+/// onto the voyage at its divvy. `parts` is what the user agreed to keep — the
+/// aggregates and the run's own identity always persist, the rest only when it
+/// says so. `self_confirmed` masks unconfirmed win/loss verdicts (and their PoE
+/// sign) to "unknown" — see [`effective_outcome`].
 pub fn from_voyage(
     v: &Voyage,
     vessel: Option<&str>,
     ship_type: Option<&str>,
     consumption: Option<&ConsumptionStats>,
+    parts: SaveParts,
     self_confirmed: bool,
 ) -> SavedVoyage {
-    // Resolve a `SHIPS` index to its name, decoupling the file from index
-    // churn.
-    let ship_name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string());
     SavedVoyage {
         ended_at: v.ported_at.map(|t| t.to_string()).unwrap_or_default(),
         vessel: vessel.map(str::to_string),
@@ -343,7 +390,7 @@ pub fn from_voyage(
         avg_pirates: v.avg_pirates(),
         avg_swabbies: v.avg_swabbies(),
         avg_mercenaries: v.avg_mercenaries(),
-        consumption: consumption.map(|c| {
+        consumption: consumption.filter(|_| parts.consumption).map(|c| {
             SavedConsumption {
                 cannonballs: c.balls,
                 swill: c.rum.swill,
@@ -352,94 +399,115 @@ pub fn from_voyage(
                 rum_spice: c.rum_spice,
             }
         }),
-        booty_chest: v.booty_chest,
-        booty_goods: v
-            .booty_goods
-            .iter()
-            .map(|(commodity, quantity)| {
-                SavedBootyGood {
-                    commodity: commodity.clone(),
-                    quantity: *quantity,
-                }
-            })
-            .collect(),
-        battles: v
-            .battles
-            .iter()
-            .map(|b| {
-                let outcome = effective_outcome(b.outcome, self_confirmed);
-                // A masked (unknown) verdict can't carry a signed PoE.
-                let poe = matches!(
-                    outcome,
-                    BattleOutcome::Won | BattleOutcome::Lost
-                )
-                .then_some(b.poe)
-                .flatten();
-                SavedBattle {
-                    outcome: outcome_str(outcome).to_string(),
-                    category: category_str(&b.category),
-                    // Persist the known foe hull regardless of `recorded`: the
-                    // game-announced type, else the ship type set in the Damage
-                    // calculator. Lightweight metadata (the full snapshot below
-                    // is still gated on `recorded`), so the
-                    // Ship Winrate history keeps
-                    // this matchup even for unrecorded saved fights.
-                    foe_ship: b
-                        .foe_ship
-                        .or_else(|| b.snapshot.map(|s| s.foe_ship))
-                        .and_then(ship_name),
-                    // The enemy vessel's proper name persists regardless of
-                    // `recorded` (log-derived metadata), so saved history keeps
-                    // the named foe in the Sea Battles
-                    // popup rather than "Unknown vessel".
-                    enemy: b.enemy.clone(),
-                    poe,
-                    goods: b.goods,
-                    pirates: b.pirates,
-                    swabbies: b.swabbies,
-                    total_secs: b.total_secs(),
-                    naval_secs: b.sea_secs(),
-                    boarding_secs: b.boarding_secs(),
-                    our_team: b.our_team.as_ref().map(saved_team),
-                    their_team: b.their_team.as_ref().map(saved_team),
-                    // The calculator snapshot is written only for recorded
-                    // fights — that's what "recording"
-                    // means, and its presence is what marks
-                    // the fight recorded on reload. Advantage is derived from
-                    // it.
-                    snapshot: if b.recorded {
-                        b.snapshot.map(saved_snapshot)
-                    } else {
-                        None
-                    },
-                    // The advantage timeline persists regardless of `recorded`
-                    // (it's log-derived, not calculator
-                    // state). Event seconds are offsets
-                    // from the fight start.
-                    timeline: b
-                        .timeline
-                        .events
-                        .iter()
-                        .map(|e| {
-                            SavedKo {
-                                secs: b
-                                    .timeline
-                                    .started_at
-                                    .zip(e.at)
-                                    .map(|(s, a)| (a - s).num_seconds()),
-                                side: match e.side {
-                                    KoSide::Ours => "us",
-                                    KoSide::Theirs => "them",
-                                }
-                                .to_string(),
-                            }
-                        })
-                        .collect(),
-                    our_start: b.timeline.our_start,
-                    their_start: b.timeline.their_start,
-                }
-            })
-            .collect(),
+        booty_chest: v.booty_chest.filter(|_| parts.booty),
+        booty_goods: v.booty_goods.as_ref().filter(|_| parts.booty).map(
+            |goods| {
+                goods
+                    .iter()
+                    .map(|(commodity, quantity)| {
+                        SavedBootyGood {
+                            commodity: commodity.clone(),
+                            quantity: *quantity,
+                        }
+                    })
+                    .collect()
+            },
+        ),
+        battles: if parts.engagements {
+            v.battles
+                .iter()
+                .map(|b| saved_battle(b, parts, self_confirmed))
+                .collect()
+        } else {
+            Vec::new()
+        },
+    }
+}
+
+/// Snapshot one fight into its persisted form. `parts` decides whether the
+/// Damage snapshot and the melee timeline come along; the fight's own metadata
+/// (outcome, foe, timings, headcounts) is the record itself and always does.
+fn saved_battle(
+    b: &Battle,
+    parts: SaveParts,
+    self_confirmed: bool,
+) -> SavedBattle {
+    // Resolve a `SHIPS` index to its name, decoupling the file from index
+    // churn.
+    let ship_name = |i: usize| SHIPS.get(i).map(|sh| sh.name.to_string());
+    let outcome = effective_outcome(b.outcome, self_confirmed);
+    // A masked (unknown) verdict can't carry a signed PoE.
+    let poe = matches!(
+        outcome,
+        BattleOutcome::Won | BattleOutcome::Lost
+    )
+    .then_some(b.poe)
+    .flatten();
+    SavedBattle {
+        outcome: outcome_str(outcome).to_string(),
+        category: category_str(&b.category),
+        // Persist the known foe hull regardless of `recorded`: the
+        // game-announced type, else the ship type set in the Damage calculator.
+        // Lightweight metadata (the full snapshot below is still gated on
+        // `recorded`), so the Ship Winrate history keeps this matchup even for
+        // unrecorded saved fights.
+        foe_ship: b
+            .foe_ship
+            .or_else(|| b.snapshot.map(|s| s.foe_ship))
+            .and_then(ship_name),
+        // The enemy vessel's proper name persists regardless of `recorded`
+        // (log-derived metadata), so saved history keeps the named foe in the
+        // Sea Battles popup rather than "Unknown vessel".
+        enemy: b.enemy.clone(),
+        poe,
+        goods: b.goods,
+        pirates: b.pirates,
+        swabbies: b.swabbies,
+        total_secs: b.total_secs(),
+        naval_secs: b.sea_secs(),
+        boarding_secs: b.boarding_secs(),
+        our_team: b.our_team.as_ref().map(saved_team),
+        their_team: b.their_team.as_ref().map(saved_team),
+        // The calculator snapshot is written only for recorded fights — that's
+        // what "recording" means, and its presence is what marks the fight
+        // recorded on reload. Advantage is derived from it.
+        snapshot: b
+            .snapshot
+            .filter(|_| b.recorded && parts.writes_damage())
+            .map(saved_snapshot),
+        // The advantage timeline is log-derived, not calculator state, so
+        // `recorded` doesn't gate it. Event seconds are offsets from the fight
+        // start.
+        timeline: if parts.writes_melee() {
+            b.timeline
+                .events
+                .iter()
+                .map(|e| {
+                    SavedKo {
+                        secs: b
+                            .timeline
+                            .started_at
+                            .zip(e.at)
+                            .map(|(s, a)| (a - s).num_seconds()),
+                        side: match e.side {
+                            KoSide::Ours => "us",
+                            KoSide::Theirs => "them",
+                        }
+                        .to_string(),
+                    }
+                })
+                .collect()
+        } else {
+            Vec::new()
+        },
+        // The headcount baseline is the timeline's own axis; without the
+        // eliminations it describes nothing.
+        our_start: if parts.writes_melee() {
+            b.timeline.our_start
+        } else {
+            0
+        },
+        their_start: b.timeline.their_start.filter(|_| parts.writes_melee()),
     }
 }
 
@@ -639,11 +707,12 @@ impl SavedVoyage {
             poisoned: self.poisoned,
             divvied: self.divvied,
             booty_chest: self.booty_chest,
-            booty_goods: self
-                .booty_goods
-                .iter()
-                .map(|g| (g.commodity.clone(), g.quantity))
-                .collect(),
+            booty_goods: self.booty_goods.as_ref().map(|goods| {
+                goods
+                    .iter()
+                    .map(|g| (g.commodity.clone(), g.quantity))
+                    .collect()
+            }),
             saved: true,
             avg_override: Some((
                 self.avg_pirates,
@@ -792,14 +861,17 @@ mod tests {
         // The booty chest PoE and the per-commodity goods (Booty column only)
         // are written by `from_voyage` and survive a JSON round-trip.
         // An older file with neither field defaults to `None` chest and
-        // no goods.
+        // `None` goods — nothing recorded, which an empty list would not say.
         // Booty is frozen onto the voyage (at its divvy) before it's persisted.
         let v = Voyage {
             sailed_at: epoch(),
             ported_at: epoch().map(|b| b + chrono::Duration::seconds(600)),
             divvied: true,
             booty_chest: Some(4200),
-            booty_goods: vec![("Iron".into(), 30), ("Hemp".into(), 12)],
+            booty_goods: Some(vec![
+                ("Iron".into(), 30),
+                ("Hemp".into(), 12),
+            ]),
             ..Default::default()
         };
         let saved = from_voyage(
@@ -807,21 +879,24 @@ mod tests {
             Some("Test Vessel"),
             None,
             None,
+            SaveParts::default(),
             true,
         );
         assert!(saved.divvied);
         assert_eq!(saved.booty_chest, Some(4200));
-        assert_eq!(saved.booty_goods.len(), 2);
-        assert_eq!(saved.booty_goods[0].commodity, "Iron");
-        assert_eq!(saved.booty_goods[0].quantity, 30);
+        let goods = saved.booty_goods.as_ref().expect("goods recorded");
+        assert_eq!(goods.len(), 2);
+        assert_eq!(goods[0].commodity, "Iron");
+        assert_eq!(goods[0].quantity, 30);
 
         let json = serde_json::to_string(&saved).unwrap();
         let back: SavedVoyage = serde_json::from_str(&json).unwrap();
         assert!(back.divvied);
         assert_eq!(back.booty_chest, Some(4200));
-        assert_eq!(back.booty_goods.len(), 2);
-        assert_eq!(back.booty_goods[1].commodity, "Hemp");
-        assert_eq!(back.booty_goods[1].quantity, 12);
+        let goods = back.booty_goods.as_ref().expect("goods survive the file");
+        assert_eq!(goods.len(), 2);
+        assert_eq!(goods[1].commodity, "Hemp");
+        assert_eq!(goods[1].quantity, 12);
         // Reconstruction restores the divvy flag and booty onto the in-RAM
         // voyage (the Divvy section reads them straight off the
         // voyage).
@@ -830,14 +905,197 @@ mod tests {
         assert_eq!(rv.booty_chest, Some(4200));
         assert_eq!(
             rv.booty_goods,
-            vec![("Iron".into(), 30), ("Hemp".into(), 12)]
+            Some(vec![
+                ("Iron".into(), 30),
+                ("Hemp".into(), 12)
+            ])
         );
 
-        // Legacy file: fields absent -> not divvied, chest None, goods empty.
+        // A recorded but bare Booty column stays distinct from one never read.
+        let bare = SavedVoyage {
+            booty_goods: Some(Vec::new()),
+            ..SavedVoyage::default()
+        };
+        let json = serde_json::to_string(&bare).unwrap();
+        let back: SavedVoyage = serde_json::from_str(&json).unwrap();
+        assert!(matches!(
+            back.booty_goods.as_deref(),
+            Some([])
+        ));
+        assert_eq!(
+            back.to_voyage().booty_goods,
+            Some(Vec::new())
+        );
+
+        // Legacy file: fields absent -> not divvied, chest None, goods never
+        // recorded.
         let legacy: SavedVoyage = serde_json::from_str("{}").unwrap();
         assert!(!legacy.divvied);
         assert_eq!(legacy.booty_chest, None);
-        assert!(legacy.booty_goods.is_empty());
+        assert!(legacy.booty_goods.is_none());
+    }
+
+    /// A finished run carrying every part the save prompt can decline: one
+    /// recorded fight with a Damage snapshot and a melee timeline, a divvied
+    /// booty, and a consumption delta.
+    fn full_voyage() -> (Voyage, ConsumptionStats) {
+        let v = Voyage {
+            sailed_at: epoch(),
+            ported_at: epoch().map(|b| b + chrono::Duration::seconds(600)),
+            divvied: true,
+            booty_chest: Some(4200),
+            booty_goods: Some(vec![("Iron".into(), 30)]),
+            battles: vec![Battle {
+                outcome: BattleOutcome::Won,
+                category: BattleCategory::Brigand,
+                poe: Some(8000),
+                started_at: epoch(),
+                ended_at: epoch().map(|b| b + chrono::Duration::seconds(300)),
+                recorded: true,
+                snapshot: Some(BattleSnapshot {
+                    our_ship: 0,
+                    foe_ship: 0,
+                    our_hits: [3, 1],
+                    foe_hits: [5, 2],
+                    rams: 1,
+                    our_pirates: 6,
+                }),
+                timeline: FightTimeline {
+                    events: vec![KoEvent {
+                        at: epoch().map(|b| b + chrono::Duration::seconds(30)),
+                        side: KoSide::Theirs,
+                    }],
+                    our_start: 6,
+                    their_start: Some(5),
+                    started_at: epoch(),
+                    ended_at: None,
+                },
+                ..Battle::default()
+            }],
+            ..Default::default()
+        };
+        let consumption = ConsumptionStats {
+            balls: 150,
+            balls_per_battle: Some(150.0),
+            rum: RumUse {
+                swill: 0,
+                grog: 60,
+                fine_rum: 15,
+            },
+            rum_spice: 18,
+            delta_unreliable: false,
+        };
+        (v, consumption)
+    }
+
+    #[test]
+    fn every_part_reaches_the_file_by_default() {
+        let (v, cs) = full_voyage();
+        let saved = from_voyage(
+            &v,
+            Some("Test Vessel"),
+            Some("Sloop"),
+            Some(&cs),
+            SaveParts::default(),
+            true,
+        );
+        assert_eq!(saved.battles.len(), 1);
+        assert!(saved.battles[0].snapshot.is_some());
+        assert_eq!(saved.battles[0].timeline.len(), 1);
+        assert_eq!(saved.battles[0].our_start, 6);
+        assert_eq!(saved.battles[0].their_start, Some(5));
+        assert!(saved.consumption.is_some());
+        assert_eq!(saved.booty_chest, Some(4200));
+        assert!(saved.booty_goods.is_some());
+    }
+
+    #[test]
+    fn a_declined_part_is_written_absent_rather_than_empty() {
+        // Each part the prompt can refuse leaves no trace of itself, so a
+        // reloaded run can't mistake "we were told not to record it" for "the
+        // run had none of it". The aggregates and the run's identity are not
+        // the prompt's to refuse and stay either way.
+        let (v, cs) = full_voyage();
+        let saved = from_voyage(
+            &v,
+            Some("Test Vessel"),
+            Some("Sloop"),
+            Some(&cs),
+            SaveParts {
+                engagements: false,
+                damage: true,
+                melee: true,
+                consumption: false,
+                booty: false,
+            },
+            true,
+        );
+        assert!(saved.battles.is_empty());
+        assert!(saved.consumption.is_none());
+        assert_eq!(saved.booty_chest, None);
+        assert!(saved.booty_goods.is_none());
+        // The run itself is still on record.
+        assert_eq!(
+            saved.vessel.as_deref(),
+            Some("Test Vessel")
+        );
+        assert_eq!(saved.duration_secs, Some(600));
+        assert!(saved.divvied);
+    }
+
+    #[test]
+    fn declining_a_fights_parts_keeps_the_fight() {
+        // Damage and melee are parts of a fight's record, not records of their
+        // own: refusing them leaves the fight — its outcome, PoE and timings —
+        // and takes only what they held.
+        let (v, cs) = full_voyage();
+        let saved = from_voyage(
+            &v,
+            Some("Test Vessel"),
+            Some("Sloop"),
+            Some(&cs),
+            SaveParts {
+                engagements: true,
+                damage: false,
+                melee: false,
+                consumption: true,
+                booty: true,
+            },
+            true,
+        );
+        let b = &saved.battles[0];
+        assert_eq!(b.outcome, "won");
+        assert_eq!(b.poe, Some(8000));
+        assert_eq!(b.total_secs, Some(300));
+        assert!(b.snapshot.is_none());
+        assert!(b.timeline.is_empty());
+        assert_eq!(b.our_start, 0);
+        assert_eq!(b.their_start, None);
+        // A fight without its snapshot reloads as an unrecorded one, which is
+        // what it now is.
+        assert!(!b.to_battle(0).recorded);
+    }
+
+    #[test]
+    fn the_nested_parts_fall_with_the_engagements() {
+        // Dropping the fights drops what rode inside them, whatever the two
+        // nested boxes were last left saying.
+        let (v, cs) = full_voyage();
+        let parts = SaveParts {
+            engagements: false,
+            ..SaveParts::default()
+        };
+        assert!(!parts.writes_damage());
+        assert!(!parts.writes_melee());
+        let saved = from_voyage(
+            &v,
+            Some("Test Vessel"),
+            Some("Sloop"),
+            Some(&cs),
+            parts,
+            true,
+        );
+        assert!(saved.battles.is_empty());
     }
 
     #[test]

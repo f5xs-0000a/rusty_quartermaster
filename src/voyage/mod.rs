@@ -471,8 +471,10 @@ pub struct Voyage {
     pub booty_chest: Option<u64>,
     /// Goods won this run — `(commodity, quantity)`, from the Profits Booty
     /// column — frozen at the divvy alongside [`Self::booty_chest`].
+    /// `None` until the run divvies, which is what tells "nothing recorded"
+    /// apart from an empty list: a Booty column that was read and was bare.
     /// Persisted with the voyage.
-    pub booty_goods: Vec<(String, u64)>,
+    pub booty_goods: Option<Vec<(String, u64)>>,
     /// Runtime-only: the user has saved or dismissed this run via the
     /// save/discard prompt, so it shouldn't be offered again. Not persisted.
     pub saved: bool,

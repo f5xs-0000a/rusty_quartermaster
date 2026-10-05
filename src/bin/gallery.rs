@@ -51,7 +51,11 @@ use rusty_quartermaster::{
     ocean::Ocean,
     profits::{Focus, HoldImport, InventoryRow, PopupKind, ProfitResult},
     utils::{FieldKind, PromptField},
-    voyage::{AxisMode, ui::SaveChoice},
+    voyage::{
+        AxisMode,
+        BattleSnapshot,
+        ui::{SaveFocus, SavePrompt},
+    },
 };
 
 #[derive(Parser)]
@@ -1626,13 +1630,123 @@ fn voyage_states(states: &mut Vec<State>) {
     ));
     states.push(state(
         "voyage-popup-save",
-        "Voyage, save-or-discard prompt",
+        "Voyage, save prompt as it opens",
         |shell| {
-            feed(shell, PILLAGE);
-            open(shell, AppId::Voyage, true);
-            shell.voyage_ui.prompt = Some(SaveChoice::Save);
+            saveable_run(shell);
+            shell.voyage_ui.prompt = Some(SavePrompt::default());
         },
     ));
+    // Declining the engagements takes the two parts of a fight's record with
+    // it: they dim, and the focus can no longer reach them.
+    states.push(state(
+        "voyage-popup-save-partial",
+        "Voyage, save prompt with parts declined",
+        |shell| {
+            saveable_run(shell);
+            let mut prompt = SavePrompt {
+                focus: SaveFocus::Part(0),
+                ..SavePrompt::default()
+            };
+            prompt.toggle(0); // engagements off; damage + melee go inert
+            prompt.focus = SaveFocus::Part(4);
+            prompt.toggle(4); // pillaged goods off
+            shell.voyage_ui.prompt = Some(prompt);
+        },
+    ));
+    // The goods are the one part of the prompt with no ceiling. A hold this
+    // full outgrows an 80x24 page, which is what puts a bar inside the popup;
+    // the same run fits whole at 120x40, where no bar is drawn. The second
+    // state is the window run to the end of the list.
+    for (slug, description, end) in [
+        (
+            "voyage-popup-save-many-goods",
+            "Voyage, save prompt over a holdful of goods",
+            false,
+        ),
+        (
+            "voyage-popup-save-scrolled",
+            "Voyage, save prompt scrolled to the last of the goods",
+            true,
+        ),
+    ] {
+        states.push(state(slug, description, move |shell| {
+            saveable_run(shell);
+            if let Some(voy) = shell.chatlog.current_pillage_voyage_mut() {
+                voy.booty_goods = Some(
+                    [
+                        ("Sugar cane", 310),
+                        ("Hemp", 120),
+                        ("Iron", 95),
+                        ("Wood", 240),
+                        ("Stone", 60),
+                        ("Hemp oil", 35),
+                        ("Varnish", 18),
+                        ("Lacquer", 12),
+                        ("Kraken's ink", 4),
+                        ("Broadcloth", 55),
+                        ("Cowhide", 70),
+                        ("Dye", 25),
+                        ("Madder", 16),
+                        ("Indigo", 9),
+                        ("Lobelia", 7),
+                    ]
+                    .into_iter()
+                    .map(|(name, qty)| (name.to_owned(), qty))
+                    .collect(),
+                );
+            }
+            shell.voyage_ui.prompt = Some(SavePrompt {
+                // The render clamps the far end, so any offset past the list
+                // lands on its last screenful.
+                pan: end.then_some(u16::MAX),
+                ..SavePrompt::default()
+            });
+        }));
+    }
+}
+
+/// A ported pillage with something to show under every part of the save prompt:
+/// fights carrying a melee timeline and a damage snapshot, a hold that came
+/// back lighter, and a divvy that won goods.
+///
+/// The gallery hands the log straight to the parser, so the app steps that
+/// normally run beside it — pinning the Damage calculator onto a resolved
+/// fight, freezing the booty at the divvy — are stood in for here.
+fn saveable_run(shell: &mut AppShell) {
+    // (commodity id, restock, stock): the consumables the hold spent.
+    for (id, restock, stock) in [
+        (6, "200", "50"),
+        (7, "100", "40"),
+        (8, "20", "5"),
+        (9, "30", "12"),
+    ] {
+        let mut row = InventoryRow::new(id);
+        row.restock = restock.to_owned();
+        row.stock = stock.to_owned();
+        shell.profits.rows.push(row);
+    }
+    feed(shell, PILLAGE);
+    open(shell, AppId::Voyage, true);
+    if let Some(voy) = shell.chatlog.current_pillage_voyage_mut() {
+        // Two of the three fights were tracked in the calculator; the third
+        // went unrecorded, as one left to itself does.
+        for battle in voy.battles.iter_mut().take(2) {
+            battle.recorded = true;
+            battle.snapshot = Some(BattleSnapshot {
+                our_ship: 0,
+                foe_ship: 0,
+                our_hits: [3, 1],
+                foe_hits: [8, 2],
+                rams: 1,
+                our_pirates: 5,
+            });
+        }
+        voy.booty_chest = Some(1_200);
+        voy.booty_goods = Some(vec![
+            ("Iron".to_owned(), 30),
+            ("Hemp".to_owned(), 12),
+        ]);
+    }
 }
 
 fn map_states(states: &mut Vec<State>) {

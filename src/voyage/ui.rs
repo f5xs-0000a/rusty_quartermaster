@@ -29,6 +29,7 @@ use crate::{
         AxisMode,
         BattleOutcome,
         BattleSnapshot,
+        persistence::SaveParts,
         stats::{
             BattleStats,
             BoxPlot,
@@ -71,12 +72,151 @@ const CHART_H: u16 = 9;
 /// inside.
 const CLOSE_H: u16 = 2;
 
-/// Which button the save prompt has focused. Cancel comes first, being the
-/// choice that changes nothing.
-#[derive(Clone, Copy, PartialEq, Eq)]
-pub enum SaveChoice {
+/// The save prompt's checkboxes, in on-screen order: the label, and whether the
+/// row is nested under the one above it. A nested row belongs to its parent's
+/// record and goes inert while the parent is off, so the indent is the whole
+/// explanation of why it stopped answering.
+pub const SAVE_PARTS: [(&str, bool); 5] = [
+    ("Engagements", false),
+    ("damage dealt", true),
+    ("melee timeline", true),
+    ("Consumption", false),
+    ("Pillaged goods", false),
+];
+
+/// Which control the save prompt has focused: one of [`SAVE_PARTS`]'s
+/// checkboxes, top to bottom, then the buttons below them. Cancel comes first,
+/// being the choice that changes nothing.
+#[derive(Clone, Copy, PartialEq, Eq, Default)]
+pub enum SaveFocus {
+    /// A checkbox, by index into [`SAVE_PARTS`].
+    Part(usize),
+    #[default]
     Cancel,
     Save,
+}
+
+/// The open save prompt: what it will write, where its focus sits, and where
+/// its window on the rows has got to.
+#[derive(Clone, Copy, Default)]
+pub struct SavePrompt {
+    pub parts: SaveParts,
+    pub focus: SaveFocus,
+    /// First row on show, as the last render left it. Driven by
+    /// [`Self::focus`] — the rows scroll to keep the focused box in view —
+    /// unless [`Self::pan`] has taken the window over.
+    pub scroll: u16,
+    /// Where the rows have been scrolled by hand. `None` while they have not
+    /// been: the window then follows the focused box, which is where it
+    /// returns the moment the focus moves.
+    ///
+    /// The figures are not focusable — there is nothing to answer on a line
+    /// that only reports a quantity — so reading past the box they sit under
+    /// means moving the window itself, which the bar, the wheel and the page
+    /// keys do.
+    pub pan: Option<u16>,
+    /// Rows the last render had room for, so a page key can move the window by
+    /// a screenful of whatever size the page turned out to be. Set by
+    /// `render`.
+    pub shown: u16,
+}
+
+impl SavePrompt {
+    /// Whether the checkbox at `idx` can still be answered. A nested row waits
+    /// on its parent, since nothing it says would reach the file.
+    pub fn live(&self, idx: usize) -> bool {
+        match SAVE_PARTS.get(idx) {
+            Some(&(_, nested)) => !nested || self.parts.engagements,
+            None => false,
+        }
+    }
+
+    /// Whether the checkbox at `idx` is ticked. A nested row shows its parent's
+    /// answer once that is a no — the file would not hold it either way.
+    pub fn ticked(&self, idx: usize) -> bool {
+        let p = &self.parts;
+        match idx {
+            0 => p.engagements,
+            1 => p.writes_damage(),
+            2 => p.writes_melee(),
+            3 => p.consumption,
+            4 => p.booty,
+            _ => false,
+        }
+    }
+
+    /// Flip the checkbox at `idx`, if it is one that can be answered.
+    pub fn toggle(&mut self, idx: usize) {
+        if !self.live(idx) {
+            return;
+        }
+        let p = &mut self.parts;
+        let field = match idx {
+            0 => &mut p.engagements,
+            1 => &mut p.damage,
+            2 => &mut p.melee,
+            3 => &mut p.consumption,
+            4 => &mut p.booty,
+            _ => return,
+        };
+        *field = !*field;
+        // Leaving the focus on a row that just went inert would strand it, so
+        // it falls to the parent that now answers for it — and the window
+        // follows it back, the focus having moved.
+        if !self.live_focus() {
+            self.focus = SaveFocus::Part(0);
+            self.pan = None;
+        }
+    }
+
+    /// Move the window by a screenful, `down` or up, and keep it there until
+    /// the focus moves again. The render clamps the far end, which is what
+    /// knows how many rows the run has.
+    pub fn page(&mut self, down: bool) {
+        let here = self.pan.unwrap_or(self.scroll);
+        let step = self.shown.max(1);
+        self.pan = Some(match down {
+            true => here.saturating_add(step),
+            false => here.saturating_sub(step),
+        });
+    }
+
+    /// Whether the focused row is one that can still be answered.
+    fn live_focus(&self) -> bool {
+        match self.focus {
+            SaveFocus::Part(i) => self.live(i),
+            _ => true,
+        }
+    }
+
+    /// Move the focus one row down (`down`) or up, skipping the rows gone
+    /// inert. The chain runs the checkboxes top to bottom and ends at the
+    /// button row; it does not wrap, so the ends stay put.
+    pub fn step(&mut self, down: bool) {
+        let last = SAVE_PARTS.len();
+        self.focus = match self.focus {
+            SaveFocus::Part(i) if down => {
+                match (i + 1 .. last).find(|&j| self.live(j)) {
+                    Some(j) => SaveFocus::Part(j),
+                    None => SaveFocus::Cancel,
+                }
+            }
+            SaveFocus::Part(i) => {
+                match (0 .. i).rev().find(|&j| self.live(j)) {
+                    Some(j) => SaveFocus::Part(j),
+                    None => SaveFocus::Part(i),
+                }
+            }
+            // The buttons share a row, which ←/→ walks instead.
+            button if down => button,
+            _ => {
+                match (0 .. last).rev().find(|&j| self.live(j)) {
+                    Some(j) => SaveFocus::Part(j),
+                    None => self.focus,
+                }
+            }
+        };
+    }
 }
 
 /// Which control the Sea Battles popup has focused. The chain runs top→bottom,
@@ -148,8 +288,8 @@ pub struct VoyageStatsUi {
     /// to the clamped index when that field doesn't exist), then clears
     /// it.
     pub pending_focus_key: Option<String>,
-    /// When `Some`, the save/discard prompt is open with this button focused.
-    pub prompt: Option<SaveChoice>,
+    /// When `Some`, the save prompt is open in this state.
+    pub prompt: Option<SavePrompt>,
     /// When `Some(i)`, chart `i` is enlarged in a popup.
     pub chart_popup: Option<usize>,
     /// Hovered cell in the enlarged Ship Winrate matrix: `(our hull, enemy
@@ -354,8 +494,9 @@ pub struct VoyageView {
     pub booty_chest: Option<u64>,
     /// Goods pillaged this run — `(commodity, quantity)`, from the Profits
     /// Booty column, frozen at the divvy. Shown itemized in the Divvy
-    /// section.
-    pub booty_goods: Vec<(String, u64)>,
+    /// section. `None` when nothing was recorded, as against a recorded
+    /// empty column.
+    pub booty_goods: Option<Vec<(String, u64)>>,
 }
 
 pub fn render(
@@ -772,9 +913,10 @@ pub fn render(
         );
     }
 
-    // Modal popups. The Sea Battles and chart popups use the full content
-    // width, not the narrow body column. Only one modal is ever open at a
-    // time.
+    // Modal popups, every one of them laid out over the full content rect
+    // rather than the narrow body column: the room is theirs to use, and a
+    // modal that stopped at the column's edge left the page's own scrollbar
+    // showing beside it. Only one is ever open at a time.
     if ui.battles_popup.is_some() {
         render_battles_popup(frame, full, view, ui, regions);
     } else if let Some(i) = ui.chart_popup {
@@ -789,8 +931,18 @@ pub fn render(
         } else {
             render_chart_popup(frame, full, i, &view.charts, regions);
         }
-    } else if let Some(choice) = ui.prompt {
-        render_save_prompt(frame, area, choice, regions);
+    } else if let Some(mut prompt) = ui.prompt {
+        // Taken out and put back so the render can settle where the window on
+        // its rows ended up and how many of them the page held.
+        render_save_prompt(
+            frame,
+            full,
+            area.width,
+            view,
+            &mut prompt,
+            regions,
+        );
+        ui.prompt = Some(prompt);
     }
 }
 
@@ -876,11 +1028,145 @@ fn voyage_badge_span(badge: VoyageBadge) -> Option<(&'static str, Style)> {
     }
 }
 
-/// Modal: "Persist this run to your history?" with Cancel and Save.
+/// One line of the save prompt: a checkbox the user answers, or a figure
+/// standing beneath one. Values right-align in a column of their own, as the
+/// page's own stat rows do.
+struct PromptRow {
+    /// `Some(i)` for a checkbox, by index into [`SAVE_PARTS`]; `None` for one
+    /// of the figures under the box above it.
+    part: Option<usize>,
+    label: String,
+    value: String,
+}
+
+/// What the save prompt has to say about the run in front of it: a headline
+/// figure beside each box, and an itemized breakdown under the two parts that
+/// carry one. A part the run has nothing of says so in words rather than
+/// showing a zero — its box still answers, since recording none of something
+/// and recording nothing about it are different claims.
+fn prompt_rows(view: &VoyageView) -> Vec<PromptRow> {
+    let plural = |n: usize, word: &str| {
+        format!(
+            "{n} {word}{}",
+            if n == 1 { "" } else { "s" }
+        )
+    };
+    let fights = view.battles.len();
+    let recorded = view
+        .battles
+        .iter()
+        .filter(|b| b.recorded && b.snapshot.is_some())
+        .count();
+    let kos: usize = view.battles.iter().map(|b| b.timeline.events.len()).sum();
+    let timed = view
+        .battles
+        .iter()
+        .filter(|b| !b.timeline.events.is_empty())
+        .count();
+
+    let part = |idx: usize, value: String| {
+        PromptRow {
+            part: Some(idx),
+            label: SAVE_PARTS[idx].0.to_string(),
+            value,
+        }
+    };
+    let figure = |label: &str, value: String| {
+        PromptRow {
+            part: None,
+            label: label.to_string(),
+            value,
+        }
+    };
+
+    let mut rows = vec![
+        part(
+            0,
+            if 0 < fights {
+                plural(fights, "fight")
+            } else {
+                "no fights".to_string()
+            },
+        ),
+        part(
+            1,
+            if 0 < recorded {
+                format!(
+                    "{recorded} of {}",
+                    plural(fights, "fight")
+                )
+            } else {
+                "none recorded".to_string()
+            },
+        ),
+        part(
+            2,
+            if 0 < kos {
+                format!(
+                    "{} in {}",
+                    plural(kos, "KO"),
+                    plural(timed, "fight")
+                )
+            } else {
+                "no eliminations".to_string()
+            },
+        ),
+    ];
+
+    // Consumption, itemized the way the page itself does it: whole-voyage
+    // totals, and no line for a commodity the hold never lost.
+    let c = &view.consumption;
+    let used = [
+        ("cannonballs", c.balls),
+        ("swill", c.rum.swill),
+        ("grog", c.rum.grog),
+        ("fine rum", c.rum.fine_rum),
+        ("rum spice", c.rum_spice),
+    ];
+    rows.push(part(
+        3,
+        match used.iter().any(|&(_, n)| 0 < n) {
+            true => String::new(),
+            false => "nothing used".to_string(),
+        },
+    ));
+    for (label, n) in used {
+        if 0 < n {
+            rows.push(figure(label, commas(n as i64)));
+        }
+    }
+
+    // The booty: what stayed in the chest, then the goods by commodity.
+    let goods = view.booty_goods.as_deref().unwrap_or_default();
+    rows.push(part(
+        4,
+        match view.booty_chest.is_some() || !goods.is_empty() {
+            true => String::new(),
+            false => "nothing won".to_string(),
+        },
+    ));
+    if let Some(chest) = view.booty_chest {
+        rows.push(figure(
+            "booty chest",
+            format!("{} PoE", commas(chest as i64)),
+        ));
+    }
+    for (name, qty) in goods {
+        rows.push(figure(name, commas(*qty as i64)));
+    }
+    rows
+}
+
+/// Modal: "Keep which parts of this run?" — a checkbox per part of the record
+/// the file can do without, what the run holds of each, then Cancel and Save.
+/// Everything starts ticked, so the prompt a user clicks straight through saves
+/// the whole run.
 fn render_save_prompt(
     frame: &mut Frame,
     area: Rect,
-    choice: SaveChoice,
+    page_w: u16,
+    view: &VoyageView,
+    prompt: &mut SavePrompt,
     regions: &mut Vec<ClickRegion>,
 ) {
     // Backdrop swallows clicks outside the box (acts as cancel).
@@ -889,10 +1175,60 @@ fn render_save_prompt(
         target: ClickTarget::VoyageSaveCancel,
     });
 
-    const PROMPT: &str = "Persist this run to your history?";
-    // The prompt, a blank, and the buttons, inside a padded border.
-    let w = (PROMPT.len() as u16 + 4).min(area.width);
-    let h = (3 + 2).min(area.height);
+    const PROMPT: &str = "Keep which parts of this run?";
+    let rows = prompt_rows(view);
+
+    // A row's label carries its own box or indent, so the two columns can be
+    // measured over every kind of row at once.
+    let labelled: Vec<String> = rows
+        .iter()
+        .map(|row| {
+            match row.part {
+                Some(i) => {
+                    let tick = if prompt.ticked(i) { 'x' } else { ' ' };
+                    let indent = if SAVE_PARTS[i].1 { "  " } else { "" };
+                    format!("[{tick}] {indent}{}", row.label)
+                }
+                // Figures hang under the label column, clear of the boxes.
+                None => format!("      {}", row.label),
+            }
+        })
+        .collect();
+    let label_w = labelled
+        .iter()
+        .map(|l| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    let value_w = rows
+        .iter()
+        .map(|r| r.value.chars().count())
+        .max()
+        .unwrap_or(0);
+    // Two columns held apart by a gap. The rows are read down their left edge,
+    // so this block is centered whole rather than line by line.
+    let rows_w = (label_w + 2 + value_w) as u16;
+
+    // The prompt, a blank, the rows, a blank, the buttons. The rows are the
+    // only part that can outgrow the page, so they are what the window
+    // falls to; everything else is chrome the prompt always spends.
+    const CHROME_H: u16 = 4 + 2;
+    let shown = area.height.saturating_sub(CHROME_H).max(1);
+    let shown = shown.min(rows.len() as u16);
+    // A run holding more than the page shows spends the bar's columns on top of
+    // what the widest row needs.
+    let bar_w = match crate::utils::scrolls(shown, rows.len()) {
+        true => crate::utils::SCROLLBAR_W,
+        false => 0,
+    };
+    let (block, min_w) = crate::utils::titled_block(
+        "Save Voyage?",
+        (rows_w + bar_w).max(PROMPT.chars().count() as u16),
+    );
+    // The prompt spans at least the page block it covers. Both are centered on
+    // the same axis, so coming in under it would leave the page's border and
+    // scrollbar showing to either side of a modal.
+    let w = min_w.max(page_w).min(area.width);
+    let h = shown + CHROME_H;
     let rect = Rect {
         x: area.x + (area.width.saturating_sub(w)) / 2,
         y: area.y + (area.height.saturating_sub(h)) / 2,
@@ -900,30 +1236,118 @@ fn render_save_prompt(
         height: h,
     };
     frame.render_widget(Clear, rect);
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::White))
-        .title(" Save Voyage? ");
     let inner = block.inner(rect);
     frame.render_widget(block, rect);
 
-    let rows = Layout::vertical([
-        Constraint::Length(1), // prompt
-        Constraint::Length(1), // spacer
-        Constraint::Length(1), // buttons
+    let layout = Layout::vertical([
+        Constraint::Length(1),     // prompt
+        Constraint::Length(1),     // spacer
+        Constraint::Length(shown), // the window on the rows
+        Constraint::Length(1),     // spacer
+        Constraint::Length(1),     // buttons
     ])
     .split(inner);
 
     frame.render_widget(
         Paragraph::new(PROMPT).centered(),
-        rows[0],
+        layout[0],
     );
 
+    // Where the window sits: wherever it was panned to, else far enough down to
+    // hold the focused box. A focused button is below the window, not in it, so
+    // it leaves the rows where they are.
+    let last = rows.len().saturating_sub(shown as usize) as u16;
+    let offset = match (prompt.pan, prompt.focus) {
+        (Some(pan), _) => pan,
+        (None, SaveFocus::Part(i)) => {
+            let row =
+                rows.iter().position(|r| r.part == Some(i)).unwrap_or(0) as u16;
+            prompt.scroll.clamp(
+                row.saturating_sub(shown.saturating_sub(1)),
+                row,
+            )
+        }
+        (None, _) => prompt.scroll,
+    }
+    .min(last);
+    // Carried to the next render, and to a page key that moves by a screenful.
+    prompt.scroll = offset;
+    prompt.shown = shown;
+
+    let window = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        layout[2],
+        crate::clickmap::ScrollView::VoyageSavePrompt,
+        offset as usize,
+        rows.len(),
+    );
+
+    // Center the block of rows, then lay each one flush inside it.
+    let block_rect = Rect {
+        x: window.x + window.width.saturating_sub(rows_w) / 2,
+        width: rows_w.min(window.width),
+        ..window
+    };
+    for (n, row) in rows
+        .iter()
+        .enumerate()
+        .skip(offset as usize)
+        .take(shown as usize)
+    {
+        let rect = Rect {
+            y: block_rect.y + (n - offset as usize) as u16,
+            height: 1,
+            ..block_rect
+        };
+        // Padded to the block's width so a focused row's highlight is a bar
+        // across it rather than a ragged edge at the end of the label.
+        let text = format!(
+            "{:<label_w$}  {:>value_w$}",
+            labelled[n], row.value
+        );
+        let Some(i) = row.part else {
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    text,
+                    Style::default().fg(Color::DarkGray),
+                )),
+                rect,
+            );
+            continue;
+        };
+        let style = if prompt.focus == SaveFocus::Part(i) {
+            Style::default().bg(Color::White).fg(Color::Black)
+        } else if prompt.live(i) {
+            Style::default()
+        } else {
+            // A box waiting on its parent says so by going quiet.
+            Style::default().fg(Color::DarkGray)
+        };
+        frame.render_widget(
+            Paragraph::new(Span::styled(text, style)),
+            rect,
+        );
+        if prompt.live(i) {
+            regions.push(ClickRegion {
+                rect,
+                target: ClickTarget::VoyageSavePart {
+                    idx: i,
+                },
+            });
+        }
+    }
+
+    let focused = match prompt.focus {
+        SaveFocus::Cancel => Some(0),
+        SaveFocus::Save => Some(1),
+        SaveFocus::Part(_) => None,
+    };
     for (rect, target) in crate::utils::render_buttons(
         frame,
-        rows[2],
+        layout[4],
         &["Cancel", "Save"],
-        Some(usize::from(choice == SaveChoice::Save)),
+        focused,
     )
     .into_iter()
     .zip([
@@ -2696,12 +3120,13 @@ fn build_lines(view: &VoyageView) -> Built {
             "PoE left in the booty chest for the divvy — your entered figure, \
              else auto-deduced.",
         );
-        if !view.booty_goods.is_empty() {
+        let goods = view.booty_goods.as_deref().unwrap_or_default();
+        if !goods.is_empty() {
             out.line(Line::from(Span::styled(
                 "Goods pillaged".to_string(),
                 Style::default().fg(Color::Gray),
             )));
-            for (name, qty) in &view.booty_goods {
+            for (name, qty) in goods {
                 out.stat(
                     &format!("  {name}"),
                     commas(*qty as i64),
@@ -3015,7 +3440,15 @@ fn opt1(x: Option<f64>) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{ConsumptionStats, VoyageView, build_lines};
+    use super::{
+        ConsumptionStats,
+        SAVE_PARTS,
+        SaveFocus,
+        SavePrompt,
+        VoyageStatsUi,
+        VoyageView,
+        build_lines,
+    };
     use crate::voyage::stats::RumUse;
 
     /// The page body as plain text, laid out at a width that clips nothing.
@@ -3083,5 +3516,177 @@ mod tests {
             lines.iter().all(|l| !l.contains("Consumption")),
             "an untouched hold keeps the section away: {lines:#?}"
         );
+    }
+
+    #[test]
+    fn a_nested_box_waits_on_the_one_above_it() {
+        // The prompt opens keeping everything, so clicking straight through it
+        // saves the whole run.
+        let mut prompt = SavePrompt::default();
+        assert!((0 .. SAVE_PARTS.len()).all(|i| prompt.ticked(i)));
+
+        // Refusing the engagements empties the two boxes that ride inside them,
+        // whatever they were last left saying, and the focus walks past them.
+        prompt.focus = SaveFocus::Part(0);
+        prompt.toggle(0);
+        assert!(!prompt.ticked(1) && !prompt.ticked(2));
+        assert!(!prompt.live(1) && !prompt.live(2));
+        prompt.step(true);
+        assert!(
+            prompt.focus == SaveFocus::Part(3),
+            "the focus skips the boxes that stopped answering"
+        );
+
+        // An inert box turns the pointer away too, so its own answer is still
+        // there to come back to.
+        prompt.toggle(1);
+        assert!(prompt.parts.damage);
+        prompt.focus = SaveFocus::Part(0);
+        prompt.toggle(0);
+        assert!(prompt.ticked(1) && prompt.ticked(2));
+
+        // Answered from the pointer while the focus sits on one of its
+        // children, the parent takes that focus rather than stranding it.
+        prompt.focus = SaveFocus::Part(2);
+        prompt.toggle(0);
+        assert!(prompt.focus == SaveFocus::Part(0));
+    }
+
+    /// The save prompt over a run, as a screenful of text.
+    fn prompt_screen(
+        view: &VoyageView,
+        prompt: SavePrompt,
+        height: u16,
+    ) -> (String, SavePrompt) {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let mut ui = VoyageStatsUi {
+            prompt: Some(prompt),
+            ..VoyageStatsUi::default()
+        };
+        let mut terminal =
+            Terminal::new(TestBackend::new(64, height)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                let area = frame.area();
+                super::render(
+                    frame,
+                    area,
+                    view,
+                    &mut ui,
+                    true,
+                    &mut Vec::new(),
+                );
+            })
+            .expect("draw");
+        (
+            format!("{}", terminal.backend()),
+            ui.prompt.expect("the prompt stays open"),
+        )
+    }
+
+    /// A run that won more goods than a short page can hold at once.
+    fn holdful() -> VoyageView {
+        VoyageView {
+            has_voyage: true,
+            saveable: true,
+            booty_chest: Some(1_200),
+            booty_goods: Some(
+                (1 ..= 20)
+                    .map(|n| (format!("Example good {n}"), n * 10))
+                    .collect(),
+            ),
+            ..VoyageView::default()
+        }
+    }
+
+    #[test]
+    fn a_long_goods_list_scrolls_rather_than_running_off_the_page() {
+        // The goods are the one part of the prompt with no ceiling, so a run
+        // that won a holdful opens at the top of the list and keeps every box —
+        // and its way out — on the screen.
+        let view = holdful();
+        let (screen, settled) = prompt_screen(&view, SavePrompt::default(), 24);
+        for (label, _) in SAVE_PARTS {
+            assert!(
+                screen.contains(label),
+                "{label} is on the first screenful: {screen}"
+            );
+        }
+        assert!(
+            screen.contains("[ Cancel ]") && screen.contains("[  Save  ]"),
+            "the buttons are never scrolled away: {screen}"
+        );
+        assert!(
+            screen.contains("Example good 1"),
+            "the window opens at the top of the list: {screen}"
+        );
+        assert!(
+            !screen.contains("Example good 20"),
+            "a list this long cannot fit, which is why it scrolls: {screen}"
+        );
+        assert!(
+            0 < settled.shown,
+            "the render reports what the page held, for the page keys"
+        );
+    }
+
+    #[test]
+    fn panning_past_the_end_lands_on_the_last_of_the_goods() {
+        // Whatever the bar, the wheel or a page key asks for, the window stops
+        // at the last screenful — and the boxes scroll away with the rest,
+        // since the figures are what the window exists to reach.
+        let view = holdful();
+        let panned = SavePrompt {
+            pan: Some(u16::MAX),
+            ..SavePrompt::default()
+        };
+        let (screen, settled) = prompt_screen(&view, panned, 24);
+        assert!(
+            screen.contains("Example good 20"),
+            "the end of the list is reachable: {screen}"
+        );
+        assert!(
+            screen.contains("[ Cancel ]") && screen.contains("[  Save  ]"),
+            "the buttons sit outside the window: {screen}"
+        );
+        assert!(
+            settled.scroll < u16::MAX,
+            "the ask is clamped to the last screenful, not taken as given"
+        );
+
+        // Moving the focus hands the window back to it: the box the focus lands
+        // on is in view, wherever the pan had wandered to. Up from the buttons
+        // is the last of the boxes.
+        let mut followed = settled;
+        followed.pan = None;
+        followed.step(false);
+        assert!(followed.focus == SaveFocus::Part(SAVE_PARTS.len() - 1));
+        let (screen, _) = prompt_screen(&view, followed, 24);
+        assert!(
+            screen.contains(SAVE_PARTS[SAVE_PARTS.len() - 1].0),
+            "the focus pulls the window back to its own box: {screen}"
+        );
+    }
+
+    #[test]
+    fn the_focus_chain_runs_from_the_boxes_to_the_buttons() {
+        let last = SAVE_PARTS.len() - 1;
+        let mut prompt = SavePrompt::default();
+
+        // Down off the last box reaches the buttons, which share a row — so
+        // down stays there and up returns to the box above them.
+        prompt.focus = SaveFocus::Part(last);
+        prompt.step(true);
+        assert!(prompt.focus == SaveFocus::Cancel);
+        prompt.step(true);
+        assert!(prompt.focus == SaveFocus::Cancel);
+        prompt.step(false);
+        assert!(prompt.focus == SaveFocus::Part(last));
+
+        // Neither end wraps.
+        prompt.focus = SaveFocus::Part(0);
+        prompt.step(false);
+        assert!(prompt.focus == SaveFocus::Part(0));
     }
 }

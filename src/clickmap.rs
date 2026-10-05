@@ -21,6 +21,9 @@ pub enum ScrollView {
     /// Everything under the Voyage Statistics page's pinned header. Keeps its
     /// own window, which the focused stat or chart also nudges.
     VoyageBody,
+    /// The save prompt's boxes and the figures under them. Keeps its own
+    /// window, which the focused box also nudges.
+    VoyageSavePrompt,
     /// The Map page's chart, a viewport on a canvas larger than it both ways.
     /// Follows the sailing cursor.
     MapCanvas,
@@ -141,6 +144,11 @@ pub enum ClickTarget {
     VoyageSaveConfirm,
     /// Its Cancel button, and the backdrop behind the prompt.
     VoyageSaveCancel,
+    /// One of the save prompt's checkboxes (`idx` into
+    /// [`crate::voyage::ui::SAVE_PARTS`]); clicking it flips that part.
+    VoyageSavePart {
+        idx: usize,
+    },
     /// A focusable stat number on the Voyage Statistics page (`idx` into the
     /// page's focusable-stat list); clicking it focuses that stat's tooltip.
     VoyageStat {
