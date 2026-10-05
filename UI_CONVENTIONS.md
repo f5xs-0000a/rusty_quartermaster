@@ -400,18 +400,29 @@ The bar reads the same for every view; what a view does with the ask depends on
 what moves its window.
 
 - **Its own window.** The two popups keep a scroll offset and nothing else
-  decides it, so the bar sets it outright. The Map's chart is the same once it
-  has been panned: the bars part the window from the sailing cursor and set it
-  themselves, so the chart reaches the canvas's own edges and caps there. The
-  parting lasts until a league point is selected — sailed to, clicked, or found
-  by search — which returns the window to centring the cursor. Until then the
-  cursor may be off the chart, which is what lets the bars reach open sea.
-- **A cursor's.** The other page views have no independent window at all: the
-  Inventory, the panes and the Skill Leaderboard scroll to keep their selection
-  in sight, and the Voyage body scrolls to keep the focused stat or chart in
-  sight — each recomputed from that cursor every frame. The bar moves the cursor
-  and the window follows, which is the only thing it could mean. The wheel over
-  those views already works this way.
+  decides it, so the bar sets it outright. The Map's chart and the Voyage body
+  are the same once scrolled by hand: the bar parts the window from the cursor
+  and sets it in rows (canvas cells, on the Map), so it reaches the content's own
+  ends and caps there. The parting lasts until the cursor moves — a league point
+  selected, a stat or chart focused — which returns the window to following it.
+  Until then the cursor may be off the view, which is what lets the Map's bars
+  reach open sea.
+
+  The Voyage body has to work this way. Its focusable items are not spread
+  evenly down it — a stat is one row, a chart is nine — so a bar that moved the
+  focus crawled: two thirds of its track scrolled nothing at all, because those
+  stats were already on show, and the last two cells leapt thirty rows between
+  them. `app::voyage_scroll_tests::the_bar_walks_the_body_evenly_down_its_track`
+  holds the body to one cell's worth of rows per cell of track.
+- **A cursor's.** The remaining page views have no independent window at all:
+  the Inventory, the panes and the Skill Leaderboard scroll to keep their
+  selection in sight, recomputed from it every frame. The bar moves the cursor
+  and the window follows, which is the only thing it could mean there. The wheel
+  over those views already works this way.
+
+  They can work this way because their rows *are* their items: one commodity,
+  one pirate, one rank to a row, so moving the cursor a tenth of the way down
+  the list moves the window a tenth of the way down the body.
 
   What the cursor is differs by view, and so does what the bar's two ends mean.
   The Inventory's sideways bar runs from the first editable column to the last,
@@ -476,7 +487,7 @@ Seven views scroll, and each has a bar:
 | Profits Inventory, across | the column cursor | `80x30-profits-wide-table` — at 120 columns the box is as wide as the table and nothing scrolls, so this one needs `--size 80x30` |
 | Jobbers panes | that pane's selection | `80x24-jobbers-long-roster` |
 | Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster` |
-| Voyage body | the focused stat or chart | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
+| Voyage body | its own scroll, until the focus moves | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
 | Map chart, both ways | its own pan, until a point is selected | `80x24-map-ocean` |
 
 ### The answer must not move as focus moves

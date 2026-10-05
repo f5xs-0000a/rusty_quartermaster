@@ -1086,12 +1086,12 @@ impl AppShell {
                 if self.voyage_ui.focus == 0 {
                     InputResult::Exit
                 } else {
-                    self.voyage_ui.focus -= 1;
+                    self.voyage_focus(self.voyage_ui.focus - 1);
                     InputResult::Consumed
                 }
             }
             KeyCode::Down => {
-                self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(1);
+                self.voyage_focus(self.voyage_ui.focus.saturating_add(1));
                 InputResult::Consumed
             }
             // Enter opens the focused item: the Sea Battles section (focus 0)
@@ -1111,11 +1111,11 @@ impl AppShell {
                 InputResult::Consumed
             }
             KeyCode::PageUp => {
-                self.voyage_ui.focus = self.voyage_ui.focus.saturating_sub(5);
+                self.voyage_focus(self.voyage_ui.focus.saturating_sub(5));
                 InputResult::Consumed
             }
             KeyCode::PageDown => {
-                self.voyage_ui.focus = self.voyage_ui.focus.saturating_add(5);
+                self.voyage_focus(self.voyage_ui.focus.saturating_add(5));
                 InputResult::Consumed
             }
             _ => InputResult::Consumed,
@@ -1228,9 +1228,19 @@ impl AppShell {
             pages[next]
         };
         self.voyage_ui.battles_popup = None;
-        // Carry focus to the same field on the new page (resolved at render).
+        // Carry focus to the same field on the new page (resolved at render),
+        // and let the body follow it there rather than holding the row a hand
+        // scroll left it on — the new page is a different length.
         self.voyage_ui.pending_focus_key =
             self.voyage_ui.focus_keys.get(self.voyage_ui.focus).cloned();
+        self.voyage_ui.pan = None;
+    }
+
+    /// Move the Voyage page's focus, which returns the body to following it: a
+    /// body scrolled by hand stays where it was put only until the focus moves.
+    fn voyage_focus(&mut self, idx: usize) {
+        self.voyage_ui.focus = idx;
+        self.voyage_ui.pan = None;
     }
 
     /// The computed view for the Voyage Statistics page, resolving the pager
@@ -3104,13 +3114,11 @@ impl AppShell {
                 }
             }
             ScrollView::VoyageBody => {
-                let count = self.voyage_ui.focus_keys.len();
-                if count == 0 {
-                    return;
-                }
+                let last = total.saturating_sub(bar.height as usize);
                 self.global_focus = GlobalFocus::Content;
-                self.voyage_ui.focus =
-                    hit.resolve(self.voyage_ui.focus, count - 1);
+                self.voyage_ui.pan = Some(
+                    hit.resolve(self.voyage_ui.scroll as usize, last) as u16,
+                );
             }
             // The chart's bars pan it, which parts the window from the cursor
             // until a point is selected again. The window is the bar's own to
@@ -3562,7 +3570,7 @@ impl AppShell {
             ClickTarget::VoyageStat {
                 idx,
             } => {
-                self.voyage_ui.focus = idx;
+                self.voyage_focus(idx);
                 // The Sea Battles section (focus 0) opens the per-fight log.
                 if idx == 0 {
                     self.open_battles_popup();
@@ -3571,7 +3579,7 @@ impl AppShell {
             ClickTarget::VoyageChart {
                 idx,
             } => {
-                self.voyage_ui.focus = self.voyage_ui.n_stats + idx;
+                self.voyage_focus(self.voyage_ui.n_stats + idx);
                 if crate::voyage::ui::CHART_ENLARGEABLE.get(idx) == Some(&true)
                 {
                     self.voyage_ui.chart_popup = Some(idx);
@@ -3758,13 +3766,14 @@ impl AppShell {
                 self.jobbers_pane_select_delta(pane, delta.signum());
             }
             AppId::Voyage => {
-                if delta < 0 {
-                    self.voyage_ui.focus =
-                        self.voyage_ui.focus.saturating_sub(1);
-                } else {
-                    self.voyage_ui.focus =
-                        self.voyage_ui.focus.saturating_add(1);
-                }
+                let focus = self.voyage_ui.focus;
+                self.voyage_focus(
+                    if delta < 0 {
+                        focus.saturating_sub(1)
+                    } else {
+                        focus.saturating_add(1)
+                    },
+                );
             }
             // The wheel pans the chart and leaves the cursor where it is. The
             // far end is clamped by the render, which is what knows how large
@@ -4110,6 +4119,144 @@ mod map_cursor_tests {
         let mut s = AppShell::new(vec![]);
         s.restore_map_cursor(Some((1, 1)));
         assert_eq!(s.map.cursor, None);
+    }
+}
+
+#[cfg(test)]
+mod voyage_scroll_tests {
+    use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+    use super::*;
+    use crate::clickmap::{ClickTarget, ScrollAxis};
+
+    /// A shell on the Voyage page with one finished fight behind it, which is
+    /// enough for a body taller than any window over it.
+    fn with_a_voyage() -> AppShell {
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Pillaging, Average to Hard \
+             Barbarians.",
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+            "[01:05:00] You intercepted the War Frigate 'Modest Sild'!",
+            "[01:06:00] Test Vessel has grappled Modest Sild. A melee \
+             breaks out between the crews!",
+            "[01:07:00] Game over.  Winners: Playerone.",
+            "[01:07:05] The victors plundered 7,756 pieces of eight and 9 \
+             units of goods from the defeated vessel.",
+        ] {
+            shell.chatlog.process_line(line);
+        }
+        shell.sidebar_index = APP_LIST
+            .iter()
+            .position(|a| *a == AppId::Voyage)
+            .expect("the Voyage page");
+        shell.global_focus = GlobalFocus::Content;
+        shell
+    }
+
+    /// Draw, and hand back the body's scrollbar.
+    fn bar(shell: &mut AppShell) -> Rect {
+        let mut terminal =
+            Terminal::new(TestBackend::new(157, 37)).expect("terminal");
+        terminal.draw(|frame| shell.render(frame)).expect("draw");
+        shell
+            .click_regions
+            .iter()
+            .find_map(|r| {
+                match r.target {
+                    ClickTarget::Scrollbar {
+                        axis: ScrollAxis::Vertical,
+                        bar,
+                        ..
+                    } => Some(bar),
+                    _ => None,
+                }
+            })
+            .expect("the body scrolls, so it has a bar")
+    }
+
+    fn click(shell: &mut AppShell, at: Rect, row: u16) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        shell.handle_mouse(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(
+                    crossterm::event::MouseButton::Left,
+                ),
+                column: at.x,
+                row,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            &tx,
+        );
+    }
+
+    /// Reading down the track moves the body down it in step: every cell of the
+    /// track is a place the body can be, and no two neighbouring cells are more
+    /// than a cell's worth of rows apart.
+    ///
+    /// The bar used to move the *focus* instead, and the focusable items are
+    /// not spread evenly down the body — a stat is one row, a chart is nine. So
+    /// two thirds of the track scrolled nothing at all (those stats were
+    /// already on show) and the last two cells leapt thirty rows between them.
+    #[test]
+    fn the_bar_walks_the_body_evenly_down_its_track() {
+        let mut shell = with_a_voyage();
+        let at = bar(&mut shell);
+        let track = at.height - 2;
+
+        let mut rows = Vec::new();
+        for cell in 1 ..= track {
+            let mut shell = with_a_voyage();
+            let at = bar(&mut shell);
+            click(&mut shell, at, at.y + cell);
+            let _ = bar(&mut shell);
+            rows.push(shell.voyage_ui.scroll);
+        }
+
+        let last = *rows.last().expect("a track to read");
+        assert_eq!(
+            rows[0], 0,
+            "the first cell is the top: {rows:?}"
+        );
+        // What the body can scroll by, and so the most one cell of track may
+        // ask for: the rows off-screen, shared over the cells that can ask.
+        let per_cell = last.div_ceil(track - 1) + 1;
+        for pair in rows.windows(2) {
+            assert!(
+                pair[0] <= pair[1],
+                "the track doubles back: {rows:?}",
+            );
+            assert!(
+                pair[1] - pair[0] <= per_cell,
+                "a cell of track jumped {} rows, over {per_cell}: {rows:?}",
+                pair[1] - pair[0],
+            );
+        }
+
+        // And the focus takes the body back, however far it was scrolled.
+        let mut shell = with_a_voyage();
+        let at = bar(&mut shell);
+        click(&mut shell, at, at.y + track);
+        let _ = bar(&mut shell);
+        assert_eq!(shell.voyage_ui.scroll, last);
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        shell.handle_key(
+            KeyEvent::new(
+                KeyCode::Down,
+                crossterm::event::KeyModifiers::NONE,
+            ),
+            &tx,
+        );
+        let _ = bar(&mut shell);
+        assert_eq!(shell.voyage_ui.pan, None);
+        assert!(
+            shell.voyage_ui.scroll < last,
+            "the focus did not bring the body back",
+        );
     }
 }
 

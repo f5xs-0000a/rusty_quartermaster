@@ -114,9 +114,21 @@ pub enum VoyageSel {
 pub struct VoyageStatsUi {
     /// Which voyage is shown (see [`VoyageSel`]). `Live` by default.
     pub selected: VoyageSel,
-    /// Vertical scroll offset, in rows. Driven by [`Self::focus`] — the body
-    /// auto-scrolls to keep the focused item visible.
+    /// Vertical scroll offset, in rows, as the last render left it. Driven by
+    /// [`Self::focus`] — the body auto-scrolls to keep the focused item
+    /// visible — unless [`Self::pan`] has taken it over.
     pub scroll: u16,
+    /// Where the body has been scrolled to by hand, in rows. `None` while it
+    /// has not been: the window then follows the focused item, which is
+    /// where it returns the moment the focus moves.
+    ///
+    /// The scrollbar sets this rather than moving the focus, because the
+    /// focusable items are not spread evenly down the body: a stat is one row
+    /// and a chart is nine, so a bar that moved the focus crawled through the
+    /// stats — two thirds of its track scrolling nothing at all, since those
+    /// stats were already on screen — and then leapt twenty rows at a time
+    /// through the charts.
+    pub pan: Option<u16>,
     /// Focused item index. Indices `0..n_stats` are the in-body focusables
     /// (the Sea Battles section, then the Timing-onward stat numbers);
     /// `n_stats.. n_stats+CHART_TITLES.len()` are the charts. The focused
@@ -596,12 +608,19 @@ pub fn render(
         None => (0, 0),
     };
     let max_scroll = total_h.saturating_sub(body.height);
-    if focused {
-        if focus_row < ui.scroll {
-            ui.scroll = focus_row;
-        } else if focus_row + focus_h > ui.scroll + body.height {
-            ui.scroll = (focus_row + focus_h).saturating_sub(body.height);
+    match ui.pan {
+        // Scrolled by hand: the window is where it was put, and the focus does
+        // not drag it back — the focused item may be off the body until the
+        // focus moves again.
+        Some(at) => ui.scroll = at,
+        None if focused => {
+            if focus_row < ui.scroll {
+                ui.scroll = focus_row;
+            } else if focus_row + focus_h > ui.scroll + body.height {
+                ui.scroll = (focus_row + focus_h).saturating_sub(body.height);
+            }
         }
+        None => {}
     }
     ui.scroll = ui.scroll.min(max_scroll);
 
