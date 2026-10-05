@@ -6,6 +6,10 @@
 //! amount, so whatever's missing was used (`Restock - Stock`). Booty is goods
 //! *won* and isn't consumable, so it's ignored here. See the
 //! `voyage-statistics-model` memory and [`crate::voyage::Voyage`].
+//!
+//! Figures are whole-voyage totals. Rum and rum spice burn at rates the game
+//! fixes (per crew member, per hour), so dividing them by the crew or the clock
+//! only restates the roster — those rates aren't kept.
 
 use crate::{
     api::Commodity,
@@ -37,10 +41,8 @@ impl RumUse {
     }
 }
 
-/// Consumption over a voyage plus the per-crew / per-minute rates derived from
-/// it. Rate fields are `None` when their denominator is unavailable: no battles
-/// yet (per-battle) or the run hasn't ported so there's no duration /
-/// time-weighted average crew (the per-minute / per-crew figures).
+/// Whole-voyage consumption plus the per-battle ball rate derived from it. That
+/// rate is `None` when its denominator is unavailable (no battles yet).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
 pub struct ConsumptionStats {
@@ -53,24 +55,12 @@ pub struct ConsumptionStats {
     /// Rum used, broken down by tier (raw item counts). The weighted total
     /// is [`RumUse::weighted`].
     pub rum: RumUse,
-    /// Rum per (pirate + swabbie), over the time-weighted average crew.
-    pub rum_per_crew: Option<f64>,
-    /// Rum per (pirate + swabbie) per minute.
-    pub rum_per_crew_per_min: Option<f64>,
-    /// Rum spice used (`Restock - Stock`). Approximate: a stock delta whose
-    /// per-mercenary rate is only ground-truthed at won fights and skewed by
-    /// an unseen restock, running out mid-run, or a sea-battle loss.
+    /// Rum spice used (`Restock - Stock`).
     pub rum_spice: u64,
-    /// Rum spice per mercenary (time-weighted average mercenaries) — spice
-    /// fuels mercenaries, not swabbies. `None` when no mercenaries were
-    /// aboard.
-    pub rum_spice_per_mercenary: Option<f64>,
-    /// Rum spice per mercenary per minute.
-    pub rum_spice_per_mercenary_per_min: Option<f64>,
-    /// The run contains a sea-battle loss, which disrupts the crew and denies
-    /// a final winners-roster ground truth — so the per-mercenary figure
-    /// is especially unreliable here (beyond the usual caveats).
-    pub rum_spice_unreliable: bool,
+    /// The stock delta is untrustworthy beyond the usual caveats: the voyage
+    /// is poisoned, or a sea battle was lost and the hold looted of goods
+    /// nobody used.
+    pub delta_unreliable: bool,
 }
 
 /// Quantity consumed of one commodity by canonical name: `Restock - Stock`
@@ -126,54 +116,25 @@ pub fn consumption_stats(
     .iter()
     .map(|name| used_by_name(rows, commodities, name))
     .sum::<u64>();
-    let rum = rum_used(rows, commodities);
-    let rum_spice = used_by_name(rows, commodities, "Rum spice");
-
     let battles = voyage.battles.len() as u32;
-    let minutes = voyage
-        .duration_secs()
-        .map(|s| s as f64 / 60.0)
-        .filter(|m| *m > 0.0);
-    let avg_swabbies = voyage.avg_swabbies();
-    let avg_mercenaries = voyage.avg_mercenaries();
-    let avg_crew = match (voyage.avg_pirates(), avg_swabbies) {
-        (Some(p), Some(s)) => Some(p + s),
-        _ => None,
-    };
+    ConsumptionStats {
+        balls,
+        balls_per_battle: (0 < battles).then(|| balls as f64 / battles as f64),
+        rum: rum_used(rows, commodities),
+        rum_spice: used_by_name(rows, commodities, "Rum spice"),
+        delta_unreliable: delta_unreliable(voyage),
+    }
+}
 
-    // Divide `amount` by a denominator that must be present and positive.
-    let per = |amount: u64, denom: Option<f64>| {
-        denom.filter(|d| *d > 0.0).map(|d| amount as f64 / d)
-    };
-
-    let balls_per_battle = (battles > 0).then(|| balls as f64 / battles as f64);
-    let rum_per_crew = per(rum.weighted(), avg_crew);
-    let rum_per_crew_per_min =
-        rum_per_crew.and_then(|a| minutes.map(|m| a / m));
-    // Spice fuels mercenaries, so it's charged per mercenary, not per swabbie.
-    let rum_spice_per_mercenary = per(rum_spice, avg_mercenaries);
-    let rum_spice_per_mercenary_per_min =
-        rum_spice_per_mercenary.and_then(|a| minutes.map(|m| a / m));
-    // A sea-battle loss disrupts the crew and denies a final ground truth; a
-    // poisoned run (left mid-run, or the hold ran too low on rum spice) is
-    // likewise untrustworthy.
-    let rum_spice_unreliable = voyage.poisoned
+/// Whether `voyage`'s stock delta counts goods the run never used: a lost sea
+/// battle lets the hold be looted, and a poisoned run (we left mid-run, or the
+/// hold ran too low on rum spice) has gaps of its own.
+pub(super) fn delta_unreliable(voyage: &Voyage) -> bool {
+    voyage.poisoned
         || voyage
             .battles
             .iter()
-            .any(|b| matches!(b.outcome, BattleOutcome::Lost));
-
-    ConsumptionStats {
-        balls,
-        balls_per_battle,
-        rum,
-        rum_per_crew,
-        rum_per_crew_per_min,
-        rum_spice,
-        rum_spice_per_mercenary,
-        rum_spice_per_mercenary_per_min,
-        rum_spice_unreliable,
-    }
+            .any(|b| matches!(b.outcome, BattleOutcome::Lost))
 }
 
 /// Aggregate battle / loot / timing stats for a voyage. Per-crew figures use
@@ -538,18 +499,10 @@ mod tests {
             row(3, "20", "5"),   // 15 fine rum -> x6 = 90 rum
             row(4, "30", "12"),  // 18 rum spice
         ];
-        // One-hour run, 4 battles, constant crew of 5 pirates + 3 NPC crew (2
-        // of them mercenaries).
         let voy = Voyage {
             sailed_at: Some(dt(12, 0, 0)),
             ported_at: Some(dt(13, 0, 0)),
             battles: vec![Battle::default(); 4],
-            crew_samples: vec![CrewSample {
-                at: dt(12, 0, 0),
-                pirates: 5,
-                swabbies: 3, // total NPC crew (manpower)
-                mercenaries: 2,
-            }],
             ..Voyage::default()
         };
 
@@ -561,26 +514,12 @@ mod tests {
         assert_eq!(stats.rum.swill, 0);
         assert_eq!(stats.rum.weighted(), 270); // 60×3 + 15×6
         assert_eq!(stats.rum_spice, 18);
-        approx(stats.rum_per_crew.unwrap(), 270.0 / 8.0); // crew = 5 + 3
-        approx(
-            stats.rum_per_crew_per_min.unwrap(),
-            270.0 / 8.0 / 60.0,
-        );
-        // Spice is charged per mercenary (2), not per swabbie.
-        approx(
-            stats.rum_spice_per_mercenary.unwrap(),
-            9.0,
-        ); // 18 / 2
-        approx(
-            stats.rum_spice_per_mercenary_per_min.unwrap(),
-            9.0 / 60.0,
-        );
-        assert!(!stats.rum_spice_unreliable); // no losses (default battles)
+        assert!(!stats.delta_unreliable); // no losses (default battles)
     }
 
     #[test]
-    fn rum_spice_flagged_unreliable_after_a_loss() {
-        // A sea-battle loss disrupts the crew and denies a final ground truth.
+    fn the_delta_is_flagged_unreliable_after_a_loss() {
+        // A lost sea battle lets the hold be looted of goods nobody fired.
         let voy = Voyage {
             sailed_at: Some(dt(12, 0, 0)),
             ported_at: Some(dt(13, 0, 0)),
@@ -591,7 +530,7 @@ mod tests {
             ..Voyage::default()
         };
         let stats = consumption_stats(&voy, &[], &[]);
-        assert!(stats.rum_spice_unreliable);
+        assert!(stats.delta_unreliable);
     }
 
     #[test]

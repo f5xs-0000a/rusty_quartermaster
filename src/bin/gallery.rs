@@ -597,16 +597,27 @@ const PVP: &[&str] = &[
 /// A few goods to name the inventory rows. Ids only have to agree with the
 /// rows that reference them.
 fn commodities() -> Vec<Commodity> {
-    ["Rum", "Iron", "Hemp", "Wood", "Cloth"]
-        .into_iter()
-        .enumerate()
-        .map(|(i, name)| {
-            Commodity {
-                id: i as u64 + 1,
-                name: name.to_owned(),
-            }
-        })
-        .collect()
+    [
+        "Rum",
+        "Iron",
+        "Hemp",
+        "Wood",
+        "Cloth",
+        // consumables, for the Voyage Statistics consumption section
+        "Small cannon balls",
+        "Grog",
+        "Fine rum",
+        "Rum spice",
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, name)| {
+        Commodity {
+            id: i as u64 + 1,
+            name: name.to_owned(),
+        }
+    })
+    .collect()
 }
 
 /// A shell with a chat log attached and our pirate known, but nothing parsed.
@@ -1537,6 +1548,32 @@ fn voyage_states(states: &mut Vec<State>) {
         |shell| {
             feed(shell, PILLAGE);
             open(shell, AppId::Voyage, true);
+        },
+    ));
+    // Consumption is a Profits stock delta, so the section only appears for a
+    // run whose hold came back lighter. The hold carried swill it never drank,
+    // which is why no swill row shows.
+    states.push(state(
+        "voyage-consumption",
+        "Voyage Statistics on a pillage that emptied its hold",
+        |shell| {
+            feed(shell, PILLAGE);
+            // (commodity id, restock, stock): balls, grog, fine rum, spice.
+            for (id, restock, stock) in [
+                (6, "200", "50"),
+                (7, "100", "40"),
+                (8, "20", "5"),
+                (9, "30", "12"),
+            ] {
+                let mut used = InventoryRow::new(id);
+                used.restock = restock.to_owned();
+                used.stock = stock.to_owned();
+                shell.profits.rows.push(used);
+            }
+            open(shell, AppId::Voyage, true);
+            // The window follows the focus, so name the field rather than
+            // counting rows down to it.
+            shell.voyage_ui.pending_focus_key = Some("Rum spice".to_owned());
         },
     ));
     states.push(state(

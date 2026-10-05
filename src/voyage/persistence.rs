@@ -186,8 +186,10 @@ impl SavedBattle {
 /// stock delta (`Restock - Stock`). The live delta can't be reconstructed once
 /// the hold is restocked, so it's frozen here. Rum is stored as the raw
 /// per-tier counts (the potency-weighted total is derived). Cannonballs are
-/// size-agnostic. `None` on a [`SavedVoyage`] means consumption wasn't recorded
-/// for that run (e.g. older history, or the user declined to store it).
+/// size-agnostic. Every figure is a whole-voyage total — the per-crew rates are
+/// game constants and so aren't kept. `None` on a [`SavedVoyage`] means
+/// consumption wasn't recorded for that run (e.g. older history, or the user
+/// declined to store it).
 #[derive(Serialize, Deserialize, Clone, Default)]
 pub struct SavedConsumption {
     /// Cannonballs fired, summed across all sizes (a ship burns only its own).
@@ -242,8 +244,8 @@ pub struct SavedVoyage {
     #[serde(default)]
     pub duration_secs: Option<i64>,
     /// The voyage's data has gaps (we left mid-run, or the hold ran too low on
-    /// rum spice). Gates `rum_spice_unreliable` on reload. Older files
-    /// default to `false`.
+    /// rum spice). Gates `ConsumptionStats::delta_unreliable` on reload. Older
+    /// files default to `false`.
     #[serde(default)]
     pub poisoned: bool,
     /// The run reached a booty division. Gates the Divvy section (goods +
@@ -256,9 +258,9 @@ pub struct SavedVoyage {
     /// Time-weighted average total NPC crew (swabbies + mercenaries).
     #[serde(default)]
     pub avg_swabbies: Option<f64>,
-    /// Time-weighted average mercenaries — the rum-spice-per-mercenary
-    /// denominator. Legacy files default to `None` (no per-merc figure for
-    /// old history).
+    /// Time-weighted average mercenaries over the run, stored alongside the
+    /// other crew averages. Legacy files default to `None` (old history
+    /// didn't record it).
     #[serde(default)]
     pub avg_mercenaries: Option<f64>,
     /// Consumables used over the run, or `None` when not recorded. See
@@ -585,48 +587,22 @@ impl SavedBattle {
 
 impl SavedConsumption {
     /// Rebuild [`ConsumptionStats`] from the frozen counts plus the voyage's
-    /// persisted averages/duration — the live inventory delta is long gone, so
-    /// we reuse the stored figures rather than recompute. Mirrors the rate
-    /// math in [`crate::voyage::stats::consumption_stats`].
+    /// battles — the live inventory delta is long gone, so we reuse the stored
+    /// figures rather than recompute. Mirrors the rate math in
+    /// [`crate::voyage::stats::consumption_stats`].
     pub fn to_stats(&self, voyage: &Voyage) -> ConsumptionStats {
-        let rum = RumUse {
-            swill: self.swill,
-            grog: self.grog,
-            fine_rum: self.fine_rum,
-        };
         let battles = voyage.battles.len() as u32;
-        let minutes = voyage
-            .duration_secs()
-            .map(|s| s as f64 / 60.0)
-            .filter(|m| *m > 0.0);
-        let avg_swabbies = voyage.avg_swabbies();
-        let avg_mercenaries = voyage.avg_mercenaries();
-        let avg_crew = match (voyage.avg_pirates(), avg_swabbies) {
-            (Some(p), Some(s)) => Some(p + s),
-            _ => None,
-        };
-        let per = |amount: u64, denom: Option<f64>| {
-            denom.filter(|d| *d > 0.0).map(|d| amount as f64 / d)
-        };
-        let rum_per_crew = per(rum.weighted(), avg_crew);
-        let rum_spice_per_mercenary = per(self.rum_spice, avg_mercenaries);
         ConsumptionStats {
             balls: self.cannonballs,
-            balls_per_battle: (battles > 0)
+            balls_per_battle: (0 < battles)
                 .then(|| self.cannonballs as f64 / battles as f64),
-            rum,
-            rum_per_crew,
-            rum_per_crew_per_min: rum_per_crew
-                .and_then(|a| minutes.map(|m| a / m)),
+            rum: RumUse {
+                swill: self.swill,
+                grog: self.grog,
+                fine_rum: self.fine_rum,
+            },
             rum_spice: self.rum_spice,
-            rum_spice_per_mercenary,
-            rum_spice_per_mercenary_per_min: rum_spice_per_mercenary
-                .and_then(|a| minutes.map(|m| a / m)),
-            rum_spice_unreliable: voyage.poisoned
-                || voyage
-                    .battles
-                    .iter()
-                    .any(|b| matches!(b.outcome, BattleOutcome::Lost)),
+            delta_unreliable: crate::voyage::stats::delta_unreliable(voyage),
         }
     }
 }
@@ -779,10 +755,10 @@ mod tests {
     }
 
     #[test]
-    fn poison_flag_round_trips_and_flags_rum_spice() {
+    fn poison_flag_round_trips_and_flags_the_delta() {
         // A run poisoned live (e.g. by the rum-spice hiring-limit tell)
-        // persists the flag, and a reloaded poisoned run reports its
-        // rum-spice figure as unreliable even without a lost battle.
+        // persists the flag, and a reloaded poisoned run reports its stock
+        // delta as unreliable even without a lost battle.
         let sv = SavedVoyage {
             duration_secs: Some(3600),
             avg_pirates: Some(5.0),
@@ -806,8 +782,8 @@ mod tests {
         );
         let cs = sv.consumption.as_ref().unwrap().to_stats(&voy);
         assert!(
-            cs.rum_spice_unreliable,
-            "a poisoned run's rum-spice stat is untrustworthy despite no loss",
+            cs.delta_unreliable,
+            "a poisoned run's stock delta is untrustworthy despite no loss",
         );
     }
 
@@ -945,9 +921,9 @@ mod tests {
         // Consumption rebuilds from the frozen counts (not the live inventory).
         let cs = sv.consumption.as_ref().unwrap().to_stats(&voy);
         assert_eq!(cs.balls, 150);
+        assert!((cs.balls_per_battle.unwrap() - 75.0).abs() < 1e-9);
         assert_eq!(cs.rum.weighted(), 60 * 3 + 15 * 6);
-        // 270 weighted rum over an average crew of 8.
-        assert!((cs.rum_per_crew.unwrap() - 270.0 / 8.0).abs() < 1e-9);
+        assert_eq!(cs.rum_spice, 18);
     }
 
     #[test]

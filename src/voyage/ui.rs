@@ -315,6 +315,7 @@ pub enum VoyageBadge {
 
 /// Everything the page needs to draw one voyage, computed by the caller so this
 /// module stays free of app-state plumbing.
+#[derive(Default)]
 pub struct VoyageView {
     pub has_voyage: bool,
     /// This is a read-only history page (loaded from disk): no save/discard,
@@ -2778,75 +2779,74 @@ fn build_lines(view: &VoyageView) -> Built {
         out.blank();
     }
 
-    // Consumption.
-    out.section("Consumption");
-    out.stat(
-        "Cannon Balls",
-        commas(c.balls as i64),
-        "Cannon balls fired this voyage (Restock minus Stock, summed across \
-         all sizes — a ship burns only its own).",
-    );
-    out.stat(
-        "  per battle",
-        opt1(c.balls_per_battle),
-        "Average cannonballs fired per sea battle.",
-    );
-    out.stat(
-        "Rum",
-        commas(c.rum.weighted() as i64),
-        "Rum consumed, weighted by potency (swill 2 / grog 3 / fine rum 6).",
-    );
-    out.stat(
-        "  swill",
-        commas(c.rum.swill as i64),
-        "Swill drained this voyage (Restock minus Stock).",
-    );
-    out.stat(
-        "  grog",
-        commas(c.rum.grog as i64),
-        "Grog drained this voyage (Restock minus Stock).",
-    );
-    out.stat(
-        "  fine rum",
-        commas(c.rum.fine_rum as i64),
-        "Fine rum drained this voyage (Restock minus Stock).",
-    );
-    out.stat(
-        "  per crew",
-        opt1(c.rum_per_crew),
-        "Rum per crew member aboard.",
-    );
-    out.stat(
-        "  per crew / min",
-        opt2(c.rum_per_crew_per_min),
-        "Rum per crew member per minute of the run.",
-    );
-    out.stat(
-        "Rum spice",
-        commas(c.rum_spice as i64),
-        "Rum spice consumed this voyage.",
-    );
-    out.stat(
-        "  per merc",
-        opt1(c.rum_spice_per_mercenary),
-        "Rum spice per mercenary — spice fuels mercenaries, not swabbies.",
-    );
-    out.stat(
-        "  per merc / min",
-        opt2(c.rum_spice_per_mercenary_per_min),
-        "Rum spice per mercenary per minute (approximate — see the note \
-         below).",
-    );
-    let warn = if c.rum_spice_unreliable {
-        "Due to losing battles, these statistics are inaccurate measures of \
-         consumption."
-    } else {
-        "These statistics are not accurate measures of consumption."
-    };
-    out.wrap(
-        warn,
-        Style::default().fg(Color::DarkGray).italic(),
-    );
+    // Consumption. Every figure is a whole-voyage total, and only what the
+    // hold actually lost earns a row — a zero says nothing about the run, so a
+    // commodity the voyage never touched goes unmentioned, as does the whole
+    // section when none of them moved.
+    let rum = c.rum.weighted();
+    if 0 < c.balls || 0 < rum || 0 < c.rum_spice {
+        out.section("Consumption");
+        if 0 < c.balls {
+            out.stat(
+                "Cannon Balls",
+                commas(c.balls as i64),
+                "Cannon balls fired this voyage (Restock minus Stock, summed \
+                 across all sizes — a ship burns only its own).",
+            );
+            out.stat(
+                "  per battle",
+                opt1(c.balls_per_battle),
+                "Average cannonballs fired per sea battle.",
+            );
+        }
+        if 0 < rum {
+            out.stat(
+                "Rum",
+                commas(rum as i64),
+                "Rum consumed, weighted by potency (swill 2 / grog 3 / fine \
+                 rum 6).",
+            );
+            for (label, used, tip) in [
+                (
+                    "  swill",
+                    c.rum.swill,
+                    "Swill drained this voyage (Restock minus Stock).",
+                ),
+                (
+                    "  grog",
+                    c.rum.grog,
+                    "Grog drained this voyage (Restock minus Stock).",
+                ),
+                (
+                    "  fine rum",
+                    c.rum.fine_rum,
+                    "Fine rum drained this voyage (Restock minus Stock).",
+                ),
+            ] {
+                if 0 < used {
+                    out.stat(label, commas(used as i64), tip);
+                }
+            }
+        }
+        if 0 < c.rum_spice {
+            out.stat(
+                "Rum spice",
+                commas(c.rum_spice as i64),
+                "Rum spice consumed this voyage — spice fuels mercenaries, \
+                 not swabbies.",
+            );
+        }
+        let warn = if c.delta_unreliable {
+            "Due to losing battles, these statistics are inaccurate measures \
+             of consumption."
+        } else {
+            "These statistics are not accurate measures of consumption."
+        };
+        out.wrap(
+            warn,
+            Style::default().fg(Color::DarkGray).italic(),
+        );
+    }
 
     out
 }
@@ -3013,7 +3013,75 @@ fn opt1(x: Option<f64>) -> String {
         .unwrap_or_else(|| "—".to_string())
 }
 
-fn opt2(x: Option<f64>) -> String {
-    x.map(|v| format!("{v:.2}"))
-        .unwrap_or_else(|| "—".to_string())
+#[cfg(test)]
+mod tests {
+    use super::{ConsumptionStats, VoyageView, build_lines};
+    use crate::voyage::stats::RumUse;
+
+    /// The page body as plain text, laid out at a width that clips nothing.
+    fn body(view: &VoyageView) -> Vec<String> {
+        let mut built = build_lines(view);
+        built.finalize(48);
+        built
+            .lines
+            .iter()
+            .map(|line| {
+                line.spans
+                    .iter()
+                    .map(|span| span.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect()
+    }
+
+    #[test]
+    fn consumption_speaks_only_of_what_the_hold_lost() {
+        // A run that fired and drank, but carried swill it never touched.
+        let used = VoyageView {
+            has_voyage: true,
+            consumption: ConsumptionStats {
+                balls: 150,
+                balls_per_battle: Some(50.0),
+                rum: RumUse {
+                    swill: 0,
+                    grog: 60,
+                    fine_rum: 15,
+                },
+                rum_spice: 18,
+                delta_unreliable: false,
+            },
+            ..VoyageView::default()
+        };
+        let lines = body(&used);
+        let has = |want: &str| lines.iter().any(|l| l.contains(want));
+        assert!(
+            has("Consumption"),
+            "a hold that lost something reports it: {lines:#?}"
+        );
+        assert!(has("Cannon Balls") && has("150"));
+        assert!(has("per battle") && has("50.0"));
+        assert!(has("Rum") && has("270")); // 60×3 + 15×6
+        assert!(has("grog") && has("60"));
+        assert!(has("fine rum") && has("15"));
+        assert!(has("Rum spice") && has("18"));
+        assert!(
+            !has("swill"),
+            "a tier the voyage never drank goes unmentioned: {lines:#?}"
+        );
+        assert!(
+            has("not accurate measures"),
+            "the stock delta's caveat rides with the figures: {lines:#?}"
+        );
+
+        // Nothing consumed, nothing to say — not even a zero.
+        let quiet = VoyageView {
+            has_voyage: true,
+            ..VoyageView::default()
+        };
+        let lines = body(&quiet);
+        assert!(
+            lines.iter().all(|l| !l.contains("Consumption")),
+            "an untouched hold keeps the section away: {lines:#?}"
+        );
+    }
 }

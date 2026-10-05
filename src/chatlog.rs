@@ -1077,10 +1077,9 @@ impl GameState {
         {
             self.spice_swap_armed = true;
             // Too little rum spice in the hold to sustain the mercenaries: the
-            // hold ran short and mercs are being shed to spice, so
-            // this run's rum-spice consumption delta can no longer
-            // be trusted. Poison the voyage — the flag persists and
-            // gates `rum_spice_unreliable`.
+            // hold ran short and mercs are being shed to spice, so this run's
+            // headcounts and stock deltas can no longer be trusted. Poison the
+            // voyage — the flag persists and gates `delta_unreliable`.
             if let Some(voy) = self.current_voyage_mut() {
                 voy.poisoned = true;
             }

@@ -444,7 +444,7 @@ pub struct Voyage {
     /// Resolved battles, in chronological order.
     pub battles: Vec<Battle>,
     /// Headcount samples at each crew change while underway (sail-time first).
-    /// Drives the time-weighted average used for per-crew consumption stats.
+    /// Drives the time-weighted average crew behind the per-crew stats.
     pub crew_samples: Vec<CrewSample>,
     /// Index into [`Self::crew_samples`] marking the start of the current
     /// not-yet-ground-truthed stretch. On each winners-roster ground truth (a
@@ -456,7 +456,8 @@ pub struct Voyage {
     /// This voyage's data has gaps and shouldn't be fully trusted: set when we
     /// leave the vessel mid-run (before booty is divided) or when the hold
     /// runs too low on rum spice (the mercenary-hiring-limit tell). Gates
-    /// `rum_spice_unreliable`; persisted with the voyage.
+    /// [`crate::voyage::stats::ConsumptionStats::delta_unreliable`]; persisted
+    /// with the voyage.
     pub poisoned: bool,
     /// The run reached a booty division (`The booty has been divided!`). Only
     /// then are the goods-pillaged / booty-chest figures meaningful, so
@@ -538,8 +539,8 @@ impl Voyage {
         self.avg_crew(|s| s.swabbies)
     }
 
-    /// Time-weighted average mercenaries aboard over the run — the denominator
-    /// for the rum-spice-per-mercenary stat. See [`Self::avg_pirates`].
+    /// Time-weighted average mercenaries aboard over the run, persisted
+    /// alongside the other crew averages. See [`Self::avg_pirates`].
     #[allow(dead_code)] // consumed by the Voyage Statistics UI (task #7)
     pub fn avg_mercenaries(&self) -> Option<f64> {
         if let Some((_, _, m)) = self.avg_override {
