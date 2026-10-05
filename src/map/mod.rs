@@ -101,6 +101,19 @@ pub struct MapApp {
     pub search: Option<PromptField>,
     /// Whether the `?` help popup is open.
     pub help: bool,
+    /// Where the chart has been panned to, as the canvas cell its top-left
+    /// corner shows. `None` while it has not been panned, when the window is
+    /// the one that centres the cursor — and that is where it returns the
+    /// moment a league point is selected, however it was selected.
+    ///
+    /// Panning is the one thing that parts the window from the cursor, so the
+    /// cursor may be off the chart while this is set.
+    pub pan: Option<(usize, usize)>,
+    /// The canvas cell the chart's top-left corner showed when it was last
+    /// drawn, panned or not. Set by the render, read by a scrollbar click,
+    /// which pans from where the window is rather than from where it was asked
+    /// to be.
+    pub window: (usize, usize),
 }
 
 impl Default for MapApp {
@@ -117,6 +130,8 @@ impl MapApp {
             memorized: BTreeSet::new(),
             search: None,
             help: false,
+            pan: None,
+            window: (0, 0),
         }
     }
 
@@ -138,6 +153,8 @@ impl MapApp {
         match map.neighbour(from, heading) {
             Some((to, _)) => {
                 self.cursor = Some(to);
+                // Selecting a point brings the chart back to it.
+                self.pan = None;
                 true
             }
             None => false,
@@ -182,6 +199,8 @@ impl MapApp {
     pub fn jump_to(&mut self, p: Point) {
         self.cursor = Some(p);
         self.search = None;
+        // Selecting a point brings the chart back to it.
+        self.pan = None;
     }
 
     /// Whether a league can be sailed from memory: both of its ends are
@@ -346,6 +365,37 @@ mod tests {
         // north-west is the way back
         press(&mut app, KeyCode::Char('q'));
         assert_eq!(app.cursor, Some((1, 1)));
+    }
+
+    /// A panned chart is parted from the cursor only until a point is selected,
+    /// however it is selected: sailing to one or landing on one returns the
+    /// window to it. Otherwise the cursor could be left off the chart with
+    /// nothing bringing it back.
+    #[test]
+    fn selecting_a_point_returns_the_chart_to_the_cursor() {
+        let mut app = MapApp::new();
+        app.cursor_on(&MAP);
+
+        app.pan = Some((40, 40));
+        press(&mut app, KeyCode::Char('d'));
+        assert_eq!(app.cursor, Some((3, 1)));
+        assert_eq!(
+            app.pan, None,
+            "sailing left the chart panned"
+        );
+
+        app.pan = Some((40, 40));
+        app.jump_to((1, 1));
+        assert_eq!(
+            app.pan, None,
+            "a jump left the chart panned"
+        );
+
+        // Marking a point is not selecting one, so it leaves the pan alone.
+        app.pirate = Some("playerone".to_owned());
+        app.pan = Some((40, 40));
+        app.toggle_memorized();
+        assert_eq!(app.pan, Some((40, 40)));
     }
 
     #[test]

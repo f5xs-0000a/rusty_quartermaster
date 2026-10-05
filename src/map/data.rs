@@ -207,61 +207,6 @@ impl Map {
             .collect()
     }
 
-    /// The nearest league point lying beyond `from` in the direction `step`
-    /// points — east or west of it for a sideways step, south or north for an
-    /// upright one.
-    ///
-    /// This is what a scrollbar's arrow asks for. It cannot ask by grid square:
-    /// points sit several squares apart, so one square along lands in open
-    /// water, whose nearest point is the one the cursor is already on — an
-    /// arrow that asked that way would never move at all.
-    pub fn next_point_along(
-        &self,
-        from: Point,
-        step: (i32, i32),
-    ) -> Option<Point> {
-        let beyond = |p: Point| {
-            let (dx, dy) = (
-                i32::from(p.0) - i32::from(from.0),
-                i32::from(p.1) - i32::from(from.1),
-            );
-            // The step is along one axis; a point counts as beyond `from` when
-            // it lies that way along it, whatever it does on the other.
-            0 < dx * step.0 + dy * step.1
-        };
-        // Drifting across the step costs more than travelling along it, so a
-        // step keeps to the row or column it started in where that row or
-        // column holds a point at all. Without the weight the nearest
-        // point north is usually the diagonal one, and a few steps
-        // north walk sideways across the ocean.
-        const ACROSS: i64 = 4;
-        self.points().into_iter().filter(|&p| beyond(p)).min_by_key(
-            |&(x, y)| {
-                let dx = i64::from(x) - i64::from(from.0);
-                let dy = i64::from(y) - i64::from(from.1);
-                let (along, across) =
-                    if step.0 == 0 { (dy, dx) } else { (dx, dy) };
-                along * along + ACROSS * across * across
-            },
-        )
-    }
-
-    /// The league point nearest `target` in grid space, or `None` on a map with
-    /// no points at all.
-    ///
-    /// The scrollbars point at a place on the chart rather than at a point, and
-    /// the cursor only ever sits on a point, so what they ask for is snapped
-    /// here. Distance is squared Euclidean in grid steps, which keeps a point
-    /// one square away on either axis nearer than one two squares off on
-    /// either; ties go to the first in map order.
-    pub fn nearest_point(&self, target: Point) -> Option<Point> {
-        self.points().into_iter().min_by_key(|&(x, y)| {
-            let dx = i64::from(x) - i64::from(target.0);
-            let dy = i64::from(y) - i64::from(target.1);
-            dx * dx + dy * dy
-        })
-    }
-
     /// The largest `x` and `y` anything on the map occupies.
     pub fn extent(&self) -> Point {
         self.points()
@@ -361,40 +306,6 @@ mod tests {
                     map.ocean,
                     island.name
                 );
-            }
-        }
-    }
-
-    /// A scrollbar's arrow asks for the next point along an axis, and must
-    /// actually get one: a point sits several grid squares from its
-    /// neighbours, so an ask that stepped one square and snapped back would
-    /// land on the point it started from and the arrow would be dead.
-    #[test]
-    fn a_step_along_an_axis_reaches_a_further_point() {
-        // One ocean is enough: what is being checked is the geometry of a step,
-        // not any one map's layout.
-        for map in [Map::for_ocean("Emerald").expect("Emerald map")] {
-            let points = map.points();
-            for &from in &points {
-                for step in [(1, 0), (-1, 0), (0, 1), (0, -1)] {
-                    let Some(to) = map.next_point_along(from, step) else {
-                        continue; // nothing that way at all
-                    };
-                    assert_ne!(
-                        to, from,
-                        "{}: a step {step:?} from {from:?} stayed put",
-                        map.ocean
-                    );
-                    let (dx, dy) = (
-                        i32::from(to.0) - i32::from(from.0),
-                        i32::from(to.1) - i32::from(from.1),
-                    );
-                    assert!(
-                        0 < dx * step.0 + dy * step.1,
-                        "{}: a step {step:?} from {from:?} went to {to:?}",
-                        map.ocean
-                    );
-                }
             }
         }
     }

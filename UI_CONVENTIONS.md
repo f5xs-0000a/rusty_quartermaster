@@ -388,11 +388,9 @@ A click on the track is a jump to where it pointed rather than a page-step, so
 a long list is crossed in one click. The thumb is not corrected for its own
 length, which on the short tracks a four-row view gives would be noise.
 
-An arrow is a *step*, and on the Map that cannot mean a grid square: the sailing
-cursor only ever sits on a league point, and points are several squares apart, so
-a one-square ask would snap straight back to the point it came from and the arrow
-would be dead. It asks for the next point that way instead, keeping to the row or
-column it started in where that row or column holds a point at all.
+An arrow is a *step* of one row, except on the Map, where a row is a quarter of a
+league point across and half of one down. There it steps a whole point, which is
+the distance the page is drawn in.
 
 The thumb is not dragged. Nothing in the app is.
 
@@ -402,20 +400,22 @@ The bar reads the same for every view; what a view does with the ask depends on
 what moves its window.
 
 - **Its own window.** The two popups keep a scroll offset and nothing else
-  decides it, so the bar sets it outright.
-- **A cursor's.** The page views have no independent window at all: the
+  decides it, so the bar sets it outright. The Map's chart is the same once it
+  has been panned: the bars part the window from the sailing cursor and set it
+  themselves, so the chart reaches the canvas's own edges and caps there. The
+  parting lasts until a league point is selected — sailed to, clicked, or found
+  by search — which returns the window to centring the cursor. Until then the
+  cursor may be off the chart, which is what lets the bars reach open sea.
+- **A cursor's.** The other page views have no independent window at all: the
   Inventory, the panes and the Skill Leaderboard scroll to keep their selection
-  in sight, the Voyage body scrolls to keep the focused stat or chart in sight,
-  and the Map's chart is centred on the sailing cursor — each recomputed from
-  that cursor every frame. The bar moves the cursor and the window follows,
-  which is the only thing it could mean. The wheel over those views already
-  works this way.
+  in sight, and the Voyage body scrolls to keep the focused stat or chart in
+  sight — each recomputed from that cursor every frame. The bar moves the cursor
+  and the window follows, which is the only thing it could mean. The wheel over
+  those views already works this way.
 
   What the cursor is differs by view, and so does what the bar's two ends mean.
   The Inventory's sideways bar runs from the first editable column to the last,
-  since the Item column is not one the cell cursor can rest on. The Map's run
-  across the ocean, and because the cursor only ever sits on a league point, a
-  jump lands on the point nearest the place it pointed at.
+  since the Item column is not one the cell cursor can rest on.
 
 A view of the second kind is focused before its cursor moves: a cursor that
 moves out of sight has not visibly moved at all.
@@ -424,12 +424,6 @@ The consequence worth knowing: on a cursor-driven view the thumb lands near
 where it was pointed rather than exactly under the pointer, because the rows
 the thumb is measured in and the items the cursor counts are not the same
 thing — the Voyage body's focusables are a dozen stats spread over fifty rows.
-
-On the Map the gap is wider still, and shows at the ends. The bar measures the
-canvas, which carries a margin of open sea around the outermost points, while the
-cursor can only travel between the points themselves — so the window stops short
-of the canvas edge and the arrows stay arrows however far the cursor sails. What
-the bar can reach is the cursor's travel, not the drawing's.
 
 ### Implementation
 
@@ -483,7 +477,7 @@ Seven views scroll, and each has a bar:
 | Jobbers panes | that pane's selection | `80x24-jobbers-long-roster` |
 | Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster` |
 | Voyage body | the focused stat or chart | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
-| Map chart, both ways | the sailing cursor | `80x24-map-ocean` |
+| Map chart, both ways | its own pan, until a point is selected | `80x24-map-ocean` |
 
 ### The answer must not move as focus moves
 

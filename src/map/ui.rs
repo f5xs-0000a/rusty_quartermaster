@@ -33,8 +33,8 @@ const METADATA_WIDTH: u16 = 32;
 // two rows per grid cell keeps the map's square grid square on screen: an
 // east-west league is a seven-glyph run and a diagonal is one glyph in the
 // row between
-const CELL_W: usize = 4;
-const CELL_H: usize = 2;
+pub(crate) const CELL_W: usize = 4;
+pub(crate) const CELL_H: usize = 2;
 // blank space around the grid so labels at the edge have room
 const MARGIN_X: usize = 14;
 const MARGIN_Y: usize = 1;
@@ -795,6 +795,13 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             Span::raw("  put the cursor on a league point"),
         ]),
         Line::from(vec![
+            key("wheel"),
+            Span::raw("  pan the chart, as the scrollbars do"),
+        ]),
+        Line::from(dim(
+            "  a panned chart returns to the cursor when a point is selected."
+        )),
+        Line::from(vec![
             key("Up"),
             Span::raw("     back to the top bar"),
         ]),
@@ -902,8 +909,25 @@ fn draw_map(
         port.width as usize,
         port.height as usize,
     );
-    let ox = origin(cx, vw, canvas.w);
-    let oy = origin(cy, vh, canvas.h);
+    // Panned, the window is where the user put it, held inside the canvas in
+    // case the terminal has grown since; otherwise it is the one that centres
+    // the cursor. Either way the window is recorded, since a scrollbar click
+    // pans from wherever it is now.
+    let (ox, oy) = match app.pan {
+        Some((x, y)) => {
+            (
+                x.min(canvas.w.saturating_sub(vw)),
+                y.min(canvas.h.saturating_sub(vh)),
+            )
+        }
+        None => {
+            (
+                origin(cx, vw, canvas.w),
+                origin(cy, vh, canvas.h),
+            )
+        }
+    };
+    app.window = (ox, oy);
 
     crate::utils::render_scrollbar(
         frame,

@@ -3112,52 +3112,47 @@ impl AppShell {
                 self.voyage_ui.focus =
                     hit.resolve(self.voyage_ui.focus, count - 1);
             }
-            // The chart's window is centred on the sailing cursor, and the
-            // cursor sits on league points — so a jump asks for a place on the
-            // map and lands on the nearest point to it, while a step asks for
-            // the next point that way.
+            // The chart's bars pan it, which parts the window from the cursor
+            // until a point is selected again. The window is the bar's own to
+            // set: its cells are canvas cells, so the last offset falls out of
+            // the bar's length the way a popup's does.
             ScrollView::MapCanvas => {
-                let Some(map) = self.ocean_map() else {
-                    return;
-                };
-                let Some(cursor) = self.map.cursor_on(map) else {
-                    return;
-                };
-                let (max_x, max_y) = map.extent();
-                let next = match hit {
+                let last = total.saturating_sub(match axis {
+                    ScrollAxis::Vertical => bar.height as usize,
+                    ScrollAxis::Horizontal => bar.width as usize,
+                });
+                let (x, y) = self.map.window;
+                self.global_focus = GlobalFocus::Content;
+                // An arrow pans by a league point, not by the character cell a
+                // row of the list would be: a quarter of a point is no distance
+                // at all across a canvas five hundred cells wide.
+                let along = match hit {
                     crate::utils::ScrollHit::Step(by) => {
-                        let step = match axis {
-                            ScrollAxis::Vertical => (0, by),
-                            ScrollAxis::Horizontal => (by, 0),
+                        let (at, step) = match axis {
+                            ScrollAxis::Vertical => (y, crate::map::ui::CELL_H),
+                            ScrollAxis::Horizontal => {
+                                (x, crate::map::ui::CELL_W)
+                            }
                         };
-                        map.next_point_along(cursor, step)
+                        if by < 0 {
+                            at.saturating_sub(step)
+                        } else {
+                            (at + step).min(last)
+                        }
                     }
                     crate::utils::ScrollHit::Jump {
                         ..
                     } => {
-                        let (cx, cy) = cursor;
-                        map.nearest_point(match axis {
-                            ScrollAxis::Vertical => {
-                                (
-                                    cx,
-                                    hit.resolve(cy as usize, max_y as usize)
-                                        as u16,
-                                )
-                            }
-                            ScrollAxis::Horizontal => {
-                                (
-                                    hit.resolve(cx as usize, max_x as usize)
-                                        as u16,
-                                    cy,
-                                )
-                            }
-                        })
+                        match axis {
+                            ScrollAxis::Vertical => hit.resolve(y, last),
+                            ScrollAxis::Horizontal => hit.resolve(x, last),
+                        }
                     }
                 };
-                if let Some(p) = next {
-                    self.global_focus = GlobalFocus::Content;
-                    self.map.jump_to(p);
-                }
+                self.map.pan = Some(match axis {
+                    ScrollAxis::Vertical => (x, along),
+                    ScrollAxis::Horizontal => (along, y),
+                });
             }
         }
     }
@@ -3771,8 +3766,21 @@ impl AppShell {
                         self.voyage_ui.focus.saturating_add(1);
                 }
             }
-            // The map follows the cursor, not the wheel.
-            AppId::Map | AppId::Exit => {}
+            // The wheel pans the chart and leaves the cursor where it is. The
+            // far end is clamped by the render, which is what knows how large
+            // the canvas is.
+            AppId::Map => {
+                let (x, y) = self.map.window;
+                self.map.pan = Some((
+                    x,
+                    if delta < 0 {
+                        y.saturating_sub(crate::map::ui::CELL_H)
+                    } else {
+                        y.saturating_add(crate::map::ui::CELL_H)
+                    },
+                ));
+            }
+            AppId::Exit => {}
         }
     }
 
