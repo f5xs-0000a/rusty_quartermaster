@@ -32,9 +32,11 @@ mod bare;
 mod cache;
 mod chatlog;
 mod clickmap;
+mod clipboard;
 mod commodities;
 mod damage;
-// parsed model only; nothing hands the app a duty report yet
+// the model is richer than the roster is interested in: the token shapes,
+// chest tiers and ratings are parsed and wait for a reader
 #[allow(dead_code)]
 mod duty;
 mod hold;
@@ -141,11 +143,13 @@ struct Args {
     #[arg(long, value_name = "SECONDS", default_value_t = 60)]
     ypp_query_rate: u64,
 
-    /// Watch the clipboard for a copied hold and offer it to Profits.
+    /// Watch the clipboard for a copied hold or duty report.
     ///
-    /// When set, the clipboard is checked about once a second; when the
-    /// game's hold JSON appears on it, Profits asks before filling the Stock
-    /// column from it. Off by default: the clipboard is never read.
+    /// When set, the clipboard is checked about once a second. A copied hold
+    /// has Profits ask before filling the Stock column from it; a copied duty
+    /// report folds the pirates it names into the current vessel's roster,
+    /// asking first when it looks too unlike the vessel we think we're on.
+    /// Off by default: the clipboard is never read.
     #[arg(long)]
     clipboard: bool,
 }
@@ -459,11 +463,11 @@ async fn main() -> io::Result<()> {
         chatlog::spawn_tailer(path.clone(), offset, chat_tx);
     }
 
-    // -- Clipboard: offer a copied hold to the Profits page (opt-in) --
-    let (hold_tx, mut hold_rx) =
-        tokio::sync::mpsc::unbounded_channel::<hold::HoldContents>();
+    // -- Clipboard: take a copied hold or duty report (opt-in) --
+    let (clip_tx, mut clip_rx) =
+        tokio::sync::mpsc::unbounded_channel::<clipboard::Copied>();
     if args.clipboard {
-        hold::spawn_watcher(hold_tx);
+        clipboard::spawn_watcher(clip_tx);
     }
 
     // -- Background pirate-stat fetching (yoweb) --
@@ -525,10 +529,16 @@ async fn main() -> io::Result<()> {
             shell.feed_chat_line(&line);
         }
 
-        while let Ok(hold) = hold_rx.try_recv() {
-            shell.queue_hold_import(&hold);
+        while let Ok(copied) = clip_rx.try_recv() {
+            match copied {
+                clipboard::Copied::Hold(hold) => shell.queue_hold_import(&hold),
+                clipboard::Copied::Duty(report) => {
+                    shell.take_duty_report(&report)
+                }
+            }
         }
         shell.surface_hold_import();
+        shell.surface_roster_import();
 
         // Absorb completed pirate fetches, folding each into the cache. Clear
         // the in-flight slot when its own result lands (a stale result

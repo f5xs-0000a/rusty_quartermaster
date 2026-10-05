@@ -11,6 +11,7 @@ pub mod bare;
 pub mod cache;
 pub mod chatlog;
 pub mod clickmap;
+pub mod clipboard;
 pub mod commodities;
 pub mod damage;
 pub mod duty;

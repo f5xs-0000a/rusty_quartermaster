@@ -1081,28 +1081,6 @@ fn compute_rum(
         .sum()
 }
 
-/// Greedy word-wrap line count for `text` at `width` columns — used to reserve
-/// enough rows for the wrapped tooltip so the popup height is stable.
-fn wrapped_line_count(text: &str, width: usize) -> u16 {
-    if width == 0 {
-        return 1;
-    }
-    let mut lines: u16 = 1;
-    let mut col = 0usize;
-    for word in text.split_whitespace() {
-        let wlen = word.chars().count();
-        if col == 0 {
-            col = wlen;
-        } else if col + 1 + wlen <= width {
-            col += 1 + wlen;
-        } else {
-            lines += 1;
-            col = wlen;
-        }
-    }
-    lines.max(1)
-}
-
 /// The "Hold From Clipboard" prompt: the recognized goods with their
 /// quantities, any names the commodity list doesn't know, and a No / Yes pair.
 fn render_hold_import(
@@ -1136,7 +1114,7 @@ fn render_hold_import(
     let w: u16 = 48;
     let inner_w = w as usize - 4; // borders + horizontal padding
     let unknown_lines = unknown_line.as_deref().map_or(0, |s| {
-        wrapped_line_count(s, inner_w) as usize
+        crate::utils::wrapped_line_count(s, inner_w) as usize
     });
     // header, list, unknowns, note, blank, buttons
     let h: u16 = (2 + 1 + list_lines + unknown_lines + 1 + 1 + 1) as u16;
@@ -1564,7 +1542,7 @@ fn render_popup(
             let inner_w = w.saturating_sub(4) as usize; // − borders − padding
             let desc_lines = bd
                 .iter()
-                .map(|r| wrapped_line_count(r.desc, inner_w))
+                .map(|r| crate::utils::wrapped_line_count(r.desc, inner_w))
                 .max()
                 .unwrap_or(1)
                 .max(1);

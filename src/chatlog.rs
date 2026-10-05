@@ -2800,6 +2800,32 @@ impl GameState {
         }
         set
     }
+
+    /// Pirates aboard the vessel we're on now, ourselves included. `None` when
+    /// we're on no vessel at all, which is a different claim from a vessel
+    /// whose roster we happen to hold nobody for.
+    pub fn current_aboard(&self) -> Option<HashSet<String>> {
+        let key = self.current.clone()?;
+        Some(self.aboard(&key))
+    }
+
+    /// Record pirates as aboard the current vessel, returning how many were
+    /// news to its roster. Ourselves is counted apart from the crewmates
+    /// everywhere it matters, so our own name is never one of them.
+    pub fn note_aboard<'a>(
+        &mut self,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> usize {
+        let me = self.player_name.clone();
+        let Some(v) = self.current_vessel_mut() else {
+            return 0;
+        };
+        names
+            .into_iter()
+            .filter(|name| me.as_deref() != Some(*name))
+            .filter(|name| v.crewmates.insert((*name).to_owned()))
+            .count()
+    }
 }
 
 impl Default for GameState {

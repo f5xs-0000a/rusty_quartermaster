@@ -9,14 +9,9 @@
 //!
 //! Only the `contents` list is used; it feeds the Stock column of the Profits
 //! page (the Booty column is the divvy's business, not the hold's). The
-//! clipboard is polled on a background thread and only a parsed hold ever
-//! crosses into the app, so arbitrary clipboard text stays out of the UI and
-//! the diagnostics log.
-
-use std::time::Duration;
+//! clipboard itself is watched by [`crate::clipboard`].
 
 use serde::Deserialize;
-use tokio::sync::mpsc::UnboundedSender;
 
 /// The goods in a hold, in the order the game listed them.
 #[derive(Debug, PartialEq)]
@@ -38,42 +33,6 @@ pub fn parse_hold(text: &str) -> Option<HoldContents> {
     Some(HoldContents {
         goods,
     })
-}
-
-/// Watch the clipboard and send every hold that appears on it. The text on
-/// the clipboard at startup is the baseline: only a later change is reported,
-/// so a stale hold left over from an earlier session doesn't prompt on every
-/// launch. The thread ends when the receiver is dropped or when no clipboard
-/// is reachable at all (a headless session).
-pub fn spawn_watcher(tx: UnboundedSender<HoldContents>) {
-    std::thread::spawn(move || {
-        let mut clipboard = match arboard::Clipboard::new() {
-            Ok(c) => c,
-            Err(e) => {
-                crate::diag!("warning: clipboard unavailable: {e}");
-                return;
-            }
-        };
-        let mut last = clipboard.get_text().ok();
-        loop {
-            std::thread::sleep(Duration::from_secs(1));
-            // a non-text clipboard (an image, say) clears the baseline so
-            // re-copying the previous hold counts as a change again
-            let Ok(text) = clipboard.get_text() else {
-                last = None;
-                continue;
-            };
-            if last.as_deref() == Some(text.as_str()) {
-                continue;
-            }
-            if let Some(hold) = parse_hold(&text)
-                && tx.send(hold).is_err()
-            {
-                return;
-            }
-            last = Some(text);
-        }
-    });
 }
 
 #[cfg(test)]

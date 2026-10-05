@@ -1877,6 +1877,80 @@ impl AppShell {
         }
     }
 
+    /// A duty report landed on the clipboard: fold the pirates it names into
+    /// the current vessel's roster.
+    ///
+    /// Only players are taken. NPCs are left to the winners roster of a won
+    /// fight, which names them and is the only thing that does, so it stays
+    /// the sole ground truth for the swabbie tally and the mercenaries.
+    ///
+    /// A report names whoever puzzled long enough to be rated during one
+    /// interval, so it can only ever add: a pirate it leaves out may simply
+    /// not have puzzled, which is no evidence they left. How much of it we
+    /// already recognize is what says whether it is even this vessel's report:
+    /// most of its players already aboard means the two agree and the
+    /// stragglers are ours to have missed, while hardly any means a stale
+    /// clipboard or another ship's report, which is worth asking about rather
+    /// than folding in unasked.
+    pub fn take_duty_report(&mut self, report: &crate::duty::DutyReport) {
+        let Some(aboard) = self.chatlog.current_aboard() else {
+            return;
+        };
+        let rated: Vec<&str> = report
+            .names()
+            .into_iter()
+            .filter(|name| crate::pirate::is_player_name(name))
+            .collect();
+        let missing: Vec<String> = rated
+            .iter()
+            .filter(|name| !aboard.contains(**name))
+            .map(|name| (*name).to_owned())
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        let known = rated.len() - missing.len();
+        if 2 * known < rated.len() {
+            self.jobbers_ui.queue_roster(crate::jobbers::RosterPrompt {
+                missing,
+                known,
+                rated: rated.len(),
+                yes_focused: false,
+            });
+            return;
+        }
+        self.fold_into_roster(&missing);
+    }
+
+    /// Record a duty report's pirates as aboard, leaving a note of how many
+    /// the roster gained. The count alone: the report came off the clipboard,
+    /// which is no place to read text out of into a log.
+    fn fold_into_roster(&mut self, names: &[String]) {
+        let added = self.chatlog.note_aboard(names.iter().map(String::as_str));
+        if 0 < added {
+            crate::diag!("roster: {added} pirate(s) added from a duty report");
+        }
+    }
+
+    /// Open a queued roster prompt once the Jobbers popup slot is free, and
+    /// surface the Jobbers page so the prompt is actually seen.
+    pub fn surface_roster_import(&mut self) {
+        if self.jobbers_ui.raise_pending_roster() {
+            self.switch_to(AppId::Chatlog);
+        }
+    }
+
+    /// Answer the roster prompt: on `yes`, the report's names join the
+    /// roster. Either way the prompt closes.
+    fn resolve_roster_prompt(&mut self, yes: bool) {
+        let Some(prompt) = self.jobbers_ui.roster_popup.take() else {
+            return;
+        };
+        if yes {
+            self.fold_into_roster(&prompt.missing);
+        }
+    }
+
     /// A new fight just began: close any open Sea Battles popup and surface the
     /// live Damage calculator so the fight is tracked from the first hit.
     fn jump_to_live_damage(&mut self) {
@@ -2267,12 +2341,41 @@ impl AppShell {
 
     // -- jobbers (chat log) handling --
 
+    /// The roster prompt: ←/→ pick a button, Enter or Space answers with the
+    /// focused one, Y and N answer outright, and Esc declines.
+    fn handle_roster_popup_key(&mut self, key: KeyEvent) -> InputResult {
+        match key.code {
+            KeyCode::Left | KeyCode::Right => {
+                if let Some(prompt) = self.jobbers_ui.roster_popup.as_mut() {
+                    prompt.yes_focused = !prompt.yes_focused;
+                }
+            }
+            KeyCode::Enter | KeyCode::Char(' ') => {
+                let yes = self
+                    .jobbers_ui
+                    .roster_popup
+                    .as_ref()
+                    .is_some_and(|p| p.yes_focused);
+                self.resolve_roster_prompt(yes);
+            }
+            KeyCode::Char('y' | 'Y') => self.resolve_roster_prompt(true),
+            KeyCode::Char('n' | 'N') | KeyCode::Esc => {
+                self.resolve_roster_prompt(false)
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
     fn handle_jobbers_key(&mut self, key: KeyEvent) -> InputResult {
         use JobberFocus::*;
 
         // The popups are modal: each eats keys until dismissed. The trophies
         // popup is checked first since it layers over the pirate-stats
         // popup.
+        if self.jobbers_ui.roster_popup.is_some() {
+            return self.handle_roster_popup_key(key);
+        }
         if self.jobbers_ui.trophy_popup.is_some() {
             return self.handle_trophy_popup_key(key);
         }
@@ -3601,6 +3704,8 @@ impl AppShell {
                     };
                 }
             }
+            ClickTarget::JobberRosterNo => self.resolve_roster_prompt(false),
+            ClickTarget::JobberRosterYes => self.resolve_roster_prompt(true),
             ClickTarget::JobberPerFightPrev => {
                 if let Some(pf) = self.jobbers_ui.per_fight_popup.as_mut() {
                     pf.idx = pf.idx.saturating_sub(1);
@@ -4552,5 +4657,131 @@ mod topbar_tests {
                 app.bar_lines().0,
             );
         }
+    }
+
+    /// A shell aboard a vessel whose roster we hold three crewmates for,
+    /// ourselves apart.
+    fn with_a_crew() -> AppShell {
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Pillaging, Average to Hard \
+             Barbarians.",
+        ] {
+            shell.chatlog.process_line(line);
+        }
+        shell
+            .chatlog
+            .note_aboard(["Mateone", "Matetwo", "Matethree"]);
+        shell
+    }
+
+    fn report(names: &[&str]) -> crate::duty::DutyReport {
+        let rated: Vec<String> = names
+            .iter()
+            .map(|n| format!("{n:?}:{{\"performance\":3}}"))
+            .collect();
+        let text = format!("{{\"sail\":{{{}}}}}", rated.join(","));
+        crate::duty::parse(&text).expect("report")
+    }
+
+    #[test]
+    fn a_report_that_mostly_agrees_adds_the_stragglers() {
+        let mut shell = with_a_crew();
+        shell.take_duty_report(&report(&[
+            "Mateone",
+            "Matetwo",
+            "Matethree",
+            "Matefour",
+        ]));
+        assert!(shell.jobbers_ui.roster_popup.is_none());
+        assert!(shell.jobbers_ui.pending_roster.is_none());
+        assert!(
+            shell
+                .chatlog
+                .current_aboard()
+                .expect("aboard")
+                .contains("Matefour")
+        );
+    }
+
+    #[test]
+    fn a_report_that_hardly_agrees_asks_first() {
+        let mut shell = with_a_crew();
+        shell.take_duty_report(&report(&[
+            "Mateone",
+            "Strangerone",
+            "Strangertwo",
+            "Strangerthree",
+            "Strangerfour",
+        ]));
+        // Nothing moves until it is answered.
+        let aboard = shell.chatlog.current_aboard().expect("aboard");
+        assert!(!aboard.contains("Strangerone"));
+        shell.surface_roster_import();
+        let prompt = shell.jobbers_ui.roster_popup.as_ref().expect("prompt");
+        assert_eq!(prompt.known, 1);
+        assert_eq!(prompt.rated, 5);
+        assert_eq!(prompt.missing.len(), 4);
+        // Defaults to No: the user did not ask for this prompt.
+        assert!(!prompt.yes_focused);
+
+        shell.resolve_roster_prompt(true);
+        let aboard = shell.chatlog.current_aboard().expect("aboard");
+        assert!(aboard.contains("Strangerone"));
+        assert!(shell.jobbers_ui.roster_popup.is_none());
+    }
+
+    #[test]
+    fn declining_the_prompt_leaves_the_roster_alone() {
+        let mut shell = with_a_crew();
+        shell.take_duty_report(&report(&["Strangerone", "Strangertwo"]));
+        shell.surface_roster_import();
+        shell.resolve_roster_prompt(false);
+        let aboard = shell.chatlog.current_aboard().expect("aboard");
+        assert!(!aboard.contains("Strangerone"));
+        assert_eq!(aboard.len(), 4); // three crewmates and us
+    }
+
+    #[test]
+    fn npcs_are_left_to_the_winners_roster() {
+        let mut shell = with_a_crew();
+        shell.take_duty_report(&report(&[
+            "Mateone",
+            "Matetwo",
+            "Matethree",
+            "Test Example",
+        ]));
+        let aboard = shell.chatlog.current_aboard().expect("aboard");
+        assert!(!aboard.contains("Test Example"));
+        assert_eq!(aboard.len(), 4);
+        assert!(shell.jobbers_ui.roster_popup.is_none());
+        assert!(shell.jobbers_ui.pending_roster.is_none());
+    }
+
+    #[test]
+    fn a_report_of_the_crew_we_hold_changes_nothing() {
+        let mut shell = with_a_crew();
+        shell.take_duty_report(&report(&[
+            "Mateone",
+            "Matetwo",
+            "Playerone",
+        ]));
+        assert!(shell.jobbers_ui.pending_roster.is_none());
+        assert_eq!(
+            shell.chatlog.current_aboard().expect("aboard").len(),
+            4
+        );
+    }
+
+    #[test]
+    fn a_report_with_no_vessel_under_it_is_ignored() {
+        let mut shell = AppShell::new(Vec::new());
+        shell.take_duty_report(&report(&["Strangerone"]));
+        assert!(shell.jobbers_ui.pending_roster.is_none());
+        assert!(shell.jobbers_ui.roster_popup.is_none());
     }
 }

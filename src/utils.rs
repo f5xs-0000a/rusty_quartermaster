@@ -912,6 +912,15 @@ pub fn wrap_words(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+/// Rows `text` takes once wrapped to `width` columns, which is how much a
+/// popup reserves for it so its height is stable. Counted by the wrapping
+/// [`wrap_words`] does, so the reservation matches what gets drawn even where
+/// a single word is longer than the line and has to be broken. Never less
+/// than one row: an empty string still occupies the line it is on.
+pub fn wrapped_line_count(text: &str, width: usize) -> u16 {
+    wrap_words(text, width).len().max(1) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

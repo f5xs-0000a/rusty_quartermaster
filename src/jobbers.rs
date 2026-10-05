@@ -27,6 +27,7 @@ use ratatui::{
         ListState,
         Padding,
         Paragraph,
+        Wrap,
     },
 };
 
@@ -742,6 +743,66 @@ pub struct JobbersUi {
     /// Isles / Vampirate waves), on the selected fight with the chosen
     /// X-axis.
     pub per_fight_popup: Option<PerFightPopup>,
+    /// When `Some`, a copied duty report is asking before its names join the
+    /// roster.
+    pub roster_popup: Option<RosterPrompt>,
+    /// A roster prompt waiting for the popup slot to free up; see
+    /// [`Self::raise_pending_roster`].
+    pub pending_roster: Option<RosterPrompt>,
+}
+
+/// A copied duty report that named pirates the current vessel has no record
+/// of, held for the user's answer.
+///
+/// A report names whoever puzzled long enough to be rated, so it can only ever
+/// *add*: a pirate it leaves out may simply not have puzzled, which is no
+/// evidence they left. It is raised only when the report looks too unlike the
+/// vessel we think we're on to fold in unasked, which is what
+/// [`known`](Self::known) against [`rated`](Self::rated) measures.
+#[derive(Clone, Default)]
+pub struct RosterPrompt {
+    /// The pirates to add, in name order.
+    pub missing: Vec<String>,
+    /// How many of the report's players we already had aboard.
+    pub known: usize,
+    /// How many players the report rated in all.
+    pub rated: usize,
+    pub yes_focused: bool,
+}
+
+impl JobbersUi {
+    /// Whether any of the page's modal popups holds the slot.
+    fn popup_open(&self) -> bool {
+        self.ship_popup.is_some()
+            || self.vessel_popup.is_some()
+            || self.voyage_popup.is_some()
+            || self.pirate_popup.is_some()
+            || self.trophy_popup.is_some()
+            || self.skill_dist_popup.is_some()
+            || self.per_fight_popup.is_some()
+            || self.roster_popup.is_some()
+    }
+
+    /// Hold a roster prompt for the user's answer, opening it only once the
+    /// popup slot is free (see [`Self::raise_pending_roster`]). A newer report
+    /// replaces an unanswered older one, since the clipboard only ever holds
+    /// the latest copy.
+    pub fn queue_roster(&mut self, prompt: RosterPrompt) {
+        match self.roster_popup {
+            Some(ref mut open) => *open = prompt,
+            None => self.pending_roster = Some(prompt),
+        }
+    }
+
+    /// Open the queued roster prompt if the popup slot is free. Returns
+    /// whether one opened.
+    pub fn raise_pending_roster(&mut self) -> bool {
+        if self.popup_open() || self.pending_roster.is_none() {
+            return false;
+        }
+        self.roster_popup = self.pending_roster.take();
+        true
+    }
 }
 
 /// State of the open per-fight statistics popup: which fight (wave) is shown
@@ -1913,6 +1974,117 @@ pub fn render(
             .map(|k| fight_timelines(state, k))
             .unwrap_or_default();
         render_per_fight_popup(frame, pf, &fights, regions);
+    }
+
+    // The roster prompt (its own modal), raised only when no other holds the
+    // slot, so it is drawn last and nothing lands on top of it.
+    if let Some(rp) = ui.roster_popup.as_ref() {
+        render_roster_prompt(frame, rp, regions);
+    }
+}
+
+/// The prompt asking whether a copied duty report's pirates should join the
+/// roster. It lists the names it would add and says how much of the report we
+/// already recognized, which is the whole reason it is asking.
+fn render_roster_prompt(
+    frame: &mut Frame,
+    prompt: &RosterPrompt,
+    regions: &mut Vec<ClickRegion>,
+) {
+    const CAP: usize = 8; // names listed before "...and N more"
+    let area = frame.area();
+
+    let shown = prompt.missing.len().min(CAP);
+    let extra = prompt.missing.len().saturating_sub(CAP);
+    let list_lines = shown + usize::from(0 < extra);
+    let w: u16 = 52;
+    let inner_w = w as usize - 4; // borders + horizontal padding
+
+    let heading = match prompt.missing.len() {
+        1 => {
+            "The duty report names this pirate we don't have aboard.".to_owned()
+        }
+        n => {
+            format!(
+                "The duty report names these {n} pirates we don't have aboard."
+            )
+        }
+    };
+    let note = format!(
+        "It shares only {} of its {} pirates with who we think is aboard. Are \
+         ye sure that this be from the same vessel?",
+        prompt.known, prompt.rated,
+    );
+    let heading_h = crate::utils::wrapped_line_count(&heading, inner_w);
+    let note_h = crate::utils::wrapped_line_count(&note, inner_w);
+
+    // borders, heading, blank, list, blank, note, blank, buttons
+    let h = 2 + heading_h + 1 + list_lines as u16 + 1 + note_h + 1 + 1;
+    let x = area.width.saturating_sub(w) / 2;
+    let y = area.height.saturating_sub(h) / 2;
+    let popup_area = Rect::new(x, y, w, h);
+
+    frame.render_widget(Clear, popup_area);
+    let (block, _) =
+        crate::utils::titled_block("Update Roster?", inner_w as u16);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
+
+    let mut constraints =
+        vec![Constraint::Length(heading_h), Constraint::Length(1)];
+    constraints.extend((0 .. list_lines).map(|_| Constraint::Length(1)));
+    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Length(note_h));
+    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Length(1)); // buttons
+    let rows = Layout::vertical(constraints).split(inner);
+
+    frame.render_widget(
+        Paragraph::new(heading).wrap(Wrap {
+            trim: true,
+        }),
+        rows[0],
+    );
+    for (i, name) in prompt.missing.iter().take(CAP).enumerate() {
+        frame.render_widget(
+            Paragraph::new(format!("  - {name}")),
+            rows[2 + i],
+        );
+    }
+    if 0 < extra {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("  ...and {extra} more"),
+                Style::default().fg(Color::DarkGray),
+            )),
+            rows[2 + shown],
+        );
+    }
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            note,
+            Style::default().fg(Color::Yellow),
+        ))
+        .wrap(Wrap {
+            trim: true,
+        }),
+        rows[rows.len() - 3],
+    );
+
+    let buttons = crate::utils::render_buttons(
+        frame,
+        rows[rows.len() - 1],
+        &["No", "Yes"],
+        Some(usize::from(prompt.yes_focused)),
+    );
+    for (rect, target) in buttons
+        .into_iter()
+        .zip([ClickTarget::JobberRosterNo, ClickTarget::JobberRosterYes])
+    {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
     }
 }
 

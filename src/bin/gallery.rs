@@ -1517,6 +1517,34 @@ fn jobbers_states(states: &mut Vec<State>) {
             });
         },
     ));
+    // A copied duty report that shares almost nobody with the vessel we think
+    // we're on, which is what makes it ask rather than fold itself in. The
+    // gallery hands the log straight to the parser, so the clipboard watcher
+    // that would normally deliver the report is stood in for here.
+    states.push(state(
+        "jobbers-popup-roster",
+        "Jobbers, duty report roster prompt",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            let rated: Vec<String> = [
+                "Matetwo",
+                "Strangerone",
+                "Strangertwo",
+                "Strangerthree",
+                "Strangerfour",
+                "Strangerfive",
+            ]
+            .iter()
+            .map(|n| format!("{n:?}:{{\"performance\":3}}"))
+            .collect();
+            let text = format!("{{\"sail\":{{{}}}}}", rated.join(","));
+            let report =
+                rusty_quartermaster::duty::parse(&text).expect("report");
+            shell.take_duty_report(&report);
+            shell.surface_roster_import();
+        },
+    ));
 
     // The live path navigates itself: entering a lair, or the Cursed Isles
     // fog tell, switches the page and its layout with no keypress at all.

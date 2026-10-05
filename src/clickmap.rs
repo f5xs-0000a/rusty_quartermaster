@@ -134,6 +134,10 @@ pub enum ClickTarget {
     /// Previous / next fight (wave) in the per-fight popup.
     JobberPerFightPrev,
     JobberPerFightNext,
+    /// No / Yes on the prompt asking whether a copied duty report's pirates
+    /// should join the roster.
+    JobberRosterNo,
+    JobberRosterYes,
     /// Previous / next selectable voyage in the Voyage Statistics pager.
     VoyagePrev,
     VoyageNext,
