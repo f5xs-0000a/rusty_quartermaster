@@ -626,8 +626,9 @@ const PILLAGE: &[&str] = &[
     "[01:30:00] The booty has been divided!",
 ];
 
-/// An Atlantis run, left mid-encounter so both dragoon counters show: two
-/// lone splashes, one monster party, one dragoon driven off.
+/// An Atlantis run, left mid-encounter: two lone dragoons splash aboard, the
+/// monster lands a party, and one dragoon is driven off again. The tells
+/// only mark the encounter — the game keeps the dragoon count itself.
 const ATLANTIS: &[&str] = &[
     "====== 2026/06/17 ======",
     "[02:00:00] Going aboard the Abyssal Grunion...",
@@ -1420,7 +1421,7 @@ fn jobbers_states(states: &mut Vec<State>) {
         ),
         (
             "jobbers-atlantis",
-            "Jobbers, Atlantis layout with dragoon counters",
+            "Jobbers, Atlantis layout (Aboard/Planked)",
             ATLANTIS,
             VoyageType::Atlantis,
             JobberFocus::Aboard,

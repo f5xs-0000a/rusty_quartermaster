@@ -322,12 +322,6 @@ impl VoyageType {
         matches!(self, VoyageType::Vikings)
     }
 
-    /// Whether this voyage type spawns dragoons (so the Aboard pane should show
-    /// the dragoon tallies). Only Atlantis does.
-    pub fn tracks_dragoons(self) -> bool {
-        matches!(self, VoyageType::Atlantis)
-    }
-
     /// Whether this voyage type fights vampirates (so the Vampirates Stats box
     /// shows). Only Vampirates does.
     pub fn tracks_vampirates(self) -> bool {
@@ -1295,28 +1289,6 @@ pub fn render(
     let top_h = view_rows as u16 + 3;
     let top_panel_w = top_panel_width(&top_columns);
 
-    // The Aboard pane gains a single dragoon tally footer on voyage types that
-    // spawn them (Atlantis): "and o to p dragoons" — a range folding lone
-    // dragoons aboard and the 3–6-strong monster boarding parties (see
-    // `dragoons_footer`).
-    let dragoon_w = if ui.voyage_type.tracks_dragoons() {
-        let d = vessel.map_or(0, |v| v.dragoons_aboard);
-        let b = vessel.map_or(0, |v| v.dragoon_boardings);
-        // `d` (lone heads) is signed and may be negative when party members
-        // were driven off; that correctly lowers the estimate. Clamp
-        // the displayed value.
-        let low = (d + b as i32 * 3).max(0) as u32;
-        let high = (d + b as i32 * 6).max(0) as u32;
-        // No dragoons aboard → no footer, so no width reserved for it.
-        if high > 0 {
-            dragoons_footer(low, high).len()
-        } else {
-            0
-        }
-    } else {
-        0
-    };
-
     // Per-pane natural widths: content + borders(2) + padding(2), floored at
     // title. The Aboard pane leads with a "Pirates (n):" header and indents
     // each name two spaces.
@@ -1332,8 +1304,7 @@ pub fn render(
             } else {
                 0
             },
-        )
-        .max(dragoon_w);
+        );
     let greedy: Vec<(&String, u32, u32)> = vessel
         .map(|v| {
             v.greedy_by_pirate
@@ -1387,29 +1358,10 @@ pub fn render(
         .collect();
     let panes_w: u16 = pane_widths.iter().sum();
 
-    // ---- Stats box sizing (Atlantis dragoons / Vampirates waves) ----
+    // ---- Stats box sizing (Vampirates waves) ----
     // A small non-selectable `label | value` table between Voyage and Top
-    // Jobbers. Atlantis tallies boarded dragoons (a single count, or a
-    // low..high range when monster boarding parties of unseen size are
-    // involved — see `dragoons_boarded_value`); Vampirates tracks the lair
-    // wave model.
-    let stats: Option<StatsBox> = if ui.voyage_type.tracks_dragoons() {
-        let d = vessel.map_or(0, |v| v.dragoons_aboard);
-        let b = vessel.map_or(0, |v| v.dragoon_boardings);
-        // `d` (lone heads) is signed and may be negative when party members
-        // were driven off; that correctly lowers the estimate. Clamp
-        // the displayed value.
-        let low = (d + b as i32 * 3).max(0) as u32;
-        let high = (d + b as i32 * 6).max(0) as u32;
-        Some(StatsBox {
-            title: "Atlantis Stats",
-            rows: vec![StatRow::new(
-                "Dragoons Boarded",
-                dragoons_boarded_value(low, high),
-            )],
-            notes: Vec::new(),
-        })
-    } else if ui.voyage_type.tracks_vampirates() {
+    // Jobbers, tracking the lair wave model.
+    let stats: Option<StatsBox> = if ui.voyage_type.tracks_vampirates() {
         let active = vessel.is_some_and(|v| v.lair_active);
         let wave = vessel.map_or(0, |v| v.lair_wave);
         let defeated = vessel.map_or(0, |v| v.vampires_defeated);
@@ -1712,9 +1664,9 @@ pub fn render(
 
     // Rows the panes come to. They share one height, so it must suit whichever
     // of them is tallest. The Aboard pane pins a "Pirates (n):" header and its
-    // swabbie / dragoon footers around a scrolling name list, so those are
-    // counted apart from the list: `cap` bounds the list alone. Mirrors the
-    // rows `render_panes` builds.
+    // swabbie footer around a scrolling name list, so those are counted
+    // apart from the list: `cap` bounds the list alone. Mirrors the rows
+    // `render_panes` builds.
     let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
     let pane_rows = |cap: usize| {
         panes
@@ -1723,8 +1675,7 @@ pub fn render(
                 let (pinned, list) = match p {
                     JobberPane::Aboard => {
                         (
-                            1 + usize::from(0 < swabbies)
-                                + usize::from(0 < dragoon_w),
+                            1 + usize::from(0 < swabbies),
                             aboard_set.len(),
                         )
                     }
@@ -2443,17 +2394,6 @@ fn render_voyage_box(
     }
 }
 
-/// The displayed "Dragoons Boarded" value. With no monster boardings the count
-/// is exact (`low == high`), so we show a single number; otherwise each
-/// boarding party hides 3..6 dragoons, so we report the span `low to high`.
-fn dragoons_boarded_value(low: u32, high: u32) -> String {
-    if low == high {
-        low.to_string()
-    } else {
-        format!("{low} to {high}")
-    }
-}
-
 /// Short label for a Cursed Isles island wave's kind, shown beside the wave
 /// number.
 fn wave_kind_label(kind: WaveKind) -> &'static str {
@@ -2465,10 +2405,10 @@ fn wave_kind_label(kind: WaveKind) -> &'static str {
 }
 
 /// A small non-selectable `label | value` table shown between the Voyage box
-/// and Top Jobbers: the Atlantis dragoon tally or the Vampirates wave counts.
-/// One box, one row per stat, plus optional centered note lines below (e.g. the
-/// Vampirates "Mother o' Nyght has joined the fray!" / leave-the-fight
-/// reminder).
+/// and Top Jobbers: the Vampirates wave counts, the Vikings gunnery
+/// breakdown, or the Cursed Isles fight statistics. One box, one row per
+/// stat, plus optional centered note lines below (e.g. the Vampirates
+/// "Mother o' Nyght has joined the fray!" / leave-the-fight reminder).
 struct StatsBox {
     title: &'static str,
     rows: Vec<StatRow>,
@@ -2941,21 +2881,6 @@ fn swabbie_footer(n: u32) -> String {
     }
 }
 
-/// The Aboard pane's dragoon footer (Atlantis): "and o to p dragoons" — a
-/// count, or a range when monster boarding parties of unseen size (3–6 each)
-/// are folded in (see [`dragoons_boarded_value`] for the `low`/`high`
-/// derivation).
-fn dragoons_footer(low: u32, high: u32) -> String {
-    if low == high && low == 1 {
-        "and 1 dragoon".to_string()
-    } else {
-        format!(
-            "and {} dragoons",
-            dragoons_boarded_value(low, high)
-        )
-    }
-}
-
 fn pane_focus_target(pane: JobberPane) -> ClickTarget {
     match pane {
         JobberPane::Aboard => ClickTarget::JobberAboardList,
@@ -3152,17 +3077,12 @@ fn render_panes(
     ui.planked_sel = clamp_sel(ui.planked_sel, planked_n);
     ui.enthralled_sel = clamp_sel(ui.enthralled_sel, enthralled.len());
 
-    // On dragoon voyages (Atlantis) the Aboard pane gains hostile tally
-    // footers.
-    let show_dragoons = ui.voyage_type.tracks_dragoons();
-
     // Render only the panes this voyage type asks for, in order.
     for (i, pane) in panes.iter().enumerate() {
         let col = cols[i];
         match pane {
             // -- Aboard: a pinned "Pirates (n):" header, an indented scrollable
-            // name    list, then pinned swabbie / dragoon footers.
-            // --
+            // name    list, then a pinned swabbie footer. --
             JobberPane::Aboard => {
                 let mut aboard: Vec<&String> = aboard_set.iter().collect();
                 aboard.sort_unstable();
@@ -3183,24 +3103,6 @@ fn render_panes(
                         swabbie_footer(swabbies),
                         Style::default().italic(),
                     )));
-                }
-                // The hostile dragoon tally (a count or 3–6-per-party range),
-                // in red — shown only once any have actually
-                // boarded.
-                if show_dragoons {
-                    let d = vessel.map_or(0, |v| v.dragoons_aboard);
-                    let b = vessel.map_or(0, |v| v.dragoon_boardings);
-                    // Signed `d` may be negative (party members driven off),
-                    // lowering the estimate; clamp the
-                    // displayed value.
-                    let low = (d + b as i32 * 3).max(0) as u32;
-                    let high = (d + b as i32 * 6).max(0) as u32;
-                    if high > 0 {
-                        footers.push(Line::from(Span::styled(
-                            dragoons_footer(low, high),
-                            Style::default().fg(Color::Red).italic(),
-                        )));
-                    }
                 }
                 render_aboard_pane(
                     frame,
@@ -3445,7 +3347,7 @@ fn render_pane(
 
 /// Render the Aboard pane: a pinned `header` row at the top, a scrollable list
 /// of `names` (each its own selectable pirate row) in the middle, and pinned
-/// `footers` (swabbies / dragoons) at the bottom. Only the name list scrolls;
+/// `footers` (the swabbie tally) at the bottom. Only the name list scrolls;
 /// the header and footers stay put. `sel` is the selected name index; `offset`
 /// the name window.
 #[allow(clippy::too_many_arguments)]
