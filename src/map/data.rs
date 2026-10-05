@@ -40,18 +40,6 @@ pub enum Heading {
 }
 
 impl Heading {
-    /// Short compass label, e.g. `"NE"`.
-    pub fn label(self) -> &'static str {
-        match self {
-            Heading::E => "E",
-            Heading::W => "W",
-            Heading::Ne => "NE",
-            Heading::Nw => "NW",
-            Heading::Se => "SE",
-            Heading::Sw => "SW",
-        }
-    }
-
     pub fn opposite(self) -> Heading {
         match self {
             Heading::E => Heading::W,
@@ -174,23 +162,6 @@ impl Map {
         self.leagues
             .iter()
             .find_map(|l| l.follow(from, heading).map(|to| (to, l)))
-    }
-
-    /// Every league leaving `p`, as (heading away from `p`, far end, league).
-    pub fn leagues_at(
-        &self,
-        p: Point,
-    ) -> impl Iterator<Item = (Heading, Point, &'static League)> {
-        self.leagues.iter().filter_map(move |l| {
-            let (a, b) = l.ends();
-            if a == p {
-                Some((l.heading, b, l))
-            } else if b == p {
-                Some((l.heading.opposite(), a, l))
-            } else {
-                None
-            }
-        })
     }
 
     /// Every league point on the map: each league end, plus each island

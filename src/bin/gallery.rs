@@ -1025,7 +1025,7 @@ fn map_shell() -> AppShell {
     let first = dump_ocean().islands.first().expect("an island");
     shell.map.cursor = Some((first.x, first.y));
     // A pirate is what the memorization tally is keyed to; without one the
-    // column asks for it instead, which `map-no-pirate` covers.
+    // chart asks for it instead, which `map-no-pirate` covers.
     shell.map.pirate = Some(ME.to_owned());
     cache_islands(&mut shell);
     shell

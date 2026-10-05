@@ -50,13 +50,13 @@ use crate::{
 const CHART_MIN_WIDTH: u16 = 68;
 
 /// What the Island column says of its own accord, whichever point the cursor
-/// is on: the tally at its foot, the line that asks for a pirate in place of
-/// one, and the notice while the island list is on its way. The column is
-/// never narrower than these.
-const TALLY_TITLE: &str = "Memorized league points";
-const NO_PIRATE: [&str; 2] =
-    ["Memorizing needs a pirate:", "name one with --user."];
+/// is on: the notice while the island list is on its way. The column is never
+/// narrower than it.
 const FETCHING: &str = "Fetching island info...";
+
+/// What stands at the foot of the chart in place of the memorized tally while
+/// no pirate is named, the tally being a pirate's knowledge and not the map's.
+const NO_PIRATE: &str = "Memorizing needs a pirate: name one with --user.";
 
 /// Columns the Island column takes, borders included: enough to print the
 /// longest name any of the ocean's islands carries, and what kind of island any
@@ -69,12 +69,7 @@ const FETCHING: &str = "Fetching island info...";
 /// The figure is the ocean's, not the cursor's: a column measured against the
 /// island under the cursor would change width as the cursor sailed.
 fn metadata_width(geo: Option<&'static bare::Ocean>) -> u16 {
-    let mut longest = [TALLY_TITLE, FETCHING]
-        .into_iter()
-        .chain(NO_PIRATE)
-        .map(|line| line.chars().count())
-        .max()
-        .unwrap_or(0);
+    let mut longest = FETCHING.chars().count();
     if let Some(ocean) = geo {
         for arch in &ocean.archipelagos {
             for isle in &arch.islands {
@@ -432,12 +427,12 @@ pub fn render(
     } = ctx;
     // The chart is a viewport onto a larger map: it pans rather than shrinks,
     // so what it needs is a viewport worth sailing in, the row its sideways
-    // scrollbar lies along, the two status rows under that, and the box around
-    // them all.
+    // scrollbar lies along, the status row under that, the box around them
+    // all, and the page's hint row below the box.
     if crate::utils::too_short(
         frame,
         area,
-        crate::utils::SCROLL_MIN_ROWS + crate::utils::SCROLLBAR_H + 2 + 2,
+        crate::utils::SCROLL_MIN_ROWS + crate::utils::SCROLLBAR_H + 1 + 2 + 1,
     ) {
         return;
     }
@@ -447,18 +442,29 @@ pub fn render(
     } else {
         Style::default().fg(Color::DarkGray)
     };
+    // the page's last row is the only hint it gives; the boxes take the rest
+    let page = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+        .split(area);
+    frame.render_widget(
+        Paragraph::new("Press ? for help")
+            .style(Style::default().fg(Color::DarkGray))
+            .centered(),
+        page[1],
+    );
+    let body = page[0];
+
     // a terminal with room for the chart and the column both gets the column
     // beside the map; the map keeps every column otherwise
     let column = metadata_width(geo);
-    let (map_area, side) = if CHART_MIN_WIDTH + column <= area.width {
+    let (map_area, side) = if CHART_MIN_WIDTH + column <= body.width {
         let cols = Layout::horizontal([
             Constraint::Fill(1),
             Constraint::Length(column),
         ])
-        .split(area);
+        .split(body);
         (cols[0], Some(cols[1]))
     } else {
-        (area, None)
+        (body, None)
     };
     if let (Some(side), Some(map)) = (side, map) {
         let sources = Sources {
@@ -486,19 +492,13 @@ pub fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // two one-line rows under the map: the cursor's point (or the search
-    // box) with the ocean at the right, then its leagues with the help hint
-    // at the right. Each side keeps its own width so the rows fit an
-    // 80-column terminal without the two halves running into each other.
-    let rows = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(1),
-    ])
-    .split(inner);
+    // one row under the map: how much of it the pirate knows, which the
+    // search box takes over while a search is being typed. Where the cursor
+    // is and which leagues leave it are read off the drawing itself.
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
 
-    let mut first: Line = Line::from("");
-    let mut second: Line = Line::from("");
+    let mut status: Line = Line::from("");
     match (ocean, map) {
         (None, _) => {
             crate::utils::render_notice(
@@ -523,7 +523,7 @@ pub fn render(
         }
         (Some(_), Some(map)) => {
             draw_map(frame, rows[0], app, map, regions);
-            first = match &app.search {
+            status = match &app.search {
                 Some(search) => {
                     let hit =
                         app.search_hit(map).map_or("no match", |p| p.name);
@@ -547,42 +547,29 @@ pub fn render(
                         ),
                     ])
                 }
-                None => point_line(app, map),
+                None => tally_line(app, map),
             };
-            second = leagues_line(app, map);
         }
     }
 
-    let ocean_tag = Span::styled(
-        ocean.unwrap_or("").to_owned(),
-        Style::default().fg(Color::DarkGray),
+    // the tally sits under the middle of the chart; the search box keeps to
+    // the left edge, a box that slid as it was typed into being worse than an
+    // off-centre one
+    let status = Paragraph::new(status);
+    frame.render_widget(
+        if app.search.is_some() {
+            status
+        } else {
+            status.centered()
+        },
+        rows[1],
     );
-    let help_tag = Span::styled(
-        "Press ? for Help",
-        Style::default().fg(Color::DarkGray),
-    );
-    for (row, left, right) in
-        [(rows[1], first, ocean_tag), (rows[2], second, help_tag)]
-    {
-        let cols = Layout::horizontal([
-            Constraint::Fill(1),
-            Constraint::Length(right.width() as u16 + 2),
-        ])
-        .split(row);
-        frame.render_widget(Paragraph::new(left), cols[0]);
-        frame.render_widget(
-            Paragraph::new(right).right_aligned(),
-            cols[1],
-        );
-    }
 
     if app.help {
         render_help(frame, area, regions);
     }
 }
 
-/// The metadata column: what the geography knows about the island under
-/// the cursor, with the memorized league-point tally pinned at the bottom.
 /// Where the metadata column's facts come from: the compiled-in geography
 /// and yoweb's island list, with whether the latter is on its way.
 struct Sources<'a> {
@@ -591,6 +578,8 @@ struct Sources<'a> {
     fetching_islands: bool,
 }
 
+/// The Island column: what is known about the point under the cursor, with
+/// the notice at its foot while yoweb's island list is still on its way.
 fn render_metadata(
     frame: &mut Frame,
     area: Rect,
@@ -608,12 +597,8 @@ fn render_metadata(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let rows = Layout::vertical([
-        Constraint::Min(0),
-        Constraint::Length(1),
-        Constraint::Length(2),
-    ])
-    .split(inner);
+    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
+        .split(inner);
     // the wheel over the column scrolls what the column says rather than
     // panning the chart beside it
     regions.push(ClickRegion {
@@ -683,40 +668,6 @@ fn render_metadata(
             rows[1],
         );
     }
-    // memorization belongs to a pirate: with none loaded there is no one
-    // whose knowledge the tally could count, so say what it would take
-    if app.pirate.is_none() {
-        frame.render_widget(
-            Paragraph::new(vec![
-                Line::from(Span::styled(
-                    NO_PIRATE[0],
-                    Style::default().bold(),
-                )),
-                Line::from(NO_PIRATE[1]),
-            ])
-            .style(Style::default().fg(Color::DarkGray)),
-            rows[2],
-        );
-        return;
-    }
-    let (known, total) = memorized_tally(app, map);
-    let percent = if total == 0 {
-        0.0
-    } else {
-        100.0 * known as f64 / total as f64
-    };
-    frame.render_widget(
-        Paragraph::new(vec![
-            Line::from(Span::styled(
-                TALLY_TITLE,
-                Style::default().bold(),
-            )),
-            Line::from(format!(
-                "{known} / {total}  ({percent:.1}%)"
-            )),
-        ]),
-        rows[2],
-    );
 }
 
 /// Memorized league points on this map, and how many there are in all.
@@ -725,25 +676,6 @@ fn memorized_tally(app: &MapApp, map: &Map) -> (usize, usize) {
     let points = map.points();
     let known = points.iter().filter(|p| app.memorized.contains(p)).count();
     (known, points.len())
-}
-
-/// The memorized state of `p` for the loaded pirate, or nothing when no
-/// pirate is loaded (the state is a pirate's, not the map's).
-fn memorized_mark(app: &MapApp, p: Point) -> Option<Span<'static>> {
-    app.pirate.as_ref()?;
-    Some(
-        if app.memorized.contains(&p) {
-            Span::styled(
-                "Memorized",
-                Style::default().fg(Color::Yellow).bold(),
-            )
-        } else {
-            Span::styled(
-                "Not memorized",
-                Style::default().fg(Color::DarkGray),
-            )
-        },
-    )
 }
 
 /// Word-wrap one metadata line to `width` columns, keeping every character's
@@ -985,52 +917,26 @@ fn metadata(
     }
 }
 
-/// The cursor's point: its name, grid cell and memorized state.
-fn point_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
-    let Some(p) = app.cursor_on(map) else {
-        return Line::from("The map has no islands.");
-    };
-    let name = map.island_at(p).map_or("Open sea", |i| i.name);
-    let mut spans = vec![
-        Span::styled(name, Style::default().bold()),
-        Span::raw(format!(" ({},{})", p.0, p.1)),
-    ];
-    if let Some(mark) = memorized_mark(app, p) {
-        spans.push(Span::raw("  "));
-        spans.push(Span::styled(
-            mark.content.to_lowercase(),
-            mark.style,
+/// How much of the map the pirate knows, as the figure at the foot of the
+/// chart: points memorized, points there are, and the share of them. With no
+/// pirate named there is no one whose knowledge could be counted, so the line
+/// says what it would take instead.
+fn tally_line(app: &MapApp, map: &Map) -> Line<'static> {
+    if app.pirate.is_none() {
+        return Line::from(Span::styled(
+            NO_PIRATE,
+            Style::default().fg(Color::DarkGray),
         ));
     }
-    Line::from(spans)
-}
-
-/// The leagues leaving the cursor's point, each as its heading and the line
-/// glyph the map draws it with (so the legend in the help applies here too).
-/// A league with no chart is listed as well, since the keys sail it, under a
-/// finer dash than the booty-chart dotted line.
-fn leagues_line(app: &mut MapApp, map: &'static Map) -> Line<'static> {
-    let Some(p) = app.cursor_on(map) else {
-        return Line::from("");
+    let (known, total) = memorized_tally(app, map);
+    let percent = if total == 0 {
+        0.0
+    } else {
+        100.0 * known as f64 / total as f64
     };
-    let mut spans = Vec::new();
-    for (heading, _, league) in map.leagues_at(p) {
-        let (glyph, paint) = match (app.sailable(league), league.chart) {
-            (true, _) => ("━", Paint::Known),
-            (false, Chart::Sold) => ("─", Paint::Solid),
-            (false, Chart::Booty) => ("┄", Paint::Dotted),
-            (false, Chart::Nonexistent) => ("┈", Paint::Dotted),
-        };
-        if !spans.is_empty() {
-            spans.push(Span::raw("  "));
-        }
-        spans.push(Span::raw(format!(
-            "{} ",
-            heading.label()
-        )));
-        spans.push(Span::styled(glyph, paint.style()));
-    }
-    Line::from(spans)
+    Line::from(format!(
+        "{known}/{total} ({percent:.1}%)"
+    ))
 }
 
 /// The `?` popup: the keys and the glyph legend. The backdrop is a click
@@ -1079,7 +985,10 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             Span::raw("  mark the league point under the cursor as memorized"),
         ]),
         Line::from(dim(
-            "  what is memorized belongs to the pirate given by --user."
+            "  what is memorized belongs to the pirate given by --user, and"
+        )),
+        Line::from(dim(
+            "  the figure under the chart is how much of it they know."
         )),
         Line::from(vec![
             key("/"),
@@ -1131,7 +1040,7 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             "  a league no chart covers is left off the map to keep it"
         )),
         Line::from(dim(
-            "  readable; the keys sail it, and the footer shows it as ┈."
+            "  readable; the keys sail it even so."
         )),
     ]);
 
@@ -1453,21 +1362,6 @@ mod tests {
         );
     }
 
-    /// The footer lists every league the keys can sail from the cursor,
-    /// uncharted ones included, so the controls and the drawing can differ.
-    #[test]
-    fn the_footer_lists_an_uncharted_league_the_map_leaves_out() {
-        let map = Map::for_ocean("Emerald").expect("Emerald map");
-        let mut app = MapApp::new();
-        app.jump_to((17, 50));
-        let footer = leagues_line(&mut app, map).to_string();
-        assert!(
-            footer.contains("SE ┈"),
-            "the uncharted league south-east of the Morannon approach: \
-             {footer}"
-        );
-    }
-
     #[test]
     fn crossing_diagonals_become_an_x_with_the_stronger_paint() {
         let mut canvas = Canvas::new(3, 3);
@@ -1566,10 +1460,10 @@ mod tests {
         }
     }
 
-    /// The column's bottom block is a pirate's tally once one is named, and
-    /// the way to name one until then.
+    /// The foot of the chart is a pirate's tally once one is named, and the
+    /// way to name one until then.
     #[test]
-    fn the_column_asks_for_a_pirate_before_it_tallies() {
+    fn the_chart_asks_for_a_pirate_before_it_tallies() {
         use ratatui::{Terminal, backend::TestBackend};
 
         let map = Map::for_ocean("Emerald").expect("Emerald map");
@@ -1598,13 +1492,14 @@ mod tests {
                 .expect("draw");
             format!("{}", terminal.backend())
         };
+        let tally = format!("0/{} (0.0%)", map.points().len());
         let screen = draw(&mut app);
-        assert!(screen.contains("Memorizing needs a pirate:"));
-        assert!(!screen.contains("Memorized league points"));
+        assert!(screen.contains(NO_PIRATE));
+        assert!(!screen.contains(&tally));
         app.pirate = Some("Someone".to_owned());
         let screen = draw(&mut app);
-        assert!(screen.contains("Memorized league points"));
-        assert!(!screen.contains("Memorizing needs a pirate:"));
+        assert!(screen.contains(&tally));
+        assert!(!screen.contains(NO_PIRATE));
     }
 
     /// Prints the whole canvas, for eyeballing the drawing:
@@ -1752,9 +1647,7 @@ mod tests {
                     ocean.name,
                 );
             };
-            for line in [TALLY_TITLE, FETCHING].into_iter().chain(NO_PIRATE) {
-                fits(line);
-            }
+            fits(FETCHING);
             for arch in &ocean.archipelagos {
                 for isle in &arch.islands {
                     fits(&isle.name);
@@ -1768,7 +1661,7 @@ mod tests {
         }
         // an ocean with no geography still fits what the column says of its
         // own accord
-        assert!(NO_PIRATE[0].chars().count() <= text_width(None));
+        assert!(FETCHING.chars().count() <= text_width(None));
     }
 
     /// A fact too long for the column carries on two columns further in, and
@@ -1978,11 +1871,11 @@ mod tests {
             end[3].ends_with('▲') && end.iter().any(|l| l.ends_with('┴')),
             "the bar is flush with the bottom: {end:?}"
         );
-        // twenty lines under the head, and twelve rows beside the bar to read
-        // them in
+        // twenty lines under the head, and thirteen rows beside the bar to
+        // read them in
         assert_eq!(
             app.info_scroll,
-            20 - 12,
+            20 - 13,
             "the ask is clamped to the last line of the column"
         );
 

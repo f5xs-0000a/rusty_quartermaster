@@ -547,7 +547,7 @@ rosters in the gallery and grow with them, to the four-row cap:
 
 | page | rows | why |
 | ---- | ---- | --- |
-| Map | 11 | a four-row viewport, its sideways bar, two status rows, its border |
+| Map | 11 | a four-row viewport, its sideways bar, a status row, its border, the hint under it |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
 | Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, the panes |
@@ -610,8 +610,8 @@ name a widget that is not being shown. Both Jobbers and Voyage Statistics are
 such pages, so neither draws a box while its prerequisite is unmet.
 
 That leaves the boxed case for a widget that is genuinely one part of a page: the
-Map, whose two status rows stay put below it and whose metadata column stays
-beside it at width.
+Map, whose status row stays put below it and whose metadata column stays beside
+it at width.
 
 ### Implementation
 
@@ -660,7 +660,7 @@ from the text once folded, and the vertical centering needs that height.
 | `Terminal too small`, too small for this page (Rules 3 and 4) | the page, unboxed |
 | Voyage `No voyage tracked yet.` | the page, unboxed |
 | Jobbers `No chat log attached` | the page, unboxed |
-| Map `Select an ocean (--ocean)` | the Map box, above its two status rows |
+| Map `Select an ocean (--ocean)` | the Map box, above its status row |
 | Map `No map for <ocean> yet` | the same |
 
 Three things that read like notices are deliberately not ones:

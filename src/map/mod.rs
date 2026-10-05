@@ -539,12 +539,16 @@ mod tests {
         assert!(Map::for_ocean("Atlantis").is_none());
         let points = map.points();
         for island in map.islands {
+            let at = island.at();
             assert!(
-                map.leagues_at(island.at()).next().is_some(),
+                map.leagues.iter().any(|l| {
+                    let (a, b) = l.ends();
+                    a == at || b == at
+                }),
                 "{} has no league",
                 island.name
             );
-            assert!(points.contains(&island.at()));
+            assert!(points.contains(&at));
         }
         // every league's far end lands on another point of the map
         for league in map.leagues {
