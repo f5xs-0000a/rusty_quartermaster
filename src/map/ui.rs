@@ -472,11 +472,17 @@ pub fn render(
     }
     let area = map_area;
 
+    // The chart is of one ocean, so the title names it; with no ocean picked
+    // there's nothing to name and the bare word has to do.
+    let title = match ocean {
+        Some(ocean) => format!("Map of {ocean} Ocean"),
+        None => "Map".to_owned(),
+    };
     let block = Block::default()
         .borders(Borders::ALL)
         .border_style(border)
         .padding(Padding::horizontal(1))
-        .title(offset_title("Map").0);
+        .title(offset_title(&title).0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 

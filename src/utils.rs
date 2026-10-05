@@ -237,7 +237,7 @@ const TITLE_DASHES: usize = 3;
 ///
 /// The title is left-aligned on the block; at the returned width it reads
 /// `┌─── Title ───┐`, and any extra width simply lengthens the trailing run.
-pub fn offset_title(title: &'static str) -> (String, u16) {
+pub fn offset_title(title: &str) -> (String, u16) {
     // The `─── …` frame, kept as a tiny macro local to this fn since nothing
     // else needs it. (`concat!` can't be used — `title` isn't a literal.)
     macro_rules! framed {
@@ -255,7 +255,7 @@ pub fn offset_title(title: &'static str) -> (String, u16) {
 /// — equal `───` runs flank the text. `const` so widgets can derive a `const`
 /// minimum width and use it directly as a layout floor. Assumes an ASCII title
 /// (byte length == column count), which all of ours are.
-pub const fn offset_title_width(title: &'static str) -> u16 {
+pub const fn offset_title_width(title: &str) -> u16 {
     // `─── {title} ` spans `title.len() + TITLE_DASHES + 2` columns; the box
     // adds a matching trailing dash run + 2 corners.
     (title.len() + 2 * TITLE_DASHES + 4) as u16
