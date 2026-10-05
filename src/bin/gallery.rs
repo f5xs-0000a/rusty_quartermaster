@@ -874,7 +874,7 @@ fn cache_islands(shell: &mut AppShell) {
 /// they hold for whichever ocean is dumped.
 fn cursor_on_island(
     shell: &mut AppShell,
-    rank: impl Fn(&IslandInfo, &bare::Island) -> Option<usize>,
+    rank: impl Fn(&IslandInfo, &bare::Archipelago, &bare::Island) -> Option<usize>,
 ) {
     let geo = shell.ocean_geo();
     let list = shell.islands.as_ref().expect("a fetched island list");
@@ -883,8 +883,8 @@ fn cursor_on_island(
         .iter()
         .filter_map(|place| {
             let info = list.get(place.name)?;
-            let (_, isle) = geo?.island(place.name)?;
-            Some((rank(info, isle)?, place.at()))
+            let (arch, isle) = geo?.island(place.name)?;
+            Some((rank(info, arch, isle)?, place.at()))
         })
         .max_by_key(|(score, _)| *score)
         .map(|(_, point)| point);
@@ -1616,7 +1616,7 @@ fn map_states(states: &mut Vec<State>) {
         "Map, cursor on a capital with its island info fetched",
         |shell| {
             *shell = map_shell();
-            cursor_on_island(shell, |info, isle| {
+            cursor_on_island(shell, |info, _, isle| {
                 (info.governor.is_some()
                     && isle.status == bare::Status::Capital)
                     .then_some(0)
@@ -1628,7 +1628,7 @@ fn map_states(states: &mut Vec<State>) {
         "Map, cursor on the colony yoweb says the most about",
         |shell| {
             *shell = map_shell();
-            cursor_on_island(shell, |info, _| {
+            cursor_on_island(shell, |info, _, _| {
                 info.governor.is_some().then_some(info.exports.len())
             });
         },
@@ -1638,8 +1638,18 @@ fn map_states(states: &mut Vec<State>) {
         "Map, cursor on an island yoweb names no governor for",
         |shell| {
             *shell = map_shell();
-            cursor_on_island(shell, |info, _| {
+            cursor_on_island(shell, |info, _, _| {
                 info.governor.is_none().then_some(info.exports.len())
+            });
+        },
+    ));
+    states.push(state(
+        "map-island-long-archipelago",
+        "Map, cursor where the archipelago wraps the column's head",
+        |shell| {
+            *shell = map_shell();
+            cursor_on_island(shell, |_, arch, _| {
+                Some(arch.name.chars().count())
             });
         },
     ));
@@ -1648,7 +1658,7 @@ fn map_states(states: &mut Vec<State>) {
         "Map, Island column scrolled to the end of what it says",
         |shell| {
             *shell = map_shell();
-            cursor_on_island(shell, |info, _| {
+            cursor_on_island(shell, |info, _, _| {
                 info.governor.is_some().then_some(info.exports.len())
             });
             // past the end: the render clamps it to the last line

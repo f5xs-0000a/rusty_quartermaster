@@ -415,6 +415,12 @@ what moves its window.
   pan. The wheel over the column scrolls it rather than panning the chart
   behind it: the wheel belongs to whatever it is over.
 
+  It pins a head of its own above that window, and wraps rather than clipping,
+  which makes its row count a thing the width decides. Both are the Map's own
+  shape rather than anything general, and are documented in `src/map/ui.rs`;
+  what the bar has to live with is that the window is whatever rows the head
+  leaves, settled before the bar is drawn.
+
   The Voyage body has to work this way. Its focusable items are not spread
   evenly down it — a stat is one row, a chart is nine — so a bar that moved the
   focus crawled: two thirds of its track scrolled nothing at all, because those

@@ -1,6 +1,27 @@
 //! Rendering for the Map app: the map is drawn onto a character canvas
 //! (points, leagues, labels), and the viewport shows the part of it around
 //! the cursor.
+//!
+//! # The Island column
+//!
+//! Beside the chart, where the terminal is wide enough for both, is what is
+//! known about the point under the cursor. How it is laid out is this page's
+//! own business, not a convention any other page keeps:
+//!
+//! - A **head** of three centred lines says where the point is: its name, what
+//!   kind of island it is, and the archipelago it lies in. It is pinned, so it
+//!   is still there at the foot of a long island, and the name is red for a
+//!   point the pirate has memorized.
+//! - **Below the head** come the colony, what the island exports, what its
+//!   archipelago forages and the gems its palace buys, each section left out
+//!   when there is nothing to say. This is the part that scrolls, under the
+//!   convention every scrolling view keeps (see `UI_CONVENTIONS.md`, Rule 4).
+//! - Facts yoweb or the geography is the source of are **underlined**, so a
+//!   value is told apart from the words that introduce it.
+//! - A line too long for the column **wraps** with its continuation two columns
+//!   further in, rather than being cut off.
+//! - The column's **width** is [`metadata_width`]: the ocean's longest island
+//!   name and kind of island, so neither ever wraps.
 
 use std::collections::BTreeSet;
 
@@ -24,10 +45,56 @@ use crate::{
     utils::offset_title,
 };
 
-/// Terminal width from which the metadata column is shown beside the map.
-const METADATA_MIN_WIDTH: u16 = 100;
-/// Width of the metadata column, borders included.
-const METADATA_WIDTH: u16 = 32;
+/// Columns the chart keeps for itself before the Island column may take any.
+/// Narrower than this and the map gets the whole width.
+const CHART_MIN_WIDTH: u16 = 68;
+
+/// What the Island column says of its own accord, whichever point the cursor
+/// is on: the tally at its foot, the line that asks for a pirate in place of
+/// one, and the notice while the island list is on its way. The column is
+/// never narrower than these.
+const TALLY_TITLE: &str = "Memorized league points";
+const NO_PIRATE: [&str; 2] =
+    ["Memorizing needs a pirate:", "name one with --user."];
+const FETCHING: &str = "Fetching island info...";
+
+/// Columns the Island column takes, borders included: enough to print the
+/// longest name any of the ocean's islands carries, and what kind of island any
+/// of them is, without wrapping either.
+///
+/// The archipelago line is not measured. One long archipelago name would widen
+/// the column for every point of the ocean, so that line wraps where it must,
+/// as everything below the head does.
+///
+/// The figure is the ocean's, not the cursor's: a column measured against the
+/// island under the cursor would change width as the cursor sailed.
+fn metadata_width(geo: Option<&'static bare::Ocean>) -> u16 {
+    let mut longest = [TALLY_TITLE, FETCHING]
+        .into_iter()
+        .chain(NO_PIRATE)
+        .map(|line| line.chars().count())
+        .max()
+        .unwrap_or(0);
+    if let Some(ocean) = geo {
+        for arch in &ocean.archipelagos {
+            for isle in &arch.islands {
+                longest = longest.max(isle.name.chars().count());
+                longest = longest.max(
+                    format!(
+                        "{} {} island",
+                        isle.status.label(),
+                        isle.size.label()
+                    )
+                    .chars()
+                    .count(),
+                );
+            }
+        }
+    }
+    // the scrollbar's columns, the block's padding and its borders all sit
+    // outside the text
+    longest as u16 + crate::utils::SCROLLBAR_W + 2 + 2
+}
 
 // a terminal cell is about twice as tall as it is wide, so four columns by
 // two rows per grid cell keeps the map's square grid square on screen: an
@@ -380,12 +447,13 @@ pub fn render(
     } else {
         Style::default().fg(Color::DarkGray)
     };
-    // a wide enough terminal gets a metadata column beside the map; the
-    // map keeps every column otherwise
-    let (map_area, side) = if METADATA_MIN_WIDTH <= area.width {
+    // a terminal with room for the chart and the column both gets the column
+    // beside the map; the map keeps every column otherwise
+    let column = metadata_width(geo);
+    let (map_area, side) = if CHART_MIN_WIDTH + column <= area.width {
         let cols = Layout::horizontal([
             Constraint::Fill(1),
-            Constraint::Length(METADATA_WIDTH),
+            Constraint::Length(column),
         ])
         .split(area);
         (cols[0], Some(cols[1]))
@@ -547,26 +615,64 @@ fn render_metadata(
         target: ClickTarget::MapIslandInfo,
     });
     if let Some(p) = app.cursor_on(map) {
-        let lines = metadata_lines(app, map, &sources, p);
+        // where the point is stays put at the head of the column: what is
+        // being read about is as worth knowing at the foot of a long island as
+        // at the top of it. Everything under it is the column's window.
+        let meta = metadata(app, map, &sources, p);
+        // how far the lines wrap is the width's, and the bar's columns are
+        // part of the width: taking them can only ask for more rows, never
+        // fewer, so asking once whether the full width scrolls settles it
+        let settle = |width: u16| {
+            let wrap = |lines: &[Line<'static>]| -> Vec<Line<'static>> {
+                lines
+                    .iter()
+                    .flat_map(|line| wrap_line(line, width))
+                    .collect()
+            };
+            (wrap(&meta.head), wrap(&meta.body))
+        };
+        let (mut head, mut body) = settle(rows[0].width);
+        let room = |head: &[Line<'static>]| {
+            rows[0].height.saturating_sub(head.len() as u16)
+        };
+        if crate::utils::scrolls(room(&head), body.len()) {
+            (head, body) =
+                settle(rows[0].width.saturating_sub(crate::utils::SCROLLBAR_W));
+        }
+        let split = Layout::vertical([
+            Constraint::Length(head.len() as u16),
+            Constraint::Min(0),
+        ])
+        .split(rows[0]);
         app.info_scroll = app
             .info_scroll
-            .min(lines.len().saturating_sub(rows[0].height as usize));
+            .min(body.len().saturating_sub(split[1].height as usize));
         let text = crate::utils::render_scrollbar(
             frame,
             regions,
-            rows[0],
+            split[1],
             crate::clickmap::ScrollView::MapIslandInfo,
             app.info_scroll,
-            lines.len(),
+            body.len(),
+        );
+        // the head is centred on the same columns as the lines under it, bar
+        // or no bar, so the column does not shift when the bar appears
+        frame.render_widget(
+            Paragraph::new(head),
+            Rect {
+                x: text.x,
+                width: text.width,
+                ..split[0]
+            },
         );
         frame.render_widget(
-            Paragraph::new(lines).scroll((app.info_scroll as u16, 0)),
+            Paragraph::new(body).scroll((app.info_scroll as u16, 0)),
             text,
         );
     }
     if sources.fetching_islands {
         frame.render_widget(
-            Paragraph::new("Fetching island info...")
+            Paragraph::new(FETCHING)
                 .style(Style::default().fg(Color::DarkGray)),
             rows[1],
         );
@@ -577,10 +683,10 @@ fn render_metadata(
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(Span::styled(
-                    "Memorizing needs a pirate:",
+                    NO_PIRATE[0],
                     Style::default().bold(),
                 )),
-                Line::from("name one with --user."),
+                Line::from(NO_PIRATE[1]),
             ])
             .style(Style::default().fg(Color::DarkGray)),
             rows[2],
@@ -596,7 +702,7 @@ fn render_metadata(
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
-                "Memorized league points",
+                TALLY_TITLE,
                 Style::default().bold(),
             )),
             Line::from(format!(
@@ -634,81 +740,243 @@ fn memorized_mark(app: &MapApp, p: Point) -> Option<Span<'static>> {
     )
 }
 
-/// The metadata lines for point `p`: name, size and status, memorized
-/// state, then what the island produces, what its archipelago forages,
-/// and the gems it buys. Open sea only has a name and a memorized state.
-fn metadata_lines(
+/// Word-wrap one metadata line to `width` columns, keeping every character's
+/// style across the break. What a line carries on with is indented two columns
+/// past the line's own indent, so a continuation reads as part of what it
+/// continues rather than as the next fact.
+///
+/// A centred line stays centred and is not indented: a heading has nothing to
+/// hang under. A single word longer than the column is broken where it reaches
+/// the edge, since dropping half a name says less than splitting it.
+fn wrap_line(line: &Line<'static>, width: u16) -> Vec<Line<'static>> {
+    let cells: Vec<(char, Style)> = line
+        .spans
+        .iter()
+        .flat_map(|span| {
+            let style = span.style;
+            span.content.chars().map(move |ch| (ch, style))
+        })
+        .collect();
+    let width = width.max(1) as usize;
+    if cells.len() <= width {
+        return vec![line.clone()];
+    }
+    let indent = cells.iter().take_while(|(ch, _)| *ch == ' ').count();
+    let hang = if line.alignment.is_some() {
+        indent
+    } else {
+        indent + 2
+    }
+    // a column too narrow to hang anything under still has to make progress
+    .min(width - 1);
+    // the line as its words, the leading indent dropped: it is put back by
+    // whichever row a word lands on
+    let mut words: Vec<Vec<(char, Style)>> = Vec::new();
+    for (ch, style) in cells.into_iter().skip(indent) {
+        match (ch, words.last_mut()) {
+            (' ', _) => words.push(Vec::new()),
+            (_, Some(word)) => word.push((ch, style)),
+            (_, None) => words.push(vec![(ch, style)]),
+        }
+    }
+
+    let blanks = |n: usize| vec![(' ', Style::default()); n];
+    let mut rows: Vec<Vec<(char, Style)>> = Vec::new();
+    let mut row = blanks(indent);
+    let mut empty = true;
+    for word in words.into_iter().filter(|word| !word.is_empty()) {
+        let mut rest = word.as_slice();
+        loop {
+            let room = width.saturating_sub(row.len() + usize::from(!empty));
+            if rest.len() <= room {
+                if !empty {
+                    row.push((' ', Style::default()));
+                }
+                row.extend_from_slice(rest);
+                empty = false;
+                break;
+            }
+            // what is left of the word does not fit: fill a row of its own
+            // where it is longer than any row, and wait for the next row
+            // otherwise
+            if empty && 0 < room {
+                let (head, tail) = rest.split_at(room);
+                row.extend_from_slice(head);
+                rest = tail;
+            }
+            rows.push(std::mem::replace(
+                &mut row,
+                blanks(hang),
+            ));
+            empty = true;
+        }
+    }
+    rows.push(row);
+    rows.into_iter()
+        .map(|cells| {
+            let mut spans: Vec<Span<'static>> = Vec::new();
+            for (ch, style) in cells {
+                match spans.last_mut() {
+                    Some(last) if last.style == style => {
+                        last.content.to_mut().push(ch)
+                    }
+                    _ => spans.push(Span::styled(ch.to_string(), style)),
+                }
+            }
+            let mut wrapped = Line::from(spans);
+            wrapped.alignment = line.alignment;
+            wrapped
+        })
+        .collect()
+}
+
+/// What the Island column has to say about a point: the three centred lines
+/// pinned at its head, and the lines below them.
+struct Metadata {
+    /// Where the point is: its name, what kind of island it is, and the
+    /// archipelago it lies in. Open sea has only the name.
+    head: Vec<Line<'static>>,
+    /// What is known about it: its colony, what it exports, what its
+    /// archipelago forages, and the gems its palace buys.
+    body: Vec<Line<'static>>,
+}
+
+/// Read point `p` out of the geography and whatever has been fetched about it.
+///
+/// The name is red for a point the pirate has memorized. Nothing is said in
+/// colour alone: the footer under the chart spells the same mark out in words.
+fn metadata(
     app: &MapApp,
     map: &'static Map,
     sources: &Sources<'_>,
     p: Point,
-) -> Vec<Line<'static>> {
+) -> Metadata {
     let bold = |s: String| Span::styled(s, Style::default().bold());
     let dim =
         |s: &'static str| Span::styled(s, Style::default().fg(Color::DarkGray));
-    let memorized = memorized_mark(app, p).map(Line::from);
+    // the facts a point's own page is the source of, set off from the words
+    // around them
+    let value = |s: String| Span::styled(s, Style::default().underlined());
+    let name_style = {
+        let plain = Style::default().bold();
+        // a mark belongs to a pirate, so without one there is none to show
+        if app.pirate.is_some() && app.memorized.contains(&p) {
+            plain.fg(Color::Red)
+        } else {
+            plain
+        }
+    };
 
     let Some(island) = map.island_at(p) else {
-        let mut lines = vec![Line::from(bold(format!(
-            "Open sea ({},{})",
-            p.0, p.1
-        )))];
-        lines.extend(memorized);
-        return lines;
+        return Metadata {
+            head: vec![
+                Line::from(Span::styled(
+                    format!("Open sea ({},{})", p.0, p.1),
+                    name_style,
+                ))
+                .centered(),
+            ],
+            body: Vec::new(),
+        };
     };
-    let mut lines = vec![Line::from(bold(island.name.to_owned()))];
+    let mut head = vec![
+        Line::from(Span::styled(
+            island.name.to_owned(),
+            name_style,
+        ))
+        .centered(),
+    ];
     let Some((arch, info)) = sources.geo.and_then(|g| g.island(island.name))
     else {
-        lines.extend(memorized);
-        lines.push(Line::from(""));
-        lines.push(Line::from(dim(
-            "No geography data for this island."
-        )));
-        return lines;
+        return Metadata {
+            head,
+            body: vec![
+                Line::from(""),
+                Line::from(dim("No geography data for this island.")),
+            ],
+        };
     };
-    lines.push(Line::from(format!(
-        "{}, {}",
-        info.size.label(),
-        info.status.label()
-    )));
-    lines.extend(memorized);
+    // the line opens with how the island is settled, so that is what opens
+    // with a capital. The labels are ASCII words, so a label's first byte is
+    // its first letter.
+    let mut status = info.status.label().to_owned();
+    status[.. 1].make_ascii_uppercase();
+    head.push(
+        Line::from(vec![
+            value(status),
+            Span::raw(" "),
+            value(info.size.label().to_owned()),
+            Span::raw(" island"),
+        ])
+        .centered(),
+    );
+    head.push(
+        Line::from(vec![
+            Span::raw("of the "),
+            value(format!("{} Archipelago", arch.name)),
+        ])
+        .centered(),
+    );
 
+    let mut lines = Vec::new();
     // every fact below is shown only once it is known: a section that has
     // nothing to say is left out rather than saying so
-    let mut section = |title: &'static str, items: Vec<String>| {
+    let mut section = |title: &'static str, items: Vec<Line<'static>>| {
         if items.is_empty() {
             return;
         }
         lines.push(Line::from(""));
         lines.push(Line::from(bold(title.to_owned())));
-        for item in items {
-            lines.push(Line::from(format!("  {item}")));
-        }
+        lines.extend(items);
+    };
+    let item = |text: String| Line::from(format!("  {text}"));
+    let fact = |said: &'static str, of: String| {
+        Line::from(vec![
+            Span::raw(format!("  {said} ")),
+            value(of),
+        ])
     };
     // what yoweb says about the island, once its list has been fetched
     if let Some(yoweb) = sources.islands.and_then(|c| c.get(island.name)) {
         let mut facts = Vec::new();
         if let Some(governor) = &yoweb.governor {
-            facts.push(format!("Governor  {governor}"));
+            facts.push(fact("Governed by", governor.clone()));
         }
         if let Some(flag) = &yoweb.flag {
-            facts.push(format!("Ruled by  {flag}"));
+            facts.push(fact("Ruled by", flag.clone()));
         }
         if let Some(tax) = yoweb.property_tax {
-            facts.push(format!("Property tax  {tax}%"));
+            facts.push(fact(
+                "Taxing properties at",
+                format!("{tax}%"),
+            ));
         }
         section("Colony", facts);
-        section("Exports", yoweb.exports.clone());
+        section(
+            "Exports",
+            yoweb.exports.iter().cloned().map(item).collect(),
+        );
     }
-    section("Forage", arch.forageables.clone());
+    section(
+        "Forage",
+        arch.forageables.iter().cloned().map(item).collect(),
+    );
     section(
         "Buys gems",
         info.buys_gems
             .iter()
-            .map(|g| format!("{g} at {} PoE", bare::GEM_BUY_PRICE))
+            .map(|g| {
+                item(format!(
+                    "{g} at {} PoE",
+                    bare::GEM_BUY_PRICE
+                ))
+            })
             .collect(),
     );
-    lines
+    Metadata {
+        head,
+        body: lines,
+    }
 }
 
 /// The cursor's point: its name, grid cell and memorized state.
@@ -1371,22 +1639,24 @@ mod tests {
         };
         let mut app = MapApp::new();
         let cromwell = island(map, "Cromwell Island");
-        // the memorized state is a pirate's: with none loaded, no line
-        let lines = text(&metadata_lines(
-            &app,
-            map,
-            &sources,
-            (2, 9),
-        ));
-        assert_eq!(lines, ["Open sea (2,9)"]);
         app.pirate = Some("Someone".to_owned());
         app.memorized.insert(cromwell);
-        let lines = text(&metadata_lines(
-            &app, map, &sources, cromwell,
-        ));
-        assert_eq!(lines[0], "Cromwell Island");
-        assert_eq!(lines[1], "outpost, colonized");
-        assert_eq!(lines[2], "Memorized");
+        let meta = metadata(&app, map, &sources, cromwell);
+        assert_eq!(
+            meta.head[0].spans[0].style.fg,
+            Some(Color::Red),
+            "a memorized point is named in red"
+        );
+        // the head says where the point is, and is all the column pins
+        assert_eq!(
+            text(&meta.head),
+            [
+                "Cromwell Island",
+                "Colonized outpost island",
+                "of the Gull Archipelago",
+            ]
+        );
+        let lines = text(&meta.body);
         assert!(lines.contains(&"Forage".to_owned()));
         // nothing from yoweb has been fetched, and no purchase is known for
         // Cromwell: neither is mentioned
@@ -1395,19 +1665,18 @@ mod tests {
         assert!(!lines.contains(&"Buys gems".to_owned()));
         // Alkaid is amber's destination
         let alkaid = island(map, "Alkaid Island");
-        let lines = text(&metadata_lines(
-            &app, map, &sources, alkaid,
-        ));
+        let lines = text(&metadata(&app, map, &sources, alkaid).body);
         assert!(lines.contains(&"Buys gems".to_owned()));
         assert!(lines.contains(&"  Amber at 1000 PoE".to_owned()));
-        // open sea has no island data, only a name and the mark
-        let sea = text(&metadata_lines(
-            &app,
-            map,
-            &sources,
-            (2, 9),
-        ));
-        assert_eq!(sea, ["Open sea (2,9)", "Not memorized"]);
+        // open sea has no island data, only the name of the point
+        let sea = metadata(&app, map, &sources, (2, 9));
+        assert_eq!(text(&sea.head), ["Open sea (2,9)"]);
+        assert!(sea.body.is_empty());
+        // the mark is a pirate's: with none loaded, nothing is named in red
+        // however the marks read
+        app.pirate = None;
+        let meta = metadata(&app, map, &sources, cromwell);
+        assert_eq!(meta.head[0].spans[0].style.fg, None);
     }
 
     #[test]
@@ -1431,27 +1700,115 @@ mod tests {
             fetching_islands: false,
         };
         let app = MapApp::new();
-        let lines = text(&metadata_lines(
-            &app,
-            map,
-            &sources,
-            island(map, "Cromwell Island"),
-        ));
+        let lines = text(
+            &metadata(
+                &app,
+                map,
+                &sources,
+                island(map, "Cromwell Island"),
+            )
+            .body,
+        );
         assert!(lines.contains(&"Colony".to_owned()));
-        assert!(lines.contains(&"  Governor  Someone".to_owned()));
-        assert!(lines.contains(&"  Ruled by  Some Flag".to_owned()));
-        assert!(lines.contains(&"  Property tax  15%".to_owned()));
+        assert!(lines.contains(&"  Governed by Someone".to_owned()));
+        assert!(lines.contains(&"  Ruled by Some Flag".to_owned()));
+        assert!(lines.contains(&"  Taxing properties at 15%".to_owned()));
         assert!(lines.contains(&"Exports".to_owned()));
         assert!(lines.contains(&"  Hemp".to_owned()));
         // an island yoweb does not list gets none of those lines
-        let lines = text(&metadata_lines(
-            &app,
-            map,
-            &sources,
-            island(map, "Alkaid Island"),
-        ));
+        let lines = text(
+            &metadata(
+                &app,
+                map,
+                &sources,
+                island(map, "Alkaid Island"),
+            )
+            .body,
+        );
         assert!(!lines.contains(&"Colony".to_owned()));
         assert!(!lines.contains(&"Exports".to_owned()));
+    }
+
+    /// The column is as wide as the longest island name and kind its ocean can
+    /// show, so neither is ever wrapped. The archipelago line is not measured,
+    /// and wraps like the lines below the head.
+    #[test]
+    fn the_column_fits_the_longest_name_its_ocean_can_show() {
+        let text_width = |geo| {
+            (metadata_width(geo) - crate::utils::SCROLLBAR_W - 4) as usize
+        };
+        for ocean in &bare::BARE.oceans {
+            let room = text_width(Some(ocean));
+            let fits = |line: &str| {
+                assert!(
+                    line.chars().count() <= room,
+                    "{line:?} does not fit the {} column",
+                    ocean.name,
+                );
+            };
+            for line in [TALLY_TITLE, FETCHING].into_iter().chain(NO_PIRATE) {
+                fits(line);
+            }
+            for arch in &ocean.archipelagos {
+                for isle in &arch.islands {
+                    fits(&isle.name);
+                    fits(&format!(
+                        "{} {} island",
+                        isle.status.label(),
+                        isle.size.label()
+                    ));
+                }
+            }
+        }
+        // an ocean with no geography still fits what the column says of its
+        // own accord
+        assert!(NO_PIRATE[0].chars().count() <= text_width(None));
+    }
+
+    /// A fact too long for the column carries on two columns further in, and
+    /// the value it names keeps its styling across the break.
+    #[test]
+    fn a_wrapped_line_hangs_under_the_one_it_continues() {
+        let flag = Style::default().underlined();
+        let line = Line::from(vec![
+            Span::raw("  Ruled by "),
+            Span::styled("Don't Open Till Dead", flag),
+        ]);
+        let wrapped = wrap_line(&line, 26);
+        assert_eq!(
+            text(&wrapped),
+            ["  Ruled by Don't Open Till", "    Dead"]
+        );
+        // "Dead" is the flag's name wherever it lands
+        assert_eq!(wrapped[1].spans[1].style, flag);
+
+        // a line that fits is left as it is, centring and all
+        let short = Line::from("  Ruled by Example Flag").centered();
+        let kept = wrap_line(&short, 26);
+        assert_eq!(text(&kept), ["  Ruled by Example Flag"]);
+        assert_eq!(kept[0].alignment, short.alignment);
+
+        // a centred line has nothing to hang under, so its continuations line
+        // up with it rather than stepping in
+        let long = Line::from("Example Islands of the Archipelago").centered();
+        assert_eq!(
+            text(&wrap_line(&long, 26)),
+            ["Example Islands of the", "Archipelago"]
+        );
+
+        // and a word longer than the column is broken rather than dropped
+        assert_eq!(
+            text(&wrap_line(
+                &Line::from("  Ruled by Abcdefghijklmnopqrstuvwxyz"),
+                16
+            )),
+            [
+                "  Ruled by",
+                "    Abcdefghijkl",
+                "    mnopqrstuvwx",
+                "    yz"
+            ]
+        );
     }
 
     /// The lines inside the Island column's box as a 120x20 terminal shows
@@ -1467,6 +1824,7 @@ mod tests {
         let (w, h) = (120, 20);
         let mut terminal =
             Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        let mut regions = Vec::new();
         terminal
             .draw(|frame| {
                 let ctx = OceanContext {
@@ -1482,21 +1840,70 @@ mod tests {
                     app,
                     ctx,
                     true,
-                    &mut Vec::new(),
+                    &mut regions,
                 );
             })
             .expect("draw");
+        // the column is where it registered itself, so the reading does not
+        // have to know how wide the ocean's names made it
+        let column = regions
+            .iter()
+            .find_map(|r| {
+                matches!(r.target, ClickTarget::MapIslandInfo).then_some(r.rect)
+            })
+            .expect("the Island column is a region of its own");
         let buffer = terminal.backend().buffer().clone();
-        let x = w - METADATA_WIDTH + 2;
         (1 .. h - 1)
             .map(|y| {
-                (x .. x + METADATA_WIDTH - 4)
+                (column.x .. column.x + column.width)
                     .map(|col| buffer[(col, y)].symbol())
                     .collect::<String>()
                     .trim_end()
                     .to_owned()
             })
             .collect()
+    }
+
+    /// The column is not sized for the archipelago line, so that line may wrap
+    /// — and a head of four rows leaves the window one row fewer, bar and all.
+    #[test]
+    fn a_wrapped_head_takes_a_row_from_the_window() {
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        // Horse Head is the longest archipelago name on the Emerald map
+        let list = crate::islands::CachedIslands {
+            fetched_at: chrono::Utc::now(),
+            islands: vec![crate::islands::IslandInfo {
+                name: "Anegada Island".to_owned(),
+                governor: Some("Someone".to_owned()),
+                flag: None,
+                property_tax: Some(20),
+                exports: [
+                    "Hemp",
+                    "Iron",
+                    "Wood",
+                    "Cloth",
+                    "Stone",
+                    "Sugar cane",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            }],
+        };
+        let mut app = MapApp::new();
+        app.pirate = Some("Someone".to_owned());
+        app.jump_to(island(map, "Anegada Island"));
+
+        let lines = column_lines(&mut app, &list);
+        assert!(
+            lines[2].contains("of the Horse Head")
+                && lines[3].contains("Archipelago"),
+            "the archipelago line wraps: {lines:?}"
+        );
+        assert_eq!(
+            lines.iter().position(|l| l.ends_with('┬')),
+            Some(4),
+            "the bar starts under the wrapped head: {lines:?}"
+        );
     }
 
     /// What the column has to say about a point can run longer than the
@@ -1530,12 +1937,14 @@ mod tests {
 
         let top = column_lines(&mut app, &list);
         assert!(
-            top[0].starts_with("Alkaid Island"),
-            "the island is read from the top: {top:?}"
+            top[0].contains("Alkaid Island"),
+            "the island is named at the head of the column: {top:?}"
         );
-        assert!(
-            top[0].ends_with('┬'),
-            "the bar starts beside the first line: {top:?}"
+        // the three lines saying where the point is are pinned above the bar
+        assert_eq!(
+            top.iter().position(|l| l.ends_with('┬')),
+            Some(3),
+            "the bar starts under the head: {top:?}"
         );
         assert!(
             top.iter().any(|l| l.ends_with('▼')),
@@ -1547,20 +1956,27 @@ mod tests {
         );
 
         // asking past the end is the end: the last line comes into view, and
-        // the bar's upper arrow with it
+        // the bar's upper arrow with it, while the head stays where it was
         app.info_scroll = usize::MAX;
         let end = column_lines(&mut app, &list);
+        assert_eq!(
+            end[.. 3],
+            top[.. 3],
+            "the head scrolled away with the body: {end:?}"
+        );
         assert!(
             end.iter().any(|l| l.contains("Amber at 1000 PoE")),
             "the end of what the column says: {end:?}"
         );
         assert!(
-            end[0].ends_with('▲') && end.iter().any(|l| l.ends_with('┴')),
+            end[3].ends_with('▲') && end.iter().any(|l| l.ends_with('┴')),
             "the bar is flush with the bottom: {end:?}"
         );
+        // twenty lines under the head, and twelve rows beside the bar to read
+        // them in
         assert_eq!(
             app.info_scroll,
-            23 - (20 - 5),
+            20 - 12,
             "the ask is clamped to the last line of the column"
         );
 
