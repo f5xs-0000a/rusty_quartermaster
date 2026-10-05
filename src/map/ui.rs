@@ -398,7 +398,9 @@ pub fn render(
             islands,
             fetching_islands,
         };
-        render_metadata(frame, side, app, map, sources, border);
+        render_metadata(
+            frame, side, app, map, sources, border, regions,
+        );
     }
     let area = map_area;
 
@@ -522,6 +524,7 @@ fn render_metadata(
     map: &'static Map,
     sources: Sources<'_>,
     border: Style,
+    regions: &mut Vec<ClickRegion>,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -537,10 +540,28 @@ fn render_metadata(
         Constraint::Length(2),
     ])
     .split(inner);
+    // the wheel over the column scrolls what the column says rather than
+    // panning the chart beside it
+    regions.push(ClickRegion {
+        rect: rows[0],
+        target: ClickTarget::MapIslandInfo,
+    });
     if let Some(p) = app.cursor_on(map) {
-        frame.render_widget(
-            Paragraph::new(metadata_lines(app, map, &sources, p)),
+        let lines = metadata_lines(app, map, &sources, p);
+        app.info_scroll = app
+            .info_scroll
+            .min(lines.len().saturating_sub(rows[0].height as usize));
+        let text = crate::utils::render_scrollbar(
+            frame,
+            regions,
             rows[0],
+            crate::clickmap::ScrollView::MapIslandInfo,
+            app.info_scroll,
+            lines.len(),
+        );
+        frame.render_widget(
+            Paragraph::new(lines).scroll((app.info_scroll as u16, 0)),
+            text,
         );
     }
     if sources.fetching_islands {
@@ -796,7 +817,7 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
         ]),
         Line::from(vec![
             key("wheel"),
-            Span::raw("  pan the chart, as the scrollbars do"),
+            Span::raw("  pan the chart, or scroll the Island column"),
         ]),
         Line::from(dim(
             "  a panned chart returns to the cursor when a point is selected."
@@ -1431,6 +1452,121 @@ mod tests {
         ));
         assert!(!lines.contains(&"Colony".to_owned()));
         assert!(!lines.contains(&"Exports".to_owned()));
+    }
+
+    /// The lines inside the Island column's box as a 120x20 terminal shows
+    /// them, the scrollbar's own column included so the bar can be read off
+    /// them.
+    fn column_lines(
+        app: &mut MapApp,
+        list: &crate::islands::CachedIslands,
+    ) -> Vec<String> {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let (w, h) = (120, 20);
+        let mut terminal =
+            Terminal::new(TestBackend::new(w, h)).expect("test terminal");
+        terminal
+            .draw(|frame| {
+                let ctx = OceanContext {
+                    map: Some(map),
+                    geo: bare::BARE.ocean("Emerald"),
+                    ocean: Some("Emerald"),
+                    islands: Some(list),
+                    fetching_islands: false,
+                };
+                render(
+                    frame,
+                    frame.area(),
+                    app,
+                    ctx,
+                    true,
+                    &mut Vec::new(),
+                );
+            })
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        let x = w - METADATA_WIDTH + 2;
+        (1 .. h - 1)
+            .map(|y| {
+                (x .. x + METADATA_WIDTH - 4)
+                    .map(|col| buffer[(col, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect()
+    }
+
+    /// What the column has to say about a point can run longer than the
+    /// column, so it keeps a window of its own: the bar scrolls it, and a
+    /// point selected afresh is read from the top.
+    #[test]
+    fn the_island_column_scrolls_what_it_cannot_fit() {
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let list = crate::islands::CachedIslands {
+            fetched_at: chrono::Utc::now(),
+            islands: vec![crate::islands::IslandInfo {
+                name: "Alkaid Island".to_owned(),
+                governor: Some("Someone".to_owned()),
+                flag: Some("Some Flag".to_owned()),
+                property_tax: Some(15),
+                exports: [
+                    "Hemp",
+                    "Iron",
+                    "Wood",
+                    "Cloth",
+                    "Stone",
+                    "Sugar cane",
+                ]
+                .map(str::to_owned)
+                .to_vec(),
+            }],
+        };
+        let mut app = MapApp::new();
+        app.pirate = Some("Someone".to_owned());
+        app.jump_to(island(map, "Alkaid Island"));
+
+        let top = column_lines(&mut app, &list);
+        assert!(
+            top[0].starts_with("Alkaid Island"),
+            "the island is read from the top: {top:?}"
+        );
+        assert!(
+            top[0].ends_with('┬'),
+            "the bar starts beside the first line: {top:?}"
+        );
+        assert!(
+            top.iter().any(|l| l.ends_with('▼')),
+            "it can still be scrolled down: {top:?}"
+        );
+        assert!(
+            !top.iter().any(|l| l.contains("Amber")),
+            "the gem it buys is past the bottom: {top:?}"
+        );
+
+        // asking past the end is the end: the last line comes into view, and
+        // the bar's upper arrow with it
+        app.info_scroll = usize::MAX;
+        let end = column_lines(&mut app, &list);
+        assert!(
+            end.iter().any(|l| l.contains("Amber at 1000 PoE")),
+            "the end of what the column says: {end:?}"
+        );
+        assert!(
+            end[0].ends_with('▲') && end.iter().any(|l| l.ends_with('┴')),
+            "the bar is flush with the bottom: {end:?}"
+        );
+        assert_eq!(
+            app.info_scroll,
+            23 - (20 - 5),
+            "the ask is clamped to the last line of the column"
+        );
+
+        // and another point is read from the top again
+        app.jump_to(island(map, "Cromwell Island"));
+        assert_eq!(app.info_scroll, 0);
     }
 
     #[test]

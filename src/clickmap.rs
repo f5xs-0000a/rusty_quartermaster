@@ -24,6 +24,10 @@ pub enum ScrollView {
     /// The Map page's chart, a viewport on a canvas larger than it both ways.
     /// Follows the sailing cursor.
     MapCanvas,
+    /// The Map page's Island column: what is known about the point under the
+    /// cursor. Keeps its own window, which starts at the top of each island
+    /// the cursor is put on.
+    MapIslandInfo,
 }
 
 /// Which way a scrollbar runs. A view that scrolls both ways has one of each,
@@ -171,6 +175,9 @@ pub enum ClickTarget {
     },
     /// The backdrop behind the Map page's help popup; clicking it closes.
     MapHelpClose,
+    /// The Map page's Island column, so the wheel over it scrolls what it says
+    /// instead of panning the chart.
+    MapIslandInfo,
     /// A view's scrollbar. The hit test hands back no geometry of its own, so
     /// the bar carries the rect it was drawn into — the click's row within it
     /// is the whole of what the click says — and `total`, the rows the view

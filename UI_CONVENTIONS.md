@@ -408,6 +408,13 @@ what moves its window.
   Until then the cursor may be off the view, which is what lets the Map's bars
   reach open sea.
 
+  The Map's Island column is of this kind too, and the plainest case of it: it
+  has no cursor of its own at all, only lines about the point the chart's cursor
+  is on. Its window starts at the top of each point selected and is the reader's
+  from there, which is why selecting a point clears it along with the chart's
+  pan. The wheel over the column scrolls it rather than panning the chart
+  behind it: the wheel belongs to whatever it is over.
+
   The Voyage body has to work this way. Its focusable items are not spread
   evenly down it — a stat is one row, a chart is nine — so a bar that moved the
   focus crawled: two thirds of its track scrolled nothing at all, because those
@@ -477,7 +484,7 @@ room away can only make the other bar more wanted, never less.
 
 ### Where this applies
 
-Seven views scroll, and each has a bar:
+Eight views scroll, and each has a bar:
 
 | view | what its window follows | state to read it in |
 | ---- | ----------------------- | ------------------- |
@@ -489,6 +496,7 @@ Seven views scroll, and each has a bar:
 | Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster` |
 | Voyage body | its own scroll, until the focus moves | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
 | Map chart, both ways | its own pan, until a point is selected | `80x24-map-ocean` |
+| Map Island column | its own scroll, until a point is selected | `120x24-map-island-exports`, and `120x24-map-island-scrolled` for the far end — the column is only shown from 100 columns out, and at `120x40` what it says about an island fits, so this one needs `--size 120x24` |
 
 ### The answer must not move as focus moves
 

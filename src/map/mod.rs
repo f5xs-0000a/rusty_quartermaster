@@ -114,6 +114,10 @@ pub struct MapApp {
     /// which pans from where the window is rather than from where it was asked
     /// to be.
     pub window: (usize, usize),
+    /// The first line of the Island column on show. The column says more
+    /// about some points than others, so its window is its own and starts at
+    /// the top of whatever the cursor has just been put on.
+    pub info_scroll: usize,
 }
 
 impl Default for MapApp {
@@ -132,6 +136,7 @@ impl MapApp {
             help: false,
             pan: None,
             window: (0, 0),
+            info_scroll: 0,
         }
     }
 
@@ -153,8 +158,10 @@ impl MapApp {
         match map.neighbour(from, heading) {
             Some((to, _)) => {
                 self.cursor = Some(to);
-                // Selecting a point brings the chart back to it.
+                // Selecting a point brings the chart back to it, and the
+                // Island column to the top of what it says about it.
                 self.pan = None;
+                self.info_scroll = 0;
                 true
             }
             None => false,
@@ -199,8 +206,10 @@ impl MapApp {
     pub fn jump_to(&mut self, p: Point) {
         self.cursor = Some(p);
         self.search = None;
-        // Selecting a point brings the chart back to it.
+        // Selecting a point brings the chart back to it, and the Island
+        // column to the top of what it says about it.
         self.pan = None;
+        self.info_scroll = 0;
     }
 
     /// Whether a league can be sailed from memory: both of its ends are
@@ -377,25 +386,37 @@ mod tests {
         app.cursor_on(&MAP);
 
         app.pan = Some((40, 40));
+        app.info_scroll = 5;
         press(&mut app, KeyCode::Char('d'));
         assert_eq!(app.cursor, Some((3, 1)));
         assert_eq!(
             app.pan, None,
             "sailing left the chart panned"
         );
+        assert_eq!(
+            app.info_scroll, 0,
+            "sailing left the Island column scrolled"
+        );
 
         app.pan = Some((40, 40));
+        app.info_scroll = 5;
         app.jump_to((1, 1));
         assert_eq!(
             app.pan, None,
             "a jump left the chart panned"
         );
+        assert_eq!(
+            app.info_scroll, 0,
+            "a jump left the Island column scrolled"
+        );
 
-        // Marking a point is not selecting one, so it leaves the pan alone.
+        // Marking a point is not selecting one, so it leaves both alone.
         app.pirate = Some("playerone".to_owned());
         app.pan = Some((40, 40));
+        app.info_scroll = 5;
         app.toggle_memorized();
         assert_eq!(app.pan, Some((40, 40)));
+        assert_eq!(app.info_scroll, 5);
     }
 
     #[test]

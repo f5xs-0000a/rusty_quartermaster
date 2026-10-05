@@ -3162,6 +3162,14 @@ impl AppShell {
                     ScrollAxis::Horizontal => (along, y),
                 });
             }
+            // The Island column scrolls by the lines it is written in, and
+            // keeps the cursor where it is: reading further down a point costs
+            // nothing on the chart.
+            ScrollView::MapIslandInfo => {
+                let last = total.saturating_sub(bar.height as usize);
+                self.global_focus = GlobalFocus::Content;
+                self.map.info_scroll = hit.resolve(self.map.info_scroll, last);
+            }
         }
     }
 
@@ -3215,6 +3223,9 @@ impl AppShell {
             ClickTarget::MapHelpClose => {
                 self.map.help = false;
             }
+            // The column is a region so the wheel over it scrolls it; a click
+            // in it selects nothing, since what it says is the cursor's.
+            ClickTarget::MapIslandInfo => {}
             // Read in `handle_mouse`, which still has the clicked row — the
             // only thing a scrollbar click says.
             ClickTarget::Scrollbar {
@@ -3779,6 +3790,17 @@ impl AppShell {
             // far end is clamped by the render, which is what knows how large
             // the canvas is.
             AppId::Map => {
+                // over the Island column it scrolls what the column says
+                if let Some(ClickTarget::MapIslandInfo) =
+                    clickmap::hit_test(&self.click_regions, col, row)
+                {
+                    self.map.info_scroll = if delta < 0 {
+                        self.map.info_scroll.saturating_sub(1)
+                    } else {
+                        self.map.info_scroll.saturating_add(1)
+                    };
+                    return;
+                }
                 let (x, y) = self.map.window;
                 self.map.pan = Some((
                     x,
@@ -4256,6 +4278,93 @@ mod voyage_scroll_tests {
         assert!(
             shell.voyage_ui.scroll < last,
             "the focus did not bring the body back",
+        );
+    }
+}
+
+#[cfg(test)]
+mod map_scroll_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+    use crate::{
+        clickmap::ClickTarget,
+        islands::{CachedIslands, IslandInfo},
+    };
+
+    /// A shell on the Map page of the Emerald Ocean, cursor on a capital whose
+    /// island list is in, which is more than a short column can hold.
+    fn on_the_map() -> AppShell {
+        let mut shell = AppShell::new(Vec::new());
+        shell.ocean = Some(crate::ocean::Ocean::Emerald);
+        shell.sidebar_index = APP_LIST
+            .iter()
+            .position(|a| *a == AppId::Map)
+            .expect("the Map page");
+        shell.global_focus = GlobalFocus::Content;
+        shell.map.pirate = Some("playerone".to_owned());
+        let map = crate::map::data::Map::for_ocean("Emerald")
+            .expect("the Emerald map");
+        let alkaid = map
+            .islands
+            .iter()
+            .find(|i| i.name == "Alkaid Island")
+            .expect("Alkaid Island on the map");
+        shell.map.cursor = Some(alkaid.at());
+        shell.islands = Some(CachedIslands {
+            fetched_at: chrono::Utc::now(),
+            islands: vec![IslandInfo {
+                name: "Alkaid Island".to_owned(),
+                governor: Some("Someone".to_owned()),
+                flag: Some("Some Flag".to_owned()),
+                property_tax: Some(15),
+                exports: ["Hemp", "Iron", "Wood", "Cloth", "Stone"]
+                    .map(str::to_owned)
+                    .to_vec(),
+            }],
+        });
+        shell
+    }
+
+    /// Draw, and hand back a cell inside the Island column that is none of its
+    /// scrollbar.
+    fn in_the_column(shell: &mut AppShell) -> (u16, u16) {
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, 20)).expect("terminal");
+        terminal.draw(|frame| shell.render(frame)).expect("draw");
+        let column = shell
+            .click_regions
+            .iter()
+            .find_map(|r| {
+                matches!(r.target, ClickTarget::MapIslandInfo).then_some(r.rect)
+            })
+            .expect("the Island column is a region of its own");
+        (column.x + 1, column.y + 1)
+    }
+
+    /// The wheel belongs to whatever it is over: the column reads on where it
+    /// sits, and the chart stays where the cursor put it.
+    #[test]
+    fn the_wheel_over_the_island_column_scrolls_what_it_says() {
+        let mut shell = on_the_map();
+        let (col, row) = in_the_column(&mut shell);
+
+        shell.handle_scroll(1, col, row);
+        assert_eq!(shell.map.info_scroll, 1);
+        assert_eq!(
+            shell.map.pan, None,
+            "the chart followed the column"
+        );
+
+        shell.handle_scroll(-1, col, row);
+        assert_eq!(shell.map.info_scroll, 0);
+
+        // over the chart the same notch pans instead
+        shell.handle_scroll(1, 2, row);
+        assert_eq!(shell.map.info_scroll, 0);
+        assert!(
+            shell.map.pan.is_some(),
+            "the chart did not pan"
         );
     }
 }

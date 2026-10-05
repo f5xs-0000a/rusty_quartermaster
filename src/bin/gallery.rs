@@ -36,7 +36,9 @@ use ratatui::{
 use rusty_quartermaster::{
     api::Commodity,
     app::{APP_LIST, AppId, AppShell},
+    bare,
     damage::{BattlePrompt, ShipSelectPopup, Side},
+    islands::{CachedIslands, IslandInfo, parse_island_list},
     jobbers::{
         JobberFocus,
         PerFightPopup,
@@ -766,7 +768,133 @@ fn dump_ocean() -> &'static Map {
     Map::for_ocean(&name).unwrap_or_else(|| panic!("{name} map"))
 }
 
-/// A shell sitting on the Map page of `dump_ocean()`, cursor on an island.
+/// The ocean's colonized islands written out the way yoweb writes them, so
+/// the Map states show what the parser makes of a fetched page rather than a
+/// list assembled by hand. Uninhabited islands are absent, as they are on
+/// yoweb. The facts are walked off short ladders so no two islands read
+/// alike, and the outposts are left without a governor or a ruling flag: a
+/// colony yoweb says less about is the shape that proves the metadata column
+/// leaves out what it has nothing to say about.
+fn island_list_page(geo: &bare::Ocean) -> String {
+    const GOVERNORS: [&str; 4] =
+        ["Playertwo", "Playerthree", "Playerfour", "Playerfive"];
+    // the last flag is longer than the metadata column is wide, since a flag
+    // name may be as long as its founders liked. It falls to the island with
+    // the longest export list, so one state carries both stresses
+    const FLAGS: [&str; 6] = [
+        "Example Flag",
+        "Test Flag",
+        "Sample & Sons",
+        "Example Fleet",
+        "Test Armada",
+        "Sample Flag of the Example Fleet",
+    ];
+    // enough goods that the longest list is as long as a large island's, which
+    // is what asks the Island column to scroll
+    const EXPORTS: [&str; 12] = [
+        "Hemp",
+        "Iron",
+        "Sugar cane",
+        "Wood",
+        "Fine black cloth",
+        "Kraken's ink",
+        "Lacquer",
+        "Varnish",
+        "Blue dye",
+        "Broad cloth",
+        "Fine sail cloth",
+        "Nitramine",
+    ];
+
+    // yoweb's own entities, so the names and flags reach the parser the way
+    // they reach it over the wire
+    let encode = |text: &str| text.replace('&', "&amp;").replace('\'', "&#39;");
+    let colonized = geo
+        .archipelagos
+        .iter()
+        .flat_map(|arch| arch.islands.iter().map(move |isle| (arch, isle)))
+        .filter(|(_, isle)| isle.status != bare::Status::Uninhabited);
+
+    let mut page =
+        String::from("<center><img src=\"/yoweb/images/header.png\"><br>\n");
+    for (n, (arch, isle)) in colonized.enumerate() {
+        page.push_str(&format!(
+            "<center><font size=\"+1\">{}</font><br>\nPopulation: \
+             {}<br>\nLocated in the {} archipelago.<br>\n",
+            encode(&isle.name),
+            100 + n * 37,
+            arch.name,
+        ));
+        if isle.size != bare::Size::Outpost {
+            page.push_str(&format!(
+                "Governor: <a \
+                 href=\"/yoweb/pirate.wm?target={gov}\">{gov}</a><br>\n",
+                gov = GOVERNORS[n % GOVERNORS.len()],
+            ));
+        }
+        page.push_str(&format!(
+            "Property tax: {}%<br>\n</center>\n",
+            5 * (n % 5),
+        ));
+        if isle.size != bare::Size::Outpost {
+            page.push_str(&format!(
+                "Ruled by <a \
+                 href=\"/yoweb/flag/info.wm?flagid={}\">{}</a><br>\n",
+                n + 1,
+                encode(FLAGS[n % FLAGS.len()]),
+            ));
+        }
+        let exports: Vec<&str> = (0 ..= n % EXPORTS.len())
+            .map(|k| EXPORTS[(n + k) % EXPORTS.len()])
+            .collect();
+        page.push_str(&format!(
+            "Exports: {} <br><br>\n",
+            exports.join(" , "),
+        ));
+    }
+    page
+}
+
+/// Put the ocean's island list in the shell as a finished fetch would, by
+/// parsing the page above.
+fn cache_islands(shell: &mut AppShell) {
+    let Some(geo) = shell.ocean_geo() else {
+        return;
+    };
+    shell.islands = Some(CachedIslands {
+        fetched_at: chrono::Utc::now(),
+        islands: parse_island_list(&island_list_page(geo)),
+    });
+    shell.island_list_wanted = false;
+}
+
+/// Move the cursor to the island on the map that `rank` scores highest among
+/// those the fetched list names, leaving it where it is if none are. The
+/// states pick an island by the shape of its entry rather than by name, so
+/// they hold for whichever ocean is dumped.
+fn cursor_on_island(
+    shell: &mut AppShell,
+    rank: impl Fn(&IslandInfo, &bare::Island) -> Option<usize>,
+) {
+    let geo = shell.ocean_geo();
+    let list = shell.islands.as_ref().expect("a fetched island list");
+    let point = dump_ocean()
+        .islands
+        .iter()
+        .filter_map(|place| {
+            let info = list.get(place.name)?;
+            let (_, isle) = geo?.island(place.name)?;
+            Some((rank(info, isle)?, place.at()))
+        })
+        .max_by_key(|(score, _)| *score)
+        .map(|(_, point)| point);
+    if let Some(point) = point {
+        shell.map.cursor = Some(point);
+    }
+}
+
+/// A shell sitting on the Map page of `dump_ocean()`, cursor on an island,
+/// with the ocean's island list already fetched.
 fn map_shell() -> AppShell {
     let mut shell = attached_shell();
     shell.ocean = Some(Ocean::Emerald);
@@ -776,6 +904,7 @@ fn map_shell() -> AppShell {
     // A pirate is what the memorization tally is keyed to; without one the
     // column asks for it instead, which `map-no-pirate` covers.
     shell.map.pirate = Some(ME.to_owned());
+    cache_islands(&mut shell);
     shell
 }
 
@@ -1480,6 +1609,59 @@ fn map_states(states: &mut Vec<State>) {
         "Map of the ocean, cursor on an island",
         |shell| {
             *shell = map_shell();
+        },
+    ));
+    states.push(state(
+        "map-island-colony",
+        "Map, cursor on a capital with its island info fetched",
+        |shell| {
+            *shell = map_shell();
+            cursor_on_island(shell, |info, isle| {
+                (info.governor.is_some()
+                    && isle.status == bare::Status::Capital)
+                    .then_some(0)
+            });
+        },
+    ));
+    states.push(state(
+        "map-island-exports",
+        "Map, cursor on the colony yoweb says the most about",
+        |shell| {
+            *shell = map_shell();
+            cursor_on_island(shell, |info, _| {
+                info.governor.is_some().then_some(info.exports.len())
+            });
+        },
+    ));
+    states.push(state(
+        "map-island-partial",
+        "Map, cursor on an island yoweb names no governor for",
+        |shell| {
+            *shell = map_shell();
+            cursor_on_island(shell, |info, _| {
+                info.governor.is_none().then_some(info.exports.len())
+            });
+        },
+    ));
+    states.push(state(
+        "map-island-scrolled",
+        "Map, Island column scrolled to the end of what it says",
+        |shell| {
+            *shell = map_shell();
+            cursor_on_island(shell, |info, _| {
+                info.governor.is_some().then_some(info.exports.len())
+            });
+            // past the end: the render clamps it to the last line
+            shell.map.info_scroll = usize::MAX;
+        },
+    ));
+    states.push(state(
+        "map-island-fetching",
+        "Map waiting on the island list",
+        |shell| {
+            *shell = map_shell();
+            shell.islands = None;
+            shell.island_list_wanted = true;
         },
     ));
     states.push(state(
