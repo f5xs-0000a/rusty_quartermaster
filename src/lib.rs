@@ -13,6 +13,7 @@ pub mod chatlog;
 pub mod clickmap;
 pub mod commodities;
 pub mod damage;
+pub mod duty;
 pub mod hold;
 pub mod islands;
 pub mod jobbers;

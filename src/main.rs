@@ -34,6 +34,9 @@ mod chatlog;
 mod clickmap;
 mod commodities;
 mod damage;
+// parsed model only; nothing hands the app a duty report yet
+#[allow(dead_code)]
+mod duty;
 mod hold;
 mod islands;
 mod jobbers;
