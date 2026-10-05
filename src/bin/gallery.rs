@@ -440,6 +440,69 @@ fn state(
     }
 }
 
+/// Something the app draws that isn't one of its pages, and so is drawn once
+/// at a size of its own rather than at every size asked for.
+///
+/// Two things qualify. The setup screen runs before the app exists and owns
+/// its own loop, so it never passes through [`AppShell`] at all. The
+/// window-too-small notice only appears in a window too small for the app,
+/// which is not a size worth rendering every page at.
+struct Screen {
+    slug: &'static str,
+    description: &'static str,
+    size: (u16, u16),
+    draw: Box<dyn Fn(&mut ratatui::Frame)>,
+}
+
+fn screen_state(
+    slug: &'static str,
+    description: &'static str,
+    size: (u16, u16),
+    draw: impl Fn(&mut ratatui::Frame) + 'static,
+) -> Screen {
+    Screen {
+        slug,
+        description,
+        size,
+        draw: Box::new(draw),
+    }
+}
+
+/// The screens outside the page model, in the order the user meets them.
+fn screens() -> Vec<Screen> {
+    vec![
+        screen_state(
+            "startup-setup",
+            "Startup, the setup screen as it opens",
+            (80, 24),
+            |frame| {
+                rusty_quartermaster::startup::preview(
+                    frame,
+                    Ocean::Emerald,
+                    "Playerone",
+                    None,
+                )
+            },
+        ),
+        screen_state(
+            "startup-setup-no-such-pirate",
+            "Startup, a name yoweb could not find",
+            (80, 24),
+            |frame| {
+                rusty_quartermaster::startup::preview(
+                    frame,
+                    Ocean::Emerald,
+                    "Playerone",
+                    Some(
+                        "Arr, no 'Playerone' to be found on the Emerald \
+                         ocean. Check yer spelling, or Esc to skip.",
+                    ),
+                )
+            },
+        ),
+    ]
+}
+
 fn key(code: KeyCode) -> KeyEvent {
     KeyEvent::new(code, KeyModifiers::NONE)
 }
@@ -2020,6 +2083,56 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             styles,
         )?;
     }
+
+    // The screens outside the page model, each at its own size. Their style
+    // reports go in one sheet of their own, since they share no size with the
+    // pages or with each other.
+    let mut styles = String::new();
+    for screen_state in screens() {
+        let (width, height) = screen_state.size;
+        let mut terminal = Terminal::new(TestBackend::new(width, height))?;
+        terminal.draw(|frame| (screen_state.draw)(frame))?;
+        let stem = format!("{width}x{height}-{}", screen_state.slug);
+        let buffer = terminal.backend().buffer();
+
+        fs::write(
+            args.out.join(format!("{stem}.txt")),
+            screen(buffer),
+        )?;
+        fs::write(
+            args.out.join(format!("{stem}.svg")),
+            svg(
+                buffer,
+                theme,
+                &args.font,
+                args.font_size,
+            ),
+        )?;
+        index.push_str(&format!(
+            "  {stem}.txt / .svg  -- {}\n",
+            screen_state.description
+        ));
+        styles.push_str(&format!(
+            "=== {stem}.txt -- {}\n",
+            screen_state.description
+        ));
+        styles.push_str(&style_report(buffer));
+        styles.push('\n');
+        sheet.push_str(&format!(
+            "<section id=\"{stem}\"><h2>{stem}</h2><p>{}</p><img \
+             src=\"{stem}.svg\" alt=\"{stem}\"></section>\n",
+            escape_xml(screen_state.description),
+        ));
+        nav.push_str(&format!(
+            "<li><a href=\"#{stem}\">{}</a></li>\n",
+            escape_xml(screen_state.slug),
+        ));
+        written += 1;
+    }
+    fs::write(
+        args.out.join("STYLES-screens.txt"),
+        styles,
+    )?;
 
     fs::write(args.out.join("INDEX.txt"), &index)?;
     fs::write(

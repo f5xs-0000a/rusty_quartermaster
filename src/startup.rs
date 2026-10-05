@@ -162,6 +162,43 @@ pub async fn prompt(
     result
 }
 
+/// Draw the setup screen for a given state, with no terminal of its own, no
+/// input and no network.
+///
+/// The screen runs before the app exists and owns its own loop, so nothing
+/// that inspects the interface can reach it the way it reaches a page. This is
+/// the way in: the gallery and the tests both draw it through here, so the
+/// first thing anyone sees is checked like everything after it.
+// the app itself never previews its own setup screen; the gallery and the
+// tests are what draw it this way
+#[allow(dead_code)]
+pub fn preview(
+    frame: &mut Frame,
+    ocean: Ocean,
+    name: &str,
+    status: Option<&str>,
+) {
+    let grid = ocean_grid();
+    let (ocean_row, ocean_col) = ocean_pos(&grid, ocean);
+    let mut field = PromptField::new("Pirate name", FieldKind::Text);
+    field.value = name.to_owned();
+    field.cursor = name.len();
+    render(
+        frame,
+        &Setup {
+            field: Field::Name,
+            grid,
+            ocean_col,
+            ocean_row,
+            dont_choose: false,
+            name: field,
+            status: status.map(str::to_owned),
+            verifying: false,
+            query_market: false,
+        },
+    );
+}
+
 async fn run(
     client: &reqwest::Client,
     ocean: Option<Ocean>,
@@ -223,7 +260,8 @@ async fn run(
                         .map(|o| o.to_string())
                         .unwrap_or_default();
                     state.status = Some(format!(
-                        "No pirate '{}' on {}. Check spelling, or Esc to skip.",
+                        "Arr, no '{}' to be found on the {} ocean. Check yer \
+                         spelling, or Esc to skip.",
                         state.name.value.trim(),
                         ocean
                     ));
@@ -613,4 +651,53 @@ fn centered(area: Rect, width: u16, height: u16) -> Rect {
     let x = area.x + (area.width.saturating_sub(w)) / 2;
     let y = area.y + (area.height.saturating_sub(h)) / 2;
     Rect::new(x, y, w, h)
+}
+
+#[cfg(test)]
+mod tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::*;
+
+    /// The setup screen as it draws, with `status` in the bottom region.
+    fn screen(name: &str, status: Option<&str>) -> String {
+        let mut terminal =
+            Terminal::new(TestBackend::new(80, 24)).expect("terminal");
+        terminal
+            .draw(|frame| preview(frame, Ocean::Emerald, name, status))
+            .expect("draw");
+        let buf = terminal.backend().buffer().clone();
+        (0 .. buf.area.height)
+            .map(|y| {
+                (0 .. buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+                    .trim_end()
+                    .to_owned()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_failed_lookup_fits_the_box_it_is_drawn_in() {
+        let status = "Arr, no 'Foo' to be found on the Emerald ocean. Check \
+                      yer spelling, or Esc to skip.";
+        let screen = screen("Foo", Some(status));
+        // Every word survives the wrap: a notice that loses its tail is worse
+        // than none, since the way out is in the last sentence.
+        for word in status.split_whitespace() {
+            assert!(
+                screen.contains(word),
+                "{word:?} did not survive the wrap:\n{screen}"
+            );
+        }
+        // And it stays inside the box it is drawn in.
+        for line in screen.lines().filter(|l| l.contains("Arr,")) {
+            assert!(
+                line.ends_with('\u{2502}'),
+                "notice overran its border:\n{line}"
+            );
+        }
+    }
 }
