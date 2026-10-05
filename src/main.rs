@@ -433,7 +433,7 @@ async fn main() -> io::Result<()> {
 
         if !missing.is_empty() {
             eprintln!(
-                "Fetching market data for {} missing commodities...",
+                "Fetching prices for {} missing commodities...",
                 missing.len()
             );
             match api::fetch_offers_for(&http, &missing, o).await {

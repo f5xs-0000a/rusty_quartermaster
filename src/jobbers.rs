@@ -79,8 +79,8 @@ const PER_FIGHT_BUTTON_LABEL: &str = "[ Show Per-Fight Statistics ]";
 
 /// Warning shown at the bottom of the app while the Unpoison button is focused.
 pub const UNPOISON_TOOLTIP: [&str; 2] = [
-    "You left the ship and you might have missed logs that were important.",
-    "Press Enter to ignore the warnings.",
+    "Ye left the ship, so we might have missed something important.",
+    "Press Enter to pay it no mind.",
 ];
 
 /// A Top Jobbers column: the skill(s) it ranks aboard jobbers by, plus an
@@ -1121,7 +1121,7 @@ impl Staffing {
     fn message(self) -> &'static str {
         match self {
             Staffing::Understaffed => "Understaffed. Hire jobbers.",
-            Staffing::Invalid => "Invalid ship selected.",
+            Staffing::Invalid => "Arr, too many aboard for that ship.",
         }
     }
 
@@ -1441,7 +1441,7 @@ pub fn render(
         // fight.
         if vessel.is_some_and(|v| v.lair_warn) {
             notes.push(Line::from(Span::styled(
-                "Please do not leave the Swordfight even if you lose.",
+                "Don't leave the fray, even if ye lose.",
                 Style::default().fg(Color::Red).italic(),
             )));
         }
@@ -1478,7 +1478,7 @@ pub fn render(
             )
         }));
         rows.push(StatRow::styled(
-            "  Not queried yet",
+            "  Not looked up yet",
             unqueried.to_string(),
             Style::default().fg(Color::DarkGray).italic(),
         ));

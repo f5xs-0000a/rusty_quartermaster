@@ -268,7 +268,7 @@ async fn run(
                 }
                 Verify::Error(e) => {
                     state.status = Some(format!(
-                        "Couldn't verify: {e} (Esc to skip)"
+                        "Arr, couldn't look ye up: {e} (Esc to skip)"
                     ));
                 }
             }
@@ -373,7 +373,7 @@ async fn run(
                             Some(o) => {
                                 state.verifying = true;
                                 state.status = Some(format!(
-                                    "Verifying {trimmed} on {o}…"
+                                    "Looking for {trimmed} on the {o} ocean…"
                                 ));
                                 let tx = tx.clone();
                                 let client = client.clone();
@@ -467,7 +467,7 @@ fn tooltip_lines(state: &Setup) -> Vec<String> {
             // The Market note only applies when it would actually take
             // effect.
             if state.query_market && ocean.market_supported() {
-                v.push("Select this to enable market querying.".to_owned());
+                v.push("Pick this to fetch market prices.".to_owned());
             }
             v.push(format!(
                 "Press Enter to select {ocean} Ocean."
@@ -476,9 +476,9 @@ fn tooltip_lines(state: &Setup) -> Vec<String> {
         }
         Field::Name if state.name.value.trim().is_empty() => {
             vec![
-                "Press Enter to not identify yourself.".to_owned(),
-                "Jobber functionality will be reduced as a result.".to_owned(),
-                "Voyage win/loss will also be indeterminate without a name."
+                "Press Enter to stay nameless.".to_owned(),
+                "Ye'll see less of yer jobbers that way.".to_owned(),
+                "And without a name, we can't tell a win from a loss."
                     .to_owned(),
             ]
         }

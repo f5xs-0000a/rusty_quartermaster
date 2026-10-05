@@ -96,7 +96,7 @@ pub fn load(path: &Path) -> SavedPersistence {
     match serde_json::from_str(&data) {
         Ok(saved) => {
             eprintln!(
-                "Loaded persisted data from {}",
+                "Read yer records from {}",
                 path.display()
             );
             saved

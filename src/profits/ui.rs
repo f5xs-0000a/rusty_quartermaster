@@ -771,7 +771,7 @@ fn field_text<'a>(
     let field = &app.panel[i];
     if is_place_field(i) {
         if shared.cached_offers.is_empty() {
-            return Cow::Borrowed("Query Market first");
+            return Cow::Borrowed("Fetch market first");
         }
         if field.value.is_empty() {
             return Cow::Borrowed("Ocean-wide");
@@ -857,7 +857,7 @@ fn build_suggestion_line<'a>(
             } else {
                 Some(Line::from(vec![
                     Span::styled(
-                        "Did you mean \"",
+                        "Did ye mean \"",
                         Style::default().fg(Color::DarkGray),
                     ),
                     Span::styled(
@@ -906,11 +906,11 @@ fn place_hint(
             Style::default().fg(Color::DarkGray),
         ))));
     }
-    // "Did you mean "<name>" (<kind>)? Press enter to accept." in muted text.
+    // "Did ye mean "<name>" (<kind>)? Press enter to accept." in muted text.
     let did_you_mean = |name: &str, kind: &'static str| {
         Some(Text::from(Line::from(vec![
             Span::styled(
-                "Did you mean \"",
+                "Did ye mean \"",
                 Style::default().fg(Color::DarkGray),
             ),
             Span::styled(
@@ -1009,7 +1009,7 @@ fn build_tooltip<'a>(
             )
         }
         Focus::Panel(P_SELL_PLACE) if shared.cached_offers.is_empty() => {
-            hint("Query the market first to pick where to sell.")
+            hint("Fetch the market first to pick where to sell.")
         }
         Focus::Panel(P_SELL_PLACE) => {
             place_hint(
@@ -1101,7 +1101,7 @@ fn render_hold_import(
     let extra = import.goods.len().saturating_sub(CAP);
     let unknown_line = (!import.unknown.is_empty()).then(|| {
         format!(
-            "Not recognized: {}",
+            "No such goods we know of: {}",
             import.unknown.join(", ")
         )
     });
@@ -1116,8 +1116,14 @@ fn render_hold_import(
     let unknown_lines = unknown_line.as_deref().map_or(0, |s| {
         crate::utils::wrapped_line_count(s, inner_w) as usize
     });
+    // The note says what the Yes costs, so it is reserved the rows it wraps
+    // to rather than the one row it used to be cut off inside.
+    const NOTE: &str =
+        "Every other row's Stock be cleared. Yer Booty stays as it is.";
+    let note_lines = crate::utils::wrapped_line_count(NOTE, inner_w) as usize;
     // header, list, unknowns, note, blank, buttons
-    let h: u16 = (2 + 1 + list_lines + unknown_lines + 1 + 1 + 1) as u16;
+    let h: u16 =
+        (2 + 1 + list_lines + unknown_lines + note_lines + 1 + 1) as u16;
     let x = area.width.saturating_sub(w) / 2;
     let y = area.height.saturating_sub(h) / 2;
     let popup_area = Rect::new(x, y, w, h);
@@ -1133,13 +1139,13 @@ fn render_hold_import(
     let mut constraints = vec![Constraint::Length(1)]; // header
     constraints.extend((0 .. list_lines).map(|_| Constraint::Length(1)));
     constraints.push(Constraint::Length(unknown_lines as u16));
-    constraints.push(Constraint::Length(1)); // note
+    constraints.push(Constraint::Length(note_lines as u16));
     constraints.push(Constraint::Length(1)); // blank
     constraints.push(Constraint::Length(1)); // buttons
     let rows = Layout::vertical(constraints).split(inner);
 
     frame.render_widget(
-        Paragraph::new("Set the Stock column from the copied hold?"),
+        Paragraph::new("Fill the Stock column from the copied hold?"),
         rows[0],
     );
     if import.goods.is_empty() {
@@ -1187,9 +1193,12 @@ fn render_hold_import(
     }
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "Other rows' Stock is cleared; Booty is left as is.",
+            NOTE,
             Style::default().fg(Color::DarkGray),
-        )),
+        ))
+        .wrap(Wrap {
+            trim: true,
+        }),
         rows[2 + list_lines],
     );
 
@@ -1244,10 +1253,10 @@ fn render_popup(
             yes_focused,
         } => {
             // The caveat belongs to the question, so it shares its line.
-            const QUESTION: &str = "Re-query market prices?";
-            const CAVEAT: &str = "This may take some time.";
+            const QUESTION: &str = "Fetch the market prices afresh?";
+            const CAVEAT: &str = "This may take a while.";
             let (block, w) = crate::utils::titled_block(
-                "Re-Query?",
+                "Fetch Afresh?",
                 ((QUESTION.len() + 1 + CAVEAT.len()) as u16)
                     .max(yes_no_width()),
             );
@@ -1354,7 +1363,7 @@ fn render_popup(
             let h: u16 = (3 + list_lines + 2) as u16;
             // Widest of the header, the bulleted commodities and the buttons —
             // the box is as wide as that and no wider.
-            const HEADER: &str = "No supply on this island for:";
+            const HEADER: &str = "Naught to be had on this island:";
             let buttons_w =
                 crate::utils::buttons_width(&["Change Island", "Ocean-wide"]);
             let content_w = shown
@@ -1423,9 +1432,8 @@ fn render_popup(
         } => {
             const CAP: usize = 6; // per-section list cap before "...and N more"
 
-            let mut lines: Vec<Line> = vec![Line::from(
-                "Enter the missing prices before calculating:",
-            )];
+            let mut lines: Vec<Line> =
+                vec![Line::from("Enter the missing prices first:")];
 
             let section = |lines: &mut Vec<Line>,
                            field: &'static str,
@@ -1754,7 +1762,7 @@ mod inventory_tests {
             for focus in [Focus::Table, Focus::Panel(P_RESTOCK_RATE)] {
                 let screen = draw_at(&["Rum"], 80, height, focus).2;
                 assert_eq!(
-                    !screen.contains("Terminal too small"),
+                    !screen.contains(crate::utils::TOO_SMALL),
                     fits,
                     "{height} rows should {} the page",
                     if fits { "draw" } else { "refuse" },

@@ -955,3 +955,145 @@ a stat row's label are all left as they read.
 The other seventeen titles the gallery draws already complied. The doc comments
 that name a popup by its title were carried along with it, so searching the
 source for a title still finds the code behind it.
+
+
+## Rule 9: The app speaks like the game it serves
+
+This is a tool for a pirate game, so its prose reads like one. The register is
+not a blanket swap of *you* for *ye*, though: the game splits by what the
+sentence is doing, and so do we.
+
+### The record is plain; the address is not
+
+The game writes about you in plain English and talks to you in pirate. Across
+a real chat log the split is consistent, and `ye`/`yer` outnumbers
+`you`/`your` about four to one:
+
+```
+Your standing in Sailing went up and is now Respected in the whole ocean!
+Your experience in Carpentry is now 1200!
+Your vote has been counted.
+You intercepted the War Frigate!
+```
+
+```
+Ye were paid 10 pieces of eight fer yer foraging.
+Ye found an empty basket!
+Yer crew member has logged on.
+Yer hearty, Foo, has logged off.
+```
+
+So a **figure reported about the reader stays plain** — a standing, a rank, an
+average, a tally, the definition of a stat. A **sentence addressed to the
+reader takes the voice** — a prompt, what answering it will do, a warning, a
+refusal, a hint that tells them what will happen.
+
+### A refusal opens with Arr
+
+The game's refusals have one shape: `Arr,` or `Arr!`, then the plain statement,
+then optionally a second sentence giving the rule behind it.
+
+```
+Arr, ye cannot view that info right now.
+Arr, ye can't do that til yer done with yer current task.
+Arr, ye must be charted to sea monsters first.
+Arr! Ye can't stand there.
+Arr, ye can't whisk to any island matching 'beaufort'. Ye can only whisk
+to islands ye've visited or that appear on a map ye carry.
+```
+
+Not everything gets one. A plain requirement stays plain: the game's own
+`Sea charts must be put on the table before their courses may be charted.`
+
+### The vocabulary
+
+| plain | ours |
+| --- | --- |
+| you, your (addressing) | ye, yer |
+| you're | yer |
+| until | til |
+| for | fer |
+| ship | vessel |
+| crew members | pirates, or hearties for our own |
+| money | pieces of eight, PoE |
+| none, nothing | naught |
+
+And no software vocabulary where a plainer word exists. Nothing the reader
+sees is *invalid*, *parsed*, *queried*, *synced*, *persisted* or *data*: a run
+is **kept**, a name is one **we can't find**, prices are **fetched**.
+
+An ocean's name renders bare, so prose supplies the rest: `the Emerald ocean`,
+never `Emerald` on its own.
+
+### It does not license vagueness
+
+The voice is the wrapping, never the content. A prompt still says exactly what
+answering it will do, a figure is still the figure, and a warning still names
+what is at risk. Where the two conflict the fact wins — which is why the
+window-too-small notices are terse (`Arr! Too narrow.`) rather than fuller:
+they are drawn in a window too small by definition, and there the shorter
+line is both the better pirate and the better engineering.
+
+Say only what is true, too. A failed lookup means we could not find a pirate,
+not that none exists, so the notice says `no 'Foo' to be found` rather than
+`no pirate 'Foo'`.
+
+### Out of scope
+
+- **Titles**, which are names and belong to
+  [Rule 8](#rule-8-titles-are-in-title-case) — except one that is itself a
+  question put to the reader, which is why `Who Are Ye?` reads as it does.
+- **Key hints**: `Press Enter to pick a vessel.` There is no *you* to convert
+  and plainness is the whole job.
+- **Figure definitions**: `Average cannonballs fired per sea battle.` These
+  are the record, exactly where the game writes `Your standing…`.
+- **Diagnostics**, which are for us and not the reader.
+
+### Verifying
+
+Read the prompts and notices in the gallery's `.txt` dumps and ask whether the
+game would have said it that way. The screens outside the page model have
+their own entries: `startup-setup*` for the first thing anyone sees, and
+`window-*` for the refusals, one per form they take.
+
+### What the sweep changed
+
+| was | is |
+| --- | -- |
+| `Terminal too small` | `Yer Window Be Too Small` |
+| `Enlarge the window to at least {n} columns (it is {}).` | `Arr! Too narrow. Make it {n} columns (it is {}).` |
+| `No pirate '{}' on {}. Check spelling, or Esc to skip.` | `Arr, no '{}' to be found on the {} ocean. Check yer spelling, or Esc to skip.` |
+| `Couldn't verify: {e} (Esc to skip)` | `Arr, couldn't look ye up: {e} (Esc to skip)` |
+| `Verifying {name} on {o}…` | `Looking for {name} on the {o} ocean…` |
+| `Select this to enable market querying.` | `Pick this to fetch market prices.` |
+| `Press Enter to not identify yourself.` | `Press Enter to stay nameless.` |
+| `Jobber functionality will be reduced as a result.` | `Ye'll see less of yer jobbers that way.` |
+| `Voyage win/loss will also be indeterminate without a name.` | `And without a name, we can't tell a win from a loss.` |
+| `You left the ship and you might have missed logs that were important.` | `Ye left the ship, so we might have missed something important.` |
+| `Press Enter to ignore the warnings.` | `Press Enter to pay it no mind.` |
+| `Please do not leave the Swordfight even if you lose.` | `Don't leave the fray, even if ye lose.` |
+| `Invalid ship selected.` | `Arr, too many aboard for that ship.` |
+| `Not queried yet` | `Not looked up yet` |
+| `Did you mean "…"` | `Did ye mean "…"` |
+| `Query Market first` | `Fetch market first` |
+| `Query the market first to pick where to sell.` | `Fetch the market first to pick where to sell.` |
+| `Not recognized: {}` | `No such goods we know of: {}` |
+| `Set the Stock column from the copied hold?` | `Fill the Stock column from the copied hold?` |
+| `Other rows' Stock is cleared; Booty is left as is.` | `Every other row's Stock be cleared. Yer Booty stays as it is.` |
+| `Re-query market prices?` | `Fetch the market prices afresh?` |
+| `Re-Query?` | `Fetch Afresh?` |
+| `This may take some time.` | `This may take a while.` |
+| `No supply on this island for:` | `Naught to be had on this island:` |
+| `Enter the missing prices before calculating:` | `Enter the missing prices first:` |
+| `Current tally is not saved.` | `Ye'll lose the tally as it stands.` |
+| `No geography data for this island.` | `We know naught of this island.` |
+| `Select an ocean (--ocean) to see its map.` | `Pick an ocean (--ocean) to see its map.` |
+| `Loaded persisted data from {}` | `Read yer records from {}` |
+| `Fetching market data for {} missing commodities...` | `Fetching prices for {} missing commodities...` |
+
+Two of those were not only out of voice. `Invalid ship selected.` described the
+wrong condition: the check fires when more crew are aboard than the chosen
+ship can hold, which is not an unknown ship. And the hold prompt's note was
+being **clipped**, 50 characters rendered in a 44-column row with no wrapping;
+it now reserves the rows it wraps to, as [Rule 4](#rule-4-a-scrollable-view-keeps-four-rows-and-nothing-else-is-clipped)
+requires.

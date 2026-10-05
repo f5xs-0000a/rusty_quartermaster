@@ -485,6 +485,19 @@ fn screens() -> Vec<Screen> {
             },
         ),
         screen_state(
+            "startup-setup-nameless",
+            "Startup, the tooltip for going without a name",
+            (80, 24),
+            |frame| {
+                rusty_quartermaster::startup::preview(
+                    frame,
+                    Ocean::Emerald,
+                    "",
+                    None,
+                )
+            },
+        ),
+        screen_state(
             "startup-setup-no-such-pirate",
             "Startup, a name yoweb could not find",
             (80, 24),
@@ -499,6 +512,37 @@ fn screens() -> Vec<Screen> {
                     ),
                 )
             },
+        ),
+        // One entry per form the refusal takes: the frame itself not fitting
+        // either way or only across, and a page that fits the frame but not
+        // the window, short of width or of height.
+        screen_state(
+            "window-tiny",
+            "Too small for the app's own frame, both ways",
+            (40, 2),
+            |frame| attached_shell().render(frame),
+        ),
+        screen_state(
+            "window-too-narrow-for-the-app",
+            "Too narrow for the app's own frame",
+            (40, 10),
+            |frame| attached_shell().render(frame),
+        ),
+        screen_state(
+            "window-too-narrow-for-the-page",
+            "Too narrow for the open page",
+            (50, 30),
+            |frame| {
+                let mut shell = attached_shell();
+                open(&mut shell, AppId::Chatlog, true);
+                shell.render(frame);
+            },
+        ),
+        screen_state(
+            "window-too-short-for-the-page",
+            "Too short for the open page",
+            (60, 20),
+            |frame| attached_shell().render(frame),
         ),
     ]
 }

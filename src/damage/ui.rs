@@ -689,7 +689,7 @@ fn render_battle_prompt(
         )
     } else if app.has_input() {
         (
-            "Current tally is not saved.",
+            "Ye'll lose the tally as it stands.",
             Style::default().fg(Color::Yellow),
         )
     } else {

@@ -785,26 +785,10 @@ impl AppShell {
             area
         };
 
-        let detail = format!(
-            "Enlarge the window to at least {}x{MIN_HEIGHT} (it is {}x{}).",
-            topbar_min_width(),
-            area.width,
-            area.height,
-        );
-        // Unlike a page's own refusal, this one cannot count on a bar above it.
-        crate::utils::render_page_notice(
+        crate::utils::too_small(
             frame,
             body,
-            &[
-                (
-                    "Terminal too small",
-                    Style::default().bold(),
-                ),
-                (
-                    &detail,
-                    Style::default().fg(Color::DarkGray),
-                ),
-            ],
+            (topbar_min_width(), MIN_HEIGHT),
         );
     }
 
@@ -4631,9 +4615,10 @@ mod topbar_tests {
     /// leave the page they are on.
     #[test]
     fn a_terminal_under_the_shell_floor_says_so_instead_of_drawing_a_page() {
-        assert!(screen(60, 20).contains("Terminal too small"));
+        assert!(screen(60, 20).contains(crate::utils::TOO_SMALL));
         assert!(
-            screen(topbar_min_width() - 1, 40).contains("Terminal too small")
+            screen(topbar_min_width() - 1, 40)
+                .contains(crate::utils::TOO_SMALL)
         );
     }
 
@@ -4652,7 +4637,7 @@ mod topbar_tests {
             // only have come from the page refusing the width.
             assert!(
                 !format!("{}", terminal.backend())
-                    .contains("Terminal too small"),
+                    .contains(crate::utils::TOO_SMALL),
                 "{} will not draw in {MIN_WIDTH} columns",
                 app.bar_lines().0,
             );

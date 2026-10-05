@@ -805,14 +805,7 @@ pub fn too_narrow(
     if needed <= area.width {
         return false;
     }
-    refuse(
-        frame,
-        area,
-        &format!(
-            "Enlarge the window to at least {needed} columns (it is {}).",
-            area.width,
-        ),
-    );
+    too_small(frame, area, (needed, 0));
     true
 }
 
@@ -833,16 +826,54 @@ pub fn too_short(
     if needed <= area.height {
         return false;
     }
-    refuse(
-        frame,
-        area,
-        &format!(
-            "Enlarge the window to at least {needed} rows (it is {}).",
-            area.height,
-        ),
-    );
+    too_small(frame, area, (0, needed));
     true
 }
+
+/// Refuse to draw in a window this size, drawing the notice saying so in its
+/// place. The one implementation behind every refusal: [`too_narrow`] and
+/// [`too_short`] are it with one dimension in question, and the app calls it
+/// directly for a window too small to hold even its own frame.
+///
+/// `needed` is the size being asked for, and a zero in either place means that
+/// dimension is not in question. Only a dimension actually lacking is named,
+/// because a window told to grow in a direction it is already big enough in
+/// reads as being told to shrink.
+pub fn too_small(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    needed: (u16, u16),
+) {
+    let (w, h) = needed;
+    let detail = match (area.width < w, area.height < h) {
+        (true, true) => {
+            format!(
+                "Arr! Too small. Make it {w}x{h} (it is {}x{}).",
+                area.width, area.height,
+            )
+        }
+        (false, true) => {
+            format!(
+                "Arr! Too short. Make it {h} rows (it is {}).",
+                area.height
+            )
+        }
+        // The width is what is lacking, or the caller refused for a reason of
+        // its own; either way the width is the figure to hand back.
+        _ => {
+            format!(
+                "Arr! Too narrow. Make it {w} columns (it is {}).",
+                area.width
+            )
+        }
+    };
+    refuse(frame, area, &detail);
+}
+
+/// The heading on every refusal to draw in too small a window. One condition
+/// to the reader however it is reached, so one heading, named here rather than
+/// written out at each place that checks for it.
+pub const TOO_SMALL: &str = "Yer Window Be Too Small";
 
 /// The notice a page draws in its own place when the window cannot hold it.
 /// Whether the width or the height is lacking, the heading is the one the app
@@ -859,10 +890,7 @@ fn refuse(
         frame,
         area,
         &[
-            (
-                "Terminal too small",
-                Style::default().bold(),
-            ),
+            (TOO_SMALL, Style::default().bold()),
             (
                 detail,
                 Style::default().fg(Color::DarkGray),

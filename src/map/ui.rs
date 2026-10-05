@@ -499,7 +499,7 @@ pub fn render(
                 frame,
                 rows[0],
                 &[(
-                    "Select an ocean (--ocean) to see its map.",
+                    "Pick an ocean (--ocean) to see its map.",
                     Style::default(),
                 )],
             );
@@ -892,7 +892,7 @@ fn metadata(
             head,
             body: vec![
                 Line::from(""),
-                Line::from(dim("No geography data for this island.")),
+                Line::from(dim("We know naught of this island.")),
             ],
         };
     };
