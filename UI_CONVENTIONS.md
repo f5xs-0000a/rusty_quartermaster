@@ -289,7 +289,8 @@ not one of them, and the borders are on top of that again:
 │   Iron       50      0 │  2
 │   Hemp              80 │  3
 │   Sugar cane        12 │  4
-└────────────────────────┘     8 rows for 4 of list
+│                        │  <- the row kept for its sideways bar
+└────────────────────────┘     9 rows for 4 of list
 ```
 
 **Where it has none** — the Damage calculator is one fixed grid — the test is
@@ -322,6 +323,10 @@ thumb having to be measured:
 | thumb | `█`, as long a part of the track as the rows on show are of the whole |
 | track | `│` |
 
+The thumb sits over the cells it can reach: flush with the track's near end at
+the first offset, flush with its far end at the last. So the thumb and the two
+end glyphs cannot disagree about whether a view has further to travel.
+
 The pirate popup's skill tables in an 80x24 terminal, which holds fifteen of
 their seventeen rows, the window at the top of the list:
 
@@ -340,6 +345,33 @@ The two arrows are the part worth having: a capped end means there is nothing
 that way, so a view can be read as scrolled-to-the-end without comparing the
 thumb against the track.
 
+### A view that scrolls sideways shows one along the bottom
+
+The same bar, turned: it lies along the view's bottom row and counts columns.
+
+| part | what it is |
+| ---- | ---------- |
+| left cell | `◄` while there is more to the left, `├` once the view is at the left edge |
+| right cell | `►` while there is more to the right, `┤` once it is at the right |
+| thumb | `█`, as long a part of the track as the columns on show are of the whole |
+| track | `─` |
+
+It keeps **one row**, where the upright bar keeps two columns. The second column
+is there because a bar drawn hard against a word runs into it; a rule under a
+line of text already reads clear of it, and rows are the scarcer of the two.
+
+A view that scrolls both ways has one of each, and hands each the room the other
+leaves — so neither measures what the other has taken, and the corner where they
+would meet stays blank. The Map's chart, four of whose rows and most of whose
+columns are on show:
+
+```
+│          ◇  Nunataq                                      ○               ○ │ │
+│        ╱   ╲                                               ╲               ▼ │
+│ ◄─────────────────────────────────██████████─────────────────────────────►   │
+│ Messier's Crown (69,2)  not memorized                                Emerald │
+```
+
 ### The bar answers the mouse
 
 The bar's own column is a click target — the blank one beside it is not, so a
@@ -347,14 +379,20 @@ click meant for the text never lands on the bar.
 
 | where | what it does |
 | ----- | ------------ |
-| an arrow end (`▲`/`▼`) | one row that way |
-| a capped end (`┬`/`┴`) | nothing; there is nothing that way, and the glyph says so |
-| anywhere on the track | that far down the view: the track's first cell is the start of the list and its last cell the end |
+| an arrow end | one row (or column) that way |
+| a capped end | nothing; there is nothing that way, and the glyph says so |
+| anywhere on the track | that far along the view: the track's first cell is the start of the content and its last cell the end |
 | the wheel, anywhere on the bar | one row, the same as an arrow |
 
 A click on the track is a jump to where it pointed rather than a page-step, so
 a long list is crossed in one click. The thumb is not corrected for its own
 length, which on the short tracks a four-row view gives would be noise.
+
+An arrow is a *step*, and on the Map that cannot mean a grid square: the sailing
+cursor only ever sits on a league point, and points are several squares apart, so
+a one-square ask would snap straight back to the point it came from and the arrow
+would be dead. It asks for the next point that way instead, keeping to the row or
+column it started in where that row or column holds a point at all.
 
 The thumb is not dragged. Nothing in the app is.
 
@@ -365,12 +403,19 @@ what moves its window.
 
 - **Its own window.** The two popups keep a scroll offset and nothing else
   decides it, so the bar sets it outright.
-- **A cursor's.** The four page views have no independent window at all: the
+- **A cursor's.** The page views have no independent window at all: the
   Inventory, the panes and the Skill Leaderboard scroll to keep their selection
-  in sight, and the Voyage body scrolls to keep the focused stat or chart in
-  sight — each recomputed from that cursor every frame. The bar moves the cursor
-  and the window follows, which is the only thing it could mean. The wheel over
-  those views already works this way.
+  in sight, the Voyage body scrolls to keep the focused stat or chart in sight,
+  and the Map's chart is centred on the sailing cursor — each recomputed from
+  that cursor every frame. The bar moves the cursor and the window follows,
+  which is the only thing it could mean. The wheel over those views already
+  works this way.
+
+  What the cursor is differs by view, and so does what the bar's two ends mean.
+  The Inventory's sideways bar runs from the first editable column to the last,
+  since the Item column is not one the cell cursor can rest on. The Map's run
+  across the ocean, and because the cursor only ever sits on a league point, a
+  jump lands on the point nearest the place it pointed at.
 
 A view of the second kind is focused before its cursor moves: a cursor that
 moves out of sight has not visibly moved at all.
@@ -380,11 +425,27 @@ where it was pointed rather than exactly under the pointer, because the rows
 the thumb is measured in and the items the cursor counts are not the same
 thing — the Voyage body's focusables are a dozen stats spread over fifty rows.
 
+On the Map the gap is wider still, and shows at the ends. The bar measures the
+canvas, which carries a margin of open sea around the outermost points, while the
+cursor can only travel between the points themselves — so the window stops short
+of the canvas edge and the arrows stay arrows however far the cursor sails. What
+the bar can reach is the cursor's travel, not the drawing's.
+
 ### Implementation
 
-`utils::render_scrollbar` draws the bar, registers its click region, and hands
-back the rect the contents may use — the whole of the area when there is nothing
-to scroll:
+`utils::render_scrollbar` draws the upright bar and `utils::render_hscrollbar`
+the sideways one — both over one `render_bar`, since the two differ only in their
+glyphs and which edge they take. Each registers its click region and hands back
+the rect the contents may use, which is the whole of the area when there is
+nothing to scroll.
+
+`render_bar` places the thumb itself rather than handing the job to ratatui's
+`Scrollbar`, which rounds the thumb's start and its length apart: the two can sum
+past the track, and the far end's glyph is then pushed off the bar — a view at the
+end of its travel showing no cap, which is exactly the thing the ends are there to
+say. `utils::tests::a_scrollbar_is_two_ends_and_a_thumb_inside_the_track` walks
+every shape of window on both axes and checks each bar whole, since the parts are
+only right together.
 
 ```rust
 let body = render_scrollbar(
@@ -396,30 +457,33 @@ frame.render_widget(
 );
 ```
 
-It is called after whatever region the view claimed for itself, so the column
-answers to the bar rather than to the list behind it. `utils::scrollbar_hit`
-reads a click on it and `ScrollHit::resolve` turns the ask into a row, which
-`AppShell::scroll_bar` hands to the right view. A widget that sizes itself to its
-contents adds `utils::SCROLLBAR_W` — the bar's column and its blank — to the
-width it asks for. Where a layout must be settled before the bar can be drawn,
-`utils::scrolls` is the one place that answers whether the columns are spent.
+Either is called after whatever region the view claimed for itself, so the bar's
+cells answer to the bar rather than to the list behind it. `utils::scrollbar_hit`
+reads a click on one and `ScrollHit::resolve` turns the ask into a row or a
+column, which `AppShell::scroll_bar` hands to the right view.
+
+A widget that sizes itself to its contents adds `utils::SCROLLBAR_W` — the bar's
+column and its blank — to the width it asks for, and `utils::SCROLLBAR_H` to its
+height where it scrolls sideways. Where a layout must be settled before a bar can
+be drawn, `utils::scrolls` is the one place that answers whether the room is
+spent; a view that scrolls both ways asks it twice, once per axis, taking the
+other bar's room into account. One pass over the pair settles it, because taking
+room away can only make the other bar more wanted, never less.
 
 ### Where this applies
 
-Six views scroll, and each has a bar:
+Seven views scroll, and each has a bar:
 
 | view | what its window follows | state to read it in |
 | ---- | ----------------------- | ------------------- |
 | pirate popup, the skill tables | its own offset | `80x24-jobbers-popup-pirate-stats` (`120x40` is tall enough for all of them, and shows no bar) |
 | trophies popup, the category grid | its own offset | `80x24-jobbers-popup-trophy-list` |
-| Profits Inventory | the cell cursor | `120x40-profits-long-list` |
+| Profits Inventory, down | the row cursor | `120x40-profits-long-list` |
+| Profits Inventory, across | the column cursor | `80x30-profits-wide-table` — at 120 columns the box is as wide as the table and nothing scrolls, so this one needs `--size 80x30` |
 | Jobbers panes | that pane's selection | `80x24-jobbers-long-roster` |
 | Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster` |
 | Voyage body | the focused stat or chart | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
-
-The Map page pans a canvas in both directions rather than windowing a list of
-rows, so it has none: a vertical bar would describe something the page does not
-have.
+| Map chart, both ways | the sailing cursor | `80x24-map-ocean` |
 
 ### The answer must not move as focus moves
 
@@ -464,7 +528,7 @@ rosters in the gallery and grow with them, to the four-row cap:
 
 | page | rows | why |
 | ---- | ---- | --- |
-| Map | 10 | a four-row viewport, two status rows, its border |
+| Map | 11 | a four-row viewport, its sideways bar, two status rows, its border |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
 | Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, the panes |
@@ -472,11 +536,11 @@ rosters in the gallery and grow with them, to the four-row cap:
 | Jobbers, Vampirates | 26 | the Vampirates Stats box and the distribution button |
 | Jobbers, Vikings | 26 | leaderboard beside the panes, under its stats box |
 | Jobbers, Cursed Isles | 27 | the Fight Statistics box, the tallest of them |
-| Profits | 28 | four boxes stacked under the Inventory's eight rows |
+| Profits | 29 | four boxes stacked under the Inventory's nine rows |
 
 Unlike the 80-column ceiling of Rule 3, **no ceiling is set on height**. The
 consequence is deliberate and worth stating plainly: a conventional 80x24
-terminal is four rows too short for Profits, and two or three short of Jobbers
+terminal is five rows too short for Profits, and two or three short of Jobbers
 on its longest voyage types, and shows the notice there while the rest draws.
 
 ## Rule 5: An unmet prerequisite is a centered, wrapped notice

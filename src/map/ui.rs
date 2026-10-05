@@ -364,12 +364,13 @@ pub fn render(
         fetching_islands,
     } = ctx;
     // The chart is a viewport onto a larger map: it pans rather than shrinks,
-    // so what it needs is a viewport worth sailing in, plus the two status
-    // rows under it and the box around them.
+    // so what it needs is a viewport worth sailing in, the row its sideways
+    // scrollbar lies along, the two status rows under that, and the box around
+    // them all.
     if crate::utils::too_short(
         frame,
         area,
-        crate::utils::SCROLL_MIN_ROWS + 2 + 2,
+        crate::utils::SCROLL_MIN_ROWS + crate::utils::SCROLLBAR_H + 2 + 2,
     ) {
         return;
     }
@@ -870,12 +871,62 @@ fn draw_map(
     };
     let canvas = build_canvas(map, app);
     let (cx, cy) = cell_of(cursor);
+
+    // The chart is a viewport on a canvas larger than it both ways, so it
+    // carries both bars, and each costs the other room: the upright one
+    // takes columns, the sideways one the bottom row. Taking room away
+    // never un-needs a bar, so one pass over the pair settles both.
+    let mut down = crate::utils::scrolls(view.height, canvas.h);
+    let across = crate::utils::scrolls(
+        view.width
+            .saturating_sub(if down { crate::utils::SCROLLBAR_W } else { 0 }),
+        canvas.w,
+    );
+    if across {
+        down = crate::utils::scrolls(
+            view.height.saturating_sub(crate::utils::SCROLLBAR_H),
+            canvas.h,
+        );
+    }
+    let port = Rect {
+        width: view
+            .width
+            .saturating_sub(if down { crate::utils::SCROLLBAR_W } else { 0 }),
+        height: view
+            .height
+            .saturating_sub(if across { crate::utils::SCROLLBAR_H } else { 0 }),
+        ..view
+    };
+
     let (vw, vh) = (
-        view.width as usize,
-        view.height as usize,
+        port.width as usize,
+        port.height as usize,
     );
     let ox = origin(cx, vw, canvas.w);
     let oy = origin(cy, vh, canvas.h);
+
+    crate::utils::render_scrollbar(
+        frame,
+        regions,
+        Rect {
+            height: port.height,
+            ..view
+        },
+        crate::clickmap::ScrollView::MapCanvas,
+        oy,
+        canvas.h,
+    );
+    crate::utils::render_hscrollbar(
+        frame,
+        regions,
+        Rect {
+            width: port.width,
+            ..view
+        },
+        crate::clickmap::ScrollView::MapCanvas,
+        ox,
+        canvas.w,
+    );
 
     let buf = frame.buffer_mut();
     for vy in 0 .. vh {

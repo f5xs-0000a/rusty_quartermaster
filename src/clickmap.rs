@@ -21,6 +21,17 @@ pub enum ScrollView {
     /// Everything under the Voyage Statistics page's pinned header. Keeps its
     /// own window, which the focused stat or chart also nudges.
     VoyageBody,
+    /// The Map page's chart, a viewport on a canvas larger than it both ways.
+    /// Follows the sailing cursor.
+    MapCanvas,
+}
+
+/// Which way a scrollbar runs. A view that scrolls both ways has one of each,
+/// and a click says which it landed on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScrollAxis {
+    Vertical,
+    Horizontal,
 }
 
 #[derive(Clone, Debug)]
@@ -167,6 +178,7 @@ pub enum ClickTarget {
     /// from.
     Scrollbar {
         view: ScrollView,
+        axis: ScrollAxis,
         bar: Rect,
         total: usize,
     },

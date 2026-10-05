@@ -495,17 +495,25 @@ pub const SCROLL_MIN_ROWS: u16 = 4;
 /// scroll; see [`render_scrollbar`].
 pub const SCROLLBAR_W: u16 = 1 + PADDING;
 
-/// Whether a view with `total` rows to show and `rows` of room must scroll, and
-/// so spends its [`SCROLLBAR_W`] columns on the bar. [`render_scrollbar`] asks
-/// this itself; a caller needs it only when the answer decides a layout it must
+/// Rows a view the user scrolls sideways keeps along its bottom edge for the
+/// horizontal scrollbar. One row where the vertical bar takes two columns: a
+/// rule under a line of text already reads clear of it, where a bar beside text
+/// would run into the words, and rows are the scarcer of the two.
+pub const SCROLLBAR_H: u16 = 1;
+
+/// Whether a view with `total` of something to show and `room` for that much of
+/// it must scroll, and so spends its [`SCROLLBAR_W`] columns or [`SCROLLBAR_H`]
+/// row on a bar. [`render_scrollbar`] and [`render_hscrollbar`] ask this
+/// themselves; a caller needs it only when the answer decides a layout it must
 /// settle before drawing.
-pub fn scrolls(rows: u16, total: usize) -> bool {
-    (rows as usize) < total
+pub fn scrolls(room: u16, total: usize) -> bool {
+    (room as usize) < total
 }
 
-/// Draw the scrollbar of a view the user scrolls and hand back the part of
-/// `area` its contents may use. `total` is the rows the view holds in all;
-/// `area.height` is how many of them are on show, and `offset` is the first.
+/// Draw the scrollbar of a view the user scrolls up and down, and hand back the
+/// part of `area` its contents may use. `total` is the rows the view holds in
+/// all; `area.height` is how many of them are on show, and `offset` is the
+/// first.
 ///
 /// With all of them on show there is nothing to scroll, so no bar is drawn and
 /// the whole of `area` comes back: the [`SCROLLBAR_W`] columns are the
@@ -530,55 +538,172 @@ pub fn render_scrollbar(
     offset: usize,
     total: usize,
 ) -> ratatui::layout::Rect {
-    use ratatui::{
-        layout::Rect,
-        widgets::{Scrollbar, ScrollbarOrientation, ScrollbarState},
+    render_bar(
+        frame,
+        regions,
+        area,
+        view,
+        crate::clickmap::ScrollAxis::Vertical,
+        offset,
+        total,
+    )
+}
+
+/// As [`render_scrollbar`], for a view the user scrolls side to side: the bar
+/// lies along the bottom row of `area` and counts columns rather than rows.
+///
+/// A view that scrolls both ways hands each bar the room the other leaves, so
+/// neither counts what the other has taken and the corner between them stays
+/// blank.
+pub fn render_hscrollbar(
+    frame: &mut ratatui::Frame,
+    regions: &mut Vec<crate::clickmap::ClickRegion>,
+    area: ratatui::layout::Rect,
+    view: crate::clickmap::ScrollView,
+    offset: usize,
+    total: usize,
+) -> ratatui::layout::Rect {
+    render_bar(
+        frame,
+        regions,
+        area,
+        view,
+        crate::clickmap::ScrollAxis::Horizontal,
+        offset,
+        total,
+    )
+}
+
+/// The one bar, drawn along whichever edge `axis` names. Both axes answer the
+/// same questions — is there anything to scroll, which way can the view still
+/// travel, how much of the whole is on show — so they are answered in one
+/// place and only the glyphs and the edge differ.
+fn render_bar(
+    frame: &mut ratatui::Frame,
+    regions: &mut Vec<crate::clickmap::ClickRegion>,
+    area: ratatui::layout::Rect,
+    view: crate::clickmap::ScrollView,
+    axis: crate::clickmap::ScrollAxis,
+    offset: usize,
+    total: usize,
+) -> ratatui::layout::Rect {
+    use ratatui::{layout::Rect, style::Style};
+
+    use crate::clickmap::{ClickRegion, ClickTarget, ScrollAxis};
+
+    let (room, bar) = match axis {
+        ScrollAxis::Vertical => {
+            (
+                area.height,
+                Rect {
+                    x: area.x + area.width.saturating_sub(1),
+                    width: 1,
+                    ..area
+                },
+            )
+        }
+        ScrollAxis::Horizontal => {
+            (
+                area.width,
+                Rect {
+                    y: area.y + area.height.saturating_sub(1),
+                    height: 1,
+                    ..area
+                },
+            )
+        }
     };
-
-    use crate::clickmap::{ClickRegion, ClickTarget};
-
-    if !scrolls(area.height, total) {
+    if !scrolls(room, total) {
         return area;
     }
-    let rows = area.height as usize;
-    let bar = Rect {
-        x: area.x + area.width.saturating_sub(1),
-        width: 1,
-        ..area
-    };
     regions.push(ClickRegion {
         rect: bar,
         target: ClickTarget::Scrollbar {
             view,
+            axis,
             bar,
             total,
         },
     });
-    let max_offset = total - rows;
+
+    let max_offset = total - room as usize;
     let offset = offset.min(max_offset);
-    // The state is given the offsets the window can rest at rather than the
-    // rows it holds, with the window's own length beside them. That is what
-    // makes the thumb `view / total` of the track and lands it against the
-    // track's far end at the foot of the list, instead of stopping a thumb's
-    // length short of it.
-    let mut state = ScrollbarState::new(max_offset + 1)
-        .position(offset)
-        .viewport_content_length(rows);
-    frame.render_stateful_widget(
-        Scrollbar::new(ScrollbarOrientation::VerticalRight)
-            .begin_symbol(Some(if 0 < offset { "▲" } else { "┬" }))
-            .end_symbol(Some(
-                if offset < max_offset { "▼" } else { "┴" },
-            ))
-            .track_symbol(Some("│"))
-            .thumb_symbol("█"),
-        area,
-        &mut state,
-    );
-    Rect {
-        width: area.width.saturating_sub(SCROLLBAR_W),
-        ..area
+    let (more_before, more_after) = (0 < offset, offset < max_offset);
+    let (begin, end, rule) = match axis {
+        ScrollAxis::Vertical => {
+            (
+                if more_before { "▲" } else { "┬" },
+                if more_after { "▼" } else { "┴" },
+                "│",
+            )
+        }
+        ScrollAxis::Horizontal => {
+            (
+                if more_before { "◄" } else { "├" },
+                if more_after { "►" } else { "┤" },
+                "─",
+            )
+        }
+    };
+
+    // The track is what lies between the two ends. The thumb is as long a part
+    // of it as the view is of the whole, and sits over the cells it can reach —
+    // flush with the track's near end at the first offset and with its far end
+    // at the last — so what the ends say and where the thumb lies cannot
+    // disagree.
+    //
+    // The thumb is placed here rather than by ratatui's `Scrollbar`, which
+    // rounds its start and its length apart: the two can sum past the track,
+    // and the end's glyph is then pushed off the bar, leaving a view at the end
+    // of its travel looking like one with further to go.
+    let track = room.saturating_sub(2);
+    let thumb = div_round(room as usize * track as usize, total)
+        .clamp(1, track as usize) as u16;
+    let span = track - thumb;
+    let thumb_at = if max_offset == 0 {
+        0
+    } else {
+        div_round(offset * span as usize, max_offset) as u16
+    };
+
+    let buffer = frame.buffer_mut();
+    for cell in 0 .. room {
+        let glyph = if cell == 0 {
+            begin
+        } else if cell + 1 == room {
+            end
+        } else if (thumb_at .. thumb_at + thumb).contains(&(cell - 1)) {
+            "█"
+        } else {
+            rule
+        };
+        let (x, y) = match axis {
+            ScrollAxis::Vertical => (bar.x, bar.y + cell),
+            ScrollAxis::Horizontal => (bar.x + cell, bar.y),
+        };
+        buffer.set_string(x, y, glyph, Style::default());
     }
+
+    match axis {
+        ScrollAxis::Vertical => {
+            Rect {
+                width: area.width.saturating_sub(SCROLLBAR_W),
+                ..area
+            }
+        }
+        ScrollAxis::Horizontal => {
+            Rect {
+                height: area.height.saturating_sub(SCROLLBAR_H),
+                ..area
+            }
+        }
+    }
+}
+
+/// `n / d` rounded to the nearest whole, halves up. The one rounding the bar
+/// uses, so where a click lands and where the thumb is drawn agree.
+fn div_round(n: usize, d: usize) -> usize {
+    if d == 0 { 0 } else { (n + d / 2) / d }
 }
 
 /// What a click on a scrollbar asks of the view it belongs to. Which of the
@@ -591,7 +716,7 @@ pub enum ScrollHit {
     /// same — there is simply nothing that way to move to, and the clamp in
     /// [`ScrollHit::resolve`] is what makes the ask a no-op.
     Step(i32),
-    /// A click on the track, as how far down it the pointer was: `cell` of
+    /// A click on the track, as how far along it the pointer was: `cell` of
     /// `track` cells.
     Jump {
         cell: u16,
@@ -599,16 +724,26 @@ pub enum ScrollHit {
     },
 }
 
-/// Read a click at `row` on the bar drawn in `bar` ([`render_scrollbar`] hands
-/// the rect to the click region it registers).
-pub fn scrollbar_hit(bar: ratatui::layout::Rect, row: u16) -> ScrollHit {
+/// Read a click at `(col, row)` on the bar drawn in `bar` — the rect the click
+/// region carries, along with the `axis` that says which way it runs.
+pub fn scrollbar_hit(
+    bar: ratatui::layout::Rect,
+    axis: crate::clickmap::ScrollAxis,
+    col: u16,
+    row: u16,
+) -> ScrollHit {
+    use crate::clickmap::ScrollAxis;
+
+    let (cell, cells) = match axis {
+        ScrollAxis::Vertical => (row.saturating_sub(bar.y), bar.height),
+        ScrollAxis::Horizontal => (col.saturating_sub(bar.x), bar.width),
+    };
     // The bar's first and last cells are its two arrows; the track is what lies
     // between them.
-    let cell = row.saturating_sub(bar.y);
     if cell == 0 {
         return ScrollHit::Step(-1);
     }
-    let track = bar.height.saturating_sub(2);
+    let track = cells.saturating_sub(2);
     if track <= cell - 1 {
         return ScrollHit::Step(1);
     }
@@ -641,13 +776,13 @@ impl ScrollHit {
                 cell,
                 track,
             } => {
-                // Both ends of the track are reachable: the top cell is the
-                // start of the list and the bottom cell its end.
+                // Both ends of the track are reachable: the first cell is the
+                // start of the content and the last cell its end.
                 let steps = track.saturating_sub(1) as usize;
                 if steps == 0 {
                     return current.min(last);
                 }
-                (cell as usize * last + steps / 2) / steps
+                div_round(cell as usize * last, steps).min(last)
             }
         }
     }
@@ -922,6 +1057,114 @@ mod tests {
         );
     }
 
+    /// Every shape of bar, on both axes: `room` cells over `total`, at every
+    /// offset it can rest at. Each is checked whole, since the parts are only
+    /// right together — a thumb that overruns its track takes the far end's
+    /// glyph with it, and the bar then reads as having further to travel at the
+    /// very moment it has none.
+    #[test]
+    fn a_scrollbar_is_two_ends_and_a_thumb_inside_the_track() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        use crate::clickmap::{ScrollAxis, ScrollView};
+
+        for axis in [ScrollAxis::Vertical, ScrollAxis::Horizontal] {
+            for room in 3u16 ..= 30 {
+                for total in room as usize + 1 ..= room as usize + 36 {
+                    for offset in 0 ..= total - room as usize {
+                        let mut regions = Vec::new();
+                        let (w, h) = match axis {
+                            ScrollAxis::Vertical => (1, room),
+                            ScrollAxis::Horizontal => (room, 1),
+                        };
+                        let mut terminal =
+                            Terminal::new(TestBackend::new(w, h))
+                                .expect("terminal");
+                        terminal
+                            .draw(|frame| {
+                                render_bar(
+                                    frame,
+                                    &mut regions,
+                                    Rect::new(0, 0, w, h),
+                                    ScrollView::JobberTrophies,
+                                    axis,
+                                    offset,
+                                    total,
+                                );
+                            })
+                            .expect("draw");
+                        let buffer = terminal.backend().buffer();
+                        let cells: Vec<String> = (0 .. room)
+                            .map(|c| {
+                                let at = match axis {
+                                    ScrollAxis::Vertical => (0, c),
+                                    ScrollAxis::Horizontal => (c, 0),
+                                };
+                                buffer[at].symbol().to_string()
+                            })
+                            .collect();
+                        let max_offset = total - room as usize;
+                        let what = format!(
+                            "{axis:?} room {room} total {total} offset \
+                             {offset}: {}",
+                            cells.concat(),
+                        );
+                        let cells: Vec<&str> =
+                            cells.iter().map(String::as_str).collect();
+
+                        // The ends: an arrow where the view can still travel,
+                        // a cap where it cannot.
+                        let (before, after) = match axis {
+                            ScrollAxis::Vertical => ("▲", "▼"),
+                            ScrollAxis::Horizontal => ("◄", "►"),
+                        };
+                        let (at_start, at_end) = match axis {
+                            ScrollAxis::Vertical => ("┬", "┴"),
+                            ScrollAxis::Horizontal => ("├", "┤"),
+                        };
+                        assert_eq!(
+                            cells[0],
+                            if 0 < offset { before } else { at_start },
+                            "{what}",
+                        );
+                        assert_eq!(
+                            cells[room as usize - 1],
+                            if offset < max_offset { after } else { at_end },
+                            "{what}",
+                        );
+
+                        // The thumb: one run, inside the track, as long a part
+                        // of it as the view is of the whole, and flush with the
+                        // track's near end at the first offset and its far end
+                        // at the last.
+                        let track = &cells[1 .. room as usize - 1];
+                        let first = track.iter().position(|c| *c == "█");
+                        let last = track.iter().rposition(|c| *c == "█");
+                        let (Some(first), Some(last)) = (first, last) else {
+                            panic!("no thumb in {what}");
+                        };
+                        assert!(
+                            track[first ..= last].iter().all(|c| *c == "█"),
+                            "thumb is broken in {what}",
+                        );
+                        assert_eq!(
+                            last - first + 1,
+                            div_round(room as usize * track.len(), total)
+                                .clamp(1, track.len()),
+                            "thumb length in {what}",
+                        );
+                        if offset == 0 {
+                            assert_eq!(first, 0, "{what}");
+                        }
+                        if offset == max_offset {
+                            assert_eq!(last, track.len() - 1, "{what}",);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     // The bar answers the mouse on its own column, and nowhere else: the blank
     // column beside it belongs to the contents.
     #[test]
@@ -969,18 +1212,15 @@ mod tests {
     fn a_scrollbar_click_steps_at_the_ends_and_jumps_between_them() {
         use ratatui::layout::Rect;
 
+        use crate::clickmap::ScrollAxis::Vertical;
+
         // Six cells: an arrow at each end, four of track between them.
         let bar = Rect::new(9, 4, 1, 6);
+        let at = |row| scrollbar_hit(bar, Vertical, 9, row);
+        assert_eq!(at(4), ScrollHit::Step(-1));
+        assert_eq!(at(9), ScrollHit::Step(1));
         assert_eq!(
-            scrollbar_hit(bar, 4),
-            ScrollHit::Step(-1)
-        );
-        assert_eq!(
-            scrollbar_hit(bar, 9),
-            ScrollHit::Step(1)
-        );
-        assert_eq!(
-            scrollbar_hit(bar, 5),
+            at(5),
             ScrollHit::Jump {
                 cell: 0,
                 track: 4,
@@ -994,9 +1234,25 @@ mod tests {
 
         // The track's first and last cells are the list's first and last rows,
         // and a cell between them lands in proportion.
-        assert_eq!(scrollbar_hit(bar, 5).resolve(4, 9), 0);
-        assert_eq!(scrollbar_hit(bar, 8).resolve(4, 9), 9);
-        assert_eq!(scrollbar_hit(bar, 6).resolve(4, 9), 3);
+        assert_eq!(at(5).resolve(4, 9), 0);
+        assert_eq!(at(8).resolve(4, 9), 9);
+        assert_eq!(at(6).resolve(4, 9), 3);
+    }
+
+    // The sideways bar reads the same way along its own axis, and its ends are
+    // the ends of the content.
+    #[test]
+    fn a_sideways_scrollbar_reads_along_its_row() {
+        use ratatui::layout::Rect;
+
+        use crate::clickmap::ScrollAxis::Horizontal;
+
+        let bar = Rect::new(4, 9, 6, 1);
+        let at = |col| scrollbar_hit(bar, Horizontal, col, 9);
+        assert_eq!(at(4), ScrollHit::Step(-1));
+        assert_eq!(at(9), ScrollHit::Step(1));
+        assert_eq!(at(5).resolve(4, 9), 0);
+        assert_eq!(at(8).resolve(4, 9), 9);
     }
 
     #[test]

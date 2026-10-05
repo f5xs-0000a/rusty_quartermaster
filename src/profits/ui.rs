@@ -163,9 +163,13 @@ pub fn render(
     // the page disappear. The Inventory keeps a scrollable view's worth of
     // commodities under its header, which is what the spare rows go to when the
     // transient ones are empty.
+    // The sideways scrollbar's row is counted whether the table is wide enough
+    // to want one or not, for the same reason the transient rows are: a window
+    // the user widens or narrows must not be able to make the page vanish.
     let inventory_h = 2 /*borders*/
         + 2 /*header and its blank*/
-        + crate::utils::SCROLL_MIN_ROWS;
+        + crate::utils::SCROLL_MIN_ROWS
+        + crate::utils::SCROLLBAR_H;
     let needed_height = inventory_h
         + 1 /*input*/ + 1 /*suggestion*/ + 2 /*borders*/
         + stats_h
@@ -504,22 +508,6 @@ fn render_inventory(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // The window the rows scroll through: what is left under the header and its
-    // margin. The scrollbar's columns come off the room the table is laid out
-    // in, so its columns sit where they would without a bar.
-    let body = Rect {
-        y: inner.y + 2,
-        height: inner.height.saturating_sub(2),
-        ..inner
-    };
-    let table_w = inner.width.saturating_sub(
-        if crate::utils::scrolls(body.height, app.rows.len()) {
-            crate::utils::SCROLLBAR_W
-        } else {
-            0
-        },
-    );
-
     // Column widths never shrink, so the table has one intrinsic width.
     let col_ws: Vec<u16> = widths
         .iter()
@@ -532,6 +520,53 @@ fn render_inventory(
         .collect();
     let columns_width = col_ws.iter().sum::<u16>()
         + COL_GAP * col_ws.len().saturating_sub(1) as u16;
+
+    // The table is the one widget that scrolls both ways, and each bar costs
+    // the other room: the upright one takes columns, which can only leave
+    // the sideways window narrower, and the sideways one takes the bottom
+    // row, which can only leave the rows window shorter. Taking room away
+    // never un-needs a bar, so one pass over the pair settles both.
+    let rows_h = inner.height.saturating_sub(2); // header + its margin
+    let mut vscrolls = crate::utils::scrolls(rows_h, app.rows.len());
+    let hscrolls = crate::utils::scrolls(
+        inner.width.saturating_sub(
+            if vscrolls {
+                crate::utils::SCROLLBAR_W
+            } else {
+                0
+            },
+        ),
+        columns_width as usize,
+    );
+    if hscrolls {
+        vscrolls = crate::utils::scrolls(
+            rows_h.saturating_sub(crate::utils::SCROLLBAR_H),
+            app.rows.len(),
+        );
+    }
+    // What the table itself is laid out in, so its columns and rows sit where
+    // they would with no bars at all.
+    let table_w = inner.width.saturating_sub(
+        if vscrolls {
+            crate::utils::SCROLLBAR_W
+        } else {
+            0
+        },
+    );
+    let table_h = inner.height.saturating_sub(
+        if hscrolls {
+            crate::utils::SCROLLBAR_H
+        } else {
+            0
+        },
+    );
+    // The window the rows scroll through: what is left under the header and its
+    // margin, above the sideways bar.
+    let body = Rect {
+        y: inner.y + 2,
+        height: table_h.saturating_sub(2),
+        ..inner
+    };
 
     // Where column `i` starts, measured from the table's own left edge.
     let col_offsets: Vec<u16> = col_ws
@@ -572,25 +607,20 @@ fn render_inventory(
             x: columns_x as u16,
             y: inner.y,
             width: columns_width,
-            height: inner.height,
+            height: table_h,
         };
         frame.render_stateful_widget(table, rect, &mut app.table_state);
     } else {
         // Draw at full width offscreen, then blit the visible window, so a
         // partially-scrolled column clips cleanly at the border.
-        let mut canvas = Buffer::empty(Rect::new(
-            0,
-            0,
-            columns_width,
-            inner.height,
-        ));
+        let mut canvas = Buffer::empty(Rect::new(0, 0, columns_width, table_h));
         StatefulWidget::render(
             table,
-            Rect::new(0, 0, columns_width, inner.height),
+            Rect::new(0, 0, columns_width, table_h),
             &mut canvas,
             &mut app.table_state,
         );
-        for row in 0 .. inner.height {
+        for row in 0 .. table_h {
             for col in 0 .. table_w {
                 let src = Position::new(app.hscroll + col, row);
                 if let Some(cell) = canvas.cell(src).cloned()
@@ -604,8 +634,10 @@ fn render_inventory(
         }
     }
 
-    // The table settles its own window while it renders, so the bar is drawn
-    // from the offset it left behind rather than the one it was handed.
+    // The table settles its own window while it renders, so the bars are drawn
+    // from the offsets it left behind rather than the ones it was handed. Each
+    // is given the room the other leaves, so neither counts what the other has
+    // taken and the corner between them stays blank.
     let scroll_offset = app.table_state.offset();
     crate::utils::render_scrollbar(
         frame,
@@ -615,12 +647,23 @@ fn render_inventory(
         scroll_offset,
         app.rows.len(),
     );
+    crate::utils::render_hscrollbar(
+        frame,
+        regions,
+        Rect {
+            width: table_w,
+            ..inner
+        },
+        crate::clickmap::ScrollView::ProfitsInventory,
+        app.hscroll as usize,
+        columns_width as usize,
+    );
 
     // Register click regions for the name + editable cells. The Sell/Buy
     // columns are only present (and clickable) when prices are entered
     // manually.
     let data_start_y = inner.y + 2; // header row + bottom_margin
-    let visible_rows = inner.height.saturating_sub(2); // header + margin
+    let visible_rows = body.height;
     for vis_row in 0 .. visible_rows as usize {
         let data_row = scroll_offset + vis_row;
         if data_row >= app.rows.len() {
@@ -1722,12 +1765,13 @@ mod inventory_tests {
     /// a field raises a tooltip, and a page that only counted those rows while
     /// one was up would disappear under the user's hands.
     ///
-    /// Without Market the panel shows three fields, so the page needs 24
-    /// rows: 8 for the Inventory, 4 for the Search, 3 for the Hold Stats, 7 for
-    /// the Parameters and 2 for the tooltip.
+    /// Without Market the panel shows three fields, so the page needs 25
+    /// rows: 9 for the Inventory (its sideways scrollbar's row among them), 4
+    /// for the Search, 3 for the Hold Stats, 7 for the Parameters and 2 for the
+    /// tooltip.
     #[test]
     fn what_the_page_needs_does_not_move_with_the_focus() {
-        for (height, fits) in [(23, false), (24, true)] {
+        for (height, fits) in [(24, false), (25, true)] {
             // The table carries no tooltip; a panel field does.
             for focus in [Focus::Table, Focus::Panel(P_RESTOCK_RATE)] {
                 let screen = draw_at(&["Rum"], 80, height, focus).2;

@@ -2933,15 +2933,22 @@ impl AppShell {
                     // the row is still at hand.
                     if let ClickTarget::Scrollbar {
                         view,
+                        axis,
                         bar,
                         total,
                     } = target
                     {
                         self.scroll_bar(
                             view,
+                            axis,
                             bar,
                             total,
-                            crate::utils::scrollbar_hit(bar, mouse.row),
+                            crate::utils::scrollbar_hit(
+                                bar,
+                                axis,
+                                mouse.column,
+                                mouse.row,
+                            ),
                         );
                         return;
                     }
@@ -3008,9 +3015,9 @@ impl AppShell {
         }
     }
 
-    /// Answer a click (or a wheel notch) on a view's scrollbar. `bar` and
-    /// `total` are what the bar was drawn from; `hit` is what the click asked
-    /// for ([`crate::utils::scrollbar_hit`]).
+    /// Answer a click (or a wheel notch) on a view's scrollbar. `axis`, `bar`
+    /// and `total` are what the bar was drawn from; `hit` is what the click
+    /// asked for ([`crate::utils::scrollbar_hit`]).
     ///
     /// Two kinds of view answer it. A view that keeps its own window — the two
     /// popups — takes the ask as the window's new first row. A view whose
@@ -3022,11 +3029,12 @@ impl AppShell {
     fn scroll_bar(
         &mut self,
         view: clickmap::ScrollView,
+        axis: clickmap::ScrollAxis,
         bar: Rect,
         total: usize,
         hit: crate::utils::ScrollHit,
     ) {
-        use clickmap::ScrollView;
+        use clickmap::{ScrollAxis, ScrollView};
 
         match view {
             ScrollView::JobberPirateSkills => {
@@ -3068,10 +3076,32 @@ impl AppShell {
                 }
                 self.global_focus = GlobalFocus::Content;
                 self.profits.focus = crate::profits::Focus::Table;
-                let row = self.profits.table_state.selected().unwrap_or(0);
-                self.profits
-                    .table_state
-                    .select(Some(hit.resolve(row, count - 1)));
+                match axis {
+                    ScrollAxis::Vertical => {
+                        let row =
+                            self.profits.table_state.selected().unwrap_or(0);
+                        self.profits
+                            .table_state
+                            .select(Some(hit.resolve(row, count - 1)));
+                    }
+                    // The sideways window follows the cell cursor's column, and
+                    // the Item column is not one it can rest on — so the bar's
+                    // ends are the first and last editable columns.
+                    ScrollAxis::Horizontal => {
+                        let first = crate::profits::FIRST_COL;
+                        let last =
+                            self.profits.last_editable_col(self.market_ok());
+                        let col = self
+                            .profits
+                            .table_state
+                            .selected_column()
+                            .unwrap_or(first)
+                            .max(first);
+                        self.profits.table_state.select_column(Some(
+                            first + hit.resolve(col - first, last - first),
+                        ));
+                    }
+                }
             }
             ScrollView::VoyageBody => {
                 let count = self.voyage_ui.focus_keys.len();
@@ -3081,6 +3111,53 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.voyage_ui.focus =
                     hit.resolve(self.voyage_ui.focus, count - 1);
+            }
+            // The chart's window is centred on the sailing cursor, and the
+            // cursor sits on league points — so a jump asks for a place on the
+            // map and lands on the nearest point to it, while a step asks for
+            // the next point that way.
+            ScrollView::MapCanvas => {
+                let Some(map) = self.ocean_map() else {
+                    return;
+                };
+                let Some(cursor) = self.map.cursor_on(map) else {
+                    return;
+                };
+                let (max_x, max_y) = map.extent();
+                let next = match hit {
+                    crate::utils::ScrollHit::Step(by) => {
+                        let step = match axis {
+                            ScrollAxis::Vertical => (0, by),
+                            ScrollAxis::Horizontal => (by, 0),
+                        };
+                        map.next_point_along(cursor, step)
+                    }
+                    crate::utils::ScrollHit::Jump {
+                        ..
+                    } => {
+                        let (cx, cy) = cursor;
+                        map.nearest_point(match axis {
+                            ScrollAxis::Vertical => {
+                                (
+                                    cx,
+                                    hit.resolve(cy as usize, max_y as usize)
+                                        as u16,
+                                )
+                            }
+                            ScrollAxis::Horizontal => {
+                                (
+                                    hit.resolve(cx as usize, max_x as usize)
+                                        as u16,
+                                    cy,
+                                )
+                            }
+                        })
+                    }
+                };
+                if let Some(p) = next {
+                    self.global_focus = GlobalFocus::Content;
+                    self.map.jump_to(p);
+                }
             }
         }
     }
@@ -3541,12 +3618,14 @@ impl AppShell {
         // page the view belongs to.
         if let Some(ClickTarget::Scrollbar {
             view,
+            axis,
             bar,
             total,
         }) = clickmap::hit_test(&self.click_regions, col, row)
         {
             self.scroll_bar(
                 view,
+                axis,
                 bar,
                 total,
                 crate::utils::ScrollHit::Step(delta.signum()),
