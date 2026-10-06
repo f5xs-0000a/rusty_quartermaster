@@ -251,6 +251,22 @@ pub fn offset_title(title: &str) -> (String, u16) {
     )
 }
 
+/// Build a label for the foot of a block's frame, the mirror of
+/// [`offset_title`] (` Label ───`). Right-aligned on the block it reads
+/// `└─── … ── Label ───┘`, so the same `───` run that leads a title at the top
+/// closes a figure at the bottom.
+///
+/// What belongs here is a figure about the whole widget rather than a row of
+/// its contents - the frame is as much part of the widget as the title is, and
+/// a figure embedded in it spends no row on itself.
+pub fn offset_footer(label: &str) -> String {
+    format!(
+        " {} {}",
+        label,
+        "─".repeat(TITLE_DASHES)
+    )
+}
+
 /// Minimum widget width at which an [`offset_title`] for `title` sits centered
 /// — equal `───` runs flank the text. `const` so widgets can derive a `const`
 /// minimum width and use it directly as a layout floor. Assumes an ASCII title

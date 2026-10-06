@@ -130,6 +130,28 @@ asserting the leading run is exactly three and the trailing run at least
 three. At the time of writing the gallery draws 39 distinct titles and all of
 them pass.
 
+### The mirror of it: a figure on the bottom border
+
+A figure about the widget as a whole may ride the **bottom** border, the rule
+read backwards: right-aligned, one space on each side, and the three-dash run
+on its right, between it and the corner.
+
+```
+┌─── Map of Emerald Ocean ──────────────┐
+│                                       │
+└─────────────────────── 2/669 (0.3%) ───┘
+```
+
+What belongs there is a figure the widget as a whole answers for — the Map's
+memorized tally is the one in the app — not a row of its contents, which
+belongs inside. The frame is as much part of the widget as its title is, and a
+figure riding it spends no row on itself.
+
+`utils::offset_footer` builds the string; a block takes it as
+`.title_bottom(Line::from(offset_footer(&figure)).right_aligned())`. It sets no
+floor on the width: a widget narrow enough for the figure to crowd its corner
+is one the figure does not belong on.
+
 ## Rule 2: Boxed widgets are padded
 
 A boxed widget keeps one blank column between its border and its contents, on
@@ -547,7 +569,7 @@ rosters in the gallery and grow with them, to the four-row cap:
 
 | page | rows | why |
 | ---- | ---- | --- |
-| Map | 11 | a four-row viewport, its sideways bar, a status row, its border, the hint under it |
+| Map | 11 | a four-row viewport, its sideways bar, the search row, its border, the hint under it |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
 | Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, the panes |
@@ -610,8 +632,8 @@ name a widget that is not being shown. Both Jobbers and Voyage Statistics are
 such pages, so neither draws a box while its prerequisite is unmet.
 
 That leaves the boxed case for a widget that is genuinely one part of a page: the
-Map, whose status row stays put below it and whose metadata column stays beside
-it at width.
+Map, whose tally rides the foot of its frame and whose metadata column stays
+beside it at width.
 
 ### Implementation
 
@@ -660,7 +682,7 @@ from the text once folded, and the vertical centering needs that height.
 | `Terminal too small`, too small for this page (Rules 3 and 4) | the page, unboxed |
 | Voyage `No voyage tracked yet.` | the page, unboxed |
 | Jobbers `No chat log attached` | the page, unboxed |
-| Map `Select an ocean (--ocean)` | the Map box, above its status row |
+| Map `Select an ocean (--ocean)` | the Map box |
 | Map `No map for <ocean> yet` | the same |
 
 Three things that read like notices are deliberately not ones:

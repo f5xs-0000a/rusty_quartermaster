@@ -54,10 +54,6 @@ const CHART_MIN_WIDTH: u16 = 68;
 /// narrower than it.
 const FETCHING: &str = "Fetching island info...";
 
-/// What stands at the foot of the chart in place of the memorized tally while
-/// no pirate is named, the tally being a pirate's knowledge and not the map's.
-const NO_PIRATE: &str = "Memorizing needs a pirate: name one with --user.";
-
 /// Columns the Island column takes, borders included: enough to print the
 /// longest name any of the ocean's islands carries, and what kind of island any
 /// of them is, without wrapping either.
@@ -427,8 +423,9 @@ pub fn render(
     } = ctx;
     // The chart is a viewport onto a larger map: it pans rather than shrinks,
     // so what it needs is a viewport worth sailing in, the row its sideways
-    // scrollbar lies along, the status row under that, the box around them
-    // all, and the page's hint row below the box.
+    // scrollbar lies along, the row a search box takes when one is open
+    // (counted whether or not it is, so opening one cannot lose the page),
+    // the box around them all, and the page's hint row below the box.
     if crate::utils::too_short(
         frame,
         area,
@@ -484,19 +481,29 @@ pub fn render(
         Some(ocean) => format!("Map of {ocean} Ocean"),
         None => "Map".to_owned(),
     };
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .border_style(border)
         .padding(Padding::horizontal(1))
         .title(offset_title(&title).0);
+    // how much of the map the pirate knows is a figure about the whole chart,
+    // so it rides the frame at the foot rather than taking a row of its own
+    if let Some(tally) = map.and_then(|map| tally_label(app, map)) {
+        block = block.title_bottom(
+            Line::from(crate::utils::offset_footer(&tally)).right_aligned(),
+        );
+    }
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // one row under the map: how much of it the pirate knows, which the
-    // search box takes over while a search is being typed. Where the cursor
-    // is and which leagues leave it are read off the drawing itself.
-    let rows = Layout::vertical([Constraint::Min(0), Constraint::Length(1)])
-        .split(inner);
+    // the row under the map is the search box's, and is laid out only while
+    // one is open: with none the chart has the row, and where the cursor is
+    // and which leagues leave it are read off the drawing itself.
+    let rows = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(u16::from(app.search.is_some())),
+    ])
+    .split(inner);
 
     let mut status: Line = Line::from("");
     match (ocean, map) {
@@ -523,47 +530,31 @@ pub fn render(
         }
         (Some(_), Some(map)) => {
             draw_map(frame, rows[0], app, map, regions);
-            status = match &app.search {
-                Some(search) => {
-                    let hit =
-                        app.search_hit(map).map_or("no match", |p| p.name);
-                    let label = "Search: ";
-                    if focused {
-                        let x = rows[1].x
-                            + label.len() as u16
-                            + search.value[.. search.cursor].chars().count()
-                                as u16;
-                        frame.set_cursor_position((x, rows[1].y));
-                    }
-                    Line::from(vec![
-                        Span::styled(label, Style::default().bold()),
-                        Span::styled(
-                            search.value.clone(),
-                            Style::default().bg(Color::White).fg(Color::Black),
-                        ),
-                        Span::styled(
-                            format!("  -> {hit}"),
-                            Style::default().fg(Color::DarkGray),
-                        ),
-                    ])
+            if let Some(search) = &app.search {
+                let hit = app.search_hit(map).map_or("no match", |p| p.name);
+                let label = "Search: ";
+                if focused {
+                    let x = rows[1].x
+                        + label.len() as u16
+                        + search.value[.. search.cursor].chars().count() as u16;
+                    frame.set_cursor_position((x, rows[1].y));
                 }
-                None => tally_line(app, map),
-            };
+                status = Line::from(vec![
+                    Span::styled(label, Style::default().bold()),
+                    Span::styled(
+                        search.value.clone(),
+                        Style::default().bg(Color::White).fg(Color::Black),
+                    ),
+                    Span::styled(
+                        format!("  -> {hit}"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]);
+            }
         }
     }
 
-    // the tally sits under the middle of the chart; the search box keeps to
-    // the left edge, a box that slid as it was typed into being worse than an
-    // off-centre one
-    let status = Paragraph::new(status);
-    frame.render_widget(
-        if app.search.is_some() {
-            status
-        } else {
-            status.centered()
-        },
-        rows[1],
-    );
+    frame.render_widget(Paragraph::new(status), rows[1]);
 
     if app.help {
         render_help(frame, area, regions);
@@ -917,24 +908,19 @@ fn metadata(
     }
 }
 
-/// How much of the map the pirate knows, as the figure at the foot of the
-/// chart: points memorized, points there are, and the share of them. With no
-/// pirate named there is no one whose knowledge could be counted, so the line
-/// says what it would take instead.
-fn tally_line(app: &MapApp, map: &Map) -> Line<'static> {
-    if app.pirate.is_none() {
-        return Line::from(Span::styled(
-            NO_PIRATE,
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
+/// How much of the map the pirate knows, for the foot of the chart's frame:
+/// points memorized, points there are, and the share of them. Nothing at all
+/// with no pirate named - the tally is a pirate's knowledge and not the map's,
+/// and the help is where naming one is explained.
+fn tally_label(app: &MapApp, map: &Map) -> Option<String> {
+    app.pirate.as_ref()?;
     let (known, total) = memorized_tally(app, map);
     let percent = if total == 0 {
         0.0
     } else {
         100.0 * known as f64 / total as f64
     };
-    Line::from(format!(
+    Some(format!(
         "{known}/{total} ({percent:.1}%)"
     ))
 }
@@ -985,10 +971,10 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             Span::raw("  mark the league point under the cursor as memorized"),
         ]),
         Line::from(dim(
-            "  what is memorized belongs to the pirate given by --user, and"
+            "  memorizing needs a pirate: name one with --user, and the"
         )),
         Line::from(dim(
-            "  the figure under the chart is how much of it they know."
+            "  tally in the frame below is how much they know of the map."
         )),
         Line::from(vec![
             key("/"),
@@ -1460,10 +1446,10 @@ mod tests {
         }
     }
 
-    /// The foot of the chart is a pirate's tally once one is named, and the
-    /// way to name one until then.
+    /// The chart's frame carries a pirate's tally once one is named; until
+    /// then it carries nothing and the help is what says how to name one.
     #[test]
-    fn the_chart_asks_for_a_pirate_before_it_tallies() {
+    fn the_frame_tallies_only_once_a_pirate_is_named() {
         use ratatui::{Terminal, backend::TestBackend};
 
         let map = Map::for_ocean("Emerald").expect("Emerald map");
@@ -1493,13 +1479,16 @@ mod tests {
             format!("{}", terminal.backend())
         };
         let tally = format!("0/{} (0.0%)", map.points().len());
-        let screen = draw(&mut app);
-        assert!(screen.contains(NO_PIRATE));
-        assert!(!screen.contains(&tally));
+        assert!(!draw(&mut app).contains(&tally));
+        app.help = true;
+        assert!(
+            draw(&mut app).contains("name one with --user"),
+            "the help is what asks for a pirate"
+        );
+        app.help = false;
+        // the figure rides the frame, closed by the house-style run
         app.pirate = Some("Someone".to_owned());
-        let screen = draw(&mut app);
-        assert!(screen.contains(&tally));
-        assert!(!screen.contains(NO_PIRATE));
+        assert!(draw(&mut app).contains(&format!(" {tally} ───")));
     }
 
     /// Prints the whole canvas, for eyeballing the drawing:
