@@ -939,13 +939,86 @@ fn render_help(
         target: ClickTarget::MapHelpClose,
     });
 
-    let key = |k: &str| Span::styled(k.to_owned(), Style::default().bold());
-    let dim = |s: &str| {
+    // The popup reads down two edges: what to press, and what it does. A key
+    // is underlined wherever it is named, and bold besides in the column of
+    // its own; the mouse is named in that column too but is no key, so it is
+    // left unmarked.
+    const INDENT: usize = 2;
+    const KEY_W: usize = 5;
+    const GLYPH_W: usize = 3;
+    const GAP: usize = 2;
+
+    let act = |k: &str| Span::styled(k.to_owned(), Style::default().bold());
+    let key = |k: &str| {
         Span::styled(
-            s.to_owned(),
+            k.to_owned(),
+            Style::default().bold().underlined(),
+        )
+    };
+    // A key named in prose is braced, so it is marked like the ones in a
+    // column - naming them by brace rather than by shape keeps the article
+    // "a" from being read as the key.
+    let keyed = |text: &str, base: Style| -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        for (i, part) in text.split('{').enumerate() {
+            let (named, rest) = match (i, part.split_once('}')) {
+                (0, _) | (_, None) => ("", part),
+                (_, Some((named, rest))) => (named, rest),
+            };
+            if !named.is_empty() {
+                spans.push(Span::styled(
+                    named.to_owned(),
+                    base.underlined(),
+                ));
+            }
+            if !rest.is_empty() {
+                spans.push(Span::styled(rest.to_owned(), base));
+            }
+        }
+        spans
+    };
+    let note = |text: &str| {
+        keyed(
+            text,
             Style::default().fg(Color::DarkGray),
         )
     };
+    let heading = |text: &str| {
+        Line::from(Span::styled(
+            text.to_owned(),
+            Style::default().bold(),
+        ))
+    };
+    // one entry: its key or its mouse action, then what it does
+    let row = |what: Span<'static>, text: &str| {
+        let pad = KEY_W.saturating_sub(what.content.chars().count()) + GAP;
+        let mut spans = vec![
+            Span::raw(" ".repeat(INDENT)),
+            what,
+            Span::raw(" ".repeat(pad)),
+        ];
+        spans.extend(keyed(text, Style::default()));
+        Line::from(spans)
+    };
+    // a glyph off the map, and what it is
+    let mark = |glyph: &str, paint: Paint, text: &str| {
+        let pad = GLYPH_W.saturating_sub(glyph.chars().count()) + GAP;
+        Line::from(vec![
+            Span::styled(" ".repeat(INDENT), Style::default()),
+            Span::styled(glyph.to_owned(), paint.style()),
+            Span::raw(" ".repeat(pad)),
+            Span::raw(text.to_owned()),
+        ])
+    };
+    // anything more about an entry hangs under its text, not under its key
+    let under = |col: usize, text: &str| {
+        let mut spans = vec![Span::raw(" ".repeat(col))];
+        spans.extend(note(text));
+        Line::from(spans)
+    };
+    let said = INDENT + KEY_W + GAP;
+    let drawn = INDENT + GLYPH_W + GAP;
+
     // The movement keys as a compass rose: each sits where it sails, so the
     // drawing says which way a key goes and no label has to. Every key is
     // placed by the heading it takes, so the rose cannot drift from
@@ -994,25 +1067,6 @@ fn render_help(
         "with no league their way, take the",
         "one diagonal on that side.",
     ];
-    let note = |text: &str| -> Vec<Span<'static>> {
-        let mut spans = Vec::new();
-        for (i, part) in text.split('{').enumerate() {
-            let (key, rest) = match (i, part.split_once('}')) {
-                (0, _) | (_, None) => ("", part),
-                (_, Some((key, rest))) => (key, rest),
-            };
-            if !key.is_empty() {
-                spans.push(Span::styled(
-                    key.to_owned(),
-                    Style::default().fg(Color::DarkGray).underlined(),
-                ));
-            }
-            if !rest.is_empty() {
-                spans.push(dim(rest));
-            }
-        }
-        spans
-    };
     // the column the note hangs from, clear of the widest rose row
     const NOTE_COL: usize = 16;
     let compass: Vec<Line> = rose
@@ -1051,78 +1105,91 @@ fn render_help(
             Line::from(spans)
         })
         .collect();
-    let mut lines = vec![Line::from(Span::styled(
-        "Sailing the cursor",
-        Style::default().bold(),
-    ))];
+    let mut lines = vec![heading("Sailing the cursor")];
     lines.extend(compass);
     lines.extend([
         Line::from(""),
-        Line::from(vec![
+        heading("Keys"),
+        row(
             key("Space"),
-            Span::raw("  mark the league point under the cursor as memorized"),
-        ]),
-        Line::from(dim(
-            "  memorizing needs a pirate: name one with --user, and the"
-        )),
-        Line::from(dim(
-            "  tally in the frame below is how much they know of the map."
-        )),
-        Line::from(vec![
+            "memorize the point under the cursor, or forget it",
+        ),
+        under(
+            said,
+            "what is memorized belongs to the pirate named by",
+        ),
+        under(
+            said,
+            "--user, and the tally in the frame counts it",
+        ),
+        row(
             key("/"),
-            Span::raw("      search for an island (Enter jumps, Esc cancels)"),
-        ]),
-        Line::from(vec![
-            key("click"),
-            Span::raw("  put the cursor on a league point"),
-        ]),
-        Line::from(vec![
-            key("wheel"),
-            Span::raw("  pan the chart, or scroll the Island column"),
-        ]),
-        Line::from(dim(
-            "  a panned chart returns to the cursor when a point is selected."
-        )),
-        Line::from(vec![
-            key("Up"),
-            Span::raw("     back to the top bar"),
-        ]),
-        Line::from(vec![
+            "search for an island - {Enter} jumps, {Esc} or {Up} cancels",
+        ),
+        row(key("Up"), "back to the top bar"),
+        row(
             key("?"),
-            Span::raw("      close this help"),
-        ]),
-        Line::from(note(
-            "  {Up} and {Down} - or the wheel - read on through this help.",
-        )),
+            "close this help - {Esc}, {Enter} or a click do too",
+        ),
+        under(
+            said,
+            "{Up} and {Down}, or the wheel, read on through it",
+        ),
         Line::from(""),
-        Line::from(Span::styled(
-            "Reading the map",
-            Style::default().bold(),
-        )),
-        Line::from(vec![
-            Span::styled("  ◇", Paint::Island.style()),
-            Span::raw(" island    "),
-            Span::styled("○", Paint::Point.style()),
-            Span::raw(" open-sea league point    "),
-            Span::styled("◆ ●", Paint::IslandKnown.style()),
-            Span::raw(" memorized"),
-        ]),
-        Line::from(vec![
-            Span::styled("  ───", Paint::Solid.style()),
-            Span::raw(" chart is sold    "),
-            Span::styled("┄┄┄", Paint::Dotted.style()),
-            Span::raw(" chart drops as booty"),
-        ]),
-        Line::from(vec![
-            Span::styled("  ━━━", Paint::Known.style()),
-            Span::raw(" both ends memorized: sailable from memory"),
-        ]),
-        Line::from(dim(
-            "  a league no chart covers is left off the map to keep it"
-        )),
-        Line::from(dim(
-            "  readable; the keys sail it even so."
-        )),
+        heading("The mouse"),
+        row(
+            act("click"),
+            "put the cursor on a league point",
+        ),
+        row(
+            act("wheel"),
+            "pan the chart, or scroll the Island column",
+        ),
+        under(
+            said,
+            "a panned chart returns to the cursor when a point",
+        ),
+        under(said, "is selected"),
+        row(
+            act("bars"),
+            "an arrow steps, the track jumps",
+        ),
+        Line::from(""),
+        heading("Legend"),
+        mark("◇", Paint::Island, "an island"),
+        mark(
+            "○",
+            Paint::Point,
+            "a league point at sea",
+        ),
+        mark(
+            "◆ ●",
+            Paint::IslandKnown,
+            "memorized by the pirate",
+        ),
+        mark(
+            "───",
+            Paint::Solid,
+            "a chart sold in game",
+        ),
+        mark(
+            "┄┄┄",
+            Paint::Dotted,
+            "a chart that drops as booty",
+        ),
+        mark(
+            "━━━",
+            Paint::Known,
+            "both ends memorized: sailable from memory",
+        ),
+        under(
+            drawn,
+            "a league no chart covers is not drawn at all, to keep",
+        ),
+        under(
+            drawn,
+            "the map readable; the keys sail it even so",
+        ),
     ]);
 
     // Widest help line, plus the border and its padding. The popup is as tall
@@ -1555,7 +1622,7 @@ mod tests {
                 .expect("draw");
             format!("{}", terminal.backend())
         };
-        let last = "readable; the keys sail it even so.";
+        let last = "the map readable; the keys sail it even so";
         let first = "Sailing the cursor";
         // tall enough for all of it: no scrolling, and so no bar
         let whole = draw(&mut app, 40);
@@ -1669,7 +1736,7 @@ mod tests {
         assert!(!draw(&mut app).contains(&tally));
         app.help = true;
         assert!(
-            draw(&mut app).contains("name one with --user"),
+            draw(&mut app).contains("--user"),
             "the help is what asks for a pirate"
         );
         app.help = false;
