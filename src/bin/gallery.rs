@@ -47,7 +47,7 @@ use rusty_quartermaster::{
         TrophyPopup,
         VoyageType,
     },
-    map::data::Map,
+    map::data::{Chart, Heading, Map},
     ocean::Ocean,
     profits::{Focus, HoldImport, InventoryRow, PopupKind, ProfitResult},
     utils::{FieldKind, PromptField},
@@ -1967,11 +1967,47 @@ fn map_states(states: &mut Vec<State>) {
         |shell| {
             *shell = map_shell();
             shell.map.pirate = Some(ME.to_owned());
-            let island = dump_ocean().islands.first().expect("an island");
-            shell.map.memorized.insert((island.x, island.y));
-            if let Some(next) = dump_ocean().islands.get(1) {
-                shell.map.memorized.insert((next.x, next.y));
+            // An island and everything within two leagues of it, so the
+            // routes memorized out of it are on show and not only
+            // the marks at their ends. The island is one whose own routes are
+            // of both kinds, so a bought chart, a booty chart and a memorized
+            // route are all on the one screen.
+            let map = dump_ocean();
+            let headings = [
+                Heading::E,
+                Heading::W,
+                Heading::Ne,
+                Heading::Nw,
+                Heading::Se,
+                Heading::Sw,
+            ];
+            let island = map
+                .islands
+                .iter()
+                .find(|i| {
+                    let kinds = headings
+                        .iter()
+                        .filter_map(|h| map.neighbour(i.at(), *h))
+                        .map(|(_, league)| league.chart)
+                        .collect::<Vec<Chart>>();
+                    kinds.contains(&Chart::Sold)
+                        && kinds.contains(&Chart::Unsold)
+                })
+                .unwrap_or_else(|| map.islands.first().expect("an island"));
+            shell.map.cursor = Some(island.at());
+            let mut known = vec![island.at()];
+            for _ in 0 .. 2 {
+                for from in known.clone() {
+                    for heading in headings {
+                        if let Some((to, _)) = map.neighbour(from, heading)
+                            && !known.contains(&to)
+                        {
+                            known.push(to);
+                        }
+                    }
+                }
             }
+            shell.map.memorized.extend(known);
         },
     ));
     states.push(state(

@@ -223,8 +223,7 @@ impl MapApp {
         self.info_scroll = 0;
     }
 
-    /// Whether a league can be sailed from memory: both of its ends are
-    /// memorized.
+    /// Whether a league counts as memorized: both of its ends are.
     pub fn sailable(&self, league: &League) -> bool {
         let (a, b) = league.ends();
         self.memorized.contains(&a) && self.memorized.contains(&b)
@@ -336,9 +335,9 @@ mod tests {
 
     use super::*;
 
-    // a three-point triangle: Foo -e- Bar on one row, a dotted diagonal
-    // south-east of Foo to an open-sea point, and a diagonal from that point
-    // north-east back up to Bar
+    // a three-point triangle: Foo -e- Bar on one row, a diagonal south-east of
+    // Foo to an open-sea point whose chart no shipyard sells, and a diagonal
+    // from that point north-east back up to Bar
     static MAP: Map = Map {
         ocean: "Test",
         source: "",
@@ -366,7 +365,7 @@ mod tests {
                 x: 1,
                 y: 1,
                 heading: Heading::Se,
-                chart: crate::map::data::Chart::Booty,
+                chart: crate::map::data::Chart::Unsold,
             },
             League {
                 x: 2,
@@ -393,7 +392,7 @@ mod tests {
         assert_eq!(app.cursor, Some((3, 1)));
         press(&mut app, KeyCode::Char('A'));
         assert_eq!(app.cursor, Some((1, 1)));
-        // south-east along the dotted league to the open-sea point
+        // south-east along the unsold league to the open-sea point
         press(&mut app, KeyCode::Char('c'));
         assert_eq!(app.cursor, Some((2, 2)));
         // no league runs south-west from there: the cursor stays
@@ -466,7 +465,7 @@ mod tests {
     }
 
     #[test]
-    fn space_toggles_memorized_and_a_league_is_sailable_between_two_marks() {
+    fn space_toggles_memorized_and_a_league_follows_both_its_marks() {
         let mut app = MapApp::new();
         // without a pirate there is no one to remember the point
         press(&mut app, KeyCode::Char(' '));

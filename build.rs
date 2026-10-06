@@ -200,7 +200,7 @@ fn generate_maps() {
             };
             let chart = match kind {
                 "solid" => "Sold",
-                "dotted" => "Booty",
+                "dotted" => "Unsold",
                 _ => bad(),
             };
             if leagues.insert((x, y, heading), chart).is_some() {

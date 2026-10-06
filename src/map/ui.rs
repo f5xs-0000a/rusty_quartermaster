@@ -2,6 +2,28 @@
 //! (points, leagues, labels), and the viewport shows the part of it around
 //! the cursor.
 //!
+//! # Reading the chart
+//!
+//! One glyph says what a thing is, and colour says the rest:
+//!
+//! - A league point at sea is `✧` and an island `○`; memorizing one fills it
+//!   in, to `✦` and `●`.
+//! - A league is a rule east and west, and the single `╱` or `╲` that fits in
+//!   the row between its ends on the diagonal. Grey is a chart no shipyard
+//!   sells, white is one that can be bought there, and red is a league with
+//!   both ends memorized.
+//! - A league no chart covers at all is not drawn until both its ends are
+//!   memorized, which keeps the sea as readable as the wiki's own map.
+//! - Every point keeps the three-by-three of cells around it to itself, the
+//!   same cells its click box reaches, so a rule stops a cell short of each
+//!   end.
+//!
+//! What a chart is worth is colour rather than line style because one cell is
+//! all a diagonal gets, and one cell cannot be dashed the way a seven-cell run
+//! can - a dotted rule had no diagonal to pair with. So the `.txt` gallery
+//! dumps show the geometry alone, and the `.svg` and `STYLES-*.txt` beside them
+//! are where a league's worth is checked.
+//!
 //! # The Island column
 //!
 //! Beside the chart, where the terminal is wide enough for both, is what is
@@ -97,17 +119,17 @@ pub(crate) const CELL_H: usize = 2;
 const MARGIN_X: usize = 14;
 const MARGIN_Y: usize = 1;
 
-/// What a canvas cell is part of; decides its style. Ordered weakest first so
-/// a crossing keeps the more important league's paint.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+/// What a canvas cell is part of; decides its style.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Paint {
     Sea,
-    /// A league whose chart is not sold: it drops as booty. A league with
-    /// no chart at all is not painted, only sailed.
-    Dotted,
+    /// A league whose chart no shipyard sells. A league with no chart at all
+    /// is not painted, only sailed.
+    Unsold,
     /// A league on a route whose chart can be bought.
-    Solid,
-    /// A league between two memorized points: sailable from memory.
+    Sold,
+    /// A league between two memorized points, so the route is memorized
+    /// too.
     Known,
     Point,
     PointKnown,
@@ -121,10 +143,14 @@ impl Paint {
     fn style(self) -> Style {
         match self {
             Paint::Sea => Style::default(),
-            Paint::Dotted => Style::default().fg(Color::DarkGray),
-            Paint::Solid | Paint::Point => Style::default().fg(Color::Gray),
+            // the chart's worth is the colour: one that cannot be bought
+            // recedes into the sea, one that can is plain white, and anything
+            // the pirate knows by heart is red
+            Paint::Unsold => Style::default().fg(Color::DarkGray),
+            Paint::Sold => Style::default().fg(Color::White),
+            Paint::Point => Style::default().fg(Color::Gray),
             Paint::Known | Paint::PointKnown | Paint::IslandKnown => {
-                Style::default().fg(Color::Yellow).bold()
+                Style::default().fg(Color::Red).bold()
             }
             Paint::Island => Style::default().fg(Color::Cyan).bold(),
             Paint::Region => Style::default().fg(Color::DarkGray).italic(),
@@ -164,20 +190,6 @@ impl Canvas {
 
     fn is_free(&self, x: usize, y: usize) -> bool {
         self.get(x, y).is_some_and(|(ch, _)| ch == ' ')
-    }
-
-    /// Lay a diagonal glyph; crossing the other diagonal makes an X with the
-    /// stronger paint, so a memorized route stays visible through it.
-    fn put_diagonal(&mut self, x: usize, y: usize, ch: char, paint: Paint) {
-        let Some((old, old_paint)) = self.get(x, y) else {
-            return;
-        };
-        let (ch, paint) = if old == ' ' {
-            (ch, paint)
-        } else {
-            ('╳', paint.max(old_paint))
-        };
-        self.put(x, y, ch, paint);
     }
 
     fn write(&mut self, x: usize, y: usize, text: &str, paint: Paint) {
@@ -310,8 +322,8 @@ fn cell_of((x, y): Point) -> (usize, usize) {
     )
 }
 
-/// An island's label: the name without its " Island" suffix, which the
-/// diamond already says.
+/// An island's label: the name without its " Island" suffix, which the mark
+/// beside it already says.
 fn island_label(name: &str) -> &str {
     name.strip_suffix(" Island").unwrap_or(name)
 }
@@ -329,28 +341,28 @@ fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
         // the sea. Memorizing both its ends brings it out.
         let paint = match (app.sailable(league), league.chart) {
             (true, _) => Paint::Known,
-            (false, Chart::Sold) => Paint::Solid,
-            (false, Chart::Booty) => Paint::Dotted,
+            (false, Chart::Sold) => Paint::Sold,
+            (false, Chart::Unsold) => Paint::Unsold,
             (false, Chart::Nonexistent) => continue,
         };
         let (a, b) = league.ends();
         let (ax, ay) = cell_of(a);
         let (bx, by) = cell_of(b);
         match league.heading {
+            // the rule stops a cell short of each end, leaving every point the
+            // 3x3 of cells around it to itself - the same cells its click box
+            // reaches
             Heading::E => {
-                let dash = if paint == Paint::Dotted { '┄' } else { '─' };
-                for x in ax + 1 .. bx {
-                    canvas.put(x, ay, dash, paint);
+                for x in ax + 1 + CLICK_REACH .. bx - CLICK_REACH {
+                    canvas.put(x, ay, '─', paint);
                 }
             }
-            // the diagonal's single glyph sits in the row between its ends,
-            // centred between their columns
-            Heading::Se => {
-                canvas.put_diagonal((ax + bx) / 2, ay + 1, '╲', paint)
-            }
-            Heading::Ne => {
-                canvas.put_diagonal((ax + bx) / 2, by + 1, '╱', paint)
-            }
+            // The diagonal's single glyph sits in the row between its ends,
+            // centred between their columns. No cell ever takes two: two
+            // diagonals crossing would need the two points of the other
+            // `x + y` parity, and a map holds one parity class only.
+            Heading::Se => canvas.put((ax + bx) / 2, ay + 1, '╲', paint),
+            Heading::Ne => canvas.put((ax + bx) / 2, by + 1, '╱', paint),
             _ => {}
         }
     }
@@ -360,10 +372,10 @@ fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
         let (x, y) = cell_of(p);
         let known = app.memorized.contains(&p);
         let (ch, paint) = match (map.island_at(p).is_some(), known) {
-            (true, true) => ('◆', Paint::IslandKnown),
-            (true, false) => ('◇', Paint::Island),
-            (false, true) => ('●', Paint::PointKnown),
-            (false, false) => ('○', Paint::Point),
+            (true, true) => ('●', Paint::IslandKnown),
+            (true, false) => ('○', Paint::Island),
+            (false, true) => ('✦', Paint::PointKnown),
+            (false, false) => ('✧', Paint::Point),
         };
         canvas.put(x, y, ch, paint);
     }
@@ -1047,7 +1059,7 @@ fn render_help(
         ),
         "     ╲ ┆ ╱".to_owned(),
         format!(
-            "   {} ─ ○ ─ {}",
+            "   {} ─ ✧ ─ {}",
             cells[1][0], cells[1][2]
         ),
         "     ╱ ┆ ╲".to_owned(),
@@ -1079,12 +1091,12 @@ fn render_help(
                     match ch {
                         ' ' => Span::raw(" "),
                         '─' | '╲' | '╱' => {
-                            Span::styled(ch.to_string(), Paint::Solid.style())
+                            Span::styled(ch.to_string(), Paint::Sold.style())
                         }
                         '┆' => {
-                            Span::styled(ch.to_string(), Paint::Dotted.style())
+                            Span::styled(ch.to_string(), Paint::Unsold.style())
                         }
-                        '○' => {
+                        '✧' => {
                             Span::styled(ch.to_string(), Paint::Point.style())
                         }
                         // a key, underlined so a letter among the glyphs
@@ -1156,31 +1168,31 @@ fn render_help(
         ),
         Line::from(""),
         heading("Legend"),
-        mark("◇", Paint::Island, "an island"),
+        mark("○", Paint::Island, "an island"),
         mark(
-            "○",
+            "✧",
             Paint::Point,
             "a league point at sea",
         ),
         mark(
-            "◆ ●",
+            "● ✦",
             Paint::IslandKnown,
             "memorized by the pirate",
         ),
         mark(
             "───",
-            Paint::Solid,
-            "a chart sold in game",
+            Paint::Sold,
+            "white: a chart sold in game",
         ),
         mark(
-            "┄┄┄",
-            Paint::Dotted,
-            "a chart that drops as booty",
+            "───",
+            Paint::Unsold,
+            "grey: a chart no shipyard sells",
         ),
         mark(
-            "━━━",
+            "───",
             Paint::Known,
-            "both ends memorized: sailable from memory",
+            "red: a memorized route, between two memorized points",
         ),
         under(
             drawn,
@@ -1396,15 +1408,15 @@ mod tests {
     #[test]
     fn labels_keep_two_cells_from_the_point_and_prefer_the_right_side() {
         let mut canvas = Canvas::new(20, 3);
-        canvas.put(10, 1, '◇', Paint::Island);
+        canvas.put(10, 1, '○', Paint::Island);
         assert!(canvas.label(10, 1, "Foo", Paint::Name));
-        assert_eq!(row(&canvas, 1), "          ◇  Foo    ");
+        assert_eq!(row(&canvas, 1), "          ○  Foo    ");
         // an east league blocks the right side, so the label goes left
         let mut canvas = Canvas::new(20, 3);
-        canvas.put(10, 1, '◇', Paint::Island);
-        canvas.put(11, 1, '─', Paint::Solid);
+        canvas.put(10, 1, '○', Paint::Island);
+        canvas.put(11, 1, '─', Paint::Sold);
         assert!(canvas.label(10, 1, "Foo", Paint::Name));
-        assert_eq!(row(&canvas, 1), "     Foo  ◇─        ");
+        assert_eq!(row(&canvas, 1), "     Foo  ○─        ");
     }
 
     #[test]
@@ -1412,12 +1424,12 @@ mod tests {
         // an island with full-length leagues east and west, diagonals
         // leaving it both ways below, and a clear row above
         let mut canvas = Canvas::new(30, 4);
-        canvas.put(12, 2, '◇', Paint::Island);
+        canvas.put(12, 2, '○', Paint::Island);
         for x in (5 .. 12).chain(13 .. 20) {
-            canvas.put(x, 2, '─', Paint::Solid);
+            canvas.put(x, 2, '─', Paint::Sold);
         }
-        canvas.put(10, 3, '╱', Paint::Solid);
-        canvas.put(14, 3, '╲', Paint::Solid);
+        canvas.put(10, 3, '╱', Paint::Sold);
+        canvas.put(14, 3, '╲', Paint::Sold);
         assert!(canvas.label(12, 2, "Barbary", Paint::Name));
         // below would have to slide nine cells to clear the diagonals;
         // centred above is nearer
@@ -1434,17 +1446,17 @@ mod tests {
     #[test]
     fn a_small_slide_on_the_nearer_row_beats_moving_a_row_away() {
         let mut canvas = Canvas::new(30, 3);
-        canvas.put(12, 1, '◇', Paint::Island);
+        canvas.put(12, 1, '○', Paint::Island);
         for x in (5 .. 12).chain(13 .. 20) {
-            canvas.put(x, 1, '─', Paint::Solid);
+            canvas.put(x, 1, '─', Paint::Sold);
         }
         // the row above is taken by another league, and one diagonal sits
         // just right of centre below: a two-cell slide left on that row
         // is the nearest spot left
         for x in 4 .. 21 {
-            canvas.put(x, 0, '─', Paint::Solid);
+            canvas.put(x, 0, '─', Paint::Sold);
         }
-        canvas.put(16, 2, '╲', Paint::Solid);
+        canvas.put(16, 2, '╲', Paint::Sold);
         assert!(canvas.label(12, 1, "Barbary", Paint::Name));
         assert_eq!(
             row(&canvas, 2),
@@ -1457,11 +1469,11 @@ mod tests {
         // the island's row is all league, the row below is blocked, and the
         // row above only has a five-cell gap between two points
         let mut canvas = Canvas::new(14, 3);
-        canvas.put(4, 1, '◇', Paint::Island);
+        canvas.put(4, 1, '○', Paint::Island);
         for x in (0 .. 4).chain(5 .. 14) {
-            canvas.put(x, 1, '─', Paint::Solid);
+            canvas.put(x, 1, '─', Paint::Sold);
         }
-        canvas.put(4, 2, '╲', Paint::Solid);
+        canvas.put(4, 2, '╲', Paint::Sold);
         canvas.put(10, 2, '○', Paint::Point);
         canvas.put(0, 0, '○', Paint::Point);
         canvas.put(8, 0, '○', Paint::Point);
@@ -1510,7 +1522,7 @@ mod tests {
 
     /// The sea is drawn as yppedia draws it, so a league no chart covers is
     /// absent from it - until both ends are memorized, when it comes out as
-    /// the sailable line. The two approaches to Ashkelon Arch, one from
+    /// the memorized line. The two approaches to Ashkelon Arch, one from
     /// Morannon Island and one from Kashgar Island, are such a pair.
     #[test]
     fn an_uncharted_league_is_drawn_once_both_its_ends_are_memorized() {
@@ -1537,15 +1549,33 @@ mod tests {
         );
     }
 
+    /// Nothing is ever drawn over a diagonal, on any ocean: the two diagonals
+    /// that would cross in one cell leave from points of the other `x + y`
+    /// parity, and a map holds one parity class only. This is what lets a
+    /// diagonal be laid with no thought for what is already there.
     #[test]
-    fn crossing_diagonals_become_an_x_with_the_stronger_paint() {
-        let mut canvas = Canvas::new(3, 3);
-        canvas.put_diagonal(1, 1, '╲', Paint::Dotted);
-        canvas.put_diagonal(1, 1, '╱', Paint::Known);
-        assert_eq!(
-            canvas.get(1, 1),
-            Some(('╳', Paint::Known))
-        );
+    fn no_cell_holds_two_diagonals_on_any_map() {
+        for ocean in &crate::bare::BARE.oceans {
+            let Some(map) = Map::for_ocean(&ocean.name) else {
+                continue;
+            };
+            let mut seen = std::collections::HashSet::new();
+            for league in map.leagues {
+                let (a, b) = league.ends();
+                let (ax, ay) = cell_of(a);
+                let (bx, by) = cell_of(b);
+                let cell = match league.heading {
+                    Heading::Se => ((ax + bx) / 2, ay + 1),
+                    Heading::Ne => ((ax + bx) / 2, by + 1),
+                    _ => continue,
+                };
+                assert!(
+                    seen.insert(cell),
+                    "{} draws two diagonals in {cell:?}",
+                    map.ocean
+                );
+            }
+        }
     }
 
     /// Prints the Map page as a 120x40 terminal would show it, with the

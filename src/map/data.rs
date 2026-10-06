@@ -85,12 +85,13 @@ impl Place {
 /// yppedia map draws; the third is a league it does not draw at all.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Chart {
-    /// Sold in game. Drawn as a solid line.
+    /// Sold in game. Drawn white.
     Sold,
-    /// Not sold anywhere: a chart for it drops as booty. Drawn dotted.
-    Booty,
+    /// No shipyard sells it; the chart has to be come by some other way.
+    /// Drawn grey.
+    Unsold,
     /// There is none, because no charted route runs this way. The league is
-    /// sailable all the same, from memory of both its ends.
+    /// sailable all the same, once both its ends are memorized.
     Nonexistent,
 }
 
