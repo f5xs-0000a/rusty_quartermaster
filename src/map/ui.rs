@@ -941,15 +941,108 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             Style::default().fg(Color::DarkGray),
         )
     };
-    // the movement keys as they sit on the keyboard, three per row
-    let compass: Vec<Line> = MOVE_KEYS
-        .chunks(3)
-        .map(|row| {
-            let mut spans = vec![Span::raw("  ")];
-            for m in row {
-                spans.push(key(&m.key.to_string()));
-                spans.push(Span::raw(format!(" {:<5}", m.label)));
+    // The movement keys as a compass rose: each sits where it sails, so the
+    // drawing says which way a key goes and no label has to. Every key is
+    // placed by the heading it takes, so the rose cannot drift from
+    // MOVE_KEYS. The glyphs between them are the map's own - a solid league
+    // east and west, diagonals to the corners, and the north-south axis
+    // dotted, no league on any map running that way.
+    let mut cells = [[' '; 3]; 3];
+    for m in &MOVE_KEYS {
+        let (col, row) = match m.label {
+            "NW" => (0, 0),
+            "N" => (1, 0),
+            "NE" => (2, 0),
+            "W" => (0, 1),
+            "E" => (2, 1),
+            "SW" => (0, 2),
+            "S" => (1, 2),
+            "SE" => (2, 2),
+            _ => continue,
+        };
+        cells[row][col] = m.key;
+    }
+    let rose = [
+        format!(
+            "   {}   {}   {}",
+            cells[0][0], cells[0][1], cells[0][2]
+        ),
+        "     ╲ ┆ ╱".to_owned(),
+        format!(
+            "   {} ─ ○ ─ {}",
+            cells[1][0], cells[1][2]
+        ),
+        "     ╱ ┆ ╲".to_owned(),
+        format!(
+            "   {}   {}   {}",
+            cells[2][0], cells[2][1], cells[2][2]
+        ),
+    ];
+    // What the rose cannot draw: the keys with no league of their own, read
+    // beside it a row at a time. A key named in the prose is braced, so it is
+    // marked like the ones in the drawing - naming them by brace rather than
+    // by shape keeps the article "a" from being read as the key.
+    let why = [
+        "{w} and {x} have no league of their",
+        "own - the map has none running",
+        "north-south - so they, and {a} or {d}",
+        "with no league their way, take the",
+        "one diagonal on that side.",
+    ];
+    let note = |text: &str| -> Vec<Span<'static>> {
+        let mut spans = Vec::new();
+        for (i, part) in text.split('{').enumerate() {
+            let (key, rest) = match (i, part.split_once('}')) {
+                (0, _) | (_, None) => ("", part),
+                (_, Some((key, rest))) => (key, rest),
+            };
+            if !key.is_empty() {
+                spans.push(Span::styled(
+                    key.to_owned(),
+                    Style::default().fg(Color::DarkGray).underlined(),
+                ));
             }
+            if !rest.is_empty() {
+                spans.push(dim(rest));
+            }
+        }
+        spans
+    };
+    // the column the note hangs from, clear of the widest rose row
+    const NOTE_COL: usize = 16;
+    let compass: Vec<Line> = rose
+        .iter()
+        .zip(why)
+        .map(|(row, why)| {
+            let mut spans: Vec<Span> = row
+                .chars()
+                .map(|ch| {
+                    match ch {
+                        ' ' => Span::raw(" "),
+                        '─' | '╲' | '╱' => {
+                            Span::styled(ch.to_string(), Paint::Solid.style())
+                        }
+                        '┆' => {
+                            Span::styled(ch.to_string(), Paint::Dotted.style())
+                        }
+                        '○' => {
+                            Span::styled(ch.to_string(), Paint::Point.style())
+                        }
+                        // a key, underlined so a letter among the glyphs
+                        // reads as one to press and not part of the drawing
+                        _ => {
+                            Span::styled(
+                                ch.to_string(),
+                                Style::default().bold().underlined(),
+                            )
+                        }
+                    }
+                })
+                .collect();
+            spans.push(Span::raw(" ".repeat(
+                NOTE_COL.saturating_sub(row.chars().count()),
+            )));
+            spans.extend(note(why));
             Line::from(spans)
         })
         .collect();
@@ -959,12 +1052,6 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
     ))];
     lines.extend(compass);
     lines.extend([
-        Line::from(dim(
-            "  a/d/w/x with no league their way take the one diagonal on"
-        )),
-        Line::from(dim(
-            "  that side, and stay put when both diagonals exist."
-        )),
         Line::from(""),
         Line::from(vec![
             key("Space"),
