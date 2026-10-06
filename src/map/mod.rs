@@ -20,7 +20,8 @@ use crate::{
 /// east, `w`/`x` north and south.
 pub struct MoveKey {
     pub key: char,
-    /// Compass label for the hint line.
+    /// Compass heading the key takes, named: which is also where the help's
+    /// compass rose draws it.
     pub label: &'static str,
     /// The heading sailed when a league runs that way. `None` for north and
     /// south, which have no leagues of their own.
@@ -101,6 +102,14 @@ pub struct MapApp {
     pub search: Option<PromptField>,
     /// Whether the `?` help popup is open.
     pub help: bool,
+    /// The first line of the help on show. The popup says more than a short
+    /// window can hold, so it scrolls rather than losing its foot, and the
+    /// window is its own: it opens at the top and is the reader's from there.
+    pub help_scroll: usize,
+    /// Lines of help the popup had room for when it was last drawn, so a page
+    /// key can move by a window without guessing at one. The render is what
+    /// knows the figure.
+    pub help_view_h: usize,
     /// Where the chart has been panned to, as the canvas cell its top-left
     /// corner shows. `None` while it has not been panned, when the window is
     /// the one that centres the cursor — and that is where it returns the
@@ -134,6 +143,8 @@ impl MapApp {
             memorized: BTreeSet::new(),
             search: None,
             help: false,
+            help_scroll: 0,
+            help_view_h: 0,
             pan: None,
             window: (0, 0),
             info_scroll: 0,
@@ -233,14 +244,28 @@ impl MapApp {
         key: KeyEvent,
         map: Option<&'static Map>,
     ) -> InputResult {
-        // the help popup is modal: Esc, Enter or another ? dismisses it and
-        // everything else is swallowed
+        // The help popup is modal: Esc, Enter or another ? dismisses it, the
+        // up and down keys read through what a short window cannot show at
+        // once, and everything else is swallowed.
         if self.help {
-            if matches!(
-                key.code,
-                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?')
-            ) {
-                self.help = false;
+            let page = (self.help_view_h / 2).max(1);
+            match key.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('?') => {
+                    self.help = false;
+                }
+                KeyCode::Up => {
+                    self.help_scroll = self.help_scroll.saturating_sub(1);
+                }
+                KeyCode::Down => {
+                    self.help_scroll = self.help_scroll.saturating_add(1);
+                }
+                KeyCode::PageUp => {
+                    self.help_scroll = self.help_scroll.saturating_sub(page);
+                }
+                KeyCode::PageDown => {
+                    self.help_scroll = self.help_scroll.saturating_add(page);
+                }
+                _ => {}
             }
             return InputResult::Consumed;
         }
@@ -249,7 +274,10 @@ impl MapApp {
         }
         match key.code {
             KeyCode::Up | KeyCode::Esc => return InputResult::Exit,
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => {
+                self.help = true;
+                self.help_scroll = 0;
+            }
             KeyCode::Char('/') => {
                 self.search = Some(PromptField::new(
                     "Search",
@@ -520,6 +548,41 @@ mod tests {
         press(&mut app, KeyCode::Char('?'));
         press(&mut app, KeyCode::Esc);
         assert!(!app.help);
+    }
+
+    /// The help is longer than a short window can hold, so the up and down
+    /// keys read through it, by the line or by the window. It opens at the
+    /// top however far it was read last time.
+    #[test]
+    fn the_help_reads_on_with_the_up_and_down_keys() {
+        let mut app = MapApp::new();
+        press(&mut app, KeyCode::Char('?'));
+        // the figure the render reports: a window of ten lines
+        app.help_view_h = 10;
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.help_scroll, 1);
+        press(&mut app, KeyCode::PageDown);
+        assert_eq!(
+            app.help_scroll, 6,
+            "a page is half a window"
+        );
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.help_scroll, 5);
+        // the far end is the render's to clamp, so the keys only ever ask
+        press(&mut app, KeyCode::PageUp);
+        press(&mut app, KeyCode::PageUp);
+        assert_eq!(
+            app.help_scroll, 0,
+            "and the near end cannot be passed"
+        );
+        press(&mut app, KeyCode::Down);
+        press(&mut app, KeyCode::Char('?'));
+        press(&mut app, KeyCode::Char('?'));
+        assert!(app.help);
+        assert_eq!(
+            app.help_scroll, 0,
+            "it opens at the top"
+        );
     }
 
     #[test]

@@ -2013,6 +2013,16 @@ fn map_states(states: &mut Vec<State>) {
             shell.map.help = true;
         },
     ));
+    states.push(state(
+        "map-help-scrolled",
+        "Map help popup read to the end, in a window too short for it",
+        |shell| {
+            *shell = map_shell();
+            shell.map.help = true;
+            // past the end: the render clamps it to the last line
+            shell.map.help_scroll = usize::MAX;
+        },
+    ));
 }
 
 fn states() -> Vec<State> {

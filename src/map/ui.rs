@@ -557,7 +557,7 @@ pub fn render(
     frame.render_widget(Paragraph::new(status), rows[1]);
 
     if app.help {
-        render_help(frame, area, regions);
+        render_help(frame, area, app, regions);
     }
 }
 
@@ -928,7 +928,12 @@ fn tally_label(app: &MapApp, map: &Map) -> Option<String> {
 /// The `?` popup: the keys and the glyph legend. The backdrop is a click
 /// target so a click anywhere outside the box closes it; it is pushed after
 /// the page's own regions so it takes precedence over them.
-fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
+fn render_help(
+    frame: &mut Frame,
+    area: Rect,
+    app: &mut MapApp,
+    regions: &mut Vec<ClickRegion>,
+) {
     regions.push(ClickRegion {
         rect: area,
         target: ClickTarget::MapHelpClose,
@@ -1086,6 +1091,9 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
             key("?"),
             Span::raw("      close this help"),
         ]),
+        Line::from(note(
+            "  {Up} and {Down} - or the wheel - read on through this help.",
+        )),
         Line::from(""),
         Line::from(Span::styled(
             "Reading the map",
@@ -1117,11 +1125,18 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
         )),
     ]);
 
-    // Widest help line, plus the border and its padding.
-    let width = (lines.iter().map(Line::width).max().unwrap_or(0) as u16
-        + crate::utils::BOX_MARGIN)
-        .min(area.width);
+    // Widest help line, plus the border and its padding. The popup is as tall
+    // as what it has to say and no taller than the room it has; the rest is
+    // read by scrolling, so a short window costs the help its foot no longer.
+    // A bar's columns sit outside the text, so wanting one widens the popup
+    // rather than wrapping what it says.
     let height = (lines.len() as u16 + 2).min(area.height);
+    let text = lines.iter().map(Line::width).max().unwrap_or(0) as u16;
+    let bar = u16::from(crate::utils::scrolls(
+        height.saturating_sub(2),
+        lines.len(),
+    )) * crate::utils::SCROLLBAR_W;
+    let width = (text + bar + crate::utils::BOX_MARGIN).min(area.width);
     let popup = Rect::new(
         area.x + (area.width - width) / 2,
         area.y + (area.height - height) / 2,
@@ -1129,15 +1144,35 @@ fn render_help(frame: &mut Frame, area: Rect, regions: &mut Vec<ClickRegion>) {
         height,
     );
     frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .border_style(Style::default().fg(Color::White))
+        .title(offset_title("Help").0);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    app.help_view_h = inner.height as usize;
+    app.help_scroll = app
+        .help_scroll
+        .min(lines.len().saturating_sub(app.help_view_h));
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        inner,
+        crate::clickmap::ScrollView::MapHelp,
+        app.help_scroll,
+        lines.len(),
+    );
     frame.render_widget(
-        Paragraph::new(lines).block(
-            Block::default()
-                .borders(Borders::ALL)
-                .padding(Padding::horizontal(1))
-                .border_style(Style::default().fg(Color::White))
-                .title(offset_title("Help").0),
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(app.help_scroll)
+                .take(body.height as usize)
+                .collect::<Vec<Line>>(),
         ),
-        popup,
+        body,
     );
 }
 
@@ -1483,6 +1518,71 @@ mod tests {
             })
             .expect("draw");
         println!("{}", terminal.backend());
+    }
+
+    /// The help is longer than a 24-row window, so in one it scrolls rather
+    /// than losing its foot: the last thing it says is reachable, and the bar
+    /// that says so takes its columns from the popup rather than from the
+    /// text.
+    #[test]
+    fn the_help_scrolls_in_a_window_too_short_for_it() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let mut app = MapApp::new();
+        app.help = true;
+        let draw = |app: &mut MapApp, rows: u16| {
+            let mut terminal = Terminal::new(TestBackend::new(120, rows))
+                .expect("test terminal");
+            terminal
+                .draw(|frame| {
+                    let ctx = OceanContext {
+                        map: Some(map),
+                        geo: None,
+                        ocean: Some("Emerald"),
+                        islands: None,
+                        fetching_islands: false,
+                    };
+                    render(
+                        frame,
+                        frame.area(),
+                        app,
+                        ctx,
+                        true,
+                        &mut Vec::new(),
+                    );
+                })
+                .expect("draw");
+            format!("{}", terminal.backend())
+        };
+        let last = "readable; the keys sail it even so.";
+        let first = "Sailing the cursor";
+        // tall enough for all of it: no scrolling, and so no bar
+        let whole = draw(&mut app, 40);
+        assert!(whole.contains(first) && whole.contains(last));
+        assert_eq!(app.help_scroll, 0);
+
+        let top = draw(&mut app, 24);
+        assert!(top.contains(first) && !top.contains(last));
+        app.help_scroll = usize::MAX;
+        let foot = draw(&mut app, 24);
+        assert!(
+            foot.contains(last) && !foot.contains(first),
+            "the far end of the help, clamped to its last line"
+        );
+        // the render clamps what the keys only ask for, and the clamp holds
+        let settled = app.help_scroll;
+        assert!(settled < usize::MAX);
+        assert_eq!(draw(&mut app, 24), foot);
+        assert_eq!(app.help_scroll, settled);
+
+        // the help asks for no more height than the page it is on: at the
+        // page's own floor it is still read, a window of it at a time
+        app.help_scroll = 0;
+        let tight = draw(&mut app, 11);
+        assert!(tight.contains(first) && !tight.contains(last));
+        app.help_scroll = usize::MAX;
+        assert!(draw(&mut app, 11).contains(last));
     }
 
     #[test]

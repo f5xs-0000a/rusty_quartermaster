@@ -512,12 +512,13 @@ room away can only make the other bar more wanted, never less.
 
 ### Where this applies
 
-Eight views scroll, and each has a bar:
+Nine views scroll, and each has a bar:
 
 | view | what its window follows | state to read it in |
 | ---- | ----------------------- | ------------------- |
 | pirate popup, the skill tables | its own offset | `80x24-jobbers-popup-pirate-stats` (`120x40` is tall enough for all of them, and shows no bar) |
 | trophies popup, the category grid | its own offset | `80x24-jobbers-popup-trophy-list` |
+| Map help popup | its own offset | `120x24-map-help`, and `120x24-map-help-scrolled` for the far end - at `120x40` the whole help fits and shows no bar |
 | Profits Inventory, down | the row cursor | `120x40-profits-long-list` |
 | Profits Inventory, across | the column cursor | `80x30-profits-wide-table` — at 120 columns the box is as wide as the table and nothing scrolls, so this one needs `--size 80x30` |
 | Jobbers panes | that pane's selection | `80x24-jobbers-long-roster` |
@@ -763,6 +764,18 @@ text, its list and its buttons, plus the frame Rules 1 and 2 ask for.
 
 A row nothing is drawn into is not reserved either — the `New battle` prompt has
 a line for a noteworthy foe and shows it only when there is one.
+
+### A popup the window cannot hold scrolls, and asks for nothing
+
+Where the window is shorter than what a popup has to say, the popup takes the
+rows there are and the rest is read by scrolling, under Rule 4 — it never cuts
+its own foot off. So a popup asks for no height beyond what its page already
+needs: the Map's help is twenty-odd rows of keys and legend, and is read whole
+at the eleven rows the Map page itself draws in
+(`map::ui::tests::the_help_scrolls_in_a_window_too_short_for_it`). The three
+popups that work this way — the pirate stats, the trophies grid and the Map's
+help — each keep their own offset, so the page behind them is untouched by the
+reading.
 
 Content with no size of its own still has a *largest useful* size. The Trophies
 grid reflows into three columns of whatever width it is given, so it is three

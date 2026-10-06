@@ -31,6 +31,9 @@ pub enum ScrollView {
     /// cursor. Keeps its own window, which starts at the top of each island
     /// the cursor is put on.
     MapIslandInfo,
+    /// The Map page's help popup, in a window too short for all of it. Keeps
+    /// its own offset, which opens at the top of the help.
+    MapHelp,
 }
 
 /// Which way a scrollbar runs. A view that scrolls both ways has one of each,

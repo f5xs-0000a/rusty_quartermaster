@@ -3306,6 +3306,12 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.map.info_scroll = hit.resolve(self.map.info_scroll, last);
             }
+            // The help popup keeps its own offset, like the Jobbers popups,
+            // so the bar sets it outright.
+            ScrollView::MapHelp => {
+                let last = total.saturating_sub(bar.height as usize);
+                self.map.help_scroll = hit.resolve(self.map.help_scroll, last);
+            }
         }
     }
 
@@ -3950,6 +3956,16 @@ impl AppShell {
             // far end is clamped by the render, which is what knows how large
             // the canvas is.
             AppId::Map => {
+                // the help is modal: the wheel reads through it rather than
+                // panning the chart behind it
+                if self.map.help {
+                    self.map.help_scroll = if delta < 0 {
+                        self.map.help_scroll.saturating_sub(1)
+                    } else {
+                        self.map.help_scroll.saturating_add(1)
+                    };
+                    return;
+                }
                 // over the Island column it scrolls what the column says
                 if let Some(ClickTarget::MapIslandInfo) =
                     clickmap::hit_test(&self.click_regions, col, row)
