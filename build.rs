@@ -7,11 +7,10 @@
 //! re-emit a minified copy into `OUT_DIR`. `src/bare.rs` embeds *that* compact
 //! copy via `include_str!`, not the pretty source.
 //!
-//! The ocean maps (`src/data/maps/*.json`, written by
-//! `scripts/extract_map.py`) go one step further: each is turned into Rust
-//! statics (`maps.rs` in `OUT_DIR`, pulled in by `src/map/data.rs`), so the
-//! Map app carries every map as compile-time data and parses nothing at run
-//! time. A malformed map file fails the build.
+//! The ocean maps (`src/data/maps/*.json`) go one step further: each is
+//! turned into Rust statics (`maps.rs` in `OUT_DIR`, pulled in by
+//! `src/map/data.rs`), so the Map app carries every map as compile-time data
+//! and parses nothing at run time. A malformed map file fails the build.
 //!
 //! A map file lists only the leagues the wiki's map draws, which are the ones
 //! some chart follows. The leagues between points a chart never joins are
@@ -144,12 +143,34 @@ fn generate_maps() {
                         "{name}: coordinates must be whole numbers below 65535"
                     ))
                 };
+                // the drawn name is the place's own unless the file gives a
+                // shorter one, so a `short` that says nothing new is a
+                // mistake worth hearing about rather than a no-op
+                let short = match &place["short"] {
+                    serde_json::Value::Null => None,
+                    value => {
+                        match value.as_str() {
+                            Some(short)
+                                if short != name && !short.is_empty() =>
+                            {
+                                Some(short)
+                            }
+                            _ => {
+                                fail(&format!(
+                                    "{name}: `short` must be a shorter name \
+                                     to draw"
+                                ))
+                            }
+                        }
+                    }
+                };
                 if key == "islands" {
                     points.insert((x, y));
                 }
                 writeln!(
                     out,
-                    "            Place {{ name: {name:?}, x: {x}, y: {y} }},"
+                    "            Place {{ name: {name:?}, short: {short:?}, \
+                     x: {x}, y: {y} }},"
                 )
                 .unwrap();
             }

@@ -9,81 +9,97 @@
     },
     {
       "name": "Paollu-Insel",
+      "short": "Paollu",
       "x": 28,
       "y": 3
     },
     {
       "name": "Nunataq-Insel",
+      "short": "Nunataq",
       "x": 15,
       "y": 6
     },
     {
       "name": "Sho-ke-Insel",
+      "short": "Sho-ke",
       "x": 63,
       "y": 6
     },
     {
       "name": "Moultrie-Insel",
+      "short": "Moultrie",
       "x": 38,
       "y": 9
     },
     {
       "name": "Tumult-Insel",
+      "short": "Tumult",
       "x": 50,
       "y": 9
     },
     {
       "name": "Beaufort-Inseln",
+      "short": "Beaufort",
       "x": 7,
       "y": 10
     },
     {
       "name": "Qaniit-Insel",
+      "short": "Qaniit",
       "x": 25,
       "y": 10
     },
     {
       "name": "Armstrong-Insel",
+      "short": "Armstrong",
       "x": 44,
       "y": 11
     },
     {
       "name": "Sirius-Insel",
+      "short": "Sirius",
       "x": 64,
       "y": 11
     },
     {
       "name": "Atchafalaya-Insel",
+      "short": "Atchafalaya",
       "x": 41,
       "y": 16
     },
     {
       "name": "Alkaid-Insel",
+      "short": "Alkaid",
       "x": 2,
       "y": 17
     },
     {
       "name": "Immokalee-Insel",
+      "short": "Immokalee",
       "x": 66,
       "y": 19
     },
     {
       "name": "McGuffins Insel",
+      "short": "McGuffins",
       "x": 7,
       "y": 20
     },
     {
       "name": "Insel Keris",
+      "short": "Keris",
       "x": 11,
       "y": 22
     },
     {
       "name": "Morgana-Insel",
+      "short": "Morgana",
       "x": 45,
       "y": 22
     },
     {
       "name": "Marlowe-Insel",
+      "short": "Marlowe",
       "x": 16,
       "y": 23
     },
@@ -94,21 +110,25 @@
     },
     {
       "name": "Umbarten-Insel",
+      "short": "Umbarten",
       "x": 49,
       "y": 24
     },
     {
       "name": "Maia-Insel",
+      "short": "Maia",
       "x": 45,
       "y": 26
     },
     {
       "name": "Myvatn-Insel",
+      "short": "Myvatn",
       "x": 70,
       "y": 27
     },
     {
       "name": "Iocane-Insel",
+      "short": "Iocane",
       "x": 51,
       "y": 28
     },
@@ -119,21 +139,25 @@
     },
     {
       "name": "Paihia-Insel",
+      "short": "Paihia",
       "x": 38,
       "y": 29
     },
     {
       "name": "Doyle-Insel",
+      "short": "Doyle",
       "x": 25,
       "y": 30
     },
     {
       "name": "Barnard-Insel",
+      "short": "Barnard",
       "x": 79,
       "y": 30
     },
     {
       "name": "Accompong-Insel",
+      "short": "Accompong",
       "x": 49,
       "y": 32
     },
@@ -144,11 +168,13 @@
     },
     {
       "name": "Lyonesse-Insel",
+      "short": "Lyonesse",
       "x": 73,
       "y": 34
     },
     {
       "name": "Manu-Insel",
+      "short": "Manu",
       "x": 16,
       "y": 35
     },
@@ -159,36 +185,43 @@
     },
     {
       "name": "Anegada-Insel",
+      "short": "Anegada",
       "x": 66,
       "y": 37
     },
     {
       "name": "Toba-Insel",
+      "short": "Toba",
       "x": 45,
       "y": 40
     },
     {
       "name": "Cambium-Insel",
+      "short": "Cambium",
       "x": 22,
       "y": 41
     },
     {
       "name": "Chachapoya-Insel",
+      "short": "Chachapoya",
       "x": 56,
       "y": 41
     },
     {
       "name": "Ilha da Aguia",
+      "short": "Aguia",
       "x": 32,
       "y": 45
     },
     {
       "name": "Matariki-Insel",
+      "short": "Matariki",
       "x": 53,
       "y": 46
     },
     {
       "name": "Aimuari-Insel",
+      "short": "Aimuari",
       "x": 51,
       "y": 48
     },
@@ -199,11 +232,13 @@
     },
     {
       "name": "Pukru-Insel",
+      "short": "Pukru",
       "x": 49,
       "y": 50
     },
     {
       "name": "Quetzal-Insel",
+      "short": "Quetzal",
       "x": 56,
       "y": 53
     },
@@ -214,43 +249,51 @@
     },
     {
       "name": "Saiph-Insel",
+      "short": "Saiph",
       "x": 44,
       "y": 57
     }
   ],
   "labels": [
     {
-      "name": "Krebs",
+      "name": "Krebs Archipelago",
+      "short": "Krebs",
       "x": 20,
       "y": 5
     },
     {
-      "name": "Canis",
+      "name": "Canis Archipelago",
+      "short": "Canis",
       "x": 50,
       "y": 14
     },
     {
-      "name": "Ursa",
+      "name": "Ursa Archipelago",
+      "short": "Ursa",
       "x": 10,
       "y": 25
     },
     {
-      "name": "Pleijaden",
+      "name": "Pleijaden Archipelago",
+      "short": "Pleijaden",
       "x": 36,
       "y": 25
     },
     {
-      "name": "Pferdekopf",
+      "name": "Pferdekopf Archipelago",
+      "short": "Pferdekopf",
       "x": 63,
       "y": 32
     },
     {
-      "name": "Orion",
+      "name": "Orion Archipelago",
+      "short": "Orion",
       "x": 46,
       "y": 44
     },
     {
-      "name": "Adler",
+      "name": "Adler Archipelago",
+      "short": "Adler",
       "x": 28,
       "y": 48
     }

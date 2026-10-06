@@ -4,6 +4,7 @@
   "islands": [
     {
       "name": "Olivia Isle",
+      "short": "Olivia",
       "x": 92,
       "y": 1
     },
@@ -14,21 +15,25 @@
     },
     {
       "name": "Cranberry Island",
+      "short": "Cranberry",
       "x": 99,
       "y": 4
     },
     {
       "name": "Lynx Island",
+      "short": "Lynx",
       "x": 91,
       "y": 6
     },
     {
       "name": "Lima Island",
+      "short": "Lima",
       "x": 40,
       "y": 7
     },
     {
       "name": "Eta Island",
+      "short": "Eta",
       "x": 96,
       "y": 7
     },
@@ -39,6 +44,7 @@
     },
     {
       "name": "Viridis Island",
+      "short": "Viridis",
       "x": 51,
       "y": 8
     },
@@ -54,6 +60,7 @@
     },
     {
       "name": "Uxmal Island",
+      "short": "Uxmal",
       "x": 131,
       "y": 10
     },
@@ -64,36 +71,43 @@
     },
     {
       "name": "Terra Island",
+      "short": "Terra",
       "x": 46,
       "y": 11
     },
     {
       "name": "Islay of Luthien",
+      "short": "Luthien",
       "x": 92,
       "y": 11
     },
     {
       "name": "Remora Island",
+      "short": "Remora",
       "x": 118,
       "y": 11
     },
     {
       "name": "Sakejima Island",
+      "short": "Sakejima",
       "x": 53,
       "y": 12
     },
     {
       "name": "Jorvik Island",
+      "short": "Jorvik",
       "x": 101,
       "y": 12
     },
     {
       "name": "Beta Island",
+      "short": "Beta",
       "x": 123,
       "y": 12
     },
     {
       "name": "Kirin Island",
+      "short": "Kirin",
       "x": 30,
       "y": 13
     },
@@ -104,6 +118,7 @@
     },
     {
       "name": "Iris Island",
+      "short": "Iris",
       "x": 129,
       "y": 14
     },
@@ -114,26 +129,31 @@
     },
     {
       "name": "Erh Island",
+      "short": "Erh",
       "x": 36,
       "y": 17
     },
     {
       "name": "Typhoon Island",
+      "short": "Typhoon",
       "x": 43,
       "y": 18
     },
     {
       "name": "O'Reilly Island",
+      "short": "O'Reilly",
       "x": 81,
       "y": 18
     },
     {
       "name": "Turtle Island",
+      "short": "Turtle",
       "x": 107,
       "y": 18
     },
     {
       "name": "Harmattan Island",
+      "short": "Harmattan",
       "x": 30,
       "y": 19
     },
@@ -144,61 +164,73 @@
     },
     {
       "name": "Papaya Island",
+      "short": "Papaya",
       "x": 112,
       "y": 19
     },
     {
       "name": "Nuptial Island",
+      "short": "Nuptial",
       "x": 86,
       "y": 21
     },
     {
       "name": "Byrne Island",
+      "short": "Byrne",
       "x": 116,
       "y": 21
     },
     {
       "name": "Conglin Island",
+      "short": "Conglin",
       "x": 37,
       "y": 22
     },
     {
       "name": "Dendrite Island",
+      "short": "Dendrite",
       "x": 46,
       "y": 23
     },
     {
       "name": "Zeta Island",
+      "short": "Zeta",
       "x": 80,
       "y": 23
     },
     {
       "name": "Olive Island",
+      "short": "Olive",
       "x": 53,
       "y": 24
     },
     {
       "name": "Ostreum Island",
+      "short": "Ostreum",
       "x": 84,
       "y": 25
     },
     {
       "name": "Alpha Island",
+      "short": "Alpha",
       "x": 112,
       "y": 25
     },
     {
       "name": "Tadpole Isle",
+      "short": "Tadpole",
       "x": 75,
       "y": 26
     },
     {
       "name": "Cnossos Island",
+      "short": "Cnossos",
       "x": 107,
       "y": 26
     },
     {
       "name": "Oyster Island",
+      "short": "Oyster",
       "x": 117,
       "y": 26
     },
@@ -214,21 +246,25 @@
     },
     {
       "name": "Cochineal Island",
+      "short": "Cochineal",
       "x": 16,
       "y": 29
     },
     {
       "name": "Swampfen Island",
+      "short": "Swampfen",
       "x": 48,
       "y": 29
     },
     {
       "name": "Frond Island",
+      "short": "Frond",
       "x": 80,
       "y": 29
     },
     {
       "name": "Wrasse Island",
+      "short": "Wrasse",
       "x": 91,
       "y": 30
     },
@@ -239,6 +275,7 @@
     },
     {
       "name": "Guava Island",
+      "short": "Guava",
       "x": 100,
       "y": 31
     },
@@ -249,6 +286,7 @@
     },
     {
       "name": "Park Island",
+      "short": "Park",
       "x": 125,
       "y": 32
     },
@@ -259,76 +297,91 @@
     },
     {
       "name": "Meke Island",
+      "short": "Meke",
       "x": 136,
       "y": 33
     },
     {
       "name": "Diastrophe Island",
+      "short": "Diastrophe",
       "x": 11,
       "y": 34
     },
     {
       "name": "Gaea Island",
+      "short": "Gaea",
       "x": 92,
       "y": 35
     },
     {
       "name": "Moab Island",
+      "short": "Moab",
       "x": 15,
       "y": 36
     },
     {
       "name": "Angelfish Island",
+      "short": "Angelfish",
       "x": 131,
       "y": 36
     },
     {
       "name": "Epsilon Island",
+      "short": "Epsilon",
       "x": 97,
       "y": 38
     },
     {
       "name": "Delta Island",
+      "short": "Delta",
       "x": 127,
       "y": 38
     },
     {
       "name": "Surtsey Island",
+      "short": "Surtsey",
       "x": 22,
       "y": 39
     },
     {
       "name": "Spectre Island",
+      "short": "Spectre",
       "x": 15,
       "y": 40
     },
     {
       "name": "Emperor Island",
+      "short": "Emperor",
       "x": 101,
       "y": 40
     },
     {
       "name": "Nova Island",
+      "short": "Nova",
       "x": 7,
       "y": 42
     },
     {
       "name": "Macaw Island",
+      "short": "Macaw",
       "x": 121,
       "y": 42
     },
     {
       "name": "Tinga Island",
+      "short": "Tinga",
       "x": 92,
       "y": 43
     },
     {
       "name": "Turongo Island",
+      "short": "Turongo",
       "x": 128,
       "y": 43
     },
     {
       "name": "Crimson Island",
+      "short": "Crimson",
       "x": 13,
       "y": 44
     },
@@ -339,21 +392,25 @@
     },
     {
       "name": "Spring Island",
+      "short": "Spring",
       "x": 99,
       "y": 44
     },
     {
       "name": "Monsoon Island",
+      "short": "Monsoon",
       "x": 122,
       "y": 45
     },
     {
       "name": "Durian Island",
+      "short": "Durian",
       "x": 132,
       "y": 45
     },
     {
       "name": "Pranayama Island",
+      "short": "Pranayama",
       "x": 16,
       "y": 47
     },
@@ -369,31 +426,37 @@
     },
     {
       "name": "Havoc Island",
+      "short": "Havoc",
       "x": 9,
       "y": 48
     },
     {
       "name": "Radix Island",
+      "short": "Radix",
       "x": 26,
       "y": 49
     },
     {
       "name": "Fintan Island",
+      "short": "Fintan",
       "x": 59,
       "y": 50
     },
     {
       "name": "Orca Island",
+      "short": "Orca",
       "x": 83,
       "y": 50
     },
     {
       "name": "Carmine Island",
+      "short": "Carmine",
       "x": 20,
       "y": 51
     },
     {
       "name": "Chaparral Island",
+      "short": "Chaparral",
       "x": 118,
       "y": 51
     },
@@ -409,6 +472,7 @@
     },
     {
       "name": "Cormorant Island",
+      "short": "Cormorant",
       "x": 56,
       "y": 53
     },
@@ -419,26 +483,31 @@
     },
     {
       "name": "Norse Island",
+      "short": "Norse",
       "x": 76,
       "y": 53
     },
     {
       "name": "Endurance Island",
+      "short": "Endurance",
       "x": 86,
       "y": 53
     },
     {
       "name": "Xi Island",
+      "short": "Xi",
       "x": 112,
       "y": 53
     },
     {
       "name": "Jubilee Island",
+      "short": "Jubilee",
       "x": 27,
       "y": 54
     },
     {
       "name": "Nu Island",
+      "short": "Nu",
       "x": 81,
       "y": 54
     },
@@ -449,11 +518,13 @@
     },
     {
       "name": "Echo Island",
+      "short": "Echo",
       "x": 22,
       "y": 55
     },
     {
       "name": "Eclipse Island",
+      "short": "Eclipse",
       "x": 116,
       "y": 55
     },
@@ -474,26 +545,31 @@
     },
     {
       "name": "Oseberg Island",
+      "short": "Oseberg",
       "x": 83,
       "y": 58
     },
     {
       "name": "Namath Island",
+      "short": "Namath",
       "x": 105,
       "y": 58
     },
     {
       "name": "Lagniappe Island",
+      "short": "Lagniappe",
       "x": 111,
       "y": 58
     },
     {
       "name": "Dugong Island",
+      "short": "Dugong",
       "x": 117,
       "y": 58
     },
     {
       "name": "Boyle Island",
+      "short": "Boyle",
       "x": 77,
       "y": 60
     },
@@ -504,6 +580,7 @@
     },
     {
       "name": "Ansel Island",
+      "short": "Ansel",
       "x": 60,
       "y": 61
     },
@@ -514,11 +591,13 @@
     },
     {
       "name": "Charcoal Island",
+      "short": "Charcoal",
       "x": 45,
       "y": 64
     },
     {
       "name": "Hadrian Island",
+      "short": "Hadrian",
       "x": 40,
       "y": 65
     },
@@ -539,6 +618,7 @@
     },
     {
       "name": "Oasis Island",
+      "short": "Oasis",
       "x": 43,
       "y": 70
     },
@@ -549,11 +629,13 @@
     },
     {
       "name": "Sapling Island",
+      "short": "Sapling",
       "x": 59,
       "y": 70
     },
     {
       "name": "Kuhio Island",
+      "short": "Kuhio",
       "x": 48,
       "y": 71
     },
@@ -564,63 +646,75 @@
     },
     {
       "name": "Whistler Island",
+      "short": "Whistler",
       "x": 58,
       "y": 73
     }
   ],
   "labels": [
     {
-      "name": "Ruby",
+      "name": "Ruby Archipelago",
+      "short": "Ruby",
       "x": 98,
       "y": 6
     },
     {
-      "name": "Sapphire",
+      "name": "Sapphire Archipelago",
+      "short": "Sapphire",
       "x": 119,
       "y": 14
     },
     {
-      "name": "Pearl",
+      "name": "Pearl Archipelago",
+      "short": "Pearl",
       "x": 74,
       "y": 16
     },
     {
-      "name": "Jade",
+      "name": "Jade Archipelago",
+      "short": "Jade",
       "x": 46,
       "y": 18
     },
     {
-      "name": "Diamond",
+      "name": "Diamond Archipelago",
+      "short": "Diamond",
       "x": 115,
       "y": 23
     },
     {
-      "name": "Coral",
+      "name": "Coral Archipelago",
+      "short": "Coral",
       "x": 119,
       "y": 37
     },
     {
-      "name": "Emerald",
+      "name": "Emerald Archipelago",
+      "short": "Emerald",
       "x": 87,
       "y": 38
     },
     {
-      "name": "Garnet",
+      "name": "Garnet Archipelago",
+      "short": "Garnet",
       "x": 5,
       "y": 39
     },
     {
-      "name": "Jet",
+      "name": "Jet Archipelago",
+      "short": "Jet",
       "x": 108,
       "y": 50
     },
     {
-      "name": "Opal",
+      "name": "Opal Archipelago",
+      "short": "Opal",
       "x": 82,
       "y": 55
     },
     {
-      "name": "Onyx",
+      "name": "Onyx Archipelago",
+      "short": "Onyx",
       "x": 51,
       "y": 59
     }

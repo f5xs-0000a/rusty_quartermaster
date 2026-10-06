@@ -9,146 +9,175 @@
     },
     {
       "name": "Squibnocket Island",
+      "short": "Squibnocket",
       "x": 23,
       "y": 4
     },
     {
       "name": "Paollu Island",
+      "short": "Paollu",
       "x": 75,
       "y": 4
     },
     {
       "name": "Hoarfrost Island",
+      "short": "Hoarfrost",
       "x": 7,
       "y": 6
     },
     {
       "name": "Nunataq Island",
+      "short": "Nunataq",
       "x": 62,
       "y": 7
     },
     {
       "name": "Sho-ke Island",
+      "short": "Sho-ke",
       "x": 110,
       "y": 7
     },
     {
       "name": "Cryo Island",
+      "short": "Cryo",
       "x": 1,
       "y": 8
     },
     {
       "name": "Rowes Island",
+      "short": "Rowes",
       "x": 19,
       "y": 8
     },
     {
       "name": "Amity Island",
+      "short": "Amity",
       "x": 23,
       "y": 10
     },
     {
       "name": "Wissahickon Island",
+      "short": "Wissahickon",
       "x": 33,
       "y": 10
     },
     {
       "name": "Moultrie Island",
+      "short": "Moultrie",
       "x": 85,
       "y": 10
     },
     {
       "name": "Tumult Island",
+      "short": "Tumult",
       "x": 97,
       "y": 10
     },
     {
       "name": "The Beaufort Islands",
+      "short": "Beaufort",
       "x": 54,
       "y": 11
     },
     {
       "name": "Qaniit Island",
+      "short": "Qaniit",
       "x": 72,
       "y": 11
     },
     {
       "name": "Auk Island",
+      "short": "Auk",
       "x": 5,
       "y": 12
     },
     {
       "name": "Penobscot Island",
+      "short": "Penobscot",
       "x": 27,
       "y": 12
     },
     {
       "name": "Armstrong Island",
+      "short": "Armstrong",
       "x": 91,
       "y": 12
     },
     {
       "name": "Sirius Island",
+      "short": "Sirius",
       "x": 111,
       "y": 12
     },
     {
       "name": "Hinga Island",
+      "short": "Hinga",
       "x": 31,
       "y": 16
     },
     {
       "name": "Atchafalaya Island",
+      "short": "Atchafalaya",
       "x": 88,
       "y": 17
     },
     {
       "name": "Scrimshaw Island",
+      "short": "Scrimshaw",
       "x": 23,
       "y": 18
     },
     {
       "name": "Alkaid Island",
+      "short": "Alkaid",
       "x": 49,
       "y": 18
     },
     {
       "name": "Basset Island",
+      "short": "Basset",
       "x": 11,
       "y": 20
     },
     {
       "name": "Immokalee Island",
+      "short": "Immokalee",
       "x": 113,
       "y": 20
     },
     {
       "name": "McGuffin's Isle",
+      "short": "McGuffin's",
       "x": 54,
       "y": 21
     },
     {
       "name": "Bowditch Island",
+      "short": "Bowditch",
       "x": 29,
       "y": 22
     },
     {
       "name": "Isle of Keris",
+      "short": "Keris",
       "x": 58,
       "y": 23
     },
     {
       "name": "Morgana Island",
+      "short": "Morgana",
       "x": 92,
       "y": 23
     },
     {
       "name": "Admiral Island",
+      "short": "Admiral",
       "x": 17,
       "y": 24
     },
     {
       "name": "Marlowe Island",
+      "short": "Marlowe",
       "x": 63,
       "y": 24
     },
@@ -159,6 +188,7 @@
     },
     {
       "name": "Umbarten Island",
+      "short": "Umbarten",
       "x": 96,
       "y": 25
     },
@@ -169,26 +199,31 @@
     },
     {
       "name": "Maia Island",
+      "short": "Maia",
       "x": 92,
       "y": 27
     },
     {
       "name": "Myvatn Island",
+      "short": "Myvatn",
       "x": 117,
       "y": 28
     },
     {
       "name": "Iocane Island",
+      "short": "Iocane",
       "x": 98,
       "y": 29
     },
     {
       "name": "Cromwell Island",
+      "short": "Cromwell",
       "x": 11,
       "y": 30
     },
     {
       "name": "Isle of Kent",
+      "short": "Kent",
       "x": 17,
       "y": 30
     },
@@ -204,26 +239,31 @@
     },
     {
       "name": "Paihia Island",
+      "short": "Paihia",
       "x": 85,
       "y": 30
     },
     {
       "name": "Doyle Island",
+      "short": "Doyle",
       "x": 72,
       "y": 31
     },
     {
       "name": "Barnard Island",
+      "short": "Barnard",
       "x": 126,
       "y": 31
     },
     {
       "name": "Ambush Island",
+      "short": "Ambush",
       "x": 31,
       "y": 32
     },
     {
       "name": "Accompong Island",
+      "short": "Accompong",
       "x": 96,
       "y": 33
     },
@@ -234,26 +274,31 @@
     },
     {
       "name": "Bryher Island",
+      "short": "Bryher",
       "x": 13,
       "y": 34
     },
     {
       "name": "Gallows Island",
+      "short": "Gallows",
       "x": 89,
       "y": 34
     },
     {
       "name": "Lyonesse Island",
+      "short": "Lyonesse",
       "x": 120,
       "y": 35
     },
     {
       "name": "Mirage Island",
+      "short": "Mirage",
       "x": 39,
       "y": 36
     },
     {
       "name": "Manu Island",
+      "short": "Manu",
       "x": 63,
       "y": 36
     },
@@ -269,16 +314,19 @@
     },
     {
       "name": "Anegada Island",
+      "short": "Anegada",
       "x": 113,
       "y": 38
     },
     {
       "name": "Lincoln Island",
+      "short": "Lincoln",
       "x": 15,
       "y": 40
     },
     {
       "name": "Toba Island",
+      "short": "Toba",
       "x": 92,
       "y": 41
     },
@@ -289,41 +337,49 @@
     },
     {
       "name": "Cambium Island",
+      "short": "Cambium",
       "x": 69,
       "y": 42
     },
     {
       "name": "Chachapoya Island",
+      "short": "Chachapoya",
       "x": 103,
       "y": 42
     },
     {
       "name": "Albatross Island",
+      "short": "Albatross",
       "x": 43,
       "y": 44
     },
     {
       "name": "Ilha da Aguia",
+      "short": "Aguia",
       "x": 79,
       "y": 46
     },
     {
       "name": "Matariki Island",
+      "short": "Matariki",
       "x": 100,
       "y": 47
     },
     {
       "name": "Morannon Island",
+      "short": "Morannon",
       "x": 15,
       "y": 48
     },
     {
       "name": "Gauntlet Island",
+      "short": "Gauntlet",
       "x": 41,
       "y": 48
     },
     {
       "name": "Aimuari Island",
+      "short": "Aimuari",
       "x": 98,
       "y": 49
     },
@@ -334,6 +390,7 @@
     },
     {
       "name": "Barbary Island",
+      "short": "Barbary",
       "x": 53,
       "y": 50
     },
@@ -344,21 +401,25 @@
     },
     {
       "name": "Pukru Island",
+      "short": "Pukru",
       "x": 96,
       "y": 51
     },
     {
       "name": "Kashgar Island",
+      "short": "Kashgar",
       "x": 19,
       "y": 54
     },
     {
       "name": "Terjit Island",
+      "short": "Terjit",
       "x": 55,
       "y": 54
     },
     {
       "name": "Quetzal Island",
+      "short": "Quetzal",
       "x": 103,
       "y": 54
     },
@@ -374,168 +435,201 @@
     },
     {
       "name": "Spaniel Island",
+      "short": "Spaniel",
       "x": 39,
       "y": 58
     },
     {
       "name": "Saiph Island",
+      "short": "Saiph",
       "x": 91,
       "y": 58
     },
     {
       "name": "Kasidim Island",
+      "short": "Kasidim",
       "x": 57,
       "y": 60
     },
     {
       "name": "Descartes Isle",
+      "short": "Descartes",
       "x": 23,
       "y": 62
     },
     {
       "name": "Greenwich Island",
+      "short": "Greenwich",
       "x": 31,
       "y": 62
     },
     {
       "name": "Starfish Island",
+      "short": "Starfish",
       "x": 37,
       "y": 62
     },
     {
       "name": "Ventress Island",
+      "short": "Ventress",
       "x": 43,
       "y": 64
     },
     {
       "name": "Aten Island",
+      "short": "Aten",
       "x": 61,
       "y": 64
     },
     {
       "name": "Cook Island",
+      "short": "Cook",
       "x": 27,
       "y": 66
     },
     {
       "name": "Fowler Island",
+      "short": "Fowler",
       "x": 33,
       "y": 68
     },
     {
       "name": "Halley Island",
+      "short": "Halley",
       "x": 39,
       "y": 68
     },
     {
       "name": "Arakoua Island",
+      "short": "Arakoua",
       "x": 51,
       "y": 68
     },
     {
       "name": "Caravanserai Island",
+      "short": "Caravanserai",
       "x": 57,
       "y": 68
     },
     {
       "name": "Blackthorpe Island",
+      "short": "Blackthorpe",
       "x": 35,
       "y": 74
     },
     {
       "name": "Kiwara Island",
+      "short": "Kiwara",
       "x": 55,
       "y": 74
     },
     {
       "name": "Kakraphoon Island",
+      "short": "Kakraphoon",
       "x": 43,
       "y": 82
     },
     {
       "name": "Fluke Island",
+      "short": "Fluke",
       "x": 49,
       "y": 82
     },
     {
       "name": "Ancoraggio Island",
+      "short": "Ancoraggio",
       "x": 47,
       "y": 88
     }
   ],
   "labels": [
     {
-      "name": "Puffin",
+      "name": "Puffin Archipelago",
+      "short": "Puffin",
       "x": 1,
       "y": 4
     },
     {
-      "name": "Crab",
+      "name": "Crab Archipelago",
+      "short": "Crab",
       "x": 67,
       "y": 6
     },
     {
-      "name": "Stork",
+      "name": "Stork Archipelago",
+      "short": "Stork",
       "x": 24,
       "y": 8
     },
     {
-      "name": "Canis",
+      "name": "Canis Archipelago",
+      "short": "Canis",
       "x": 97,
       "y": 15
     },
     {
-      "name": "Ursa",
+      "name": "Ursa Archipelago",
+      "short": "Ursa",
       "x": 57,
       "y": 26
     },
     {
-      "name": "Pleiades",
+      "name": "Pleiades Archipelago",
+      "short": "Pleiades",
       "x": 83,
       "y": 26
     },
     {
-      "name": "Gull",
+      "name": "Gull Archipelago",
+      "short": "Gull",
       "x": 5,
       "y": 27
     },
     {
-      "name": "Horse Head",
+      "name": "Horse Head Archipelago",
+      "short": "Horse Head",
       "x": 110,
       "y": 33
     },
     {
-      "name": "Osprey",
+      "name": "Osprey Archipelago",
+      "short": "Osprey",
       "x": 40,
       "y": 38
     },
     {
-      "name": "Orion",
+      "name": "Orion Archipelago",
+      "short": "Orion",
       "x": 93,
       "y": 45
     },
     {
-      "name": "Eagle",
+      "name": "Eagle Archipelago",
+      "short": "Eagle",
       "x": 75,
       "y": 49
     },
     {
-      "name": "Tern",
+      "name": "Tern Archipelago",
+      "short": "Tern",
       "x": 11,
       "y": 51
     },
     {
-      "name": "Ibis",
+      "name": "Ibis Archipelago",
+      "short": "Ibis",
       "x": 49,
       "y": 60
     },
     {
-      "name": "Pelican",
+      "name": "Pelican Archipelago",
+      "short": "Pelican",
       "x": 24,
       "y": 68
     },
     {
-      "name": "Dodo",
+      "name": "Dodo Archipelago",
+      "short": "Dodo",
       "x": 36,
       "y": 84
     }

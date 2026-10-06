@@ -4,66 +4,79 @@
   "islands": [
     {
       "name": "Isla Escuibnocket",
+      "short": "Escuibnocket",
       "x": 23,
       "y": 1
     },
     {
       "name": "Isla Escarcha",
+      "short": "Escarcha",
       "x": 7,
       "y": 3
     },
     {
       "name": "Isla Cryo",
+      "short": "Cryo",
       "x": 1,
       "y": 5
     },
     {
       "name": "Isla Rowes",
+      "short": "Rowes",
       "x": 19,
       "y": 5
     },
     {
       "name": "Isla Amistad",
+      "short": "Amistad",
       "x": 23,
       "y": 7
     },
     {
       "name": "Isla Wissajickon",
+      "short": "Wissajickon",
       "x": 33,
       "y": 7
     },
     {
       "name": "Isla Alca",
+      "short": "Alca",
       "x": 5,
       "y": 9
     },
     {
       "name": "Isla Penoscot",
+      "short": "Penoscot",
       "x": 27,
       "y": 9
     },
     {
       "name": "Isla Hinga",
+      "short": "Hinga",
       "x": 31,
       "y": 13
     },
     {
       "name": "Isla Scrimshaw",
+      "short": "Scrimshaw",
       "x": 23,
       "y": 15
     },
     {
       "name": "Isla Basset",
+      "short": "Basset",
       "x": 11,
       "y": 17
     },
     {
       "name": "Isla Bowditch",
+      "short": "Bowditch",
       "x": 29,
       "y": 19
     },
     {
       "name": "Isla Almirante",
+      "short": "Almirante",
       "x": 17,
       "y": 21
     },
@@ -74,11 +87,13 @@
     },
     {
       "name": "Isla Cromwell",
+      "short": "Cromwell",
       "x": 11,
       "y": 27
     },
     {
       "name": "Isla de Kent",
+      "short": "Kent",
       "x": 17,
       "y": 27
     },
@@ -89,6 +104,7 @@
     },
     {
       "name": "Isla Emboscada",
+      "short": "Emboscada",
       "x": 31,
       "y": 29
     },
@@ -99,11 +115,13 @@
     },
     {
       "name": "Isla Bryer",
+      "short": "Bryer",
       "x": 13,
       "y": 31
     },
     {
       "name": "Isla Espejismo",
+      "short": "Espejismo",
       "x": 39,
       "y": 33
     },
@@ -114,6 +132,7 @@
     },
     {
       "name": "Isla Lincoln",
+      "short": "Lincoln",
       "x": 15,
       "y": 37
     },
@@ -124,16 +143,19 @@
     },
     {
       "name": "Isla Albatros",
+      "short": "Albatros",
       "x": 43,
       "y": 41
     },
     {
       "name": "Isla Morannon",
+      "short": "Morannon",
       "x": 15,
       "y": 45
     },
     {
       "name": "Isla Guantelete",
+      "short": "Guantelete",
       "x": 41,
       "y": 45
     },
@@ -144,16 +166,19 @@
     },
     {
       "name": "Isla Berberisca",
+      "short": "Berberisca",
       "x": 53,
       "y": 47
     },
     {
       "name": "Isla Kashgar",
+      "short": "Kashgar",
       "x": 19,
       "y": 51
     },
     {
       "name": "Isla Terjit",
+      "short": "Terjit",
       "x": 55,
       "y": 51
     },
@@ -164,128 +189,153 @@
     },
     {
       "name": "Isla Spaniel",
+      "short": "Spaniel",
       "x": 39,
       "y": 55
     },
     {
       "name": "Isla Kasidim",
+      "short": "Kasidim",
       "x": 57,
       "y": 57
     },
     {
       "name": "Isla Descartes",
+      "short": "Descartes",
       "x": 23,
       "y": 59
     },
     {
       "name": "Isla Greenwich",
+      "short": "Greenwich",
       "x": 31,
       "y": 59
     },
     {
       "name": "Isla Asteroidea",
+      "short": "Asteroidea",
       "x": 37,
       "y": 59
     },
     {
       "name": "Isla Ventress",
+      "short": "Ventress",
       "x": 43,
       "y": 61
     },
     {
       "name": "Isla Aten",
+      "short": "Aten",
       "x": 61,
       "y": 61
     },
     {
       "name": "Isla Cook",
+      "short": "Cook",
       "x": 27,
       "y": 63
     },
     {
       "name": "Isla Retorno",
+      "short": "Retorno",
       "x": 33,
       "y": 65
     },
     {
       "name": "Isla Halley",
+      "short": "Halley",
       "x": 39,
       "y": 65
     },
     {
       "name": "Isla Arakoua",
+      "short": "Arakoua",
       "x": 51,
       "y": 65
     },
     {
       "name": "Isla Caravanserai",
+      "short": "Caravanserai",
       "x": 57,
       "y": 65
     },
     {
       "name": "Isla Blackthorpe",
+      "short": "Blackthorpe",
       "x": 35,
       "y": 71
     },
     {
       "name": "Isla Kiwara",
+      "short": "Kiwara",
       "x": 55,
       "y": 71
     },
     {
       "name": "Isla Kakrafoon",
+      "short": "Kakrafoon",
       "x": 43,
       "y": 79
     },
     {
       "name": "Isla Aleta",
+      "short": "Aleta",
       "x": 49,
       "y": 79
     },
     {
       "name": "Isla Ancoraggio",
+      "short": "Ancoraggio",
       "x": 47,
       "y": 85
     }
   ],
   "labels": [
     {
-      "name": "Frailecillo",
+      "name": "Frailecillo Archipelago",
+      "short": "Frailecillo",
       "x": 1,
       "y": 1
     },
     {
-      "name": "Cigüeña",
+      "name": "Cigüeña Archipelago",
+      "short": "Cigüeña",
       "x": 24,
       "y": 5
     },
     {
-      "name": "Gaviota",
+      "name": "Gaviota Archipelago",
+      "short": "Gaviota",
       "x": 5,
       "y": 24
     },
     {
-      "name": "Águila",
+      "name": "Águila Archipelago",
+      "short": "Águila",
       "x": 40,
       "y": 35
     },
     {
-      "name": "Charrán",
+      "name": "Charrán Archipelago",
+      "short": "Charrán",
       "x": 11,
       "y": 48
     },
     {
-      "name": "Ibis",
+      "name": "Ibis Archipelago",
+      "short": "Ibis",
       "x": 49,
       "y": 57
     },
     {
-      "name": "Pelícano",
+      "name": "Pelícano Archipelago",
+      "short": "Pelícano",
       "x": 24,
       "y": 65
     },
     {
-      "name": "Dodo",
+      "name": "Dodo Archipelago",
+      "short": "Dodo",
       "x": 36,
       "y": 81
     }

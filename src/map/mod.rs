@@ -229,13 +229,24 @@ impl MapApp {
         self.memorized.contains(&a) && self.memorized.contains(&b)
     }
 
-    /// The island the open search currently resolves to.
+    /// The island the open search currently resolves to. An island answers to
+    /// the name the chart draws it under as readily as to its own, so what can
+    /// be read off the sea can be typed back in: `Kent` finds Isle of Kent.
     pub fn search_hit(&self, map: &'static Map) -> Option<&'static Place> {
         let query = self.search.as_ref()?.value.as_str();
-        let names: Vec<String> =
-            map.islands.iter().map(|i| i.name.to_owned()).collect();
+        let mut names: Vec<String> = Vec::new();
+        for island in map.islands {
+            names.push(island.name.to_owned());
+            // the same name twice would tie with itself, and a tie resolves
+            // to no island at all
+            if island.drawn() != island.name {
+                names.push(island.drawn().to_owned());
+            }
+        }
         let name = crate::app::suggest_island(query, &names)?;
-        map.islands.iter().find(|i| i.name == name)
+        map.islands
+            .iter()
+            .find(|i| i.name == name || i.drawn() == name)
     }
 
     pub fn handle_key(
@@ -344,11 +355,13 @@ mod tests {
         islands: &[
             Place {
                 name: "Foo Island",
+                short: Some("Foo"),
                 x: 1,
                 y: 1,
             },
             Place {
                 name: "Bar Island",
+                short: Some("Bar"),
                 x: 3,
                 y: 1,
             },
@@ -505,6 +518,21 @@ mod tests {
         press(&mut app, KeyCode::Enter);
         assert_eq!(app.cursor, Some((3, 1)));
         assert!(app.search.is_none());
+    }
+
+    /// What the chart draws is what a player has to go on, so an island is
+    /// found under that name as well as its own.
+    #[test]
+    fn an_island_answers_to_the_name_the_chart_draws() {
+        let map = Map::for_ocean("Emerald").expect("Emerald map");
+        let mut app = MapApp::new();
+        let mut search = PromptField::new("Search", FieldKind::Text);
+        search.value = "Kent".to_owned();
+        app.search = Some(search);
+        assert_eq!(
+            app.search_hit(map).map(|p| p.name),
+            Some("Isle of Kent")
+        );
     }
 
     #[test]

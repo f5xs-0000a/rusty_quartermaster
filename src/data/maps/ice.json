@@ -4,46 +4,55 @@
   "islands": [
     {
       "name": "Winking Wall Island",
+      "short": "Winking Wall",
       "x": 18,
       "y": 1
     },
     {
       "name": "Kings Island",
+      "short": "Kings",
       "x": 33,
       "y": 12
     },
     {
       "name": "Cringe Island",
+      "short": "Cringe",
       "x": 2,
       "y": 13
     },
     {
       "name": "Diablo Island",
+      "short": "Diablo",
       "x": 8,
       "y": 13
     },
     {
       "name": "Wyeth Island",
+      "short": "Wyeth",
       "x": 26,
       "y": 13
     },
     {
       "name": "Cold Spring Island",
+      "short": "Cold Spring",
       "x": 13,
       "y": 18
     },
     {
       "name": "Escher Island",
+      "short": "Escher",
       "x": 6,
       "y": 19
     },
     {
       "name": "Shatterstone Island",
+      "short": "Shatterstone",
       "x": 24,
       "y": 21
     },
     {
       "name": "Eieio Island",
+      "short": "Eieio",
       "x": 30,
       "y": 21
     },
@@ -54,43 +63,51 @@
     },
     {
       "name": "Yorrick Island",
+      "short": "Yorrick",
       "x": 3,
       "y": 30
     },
     {
       "name": "Oubliette Island",
+      "short": "Oubliette",
       "x": 33,
       "y": 30
     },
     {
       "name": "Maelstrom Island",
+      "short": "Maelstrom",
       "x": 24,
       "y": 33
     },
     {
       "name": "Wemadeit Island",
+      "short": "Wemadeit",
       "x": 15,
       "y": 34
     },
     {
       "name": "Mini Island",
+      "short": "Mini",
       "x": 18,
       "y": 39
     }
   ],
   "labels": [
     {
-      "name": "Vilya",
+      "name": "Vilya Archipelago",
+      "short": "Vilya",
       "x": 8,
       "y": 7
     },
     {
-      "name": "Nenya",
+      "name": "Nenya Archipelago",
+      "short": "Nenya",
       "x": 30,
       "y": 24
     },
     {
-      "name": "Narya",
+      "name": "Narya Archipelago",
+      "short": "Narya",
       "x": 8,
       "y": 35
     }

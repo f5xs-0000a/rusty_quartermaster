@@ -15,8 +15,15 @@
 //! - A league no chart covers at all is not drawn until both its ends are
 //!   memorized, which keeps the sea as readable as the wiki's own map.
 //! - Every point keeps the three-by-three of cells around it to itself, the
-//!   same cells its click box reaches, so a rule stops a cell short of each
-//!   end.
+//!   same cells its click box reaches: a rule stops a cell short of each end,
+//!   and no name is written in one, blank though those cells are. A name is
+//!   read as naming what it sits beside, so the sea around a mark is left to
+//!   the mark.
+//! - A place is drawn under the name its map file gives it to be drawn under
+//!   ([`crate::map::data::Place::drawn`]): `Kent` for Isle of Kent, and most
+//!   archipelagos without their `Archipelago`. A name wider than [`LABEL_WRAP`]
+//!   wraps onto further rows, and the block of rows is placed and kept clear as
+//!   one.
 //!
 //! What a chart is worth is colour rather than line style because one cell is
 //! all a diagonal gets, and one cell cannot be dashed the way a seven-cell run
@@ -163,6 +170,9 @@ struct Canvas {
     w: usize,
     h: usize,
     cells: Vec<(char, Paint)>,
+    /// The cells league points keep to themselves: no name is written in one,
+    /// blank though it is.
+    kept: Vec<bool>,
 }
 
 impl Canvas {
@@ -171,6 +181,7 @@ impl Canvas {
             w,
             h,
             cells: vec![(' ', Paint::Sea); w * h],
+            kept: vec![false; w * h],
         }
     }
 
@@ -188,8 +199,27 @@ impl Canvas {
         }
     }
 
+    /// Mark a league point: its glyph, and the three-by-three of cells around
+    /// it that it keeps to itself - the same cells its click box reaches.
+    fn put_point(&mut self, x: usize, y: usize, ch: char, paint: Paint) {
+        self.put(x, y, ch, paint);
+        for ky in y.saturating_sub(CLICK_REACH) ..= y + CLICK_REACH {
+            for kx in x.saturating_sub(CLICK_REACH) ..= x + CLICK_REACH {
+                if let Some(i) = self.idx(kx, ky) {
+                    self.kept[i] = true;
+                }
+            }
+        }
+    }
+
     fn is_free(&self, x: usize, y: usize) -> bool {
         self.get(x, y).is_some_and(|(ch, _)| ch == ' ')
+    }
+
+    /// Whether a cell can carry a letter: blank, and not a cell some point
+    /// keeps to itself.
+    fn is_writable(&self, x: usize, y: usize) -> bool {
+        self.is_free(x, y) && self.idx(x, y).is_some_and(|i| !self.kept[i])
     }
 
     fn write(&mut self, x: usize, y: usize, text: &str, paint: Paint) {
@@ -208,38 +238,61 @@ impl Canvas {
             .join("\n")
     }
 
-    /// Whether an `n`-cell label can sit at `(x, y)` with [`LABEL_GAP`]
-    /// blank cells on both sides. The gap may run off the canvas edge; the
-    /// label may not.
-    fn fits(&self, x: usize, y: usize, n: usize) -> bool {
-        if self.w < x + n || self.h <= y {
+    /// Whether a block of `rows`, each centred in the widest row's width, can
+    /// sit with its top-left at `(x, y)`: every letter on a cell that can
+    /// carry one, and [`LABEL_GAP`] blank cells either side of every row. The
+    /// gap may fall on a cell a point keeps, or run off the canvas edge; no
+    /// row may do either.
+    fn fits(&self, x: usize, y: usize, rows: &[String]) -> bool {
+        let w = block_width(rows);
+        if self.w < x + w || self.h < y + rows.len() {
             return false;
         }
-        let lo = x.saturating_sub(LABEL_GAP);
-        let hi = (x + n + LABEL_GAP).min(self.w);
-        (lo .. hi).all(|i| self.is_free(i, y))
+        rows.iter().enumerate().all(|(i, row)| {
+            let (rx, n) = (x + indent(row, w), row.chars().count());
+            let y = y + i;
+            let lo = rx.saturating_sub(LABEL_GAP);
+            let hi = (rx + n + LABEL_GAP).min(self.w);
+            (rx .. rx + n).all(|cx| self.is_writable(cx, y))
+                && (lo .. rx).chain(rx + n .. hi).all(|cx| self.is_free(cx, y))
+        })
     }
 
-    /// The cheapest spot of [`label_spots`] where an `n`-cell label of the
+    /// The cheapest spot of [`label_spots`] where a block of `rows` for the
     /// point at `(cx, cy)` fits, keeping clear of every drawn glyph, the
     /// point's own included.
     fn best_spot(
         &self,
         cx: usize,
         cy: usize,
-        n: usize,
+        rows: &[String],
     ) -> Option<(usize, usize)> {
-        label_spots(cx, cy, n)
-            .filter(|&(x, y, _)| self.fits(x, y, n))
+        label_spots(cx, cy, block_width(rows), rows.len())
+            .filter(|&(x, y, _)| self.fits(x, y, rows))
             .min_by_key(|&(_, _, cost)| cost)
             .map(|(x, y, _)| (x, y))
     }
 
+    /// Write a block of `rows` with its top-left at `(x, y)`, each row
+    /// centred in the widest one's width.
+    fn write_block(
+        &mut self,
+        x: usize,
+        y: usize,
+        rows: &[String],
+        paint: Paint,
+    ) {
+        let w = block_width(rows);
+        for (i, row) in rows.iter().enumerate() {
+            self.write(x + indent(row, w), y + i, row, paint);
+        }
+    }
+
     /// Place `text` for the point at `(cx, cy)` in the spot that keeps it
-    /// nearest the point. With no spot for the whole name, the longest
-    /// head of it (three characters or more) that fits anywhere is written
-    /// instead so the island stays findable. Returns whether the whole
-    /// name was placed.
+    /// nearest the point, wrapped onto further rows where it is wider than
+    /// [`LABEL_WRAP`]. With no spot for the whole name, the longest head of
+    /// it (three characters or more) that fits anywhere is written instead so
+    /// the island stays findable. Returns whether the whole name was placed.
     fn label(
         &mut self,
         cx: usize,
@@ -247,15 +300,17 @@ impl Canvas {
         text: &str,
         paint: Paint,
     ) -> bool {
-        let n = text.chars().count();
-        if let Some((x, y)) = self.best_spot(cx, cy, n) {
-            self.write(x, y, text, paint);
+        let rows = label_rows(text);
+        if let Some((x, y)) = self.best_spot(cx, cy, &rows) {
+            self.write_block(x, y, &rows, paint);
             return true;
         }
+        let n = text.chars().count();
         for len in (3 .. n).rev() {
-            if let Some((x, y)) = self.best_spot(cx, cy, len) {
-                let head: String = text.chars().take(len).collect();
-                self.write(x, y, &head, paint);
+            let head: String = text.chars().take(len).collect();
+            let rows = label_rows(&head);
+            if let Some((x, y)) = self.best_spot(cx, cy, &rows) {
+                self.write_block(x, y, &rows, paint);
                 return false;
             }
         }
@@ -263,8 +318,50 @@ impl Canvas {
     }
 }
 
+/// The widest row of a label block, which is the width the block takes.
+fn block_width(rows: &[String]) -> usize {
+    rows.iter()
+        .map(|row| row.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// Where a row starts within a block `w` cells wide, centred in it.
+fn indent(row: &str, w: usize) -> usize {
+    (w - row.chars().count()) / 2
+}
+
+/// A name broken into the rows it is drawn on: whole while it is no wider
+/// than [`LABEL_WRAP`], else broken at the spaces, each row carrying as many
+/// words as it can hold. A single word wider than that keeps a row of its
+/// own, since a name says less broken mid-word than drawn too wide.
+fn label_rows(text: &str) -> Vec<String> {
+    if text.chars().count() <= LABEL_WRAP {
+        return vec![text.to_owned()];
+    }
+    let mut rows: Vec<String> = Vec::new();
+    for word in text.split(' ') {
+        match rows.last_mut() {
+            Some(row)
+                if row.chars().count() + 1 + word.chars().count()
+                    <= LABEL_WRAP =>
+            {
+                row.push(' ');
+                row.push_str(word);
+            }
+            _ => rows.push(word.to_owned()),
+        }
+    }
+    rows
+}
+
 /// Blank cells kept between a label and anything drawn beside it on its row.
 const LABEL_GAP: usize = 2;
+
+/// The widest row a label is drawn on before it wraps onto another. The sea
+/// has room for a far wider one, but the viewport onto it does not: a name
+/// that runs on for a quarter of the chart hides more water than it names.
+const LABEL_WRAP: usize = 24;
 
 /// Cells a point's click box extends past its glyph on each side.
 const CLICK_REACH: usize = 1;
@@ -275,33 +372,42 @@ const CLICK_REACH: usize = 1;
 /// from the point than that.
 const ROW_STEP_COST: usize = 3;
 
-/// Candidate top-left cells for an `n`-cell label of the point at `(cx,
-/// cy)`, each with its cost: beside the point on its own row (right or
-/// left, sliding up to four cells further out), and on the rows one and
-/// two steps above and below, centred on the point and sliding either way
-/// until the label has cleared it. Sitting right beside the point is the
-/// cheapest spot, then a centred spot on the next row, then the rest by
-/// drift. Spots off the top or left edge are skipped; ties go to the
+/// Candidate top-left cells for a label block `w` cells wide and `h` rows
+/// tall belonging to the point at `(cx, cy)`, each with its cost: beside the
+/// point on its own row (right or left, sliding up to four cells further
+/// out, the rest of the block hanging below), and clear of the point's row
+/// one and two steps above and below it, centred on the point and sliding
+/// either way until the block has cleared it. Sitting right beside the point
+/// is the cheapest spot, then a centred spot on the next row, then the rest
+/// by drift. Spots off the top or left edge are skipped; ties go to the
 /// earlier candidate (right before left, below before above).
 fn label_spots(
     cx: usize,
     cy: usize,
-    n: usize,
+    w: usize,
+    h: usize,
 ) -> impl Iterator<Item = (usize, usize, usize)> {
-    let (cx, cy, n) = (cx as isize, cy as isize, n as isize);
+    let (cx, cy, w, h) = (
+        cx as isize,
+        cy as isize,
+        w as isize,
+        h as isize,
+    );
     let gap = LABEL_GAP as isize;
     let beside = (0 ..= 4).flat_map(move |slide| {
         let cost = 2 + slide as usize;
         [
             (cx + 1 + gap + slide, cy, cost),
-            (cx - gap - n - slide, cy, cost),
+            (cx - gap - w - slide, cy, cost),
         ]
     });
-    let rows = [(cy + 1, 1), (cy - 1, 1), (cy + 2, 2), (cy - 2, 2)];
+    // above the point, the block's last row is the one that has to clear it,
+    // so its top sits that much higher
+    let rows = [(cy + 1, 1), (cy - h, 1), (cy + 2, 2), (cy - h - 1, 2)];
     let around = rows.into_iter().flat_map(move |(y, steps)| {
-        let centred = cx - n / 2;
+        let centred = cx - w / 2;
         let base = ROW_STEP_COST * steps;
-        std::iter::once((centred, y, base)).chain((1 ..= n).flat_map(
+        std::iter::once((centred, y, base)).chain((1 ..= w).flat_map(
             move |slide| {
                 let cost = base + slide as usize;
                 [(centred - slide, y, cost), (centred + slide, y, cost)]
@@ -320,12 +426,6 @@ fn cell_of((x, y): Point) -> (usize, usize) {
         x as usize * CELL_W + MARGIN_X,
         y as usize * CELL_H + MARGIN_Y,
     )
-}
-
-/// An island's label: the name without its " Island" suffix, which the mark
-/// beside it already says.
-fn island_label(name: &str) -> &str {
-    name.strip_suffix(" Island").unwrap_or(name)
 }
 
 fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
@@ -377,21 +477,16 @@ fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
             (false, true) => ('✦', Paint::PointKnown),
             (false, false) => ('✧', Paint::Point),
         };
-        canvas.put(x, y, ch, paint);
+        canvas.put_point(x, y, ch, paint);
     }
 
     for island in map.islands {
         let (x, y) = cell_of(island.at());
-        canvas.label(
-            x,
-            y,
-            island_label(island.name),
-            Paint::Name,
-        );
+        canvas.label(x, y, island.drawn(), Paint::Name);
     }
     for region in map.labels {
         let (x, y) = cell_of(region.at());
-        canvas.label(x, y, region.name, Paint::Region);
+        canvas.label(x, y, region.drawn(), Paint::Region);
     }
     canvas
 }
@@ -531,8 +626,8 @@ pub fn render(
         }
         (Some(ocean), None) => {
             let msg = format!(
-                "No map for {ocean} yet. See scripts/extract_map.py to add \
-                 one."
+                "We carry no map of {ocean} yet. One is added as a file in \
+                 src/data/maps/."
             );
             crate::utils::render_notice(
                 frame,
@@ -851,9 +946,15 @@ fn metadata(
         ])
         .centered(),
     );
+    // an archipelago whose name opens with its own article takes no second
+    // one: two in a row read as neither
+    let of = match arch.name.split(' ').next() {
+        Some("Ye" | "The") => "of ",
+        _ => "of the ",
+    };
     head.push(
         Line::from(vec![
-            Span::raw("of the "),
+            Span::raw(of),
             value(format!("{} Archipelago", arch.name)),
         ])
         .centered(),
@@ -1408,33 +1509,53 @@ mod tests {
     #[test]
     fn labels_keep_two_cells_from_the_point_and_prefer_the_right_side() {
         let mut canvas = Canvas::new(20, 3);
-        canvas.put(10, 1, '○', Paint::Island);
+        canvas.put_point(10, 1, '○', Paint::Island);
         assert!(canvas.label(10, 1, "Foo", Paint::Name));
         assert_eq!(row(&canvas, 1), "          ○  Foo    ");
         // an east league blocks the right side, so the label goes left
         let mut canvas = Canvas::new(20, 3);
-        canvas.put(10, 1, '○', Paint::Island);
+        canvas.put_point(10, 1, '○', Paint::Island);
         canvas.put(11, 1, '─', Paint::Sold);
         assert!(canvas.label(10, 1, "Foo", Paint::Name));
         assert_eq!(row(&canvas, 1), "     Foo  ○─        ");
     }
 
+    /// A point keeps the cells around it whether or not anything is drawn in
+    /// them, so a name on the row above or below slides clear of the point's
+    /// own columns rather than sitting against its mark.
+    #[test]
+    fn a_name_keeps_out_of_the_cells_a_point_keeps() {
+        // the point's row is league from end to end, so the clear row above
+        // is where the name has to go
+        let mut canvas = Canvas::new(30, 3);
+        canvas.put_point(12, 2, '○', Paint::Island);
+        for x in (0 .. 12).chain(13 .. 30) {
+            canvas.put(x, 2, '─', Paint::Sold);
+        }
+        assert!(canvas.label(12, 2, "Foo", Paint::Name));
+        assert_eq!(
+            row(&canvas, 1),
+            "        Foo                   "
+        );
+    }
+
     #[test]
     fn a_boxed_in_label_takes_the_nearest_free_row() {
         // an island with full-length leagues east and west, diagonals
-        // leaving it both ways below, and a clear row above
+        // leaving it both ways below, and clear rows above
         let mut canvas = Canvas::new(30, 4);
-        canvas.put(12, 2, '○', Paint::Island);
+        canvas.put_point(12, 2, '○', Paint::Island);
         for x in (5 .. 12).chain(13 .. 20) {
             canvas.put(x, 2, '─', Paint::Sold);
         }
         canvas.put(10, 3, '╱', Paint::Sold);
         canvas.put(14, 3, '╲', Paint::Sold);
         assert!(canvas.label(12, 2, "Barbary", Paint::Name));
-        // below would have to slide nine cells to clear the diagonals;
-        // centred above is nearer
+        // the row below is barred by the diagonals, and the row above by the
+        // cells the point keeps unless the name slides five cells off centre:
+        // a second row up, still centred on the island, reads nearer than that
         assert_eq!(
-            row(&canvas, 1),
+            row(&canvas, 0),
             "         Barbary              "
         );
         assert_eq!(
@@ -1446,13 +1567,13 @@ mod tests {
     #[test]
     fn a_small_slide_on_the_nearer_row_beats_moving_a_row_away() {
         let mut canvas = Canvas::new(30, 3);
-        canvas.put(12, 1, '○', Paint::Island);
+        canvas.put_point(12, 1, '○', Paint::Island);
         for x in (5 .. 12).chain(13 .. 20) {
             canvas.put(x, 1, '─', Paint::Sold);
         }
         // the row above is taken by another league, and one diagonal sits
-        // just right of centre below: a two-cell slide left on that row
-        // is the nearest spot left
+        // just right of centre below: sliding left on that row is the
+        // nearest spot left
         for x in 4 .. 21 {
             canvas.put(x, 0, '─', Paint::Sold);
         }
@@ -1460,7 +1581,7 @@ mod tests {
         assert!(canvas.label(12, 1, "Barbary", Paint::Name));
         assert_eq!(
             row(&canvas, 2),
-            "       Barbary  ╲             "
+            "    Barbary     ╲             "
         );
     }
 
@@ -1482,35 +1603,47 @@ mod tests {
     }
 
     /// Reads the drawing the way a player would: on every ocean's canvas,
-    /// each island's name appears whole somewhere with two blank cells on
-    /// either side of it.
+    /// each island and each archipelago is named whole, every row of the name
+    /// with two blank cells on either side of it, and a name on more than one
+    /// row drawn as a block of rows centred on each other.
     #[test]
-    fn every_island_is_named_whole_with_room_around_it() {
+    fn every_place_is_named_whole_with_room_around_it() {
         let mut crowded = Vec::new();
         for map in crate::map::data::MAPS {
             let canvas = build_canvas(map, &MapApp::new());
             let rows: Vec<Vec<char>> =
                 canvas.dump().lines().map(|l| l.chars().collect()).collect();
-            for island in map.islands {
-                let label: Vec<char> =
-                    island_label(island.name).chars().collect();
-                let n = label.len();
-                let found = rows.iter().any(|r| {
-                    (0 .. r.len().saturating_sub(n)).any(|x| {
-                        r[x .. x + n] == label[..]
-                            && r[x.saturating_sub(LABEL_GAP) .. x]
-                                .iter()
-                                .all(|c| *c == ' ')
-                            && r[x + n .. (x + n + LABEL_GAP).min(r.len())]
-                                .iter()
-                                .all(|c| *c == ' ')
+            // whether `text` sits at `(x, y)` with its gap clear on both
+            // sides, which is what the eye reads as a name of its own
+            let clear_at = |x: usize, y: usize, text: &str| {
+                let want: Vec<char> = text.chars().collect();
+                let Some(row) = rows.get(y) else {
+                    return false;
+                };
+                if row.len() < x + want.len() {
+                    return false;
+                }
+                row[x .. x + want.len()] == want[..]
+                    && row[x.saturating_sub(LABEL_GAP) .. x]
+                        .iter()
+                        .all(|c| *c == ' ')
+                    && row[x + want.len()
+                        .. (x + want.len() + LABEL_GAP).min(row.len())]
+                        .iter()
+                        .all(|c| *c == ' ')
+            };
+            for place in map.islands.iter().chain(map.labels) {
+                let block = label_rows(place.drawn());
+                let w = block_width(&block);
+                let found = (0 .. rows.len()).any(|y| {
+                    (0 .. canvas.w).any(|x| {
+                        block.iter().enumerate().all(|(i, text)| {
+                            clear_at(x + indent(text, w), y + i, text)
+                        })
                     })
                 });
                 if !found {
-                    crowded.push(format!(
-                        "{}: {}",
-                        map.ocean, island.name
-                    ));
+                    crowded.push(format!("{}: {}", map.ocean, place.name));
                 }
             }
         }
@@ -1851,6 +1984,25 @@ mod tests {
         app.pirate = None;
         let meta = metadata(&app, map, &sources, cromwell);
         assert_eq!(meta.head[0].spans[0].style.fg, None);
+    }
+
+    /// An archipelago that carries its own article is not given a second one.
+    #[test]
+    fn an_archipelago_named_with_its_article_is_said_without_another() {
+        let map = Map::for_ocean("Obsidian").expect("Obsidian map");
+        let sources = Sources {
+            geo: bare::BARE.ocean("Obsidian"),
+            islands: None,
+            fetching_islands: false,
+        };
+        let magpie = island(map, "Magpie Island");
+        let meta = metadata(&MapApp::new(), map, &sources, magpie);
+        assert!(
+            text(&meta.head)
+                .contains(&"of Ye Bloody Bounding Main Archipelago".to_owned()),
+            "{:?}",
+            text(&meta.head)
+        );
     }
 
     #[test]
