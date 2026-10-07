@@ -1842,9 +1842,11 @@ pub fn render(
             render_stats_box(frame, rows[1], s, focused);
         }
         // Skill Leaderboard (its natural width) on the left, the pane(s)
-        // filling the rest. The row is as tall as the panes are given, so the
-        // leaderboard is held to the rows it keeps rather than standing as
-        // tall as them with the rest of the box blank.
+        // filling the rest. Both take the whole row: the leaderboard stands
+        // beside the panes here rather than above them, and a box that stopped
+        // short of the ones it is shoulder to shoulder with would read as a
+        // hole in the page rather than as a box that had said its piece. The
+        // rows it gains are a longer ranking on show.
         let main = Layout::horizontal([
             Constraint::Length(top_panel_w),
             Constraint::Min(0),
@@ -1852,10 +1854,7 @@ pub fn render(
         .split(rows[2]);
         render_top_panel(
             frame,
-            Rect {
-                height: top_h.max(top_min).min(main[0].height),
-                ..main[0]
-            },
+            main[0],
             &top_columns,
             ui,
             focused,

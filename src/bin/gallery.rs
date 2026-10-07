@@ -1536,6 +1536,26 @@ fn jobbers_states(states: &mut Vec<State>) {
         },
     ));
 
+    // Vikings stands the leaderboard beside the panes, so its height is the
+    // panes' and a long ranking is what it holds. The crew's Gunnery is known
+    // here, which is also what the Vikings Statistics box breaks down.
+    states.push(state(
+        "jobbers-vikings-ranked",
+        "Jobbers, Vikings leaderboard beside the panes, crew ranked",
+        |shell| {
+            feed(shell, PILLAGE);
+            for (i, name) in LONG_ROSTER.iter().enumerate() {
+                shell.chatlog.process_line(&format!(
+                    "[01:00:30] {name} has come aboard."
+                ));
+                cache_pirate(shell, name, i);
+            }
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::Vikings;
+            shell.jobbers_ui.focus = JobberFocus::Leaderboard;
+        },
+    ));
+
     // -- popups --
     states.push(state(
         "jobbers-popup-vessel",

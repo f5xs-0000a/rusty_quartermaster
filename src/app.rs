@@ -4882,7 +4882,13 @@ mod jobber_room_tests {
                 !text.contains("Coming Soon"),
                 "{name} has no layout of its own",
             );
-            assert_eq!(leaderboard_rows(&text), LEADERBOARD_MIN);
+            // Vikings stands the leaderboard beside the panes, where it takes
+            // their height; everywhere else it is its ranking's own.
+            let rows = leaderboard_rows(&text);
+            assert!(
+                LEADERBOARD_MIN <= rows,
+                "{name} gives the leaderboard {rows} rows",
+            );
         }
     }
 

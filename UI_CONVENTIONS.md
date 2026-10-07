@@ -533,7 +533,7 @@ Nine views scroll, and each has a bar:
 | Profits Inventory, down | the row cursor | `120x40-profits-long-list` |
 | Profits Inventory, across | the column cursor | `80x30-profits-wide-table` — at 120 columns the box is as wide as the table and nothing scrolls, so this one needs `--size 80x30` |
 | Jobbers panes | that pane's selection | `80x24-jobbers-long-roster` |
-| Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster` |
+| Jobbers Skill Leaderboard | the ranked selection, shared by its columns | `80x24-jobbers-long-roster`, and `120x40-jobbers-vikings-ranked` where it stands beside the panes and so has room for the whole ranking |
 | Voyage body | its own scroll, until the focus moves | `80x24-voyage-pillage`, and `80x24-voyage-scrolled` for a window with rows on both sides of it |
 | Map chart, both ways | its own pan, until a point is selected | `80x24-map-ocean` |
 | Map Island column | its own scroll, until a point is selected | `120x24-map-island-exports`, and `120x24-map-island-scrolled` for the far end — the column is only shown from 100 columns out, and at `120x40` what it says about an island fits, so this one needs `--size 120x24` |
@@ -567,9 +567,13 @@ to rather than leave them blank at the foot — on Jobbers the pirate panes
 (Aboard, Greedy, Planked, Enthralled), on Profits the Inventory — those holding
 the lists that grow, which is where room is worth the most. Every other box is
 its contents' height, its own four rows first: the Skill Leaderboard stands
-four ranks tall before the panes are given anything, and on Vikings, where it
-stands beside them, it keeps those rows rather than standing as tall as they do
-with the rest of its box blank.
+four ranks tall before the panes are given anything.
+
+Vikings is the exception, standing the leaderboard beside the panes rather
+than above them. Shoulder to shoulder with a box that reaches the foot of the
+page, one that stopped short would read as a hole in the page rather than as a
+box that had said its piece, so it reaches the foot as well — and the rows it
+gains are not blank, they are more of the ranking on show.
 
 Where the rows cannot all be had, they are given out the other way round: the
 boxes whose lists scroll give way — the panes first, holding the longer
@@ -580,8 +584,9 @@ the least room the page draws in, and a window with rows to spare lists the
 whole roster in them.
 
 The Skill Leaderboard is capped besides, at `--leaderboard-size` (default five):
-it is a leaderboard, so it shows its top few and the rest of the ranking
-scrolls. It is never the page's filler.
+it is a leaderboard, so the box it asks for is its top few and the rest of the
+ranking scrolls. Above the panes it is never the page's filler; beside them, on
+Vikings, it is the page, and shows as much of the ranking as the room runs to.
 
 ### What the pages need
 
