@@ -4085,8 +4085,8 @@ mod tests {
              Sild'!",
         );
         gs.process_line(
-            "[02:09:51] Modest Sild has grappled Test Vessel. A melee \
-             breaks out between the crews!",
+            "[02:09:51] Modest Sild has grappled Test Vessel. A melee breaks \
+             out between the crews!",
         );
         gs.process_line(
             "[02:14:43] Game over.  Winners: Matetwo, Playerone, A swabbie.",
@@ -4183,8 +4183,8 @@ mod tests {
             "[02:01:00] You intercepted the War Frigate 'Modest Sild'!",
         );
         gs.process_line(
-            "[02:02:00] Test Vessel has grappled Modest Sild. A melee \
-             breaks out between the crews!",
+            "[02:02:00] Test Vessel has grappled Modest Sild. A melee breaks \
+             out between the crews!",
         );
         // Matedrop's client drops and never returns; Mateleaver bails
         // mid-melee.
@@ -4219,8 +4219,8 @@ mod tests {
             "[02:01:00] You intercepted the War Frigate 'Modest Sild'!",
         );
         gs.process_line(
-            "[02:02:00] Modest Sild has grappled Test Vessel. A melee \
-             breaks out between the crews!",
+            "[02:02:00] Modest Sild has grappled Test Vessel. A melee breaks \
+             out between the crews!",
         );
         gs.process_line("[02:02:05] Matedrop has disconnected.");
         gs.process_line("[02:02:10] Matedrop has reconnected.");
@@ -4242,8 +4242,8 @@ mod tests {
             "[03:01:00] You intercepted the War Frigate 'Bloody Nightmare'!",
         );
         gs.process_line(
-            "[03:02:00] Test Vessel has grappled Bloody Nightmare. A \
-             melee breaks out between the crews!",
+            "[03:02:00] Test Vessel has grappled Bloody Nightmare. A melee \
+             breaks out between the crews!",
         );
         gs.process_line("[03:02:30] Enemyone is eliminated!"); // single-word, not our crew
         gs.process_line("[03:02:40] Sea Lawyer is eliminated!"); // NPC mercenary (has a space)
@@ -4266,8 +4266,8 @@ mod tests {
              Nightmare'!",
         );
         gs.process_line(
-            "[04:02:00] Bloody Nightmare has grappled Test Vessel. A \
-             melee breaks out between the crews!",
+            "[04:02:00] Bloody Nightmare has grappled Test Vessel. A melee \
+             breaks out between the crews!",
         );
         // We lose with no enemy KO'd — only the winners list reveals the foe
         // players.
@@ -4417,8 +4417,8 @@ mod tests {
              Stickleback: That vessel has put into port.",
         );
         gs.process_line(
-            "[02:39:29] Test Vessel has grappled Hot Barbel. A melee \
-             breaks out between the crews!",
+            "[02:39:29] Test Vessel has grappled Hot Barbel. A melee breaks \
+             out between the crews!",
         );
         gs.process_line("[02:42:43] Game over.  Winners: Playerone, Mashtag.");
         gs.process_line(
@@ -4693,8 +4693,8 @@ mod tests {
             "[01:01:00] You intercepted the War Frigate 'Modest Sild'!",
         );
         gs.process_line(
-            "[01:02:00] Test Vessel has grappled Modest Sild. A melee \
-             breaks out between the crews!",
+            "[01:02:00] Test Vessel has grappled Modest Sild. A melee breaks \
+             out between the crews!",
         );
         // Winners = us + one mercenary + two swabbies (one named, one generic).
         // The generic "A swabbie" never actually appears in a real Game
@@ -4871,8 +4871,8 @@ mod tests {
             "[01:01:00] You intercepted the War Frigate 'Modest Sild'!",
         );
         gs.process_line(
-            "[01:02:00] Test Vessel has grappled Modest Sild. A melee \
-             breaks out between the crews!",
+            "[01:02:00] Test Vessel has grappled Modest Sild. A melee breaks \
+             out between the crews!",
         );
         // The win reveals one mercenary — every sample so far is backfilled to
         // it.

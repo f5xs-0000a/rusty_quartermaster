@@ -4489,8 +4489,8 @@ mod voyage_scroll_tests {
              Barbarians.",
             "[01:00:06] Playerone issued an order to set the vessel to sail.",
             "[01:05:00] You intercepted the War Frigate 'Modest Sild'!",
-            "[01:06:00] Test Vessel has grappled Modest Sild. A melee \
-             breaks out between the crews!",
+            "[01:06:00] Test Vessel has grappled Modest Sild. A melee breaks \
+             out between the crews!",
             "[01:07:00] Game over.  Winners: Playerone.",
             "[01:07:05] The victors plundered 7,756 pieces of eight and 9 \
              units of goods from the defeated vessel.",

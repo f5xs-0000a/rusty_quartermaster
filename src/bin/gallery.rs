@@ -609,8 +609,8 @@ const PILLAGE: &[&str] = &[
      booty!",
     // fight two: a loss
     "[01:12:00] You have been intercepted by the Xebec 'Thieving Stickleback'!",
-    "[01:13:00] Thieving Stickleback has grappled Test Vessel. A melee \
-     breaks out between the crews!",
+    "[01:13:00] Thieving Stickleback has grappled Test Vessel. A melee breaks \
+     out between the crews!",
     "[01:13:20] Playerone is eliminated!",
     "[01:14:00] Game over.  Winners: Nervy Hugh, Insane Yang.",
     "[01:14:05] The victors plundered 3,207 pieces of eight and 15 units of \

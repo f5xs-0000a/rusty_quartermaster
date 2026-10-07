@@ -160,8 +160,8 @@ fn parse_ocean(s: &str) -> Result<Ocean, String> {
 
 /// Pull the pirate name and ocean out of a Puzzle Pirates chat-log filename.
 ///
-/// Client logs are named `<PirateName>_<ocean>_ypp…`, e.g. `Playerone_emerald…` or
-/// `Mateone-East_emerald…`; the pirate name is a single underscore-delimited
+/// Client logs are named `<PirateName>_<ocean>_ypp…`, e.g. `Playerone_emerald…`
+/// or `Mateone-East_emerald…`; the pirate name is a single underscore-delimited
 /// field, so a hyphen inside it stays intact. Only the first two fields are
 /// consulted, and a value is returned solely when the second field names a live
 /// ocean — the parse fails closed for paths that don't follow the convention.
