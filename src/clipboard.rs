@@ -130,7 +130,9 @@ mod tests {
     /// at all.
     #[test]
     fn only_an_unreadable_report_carries_its_own_text() {
-        let unreadable = r#"{"sail":{"Foo":{"performance":9}}}"#;
+        // a figure of a width the parse does not take that key for
+        let unreadable = r#"{"sail":{"Foo":{"performance":3,
+            "maneuver_tokens":[1,1,1,1,1,1]}}}"#;
         let Some(Copied::UnreadDuty {
             text,
             names,

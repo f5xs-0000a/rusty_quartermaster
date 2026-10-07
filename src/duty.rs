@@ -97,14 +97,24 @@ pub enum ChestTier {
 /// A rating is relative to the pirate's own standing: an Incredible from an
 /// Able puzzler is a smaller contribution than an Incredible from a Legendary
 /// one, so a rating ranks a pirate against themselves and never against
-/// another pirate. The game also shows greenies one "Learning" in place of
-/// both [`Booched`](Self::Booched) and [`Poor`](Self::Poor), so the bottom
-/// two are not reliably told apart.
+/// another pirate.
+///
+/// The game writes a rank we have no word for, which a capture has shown
+/// listed below every rated pirate at its station while the same pirate was
+/// rated ordinarily at another. Standings are per-puzzle, and a greenie at
+/// one puzzle is shown "Learning" in place of both
+/// [`Booched`](Self::Booched) and [`Poor`](Self::Poor), which is the reading
+/// that fits; until a capture settles it the rank is kept as
+/// [`Unknown`](Self::Unknown) rather than named. A rank is a word or a number
+/// we hold onto, never a reason to lose a report.
 #[derive(
     Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
 )]
 #[serde(rename_all = "lowercase")]
 pub enum Performance {
+    /// A rank outside the words below, kept as the game wrote it. Ordered
+    /// under all of them, which is where the game itself has listed it.
+    Unknown(u64),
     Booched,
     Poor,
     Fine,
@@ -273,6 +283,7 @@ impl Performance {
     /// The word the game shows for this rating.
     pub fn label(self) -> &'static str {
         match self {
+            Self::Unknown(_) => "Unrated",
             Self::Booched => "Booched",
             Self::Poor => "Poor",
             Self::Fine => "Fine",
@@ -282,15 +293,18 @@ impl Performance {
         }
     }
 
-    fn from_rank(rank: u64) -> Option<Self> {
+    /// The rating a rank stands for. A rank we have no word for is the rank
+    /// itself: a report is the only record its interval will ever have, and
+    /// one line we cannot read the rating of is no reason to lose the rest.
+    fn from_rank(rank: u64) -> Self {
         match rank {
-            0 => Some(Self::Booched),
-            1 => Some(Self::Poor),
-            2 => Some(Self::Fine),
-            3 => Some(Self::Good),
-            4 => Some(Self::Excellent),
-            5 => Some(Self::Incredible),
-            _ => None,
+            0 => Self::Booched,
+            1 => Self::Poor,
+            2 => Self::Fine,
+            3 => Self::Good,
+            4 => Self::Excellent,
+            5 => Self::Incredible,
+            other => Self::Unknown(other),
         }
     }
 }
@@ -548,7 +562,7 @@ fn entry(name: String, fields: Ordered<Value>) -> Option<Entry> {
     for (key, value) in fields.0 {
         match key.as_str() {
             "performance" => {
-                performance = Some(Performance::from_rank(value.as_u64()?)?);
+                performance = Some(Performance::from_rank(value.as_u64()?));
             }
             _ => metrics.push(metric(key, value)?),
         }
@@ -849,9 +863,10 @@ mod tests {
             ]))
         );
 
-        // a rating off the end of the scale, and a station we cannot name
-        // alongside two we can
-        let text = r#"{"sail":{"Foo":{"performance":9}},
+        // a figure of a width we don't take it for, and a station we cannot
+        // name alongside two we can
+        let text = r#"{"sail":{"Foo":{"performance":3,
+            "maneuver_tokens":[1,1,1,1,1,1]}},
             "bilge":{"Bar":{"performance":2}},
             "forage":{"Baz":{"performance":2}}}"#;
         assert!(parse(text).is_none());
@@ -955,6 +970,50 @@ mod tests {
         );
     }
 
+    /// A rank we have no word for costs us the line's rating and nothing
+    /// else: the rest of the station reads, the figures are counted, and the
+    /// rank is kept as the game wrote it. A report is the only record its
+    /// interval will ever have, so one unreadable rating must not take the
+    /// other seventy with it.
+    #[test]
+    fn a_rank_we_have_no_word_for_keeps_the_report() {
+        let report = parse(
+            r#"{"carpentry":{"Foo":{"performance":5,
+                "maneuver_tokens":[2,0,0,0,0,0,0]},
+                "Bar":{"performance":2},
+                "Baz":{"performance":6,
+                "maneuver_tokens":[0,1,0,0,0,0,0]}}}"#,
+        )
+        .expect("report");
+        let carpentry = report.station(Skill::Carpentry).expect("carpentry");
+        let rated: Vec<_> = carpentry
+            .pirates
+            .iter()
+            .map(|p| (p.name.as_str(), p.performance))
+            .collect();
+        assert_eq!(
+            rated,
+            vec![
+                ("Foo", Performance::Incredible),
+                ("Bar", Performance::Fine),
+                ("Baz", Performance::Unknown(6)),
+            ]
+        );
+        // The game lists such a line under every rated one, which is where
+        // this rating sorts.
+        assert!(Performance::Unknown(6) < Performance::Booched);
+        // And the figure beside it counts like any other.
+        let run = vec![CopiedReport::new(&report, DateTime::UNIX_EPOCH)];
+        let tokens = maneuvers(&run);
+        assert_eq!(
+            tokens
+                .iter()
+                .map(|c| (c.name.as_str(), c.sum()))
+                .collect::<Vec<_>>(),
+            vec![("Baz", 1), ("Foo", 2)]
+        );
+    }
+
     #[test]
     fn rejects_other_text() {
         // a hold, the other thing the clipboard carries
@@ -962,9 +1021,11 @@ mod tests {
         assert!(parse("hello").is_none());
         assert!(parse("{}").is_none());
         assert!(parse(r#"{"sail":{}}"#).is_none());
-        // a line with no rating, or a rating off the end of the scale
+        // a line with no rating at all, or one that is no number. A rank we
+        // have no word for is another matter: see
+        // `a_rank_we_have_no_word_for_keeps_the_report`.
         assert!(parse(r#"{"sail":{"Foo":{}}}"#).is_none());
-        assert!(parse(r#"{"sail":{"Foo":{"performance":6}}}"#).is_none());
+        assert!(parse(r#"{"sail":{"Foo":{"performance":"Good"}}}"#).is_none());
         // a figure of a width we don't take it for
         assert!(
             parse(
