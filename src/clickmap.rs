@@ -17,6 +17,9 @@ pub enum ScrollView {
     /// The ranking in the Tokens and Chests box. Keeps its own window, there
     /// being no cursor in it to follow.
     JobberBoard,
+    /// The Boochers box, whose two lists share one window. Keeps its own,
+    /// there being no cursor in it to follow.
+    JobberBoochers,
     /// The skill tables in the pirate-stats popup. Keeps its own window.
     JobberPirateSkills,
     /// The Duty Timelapse's strip in the same popup, a window on a run of
@@ -125,6 +128,9 @@ pub enum ClickTarget {
     /// The head of one of its figure columns, the sum's counting last; a click
     /// ranks the board on it.
     JobberBoardColumn(usize),
+    /// The Boochers box. A click gives it the keys; it has no cursor of its
+    /// own for one to land on.
+    JobberBoochers,
     JobberPirate {
         pane: JobberPane,
         idx: usize,

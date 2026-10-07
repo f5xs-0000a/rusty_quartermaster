@@ -562,6 +562,54 @@ pub fn timelapse(reports: &[CopiedReport], name: &str) -> Option<Timelapse> {
 /// on a capture yet: the set grows with the encounter (foraging on a Cursed
 /// Isles landing or a forage expedition, navigating at a league point), and a
 /// station we cannot name is still worth keeping.
+/// What one report said about one pirate, as a running tally of booches
+/// counts it.
+///
+/// A rating is standing-relative, so the only thing a report says that can be
+/// counted against a pirate is that they fell short of their own bar. The
+/// verdict is over the whole report and not one station of it: a pirate rated
+/// at two stations has booched only if neither went better.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Verdict {
+    /// Every rating the report gave them is a booch.
+    Booched,
+    /// One of them is [`Fine`](Performance::Fine) or better, which is a
+    /// booch worked off.
+    Redeemed,
+    /// Rated, but neither: a [`Poor`](Performance::Poor) is nobody's good
+    /// interval and nobody's booch, and a rank we have no word for says
+    /// nothing we can count either way.
+    Unsaid,
+}
+
+/// How each pirate the report rated did by it, a name to a verdict.
+///
+/// A pirate the report does not name is not here at all, which is a different
+/// thing from being here with nothing said: one was not rated, the other was.
+pub fn verdicts(report: &DutyReport) -> BTreeMap<&str, Verdict> {
+    // (every rating so far is a booch, one of them is Fine or better)
+    let mut rated: BTreeMap<&str, (bool, bool)> = BTreeMap::new();
+    for station in &report.stations {
+        for pirate in &station.pirates {
+            let seen =
+                rated.entry(pirate.name.as_str()).or_insert((true, false));
+            seen.0 &= pirate.performance == Performance::Booched;
+            seen.1 |= Performance::Fine <= pirate.performance;
+        }
+    }
+    rated
+        .into_iter()
+        .map(|(name, (booched, redeemed))| {
+            let verdict = match (booched, redeemed) {
+                (true, _) => Verdict::Booched,
+                (false, true) => Verdict::Redeemed,
+                (false, false) => Verdict::Unsaid,
+            };
+            (name, verdict)
+        })
+        .collect()
+}
+
 /// The short name a duty is read under where its column of them stands beside
 /// a run of marks, as in the Duty Timelapse. Navigating is told from battle
 /// navigation, the game reporting the two at stations of their own.

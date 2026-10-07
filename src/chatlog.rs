@@ -16,7 +16,7 @@
 //! so history is in place before the first frame.
 
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
     fmt,
     sync::Arc,
     time::Duration,
@@ -345,6 +345,26 @@ pub struct WaveRecord {
 // Vessel
 // ---------------------------------------------------------------------------
 
+/// What a run's duty reports have counted against one pirate.
+///
+/// Both are walked rather than summed: a report that goes against a pirate
+/// steps the count up and one that goes for them steps it back down, so a bad
+/// interval fades and a habit does not. Neither falls below zero, there being
+/// no credit to be banked for later.
+///
+/// A rating is standing-relative and so cannot rank one pirate against
+/// another, but falling short of one's own bar is a pirate's own doing, and
+/// doing it again is the thing an officer is looking for.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub struct DutyTally {
+    /// Reports that rated them a booch at every station they worked, less
+    /// those that rated them Fine or better at one.
+    pub booched: u32,
+    /// Reports that rated them nowhere while they were aboard, less those
+    /// that rated them somewhere.
+    pub idled: u32,
+}
+
 /// State accumulated for a single vessel we've been aboard.
 #[derive(Default)]
 pub struct Vessel {
@@ -472,6 +492,12 @@ pub struct Vessel {
     /// Jobbers we (the player) planked. A set: each victim shows once even if
     /// planked across multiple battles. BTreeSet so iteration is alphabetical.
     pub planked_by_us: BTreeSet<String>,
+    /// How each pirate has been doing at the duties, as the run's reports have
+    /// come in. Kept per vessel and not per voyage, so a pirate who steps off
+    /// and comes back is read at the tally they left on rather than a clean
+    /// one. A pirate the reports have nothing against is still listed here at
+    /// zero, which is the record saying so.
+    pub duty_tallies: BTreeMap<String, DutyTally>,
     /// We left this vessel mid-run, so its data has gaps.
     pub poisoned: bool,
     /// We jobbed aboard via an offer, so the vessel's real name isn't known
@@ -2831,7 +2857,55 @@ impl GameState {
         voyage.duty_reports.push(crate::duty::CopiedReport::new(
             report, copied_at,
         ));
+        self.tally_duties(report);
         true
+    }
+
+    /// Walk the vessel's duty tallies on by one interval.
+    ///
+    /// A report is the interval's whole account of who worked: whoever it
+    /// rates was at a station, and whoever is aboard and goes unrated was at
+    /// none. Only pirates are counted - an NPC is not idling, it is crew.
+    ///
+    /// The roster is read as it stands when the report arrives, which is why
+    /// the tallies are walked as the reports come in rather than read off the
+    /// run afterwards: who was aboard for an interval is not in the report,
+    /// and the log only ever says who is aboard *now*. A pirate who boards
+    /// late therefore starts at nothing instead of answering for the
+    /// intervals they were nowhere near.
+    fn tally_duties(&mut self, report: &crate::duty::DutyReport) {
+        let Some(aboard) = self.current_aboard() else {
+            return;
+        };
+        let verdicts = crate::duty::verdicts(report);
+        let Some(vessel) = self.current_vessel_mut() else {
+            return;
+        };
+        for (name, verdict) in &verdicts {
+            if !crate::pirate::is_player_name(name) {
+                continue;
+            }
+            let tally =
+                vessel.duty_tallies.entry((*name).to_owned()).or_default();
+            match verdict {
+                crate::duty::Verdict::Booched => tally.booched += 1,
+                crate::duty::Verdict::Redeemed => {
+                    tally.booched = tally.booched.saturating_sub(1);
+                }
+                crate::duty::Verdict::Unsaid => {}
+            }
+            // rated at a station is the whole of not having idled, whatever
+            // the rating was
+            tally.idled = tally.idled.saturating_sub(1);
+        }
+        for name in &aboard {
+            if verdicts.contains_key(name.as_str())
+                || !crate::pirate::is_player_name(name)
+            {
+                continue;
+            }
+            vessel.duty_tallies.entry(name.clone()).or_default().idled += 1;
+        }
     }
 
     /// Record pirates as aboard the current vessel, returning how many were
@@ -3313,6 +3387,147 @@ mod tests {
         assert!(voyage.battles.is_empty());
         assert_eq!(voyage.duty_reports.len(), 1);
         assert_eq!(voyage.duty_reports[0].copied_at, copied);
+    }
+
+    /// A vessel with Foo, Bar and Baz aboard, ready to be told of reports.
+    fn crewed() -> GameState {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:01] Foo has come aboard.",
+            "[01:00:02] Bar has come aboard.",
+            "[01:00:03] Baz has come aboard.",
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+        ] {
+            gs.process_line(line);
+        }
+        gs
+    }
+
+    /// Note `text` as the next interval's report, which must be a new one.
+    fn note(gs: &mut GameState, text: &str) {
+        let report = crate::duty::parse(text).expect("a report");
+        assert!(gs.note_duty_report(&report, chrono::Utc::now()));
+    }
+
+    fn tally(gs: &GameState, name: &str) -> DutyTally {
+        gs.vessels["Test Vessel"]
+            .duty_tallies
+            .get(name)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// A booch steps the count up and a Fine or better steps it back down, so
+    /// one bad interval fades and a habit does not. Nothing in between moves
+    /// it, and it never falls below nothing.
+    #[test]
+    fn a_booch_is_walked_off_by_doing_better() {
+        let mut gs = crewed();
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":0}}}"#,
+        );
+        assert_eq!(tally(&gs, "Foo").booched, 1);
+
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":0},
+            "Bar":{"performance":3}}}"#,
+        );
+        assert_eq!(tally(&gs, "Foo").booched, 2);
+
+        // a Poor is nobody's booch and nobody's good interval
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":1}}}"#,
+        );
+        assert_eq!(tally(&gs, "Foo").booched, 2);
+
+        // Bar's rank only keeps each interval's report a report of its own
+        for (bar, expected) in [(5, 1), (4, 0), (3, 0)] {
+            note(
+                &mut gs,
+                &format!(
+                    r#"{{"bilge":{{"Foo":{{"performance":2}}}},
+                    "sail":{{"Bar":{{"performance":{bar}}}}}}}"#
+                ),
+            );
+            assert_eq!(tally(&gs, "Foo").booched, expected);
+        }
+    }
+
+    /// The verdict is over the whole report: a pirate who booched at one
+    /// station and did better at another has not booched the interval.
+    #[test]
+    fn a_better_station_answers_for_the_booched_one() {
+        let mut gs = crewed();
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":0}},
+                "sail":{"Foo":{"performance":4}}}"#,
+        );
+        assert_eq!(tally(&gs, "Foo").booched, 0);
+
+        // and two booched stations are still the one booch
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":0}},
+                "sail":{"Foo":{"performance":0}}}"#,
+        );
+        assert_eq!(tally(&gs, "Foo").booched, 1);
+    }
+
+    /// Being aboard and rated at nothing is what idling looks like, and being
+    /// rated anywhere answers it - a booched station included, since a pirate
+    /// who booched was at least at a station.
+    #[test]
+    fn going_unrated_while_aboard_is_idling() {
+        let mut gs = crewed();
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":3}}}"#,
+        );
+        assert_eq!(tally(&gs, "Bar").idled, 1);
+        assert_eq!(tally(&gs, "Foo").idled, 0);
+
+        note(
+            &mut gs,
+            r#"{"bilge":{"Foo":{"performance":4}}}"#,
+        );
+        assert_eq!(tally(&gs, "Bar").idled, 2);
+
+        note(
+            &mut gs,
+            r#"{"bilge":{"Bar":{"performance":0}}}"#,
+        );
+        assert_eq!(tally(&gs, "Bar").idled, 1);
+        assert_eq!(tally(&gs, "Bar").booched, 1);
+    }
+
+    /// The roster is read as the report arrives, so a pirate who boards late
+    /// answers for the intervals they were aboard for and no others.
+    #[test]
+    fn a_late_boarder_starts_at_nothing() {
+        let mut gs = crewed();
+        // Foo's rank only keeps each interval's report a report of its own
+        for rank in 3 ..= 5 {
+            note(
+                &mut gs,
+                &format!(r#"{{"bilge":{{"Foo":{{"performance":{rank}}}}}}}"#),
+            );
+        }
+        assert_eq!(tally(&gs, "Baz").idled, 3);
+
+        gs.process_line("[01:30:00] Qux has come aboard.");
+        note(
+            &mut gs,
+            r#"{"sail":{"Foo":{"performance":5}}}"#,
+        );
+        assert_eq!(tally(&gs, "Qux").idled, 1);
+        assert_eq!(tally(&gs, "Baz").idled, 4);
     }
 
     #[test]

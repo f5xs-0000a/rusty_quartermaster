@@ -744,6 +744,10 @@ pub enum JobberFocus {
     /// something in it — see [`boards`]). Its list scrolls and its tabs and
     /// column heads answer to keys of their own.
     Board,
+    /// The Boochers box, which stands over the Planked pane wherever that
+    /// pane sits. Drawn only once the reports have something against someone
+    /// aboard — see [`marks`].
+    Boochers,
 }
 
 #[derive(Default)]
@@ -781,6 +785,11 @@ pub struct JobbersUi {
     pub treasures_ranking: Ranking,
     pub tokens_offset: usize,
     pub treasures_offset: usize,
+    /// How far down the Boochers box is scrolled, and how far down it can be
+    /// — what the last render left to show, so ↓ knows when the box has said
+    /// everything and the keys should leave for the pane under it.
+    pub boochers_offset: usize,
+    pub boochers_max_offset: usize,
     /// How many entries each Top Jobbers column shows. `None` (the default)
     /// shows the whole ranked list with no cap.
     pub leaderboard_size: Option<usize>,
@@ -1169,6 +1178,12 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
                  panes \u{00b7} \u{2191}/\u{2193} scroll",
             ]
         }
+        JobberFocus::Boochers => {
+            vec![
+                "Dim: once \u{00b7} plain: again \u{00b7} \u{2190}/\u{2192} \
+                 panes \u{00b7} \u{2191}/\u{2193} scroll",
+            ]
+        }
     }
 }
 
@@ -1471,11 +1486,11 @@ pub fn render(
 
     let implemented = ui.voyage_type.implemented();
     let panes = ui.voyage_type.panes();
-    // The Tokens and Chests box, where the run has earned one. It stands
-    // beside the panes, which stack one over the other to make the column for
-    // it, so its presence is the layout's and not just a widget's.
+    // The two boxes the duty reports earn, both of which take their room from
+    // the row the panes share: the Tokens and Chests box a column of its own
+    // before the last pane, and the Boochers box the rows over that pane.
     let boards = boards(state, selected.as_ref(), ui.voyage_type);
-    let stacked = boards.is_some();
+    let marks = marks(state, selected.as_ref());
 
     // The Unpoison button is only focusable while the vessel is poisoned, and a
     // pane is only focusable when this voyage type actually shows it — bounce
@@ -1501,8 +1516,9 @@ pub fn render(
     if focused_pane.is_some_and(|p| !panes.contains(&p)) {
         ui.focus = JobberFocus::VoyageType;
     }
-    // The Tokens and Chests box is only focusable while it is drawn.
-    if ui.focus == JobberFocus::Board && !stacked {
+    // The Tokens and Chests box is only focusable while it is drawn. The
+    // Boochers box always is, so there is nothing to bounce out of.
+    if ui.focus == JobberFocus::Board && boards.is_none() {
         ui.focus = JobberFocus::VoyageType;
     }
     // The Skill Distribution button is only focusable on voyage types that show
@@ -1661,15 +1677,26 @@ pub fn render(
             }
         })
         .collect();
-    // Stacked, the panes share one column as wide as the widest of them, and
-    // the box stands beside it; side by side they each take their own width.
-    let pane_col_w = pane_widths.iter().copied().max().unwrap_or(0);
+    // Columns the pane row comes to, left to right: a pane each, the Tokens
+    // and Chests box slipped in before the last of them, and that last pane's
+    // column widened to carry the Boochers box standing over it.
     let board_w = boards.as_ref().map_or(0, board_box_width);
-    let panes_w: u16 = if stacked {
-        pane_col_w + board_w
-    } else {
-        pane_widths.iter().sum()
-    };
+    let marks_w = marks_box_width(&marks);
+    let last_pane = pane_widths.len().saturating_sub(1);
+    let mut col_widths: Vec<u16> = Vec::with_capacity(pane_widths.len() + 1);
+    for (i, pane_w) in pane_widths.iter().enumerate() {
+        if i == last_pane && 0 < board_w {
+            col_widths.push(board_w);
+        }
+        col_widths.push(
+            if i == last_pane {
+                (*pane_w).max(marks_w)
+            } else {
+                *pane_w
+            },
+        );
+    }
+    let panes_w: u16 = col_widths.iter().sum();
 
     // ---- Stats box sizing (Vampirates waves) ----
     // A small non-selectable `label | value` table between Voyage and Top
@@ -2017,14 +2044,18 @@ pub fn render(
             (rows as u16).saturating_add(pinned(pane) + 2)
         })
         .collect();
-    // Side by side the panes share one height, so it must suit whichever of
-    // them pins the most; stacked they each take their own, so the column
-    // must hold every floor at once.
-    let pane_min = if stacked {
-        pane_floors.iter().sum::<u16>().max(board_box_min_height())
-    } else {
-        pane_floors.iter().copied().max().unwrap_or(0)
-    };
+    // The panes share one height, so the row must suit every column of it:
+    // whichever pane pins the most, the box beside them, and the last pane's
+    // column, which carries the Boochers box's floor on top of its own.
+    let last_col_min =
+        pane_floors.last().copied().unwrap_or(0) + marks_box_min_height();
+    let pane_min = pane_floors
+        .iter()
+        .copied()
+        .max()
+        .unwrap_or(0)
+        .max(last_col_min)
+        .max(boards.as_ref().map_or(0, |_| board_box_min_height()));
     // The same floor for the Skill Leaderboard, whose header and borders are
     // the 3 rows `top_h` adds to its ranking. A window capped below the floor
     // can never show four rows, so there the cap is the floor.
@@ -2144,6 +2175,19 @@ pub fn render(
             focused,
             regions,
         );
+        let pane_cols = render_pane_row(
+            frame,
+            main[1],
+            cache,
+            &col_widths,
+            boards.as_ref(),
+            &marks,
+            &pane_wants,
+            &pane_floors,
+            ui,
+            focused,
+            regions,
+        );
         render_panes(
             frame,
             state,
@@ -2154,7 +2198,7 @@ pub fn render(
             ui,
             focused,
             panes,
-            &pane_areas(main[1], &pane_widths),
+            &pane_cols,
             regions,
         );
         rows[3]
@@ -2201,25 +2245,19 @@ pub fn render(
                 regions,
             );
         }
-        // Stacked, the panes take a column of their own and the Tokens and
-        // Chests box the rest of the row: it runs the whole way down beside
-        // them, a box that stopped level with the upper pane reading as a
-        // hole in the page rather than as one that had said its piece.
-        let pane_cols = if stacked {
-            let split = Layout::horizontal([
-                Constraint::Length(pane_col_w),
-                Constraint::Min(0),
-            ])
-            .split(rows[5]);
-            if let Some(boards) = &boards {
-                render_board_box(
-                    frame, split[1], boards, ui, focused, regions,
-                );
-            }
-            stacked_pane_areas(split[0], &pane_wants, &pane_floors)
-        } else {
-            pane_areas(rows[5], &pane_widths)
-        };
+        let pane_cols = render_pane_row(
+            frame,
+            rows[5],
+            cache,
+            &col_widths,
+            boards.as_ref(),
+            &marks,
+            &pane_wants,
+            &pane_floors,
+            ui,
+            focused,
+            regions,
+        );
         render_panes(
             frame,
             state,
@@ -3623,14 +3661,69 @@ fn pane_areas(area: Rect, widths: &[u16]) -> Vec<Rect> {
     Layout::horizontal(constraints).split(area).to_vec()
 }
 
+/// Lay out the row the panes share, drawing the two boxes that share it with
+/// them and answering with a column per pane.
+///
+/// The Tokens and Chests box takes a column of its own just before the last
+/// pane, and the Boochers box stands over that last pane - which is Planked
+/// on every layout that has one, so the pair reads down the right-hand side
+/// however many panes are to their left. The two fight each other for the
+/// column's rows the way stacked panes do, neither falling below its floor.
+#[allow(clippy::too_many_arguments)] // a row's worth of boxes to draw
+fn render_pane_row(
+    frame: &mut Frame,
+    area: Rect,
+    cache: &PirateCache,
+    col_widths: &[u16],
+    boards: Option<&Boards>,
+    marks: &Marks,
+    wants: &[u16],
+    floors: &[u16],
+    ui: &mut JobbersUi,
+    focused: bool,
+    regions: &mut ClickMap,
+) -> Vec<Rect> {
+    let cols = pane_areas(area, col_widths);
+    let last_pane = floors.len().saturating_sub(1);
+    let mut panes: Vec<Rect> = cols.iter().take(last_pane).copied().collect();
+    if let (Some(boards), Some(col)) = (boards, cols.get(last_pane)) {
+        render_board_box(
+            frame, *col, boards, ui, focused, regions,
+        );
+    }
+    let Some(last_col) = cols.last().copied() else {
+        return panes;
+    };
+    let rows = stacked_pane_areas(
+        last_col,
+        &[
+            marks_lines(cache, marks).len() as u16 + 2,
+            wants.get(last_pane).copied().unwrap_or(0),
+        ],
+        &[
+            marks_box_min_height(),
+            floors.get(last_pane).copied().unwrap_or(0),
+        ],
+    );
+    render_marks_box(
+        frame, rows[0], cache, marks, ui, focused, regions,
+    );
+    panes.push(rows[1]);
+    panes
+}
+
 /// Where each pane goes in a column they share one over the other.
 ///
 /// The panes fight each other for the rows: each is floored at what it cannot
 /// read without (`floors`), and what is left over is shared in proportion to
 /// the rows each would fill (`wants`), so the longer roster draws the larger
 /// share. Neither is given more than it can fill while the other still has a
-/// list to scroll, and rows nobody can fill go to the first pane, the page
-/// reading better with its slack at the top than between the two.
+/// list to scroll.
+///
+/// Rows nobody can fill are split evenly, the odd one to the first. Two boxes
+/// with nothing in either of them are then the same height, which is what
+/// having nothing to say looks like - one of them towering over the other
+/// would read as the taller having something the shorter had not.
 fn stacked_pane_areas(area: Rect, wants: &[u16], floors: &[u16]) -> Vec<Rect> {
     let mut given: Vec<u16> = floors.to_vec();
     let mut spare = area.height.saturating_sub(floors.iter().sum::<u16>());
@@ -3641,13 +3734,15 @@ fn stacked_pane_areas(area: Rect, wants: &[u16], floors: &[u16]) -> Vec<Rect> {
         .collect();
     let total: u16 = needs.iter().sum();
     if total <= spare {
-        // Room for every pane's whole list: the rest goes to the first.
+        // Room for every pane's whole list, and the rest shared out evenly.
         for (give, need) in given.iter_mut().zip(&needs) {
             *give += need;
         }
         spare -= total;
-        if let Some(first) = given.first_mut() {
-            *first += spare;
+        let n = given.len().max(1) as u16;
+        let (each, odd) = (spare / n, spare % n);
+        for (i, give) in given.iter_mut().enumerate() {
+            *give += each + u16::from((i as u16) < odd);
         }
     } else if 0 < total {
         // Short of that, each takes a share of the spare rows in proportion
@@ -3890,6 +3985,90 @@ impl Boards {
     }
 }
 
+/// One name under a Boochers heading, and whether the tally behind it has
+/// said so more than once.
+///
+/// The tally itself is not drawn. What an officer is deciding is who to look
+/// at, and a number invites a comparison the figure cannot carry: one booch
+/// is a bad interval and is read quietly, two is a habit and is read plainly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marked {
+    pub name: String,
+    /// The tally has reached two, so the name is read in full rather than
+    /// dimmed.
+    pub repeated: bool,
+}
+
+/// Who the run's reports have marked, under the two headings the Boochers box
+/// reads them under. Either list stands empty where nobody is on it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Marks {
+    pub boochers: Vec<Marked>,
+    pub idlers: Vec<Marked>,
+}
+
+impl Marks {
+    /// The headings with somebody under them, in reading order. A heading over
+    /// nobody is not drawn, so a box with one list shows one.
+    pub fn sections(&self) -> Vec<(&'static str, &[Marked])> {
+        [("Boochers", &self.boochers), ("Idlers", &self.idlers)]
+            .into_iter()
+            .filter(|(_, marked)| !marked.is_empty())
+            .map(|(head, marked)| (head, marked.as_slice()))
+            .collect()
+    }
+}
+
+/// Who the selected vessel's duty tallies have marked.
+///
+/// The box itself always stands. That it has nothing on anybody is worth
+/// reading, and is not the same claim as not having looked; it is the
+/// headings inside that come and go with the names under them.
+///
+/// Only pirates aboard right now are read: the box is there to be acted on,
+/// and nothing can be done about a jobber who has already gone. Their tally
+/// is kept all the same ([`crate::chatlog::Vessel::duty_tallies`]), so one
+/// who comes back is read at the tally they left on.
+///
+/// Names are ordered by how much the tally has against them, the worst first,
+/// and alphabetically where it has the same.
+pub fn marks(state: &GameState, selected: Option<&Arc<str>>) -> Marks {
+    let mut boochers: Vec<(u32, Marked)> = Vec::new();
+    let mut idlers: Vec<(u32, Marked)> = Vec::new();
+    let aboard = selected
+        .and_then(|key| state.vessels.get(key).map(|v| (v, state.aboard(key))));
+    if let Some((vessel, aboard)) = aboard {
+        for (name, tally) in &vessel.duty_tallies {
+            if !aboard.contains(name) {
+                continue;
+            }
+            for (count, list) in
+                [(tally.booched, &mut boochers), (tally.idled, &mut idlers)]
+            {
+                if count == 0 {
+                    continue;
+                }
+                list.push((
+                    count,
+                    Marked {
+                        name: name.clone(),
+                        repeated: 2 <= count,
+                    },
+                ));
+            }
+        }
+    }
+    // the map is read in name order, so sorting on the count alone and
+    // keeping it stable leaves ties alphabetical
+    for list in [&mut boochers, &mut idlers] {
+        list.sort_by(|(one, _), (two, _)| two.cmp(one));
+    }
+    Marks {
+        boochers: boochers.into_iter().map(|(_, m)| m).collect(),
+        idlers: idlers.into_iter().map(|(_, m)| m).collect(),
+    }
+}
+
 /// The Tokens and Chests boards for the selected vessel, or `None` where the
 /// box is not drawn at all.
 ///
@@ -4091,6 +4270,121 @@ fn board_box_width(boards: &Boards) -> u16 {
 /// column heads, a scrollable view's worth of ranking, and its borders.
 fn board_box_min_height() -> u16 {
     3 + crate::utils::SCROLL_MIN_ROWS + 2
+}
+
+/// Title of the Boochers box, which reads both of its lists.
+const BOOCHERS_BOX_TITLE: &str = "Boochers";
+
+/// What the Pirate popup reads where the pirate's pages have not landed yet.
+/// Named here because the popup is sized to it as well as drawing it.
+const PIRATE_STATS_UNREAD: &str = "Pirate stats not loaded yet.";
+
+/// The lines the Boochers box reads, a heading to each list and its names
+/// indented under it. One blank between the lists, none at either end.
+fn marks_lines(cache: &PirateCache, marks: &Marks) -> Vec<Line<'static>> {
+    let mut lines = Vec::new();
+    for (head, listed) in marks.sections() {
+        if !lines.is_empty() {
+            lines.push(Line::from(""));
+        }
+        lines.push(Line::from(Span::styled(
+            head,
+            Style::default().bold().underlined(),
+        )));
+        for marked in listed {
+            // One lapse is a bad interval and is read quietly; twice is a
+            // habit and is read as plainly as the rosters read a name.
+            let style = if marked.repeated {
+                name_colour(cache, &marked.name)
+            } else {
+                Style::default().fg(Color::DarkGray)
+            };
+            lines.push(Line::from(vec![
+                Span::raw(" ".repeat(ABOARD_INDENT)),
+                Span::styled(marked.name.clone(), style),
+            ]));
+        }
+    }
+    lines
+}
+
+/// The width the Boochers box must have: its widest line inside the margins,
+/// the room its list keeps for a scrollbar, and never less than its title.
+fn marks_box_width(marks: &Marks) -> u16 {
+    let widest = marks
+        .sections()
+        .into_iter()
+        .flat_map(|(head, listed)| {
+            std::iter::once(head.chars().count()).chain(
+                listed
+                    .iter()
+                    .map(|m| ABOARD_INDENT + m.name.chars().count()),
+            )
+        })
+        .max()
+        .unwrap_or(0) as u16;
+    (widest + crate::utils::BOX_MARGIN + crate::utils::SCROLLBAR_W)
+        .max(offset_title_width(BOOCHERS_BOX_TITLE))
+}
+
+/// Rows the box cannot do without: a scrollable view's worth of its lists and
+/// its borders. The headings scroll with the names, a heading being no use
+/// pinned over a list it may not be naming.
+fn marks_box_min_height() -> u16 {
+    crate::utils::SCROLL_MIN_ROWS + 2
+}
+
+/// Render the Boochers box: who the reports have against them, under the two
+/// headings they are read under.
+fn render_marks_box(
+    frame: &mut Frame,
+    area: Rect,
+    cache: &PirateCache,
+    marks: &Marks,
+    ui: &mut JobbersUi,
+    page_focused: bool,
+    regions: &mut ClickMap,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(box_border(
+            page_focused,
+            ui.focus == JobberFocus::Boochers,
+        ))
+        .padding(Padding::horizontal(1))
+        .title(offset_title(BOOCHERS_BOX_TITLE).0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::JobberBoochers,
+    });
+    if inner.height == 0 {
+        return;
+    }
+
+    let lines = marks_lines(cache, marks);
+    let view_h = inner.height as usize;
+    ui.boochers_max_offset = lines.len().saturating_sub(view_h);
+    ui.boochers_offset = ui.boochers_offset.min(ui.boochers_max_offset);
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        inner,
+        crate::clickmap::ScrollView::JobberBoochers,
+        ui.boochers_offset,
+        lines.len(),
+    );
+    frame.render_widget(
+        Paragraph::new(
+            lines
+                .into_iter()
+                .skip(ui.boochers_offset)
+                .take(view_h)
+                .collect::<Vec<Line>>(),
+        ),
+        body,
+    );
 }
 
 /// Render the Tokens and Chests box: a tab strip over a ranked table of what
@@ -5653,10 +5947,23 @@ fn render_pirate_popup(
     // when the popup is wider they expand to fill, content centered within
     // each half.
     const AFFIL_GAP: u16 = 2;
-    let affil_w = 2 * crew_w.max(flag_w) + AFFIL_GAP;
+    // Both halves say what the pirate's pages said, so neither is drawn until
+    // the pages have landed. "No crew" is a claim about a pirate we have read
+    // and not one we have yet to look up, and a popup opened on a pirate the
+    // queue has not reached must not make it on their behalf.
+    let affil = cached.is_some();
+    let affil_w = if affil {
+        2 * crew_w.max(flag_w) + AFFIL_GAP
+    } else {
+        0
+    };
     // The crew column may be 3 lines tall (with a role); the row fits the
-    // taller.
-    let affil_h = crew_lines.len().max(flag_lines.len()) as u16;
+    // taller. Nothing to say, no rows and no gap under them.
+    let affil_h = if affil {
+        crew_lines.len().max(flag_lines.len()) as u16
+    } else {
+        0
+    };
 
     // --- Build the skill tables (one per family, in popup order). ---
     let sections: [(&str, &[Skill]); 3] = [
@@ -5683,16 +5990,13 @@ fn render_pirate_popup(
 
     let mut skill_lines: Vec<Line> = Vec::new();
     let mut table_title_w = 0usize;
+    // Said in place of the tables where there are none. It belongs to the
+    // popup rather than to the block the tables are centered as, there being
+    // no table for it to line up with, so it is centered across the body on
+    // its own.
+    let mut instead: Option<&'static str> = None;
     match cached {
-        None => {
-            skill_lines.push(
-                Line::from(Span::styled(
-                    "Stats not loaded yet.",
-                    muted,
-                ))
-                .centered(),
-            )
-        }
+        None => instead = Some(PIRATE_STATS_UNREAD),
         Some(c) => {
             let mut first = true;
             for (title, skills) in sections {
@@ -5729,13 +6033,7 @@ fn render_pirate_popup(
                 }
             }
             if skill_lines.is_empty() {
-                skill_lines.push(
-                    Line::from(Span::styled(
-                        "No skills recorded.",
-                        muted,
-                    ))
-                    .centered(),
-                );
+                instead = Some("No skills recorded.");
             }
         }
     }
@@ -5748,7 +6046,7 @@ fn render_pirate_popup(
     // line), so the whole section can be centered within the popup.
     let skills_block_w = skill_row_w
         .max(table_title_w)
-        .max("Stats not loaded yet.".len())
+        .max(PIRATE_STATS_UNREAD.len())
         .max("No skills recorded.".len());
 
     // --- Geometry ---
@@ -5813,25 +6111,40 @@ fn render_pirate_popup(
     // The standings keep the column they are centered in; the note spans the
     // body, so the two are laid out in one block as wide as the body and the
     // tables are indented into their place within it.
+    //
+    // A line of the block that wants centering is centered *within the
+    // block*, by padding, and handed over left-aligned. Left to the line's own
+    // alignment it would be centered a second time, on the indent as well as
+    // on itself, and would sit off to one side of everything around it.
     let indent = body_w.saturating_sub(skills_block_w) / 2;
     let scroll_lines: Vec<Line> = note_lines
         .into_iter()
         .chain(skill_lines.into_iter().map(|line| {
-            if indent == 0 {
-                return line;
+            let centered = line.alignment == Some(Alignment::Center);
+            let pad = indent
+                + if centered {
+                    skills_block_w.saturating_sub(line.width()) / 2
+                } else {
+                    0
+                };
+            if pad == 0 {
+                return line.alignment(Alignment::Left);
             }
-            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            let mut spans = vec![Span::raw(" ".repeat(pad))];
             spans.extend(line.spans);
-            Line::from(spans)
-                .alignment(line.alignment.unwrap_or(Alignment::Left))
+            Line::from(spans).alignment(Alignment::Left)
         }))
+        .chain(
+            instead
+                .map(|said| Line::from(Span::styled(said, muted)).centered()),
+        )
         .collect();
     // name + gap + affil + gap + timelapse + body + gap + buttons, plus
     // borders(2).
     let box_h = (1
         + 1
         + affil_h
-        + 1
+        + u16::from(affil)
         + timelapse_h
         + scroll_lines.len() as u16
         + 1
@@ -5851,14 +6164,14 @@ fn render_pirate_popup(
     frame.render_widget(block, popup);
 
     let rows = Layout::vertical([
-        Constraint::Length(1),           // name
-        Constraint::Length(1),           // gap
-        Constraint::Length(affil_h),     // crew | flag
-        Constraint::Length(1),           // gap
-        Constraint::Length(timelapse_h), // the Duty Timelapse
-        Constraint::Min(0),              // the note and the standings
-        Constraint::Length(1),           // gap
-        Constraint::Length(1),           // buttons
+        Constraint::Length(1),            // name
+        Constraint::Length(1),            // gap
+        Constraint::Length(affil_h),      // crew | flag
+        Constraint::Length(affil.into()), // gap
+        Constraint::Length(timelapse_h),  // the Duty Timelapse
+        Constraint::Min(0),               // the note and the standings
+        Constraint::Length(1),            // gap
+        Constraint::Length(1),            // buttons
     ])
     .split(inner);
 
@@ -6723,22 +7036,27 @@ mod board_tests {
         assert!(boards(&state, Some(&key), VoyageType::Atlantis).is_some());
     }
 
-    /// Stacked, the panes are floored at a scrollable view's worth each and
-    /// the rows left over go to the pane with the longer list waiting.
+    /// Stacked, the boxes are floored at a scrollable view's worth each and
+    /// the rows left over go to the one with the longer list waiting - or
+    /// evenly, where neither has a list at all.
     #[test]
     fn stacked_panes_are_floored_before_they_are_shared() {
         let area = Rect::new(0, 0, 20, 25);
         let floors = [7, 6];
 
-        // Neither has a list the room cannot hold: the slack goes to the
-        // first, and both keep their floor.
+        // Neither has a list the room cannot hold: each keeps its floor and
+        // the slack is split, so having nothing to say looks the same in
+        // both. The odd row goes to the first.
         let areas = stacked_pane_areas(area, &[6, 2], &floors);
         assert_eq!(areas.len(), 2);
         assert_eq!(
             areas[0].height + areas[1].height,
             area.height
         );
-        assert_eq!(areas[1].height, floors[1]);
+        assert_eq!(
+            areas[0].height - floors[0],
+            areas[1].height - floors[1]
+        );
         assert_eq!(areas[0].y, area.y);
         assert_eq!(areas[1].y, area.y + areas[0].height);
 
@@ -6753,6 +7071,105 @@ mod board_tests {
         assert!(floors[0] < areas[0].height);
         assert!(floors[1] < areas[1].height);
         assert!(areas[1].height < areas[0].height);
+    }
+
+    /// The names the box reads are only those still aboard - nothing can be
+    /// done about a jobber who has gone - and the tally is kept all the same,
+    /// so one who comes back is read at the tally they left on.
+    #[test]
+    fn only_those_still_aboard_are_named() {
+        let (mut state, key) = atlantis();
+        state.process_line("[01:02:00] Foo has come aboard.");
+        state.process_line("[01:02:01] Bar has come aboard.");
+        copy(
+            &mut state,
+            r#"{"sail":{"Foo":{"performance":0}}}"#,
+        );
+
+        let read = marks(&state, Some(&key));
+        assert_eq!(
+            read.boochers.iter().map(|m| &m.name).collect::<Vec<_>>(),
+            vec!["Foo"]
+        );
+        assert_eq!(
+            read.idlers.iter().map(|m| &m.name).collect::<Vec<_>>(),
+            vec!["Bar"]
+        );
+
+        state.process_line("[01:10:00] Foo has left the vessel.");
+        let read = marks(&state, Some(&key));
+        assert!(read.boochers.is_empty());
+        // and the tally itself is untouched by their leaving
+        assert_eq!(
+            state.vessels[&key].duty_tallies["Foo"].booched,
+            1
+        );
+    }
+
+    /// The worst are read first, and a tally of one is read quietly: one bad
+    /// interval is not the habit the box is there to show.
+    #[test]
+    fn the_worst_are_read_first_and_once_is_read_quietly() {
+        let (mut state, key) = atlantis();
+        for name in ["Foo", "Bar", "Baz"] {
+            state.process_line(&format!(
+                "[01:02:00] {name} has come aboard."
+            ));
+        }
+        // Foo booches twice, Bar once, and Baz works throughout
+        for sail in [3, 4] {
+            copy(
+                &mut state,
+                &format!(
+                    r#"{{"bilge":{{"Foo":{{"performance":0}}}},
+                    "sail":{{"Baz":{{"performance":{sail}}}}}}}"#
+                ),
+            );
+        }
+        copy(
+            &mut state,
+            r#"{"bilge":{"Bar":{"performance":0}},
+                "sail":{"Baz":{"performance":5}}}"#,
+        );
+
+        let read = marks(&state, Some(&key));
+        assert_eq!(
+            read.boochers
+                .iter()
+                .map(|m| (m.name.as_str(), m.repeated))
+                .collect::<Vec<_>>(),
+            vec![("Foo", true), ("Bar", false)]
+        );
+        // Baz was rated at every interval, so nothing is held against them
+        assert!(!read.idlers.iter().any(|m| m.name == "Baz"));
+    }
+
+    /// A heading over nobody is not read at all, so a box with one list shows
+    /// one; and a run with nothing against anybody draws no box.
+    #[test]
+    fn a_heading_over_nobody_is_not_read() {
+        let (mut state, key) = atlantis();
+        state.process_line("[01:02:00] Foo has come aboard.");
+        copy(
+            &mut state,
+            r#"{"sail":{"Foo":{"performance":0}}}"#,
+        );
+
+        let read = marks(&state, Some(&key));
+        assert_eq!(
+            read.sections()
+                .iter()
+                .map(|(head, _)| *head)
+                .collect::<Vec<_>>(),
+            vec!["Boochers"]
+        );
+
+        // worked off, and the box that still stands reads nothing at all
+        copy(
+            &mut state,
+            r#"{"sail":{"Foo":{"performance":4}}}"#,
+        );
+        assert!(marks(&state, Some(&key)).sections().is_empty());
     }
 }
 

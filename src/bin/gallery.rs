@@ -671,6 +671,22 @@ const ATLANTIS_REPORTS: [&str; 2] = [
                 "Matethree":{"performance":4,"m.treasure_hauled":[5,1,0]}}}"#,
 ];
 
+/// Three intervals of an Atlantis that leave somebody under each of the
+/// Boochers box's headings: Matetwo booched twice and so is read plainly,
+/// Matethree once and so is read quietly, and Playerone - at the helm, which
+/// no report of these rates - was at no station any of the three times.
+const BOOCHED: [&str; 3] = [
+    r#"{"sail":{"Matetwo":{"performance":0,
+                           "maneuver_tokens":[4,1,0,2,0,0,0]},
+               "Matethree":{"performance":0,
+                            "maneuver_tokens":[2,0,1,0,0,0,0]}}}"#,
+    r#"{"sail":{"Matetwo":{"performance":0,
+                           "maneuver_tokens":[3,2,0,1,0,0,0]}}}"#,
+    r#"{"haul":{"Matetwo":{"performance":1,"m.treasure_hauled":[3,1,1]},
+                "Matethree":{"performance":1,
+                             "m.treasure_hauled":[1,0,0]}}}"#,
+];
+
 /// One pirate's duties over an Atlantis, a station to the line and a report
 /// to the character: the rank the report gave them there, or `.` for an
 /// interval it did not rate them at that station at all. An interval every
@@ -1696,6 +1712,25 @@ fn jobbers_states(states: &mut Vec<State>) {
         }));
     }
 
+    // The Boochers box with somebody under each of its headings. The box
+    // stands on every layout whether or not it has anything to say, so the
+    // states above show it empty; this is it with the tallies walked up.
+    states.push(state(
+        "jobbers-boochers",
+        "Jobbers, Boochers and Idlers over the Planked pane",
+        |shell| {
+            feed(shell, ATLANTIS);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::Atlantis;
+            for text in BOOCHED {
+                let report =
+                    rusty_quartermaster::duty::parse(text).expect("report");
+                shell.take_duty_report(&report, chrono::Utc::now());
+            }
+            shell.jobbers_ui.focus = JobberFocus::Boochers;
+        },
+    ));
+
     // The Duty Timelapse: what the run's reports said about one pirate, a duty
     // to the row and a report to the column, read above the note and the
     // standings. The window sits at the newest report unless it is walked
@@ -1947,6 +1982,26 @@ fn jobbers_states(states: &mut Vec<State>) {
             feed(shell, PILLAGE);
             open(shell, AppId::Chatlog, true);
             cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 0,
+                offset: 0,
+                view_h: 0,
+                note: Some(NOTE.to_owned()),
+                ..PiratePopup::default()
+            });
+        },
+    ));
+    // A note stands on its own: it is read out of our own file and not off
+    // the pirate's pages, so it is there to be read and written whether or
+    // not the queue has reached them. The crew and the flag are the halves
+    // that wait, those being theirs to say and not ours.
+    states.push(state(
+        "jobbers-popup-pirate-note-unread",
+        "Jobbers, a note on a pirate whose pages have not landed",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
             shell.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: "Matetwo".to_owned(),
                 button: 0,
