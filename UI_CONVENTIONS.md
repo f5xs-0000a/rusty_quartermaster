@@ -936,12 +936,12 @@ A vertical list the user picks from marks the selected row by highlighting it,
 with no `> ` prefix:
 
 ```
-┌─── Voyage Type ───┐          ┌─── Voyage Type ───┐
-│ Pillage           │          │   Pillage         │
-│ Vampirates        │          │   Vampirates      │
-│ Atlantis          │ ← hl     │ > Atlantis        │ ← hl
-│ Cursed Isles      │          │   Cursed Isles    │
-└───────────────────┘          └───────────────────┘
+┌─── Voyage Type ────┐          ┌─── Voyage Type ──────┐
+│    Pillage         │          │      Pillage         │
+│    Vampirates      │          │      Vampirates      │
+│    Atlantis        │ ← hl     │    > Atlantis        │ ← hl
+│    Cursed Isles    │          │      Cursed Isles    │
+└────────────────────┘          └──────────────────────┘
 ```
 
 The highlight already says which row it is, and it says so in a way the marker
@@ -954,16 +954,62 @@ whole column moves instead — which matters because the box is usually held ope
 by its title rather than by its longest entry:
 
 ```
-┌─── Voyage Type ───┐          ┌─── Voyage Type ───┐
-│   Pillage         │          │ Pillage           │
-│   Vampirates      │          │ Vampirates        │
-│   Cursed Isles    │          │ Cursed Isles      │
-└───────────────────┘          └───────────────────┘
-   block centered                 flush left, box
-   in the box's slack             looking lopsided
+┌─── Voyage Type ────┐          ┌─── Voyage Type ────┐
+│    Pillage         │          │ Pillage            │
+│    Vampirates      │          │ Vampirates         │
+│    Cursed Isles    │          │ Cursed Isles       │
+└────────────────────┘          └────────────────────┘
+   block centered                  flush left, box
+   in the box's slack              looking lopsided
 ```
 
 `utils::choice_block` is `titled_block` with that offset applied.
+
+### A highlight reaches one column past the words it marks
+
+The highlight is the whole of what says which row the user is on, so how far it
+reaches is what says which words it is marking. It is drawn around the **block
+of labels**: as wide as the widest of them and one column either side, the same
+width on every row, since every row is as choosable as the next.
+
+```
+┌─── Voyage Type ────┐   ┌─── Voyage Type ───┐    ┌─── Voyage Type ───┐
+│   #Pillage######   │   │ ##Pillage######## │    │   Pillage######## │
+│   #Vikings######   │   │ ##Vikings######## │    │   Vikings######## │
+│   #Haunted Seas#   │   │ ##Haunted Seas### │    │   Haunted Seas### │
+└────────────────────┘   └───────────────────┘    └───────────────────┘
+  around the words        around the box            ending at the text
+```
+
+(`#` marks a highlighted cell; `Haunted Seas` is the row the user is on, the
+other two rows showing where its bar would fall.) Reaching for the box takes
+in the slack the title holds it open with, and reads as a bar the words are
+adrift inside; ending at the letters leaves the bar flush against the first of
+them and loose past the last. One column either side marks the words
+themselves, wherever the box's width leaves that block sitting.
+
+Two things follow for the box, which is why the first of those is a column
+wider than the other two:
+
+- **The bar's columns are the list's own**, counted in what the box must hold
+  (`utils::CHOICE_MARGIN`) rather than borrowed from the blank Rule 2 keeps at
+  each edge. A box held open by its labels — `Vessels`, `Select Ship` — grows
+  by the two columns, and the blank between bar and border survives.
+- **The spare columns halve evenly.** A block centered in an odd number of
+  them cannot sit centered, so the box takes one more column: `Voyage Type`'s
+  five spare become six, three unmarked columns to the bar's left and three to
+  its right, where before it was two and three.
+
+`utils::choice_rows` works the width out, and the four popups the user picks a
+row out of — `Voyage Type`, `Vessels`, and `Select Ship` on both the Jobbers
+and the Damage page — draw their list in it. The bar's left column is held open
+by a blank highlight symbol, so the labels keep the place `choice_block`
+centered them in.
+
+This is about a list of choices. A highlight that marks a row of a list the
+page *holds* — a pirate in the Aboard pane, a rank in the Skill Leaderboard —
+or the field a form's cursor rests on — a row of the Voyage box, a cell of the
+Profits Inventory — still spans the row or the column it belongs to.
 
 ### Nothing to search is nothing to show
 

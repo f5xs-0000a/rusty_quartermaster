@@ -22,6 +22,7 @@ use ratatui::{
         Block,
         Borders,
         Clear,
+        HighlightSpacing,
         List,
         ListItem,
         ListState,
@@ -3930,15 +3931,22 @@ fn render_ship_popup(
     let popup_area = Rect::new(x, y, w, h);
 
     frame.render_widget(Clear, popup_area);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     let items: Vec<ListItem> =
         SHIPS.iter().map(|s| ListItem::new(s.name)).collect();
     let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol(" ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut state = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(list, popup_area, &mut state);
+    frame.render_stateful_widget(
+        list,
+        crate::utils::choice_rows(inner, max_name as u16),
+        &mut state,
+    );
 
     let inner_x = popup_area.x + 1;
     let inner_y = popup_area.y + 1;
@@ -3975,6 +3983,8 @@ fn render_vessel_popup(
     let popup_area = Rect::new(x, y, w, h);
 
     frame.render_widget(Clear, popup_area);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     let items: Vec<ListItem> = if ordered.is_empty() {
         vec![
@@ -4002,11 +4012,16 @@ fn render_vessel_popup(
             .collect()
     };
     let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol(" ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut st = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(list, popup_area, &mut st);
+    frame.render_stateful_widget(
+        list,
+        crate::utils::choice_rows(inner, max_name as u16),
+        &mut st,
+    );
 
     let inner_x = popup_area.x + 1;
     let inner_y = popup_area.y + 1;
@@ -4046,6 +4061,8 @@ fn render_voyage_popup(
     let popup_area = Rect::new(x, y, w, h);
 
     frame.render_widget(Clear, popup_area);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     let items: Vec<ListItem> = labels
         .iter()
@@ -4060,11 +4077,16 @@ fn render_voyage_popup(
         })
         .collect();
     let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol(" ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut st = ListState::default().with_selected(Some(selected));
-    frame.render_stateful_widget(list, popup_area, &mut st);
+    frame.render_stateful_widget(
+        list,
+        crate::utils::choice_rows(inner, max_name as u16),
+        &mut st,
+    );
 
     let inner_x = popup_area.x + 1;
     let inner_y = popup_area.y + 1;

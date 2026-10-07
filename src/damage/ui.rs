@@ -4,6 +4,7 @@ use ratatui::{
         Block,
         Borders,
         Clear,
+        HighlightSpacing,
         List,
         ListItem,
         ListState,
@@ -782,16 +783,23 @@ fn render_ship_popup(
     let popup_area = Rect::new(x, y, w, h);
 
     frame.render_widget(Clear, popup_area);
+    let inner = block.inner(popup_area);
+    frame.render_widget(block, popup_area);
 
     let items: Vec<ListItem> =
         SHIPS.iter().map(|ship| ListItem::new(ship.name)).collect();
 
     let list = List::new(items)
-        .block(block)
-        .highlight_style(Style::default().bg(Color::White).fg(Color::Black));
+        .highlight_style(Style::default().bg(Color::White).fg(Color::Black))
+        .highlight_symbol(" ")
+        .highlight_spacing(HighlightSpacing::Always);
 
     let mut state = ListState::default().with_selected(Some(popup.selected));
-    frame.render_stateful_widget(list, popup_area, &mut state);
+    frame.render_stateful_widget(
+        list,
+        crate::utils::choice_rows(inner, max_name_len as u16),
+        &mut state,
+    );
 
     // Register click regions for each ship item
     let inner_y = popup_area.y + 1; // top border

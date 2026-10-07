@@ -311,6 +311,12 @@ pub fn titled_block(
     )
 }
 
+/// Columns a choice popup keeps for the highlight on the chosen row, one
+/// either side of the labels. They are part of what the list occupies, so the
+/// box is that much wider rather than the bar reaching into the blank
+/// [`PADDING`] holds at each edge.
+pub const CHOICE_MARGIN: u16 = 2;
+
 /// As [`titled_block`], for a popup the user picks a row out of: the labels are
 /// centered inside the box *as a block*, without being centered themselves.
 ///
@@ -324,7 +330,10 @@ pub fn choice_block(
 ) -> (ratatui::widgets::Block<'static>, u16) {
     use ratatui::widgets::Padding;
 
-    let (block, width) = titled_block(title, label_width);
+    let (block, width) = titled_block(title, label_width + CHOICE_MARGIN);
+    // Centered means the same number of columns either side, which an odd
+    // count cannot be: the box takes one more column and halves it evenly.
+    let width = width + width.saturating_sub(BOX_MARGIN + label_width) % 2;
     let slack = width.saturating_sub(BOX_MARGIN + label_width);
     (
         block.padding(Padding::new(
@@ -335,6 +344,38 @@ pub fn choice_block(
         )),
         width,
     )
+}
+
+/// Where a choice popup's rows are drawn inside `inner`, the area
+/// [`choice_block`] leaves for them: as wide as the widest label and one
+/// column either side, which is as far as the highlight on the chosen row
+/// reaches.
+///
+/// A highlight says which words it is marking by how far it reaches, so it is
+/// drawn around the block of labels rather than around the box. Spanning the
+/// box would reach into the slack the title holds it open with, reading as a
+/// bar with the words adrift inside it; ending at the letters leaves it flush
+/// against the first of them and loose past the last. The bar is one width on
+/// every row, since every row is as choosable as the next, and the blank
+/// [`PADDING`] keeps at each edge stays outside it: [`choice_block`] has
+/// already made the box [`CHOICE_MARGIN`] wider so the two columns are the
+/// list's own.
+///
+/// The left column is held by a blank highlight symbol — `highlight_symbol("
+/// ")` with [`ratatui::widgets::HighlightSpacing::Always`] — so the labels
+/// still start where `inner` does.
+pub fn choice_rows(
+    inner: ratatui::layout::Rect,
+    label_width: u16,
+) -> ratatui::layout::Rect {
+    let x = inner.x.saturating_sub(1);
+    ratatui::layout::Rect {
+        x,
+        // The box was built around these columns, so the clamp only answers a
+        // caller measuring its labels differently than it did.
+        width: (label_width + CHOICE_MARGIN).min(inner.width + 1),
+        ..inner
+    }
 }
 
 /// Draw the notice that stands in for something unusable until a prerequisite
@@ -972,6 +1013,43 @@ mod tests {
     // The width is const-evaluable, so widgets can build `const` floors from
     // it.
     const _: () = assert!(offset_title_width("Ocean") == 15);
+
+    /// The highlight marks the block of labels: one column either side of
+    /// them, inside the blank each edge of the box keeps, with as many
+    /// unmarked columns to its left as to its right. Whether the box is held
+    /// open by its title or by the labels themselves makes no difference —
+    /// what changes is only how much of it the bar leaves over.
+    #[test]
+    fn a_choice_highlight_takes_the_labels_and_a_column_either_side() {
+        use ratatui::layout::Rect;
+
+        let labels = "Example Label".len() as u16;
+        for title in ["A Longer Title Than That", "Short"] {
+            let (block, width) = choice_block(title, labels);
+            let box_area = Rect::new(0, 0, width, 8);
+            let inner = block.inner(box_area);
+            let rows = choice_rows(inner, labels);
+            assert_eq!(
+                rows.x + 1,
+                inner.x,
+                "{title}: a column before the labels"
+            );
+            assert_eq!(
+                rows.width,
+                labels + CHOICE_MARGIN,
+                "{title}: the labels and one either side"
+            );
+            // The blank columns the box keeps at its edges are not the bar's
+            // to take, and what is left over is halved evenly.
+            let left = rows.x - box_area.x - 1;
+            let right = box_area.right() - 1 - rows.right();
+            assert_eq!(left, right, "{title}: lopsided bar");
+            assert!(
+                PADDING <= left,
+                "{title}: the bar is on the padding"
+            );
+        }
+    }
 
     #[test]
     fn wrap_words_breaks_on_spaces() {
