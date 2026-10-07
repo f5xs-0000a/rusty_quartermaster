@@ -300,6 +300,17 @@ window: a list of thirty reads as a list of two, which misreports what is there
 rather than merely cramping it. If the window cannot give four, the terminal is
 too small.
 
+The four are kept whether or not the view has four rows to show just now. A
+view is a window onto a list that grows, so the room it holds is the room four
+rows would be read in, not the rows it happens to hold: a pane with two names
+in it still shows where the next two will land, and a leaderboard ranking two
+pirates stands four ranks tall. What the page asks of the terminal follows from
+that and so does not drop as a roster shortens, which is what keeps a window
+sized to a page from ceasing to be big enough for it while nobody has moved.
+Where a view's window is capped below four — the Skill Leaderboard's is, by
+`--leaderboard-size` — the cap is the floor, there being no fourth row it could
+ever show.
+
 The four are the view's *own* rows. A pinned header does not scroll, so it is
 not one of them, and the borders are on top of that again:
 
@@ -541,49 +552,60 @@ four commodity rows and shows six when no tooltip is up.
 `profits::ui::inventory_tests::what_the_page_needs_does_not_move_with_the_focus`
 holds this.
 
-Content the *data* drives is a different matter and does move the requirement —
-a pirate boarding lengthens a pane, an understaffed ship adds a warning line —
-exactly as it moves the width a page needs under Rule 3. The four-row floor caps
-how far that can go: a pane needs its rows up to four of them and no more, since
-past four it scrolls.
+Content the *data* drives moves the requirement where nothing can scroll it out
+of the way — an understaffed ship adds a warning line to the Voyage box, a
+swabbie tally adds the row the Aboard pane pins under its names — exactly as it
+moves the width a page needs under Rule 3. A list that scrolls does not: it
+asks for its four rows whether it holds three names or thirty, so a pirate
+boarding changes what is drawn and not what the page needs.
 
-### A box is as tall as its contents
+### A box is as tall as its contents, bar the one the slack goes to
 
-Four rows is a floor, not an allowance to grow into. On the Jobbers page no box
-stretches to fill the window: each takes the rows its contents come to and
-whatever is left over stays blank at the foot of the page, so a pane holding
-three pirates is three pirates tall. Where they cannot all have that, the boxes
-whose lists scroll give way — the panes first, holding the longer rosters, then
-the Skill Leaderboard — rather than the page dropping one of them.
+Four rows is a floor, not an allowance to grow into: above it a box takes the
+rows its contents come to. Each page then names one box the rows left over go
+to rather than leave them blank at the foot — on Jobbers the pirate panes
+(Aboard, Greedy, Planked, Enthralled), on Profits the Inventory — those holding
+the lists that grow, which is where room is worth the most. Every other box is
+its contents' height, its own four rows first: the Skill Leaderboard stands
+four ranks tall before the panes are given anything, and on Vikings, where it
+stands beside them, it keeps those rows rather than standing as tall as they do
+with the rest of its box blank.
+
+Where the rows cannot all be had, they are given out the other way round: the
+boxes whose lists scroll give way — the panes first, holding the longer
+rosters, then the Skill Leaderboard — rather than the page dropping one of
+them. `app::jobber_room_tests` holds all of that: what the page asks of the
+window does not move with the roster, the leaderboard keeps its four rows in
+the least room the page draws in, and a window with rows to spare lists the
+whole roster in them.
 
 The Skill Leaderboard is capped besides, at `--leaderboard-size` (default five):
 it is a leaderboard, so it shows its top few and the rest of the ranking
 scrolls. It is never the page's filler.
 
-Profits is the one page that still hands its slack to a single box, the
-Inventory, rather than leaving it blank.
-
 ### What the pages need
 
 In terminal rows, the two-row bar included. The Jobbers figures are for the
-rosters in the gallery and grow with them, to the four-row cap:
+gallery's states: what their rosters hold does not move them, rows that scroll
+asking for four and no more, but rows nothing can scroll do — a swabbie tally,
+a staffing warning, a stats box the voyage has filled:
 
 | page | rows | why |
 | ---- | ---- | --- |
 | Map | 11 | a four-row viewport, its sideways bar, the search row, its border, the hint under it |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
-| Jobbers, Pillage | 20 | Voyage box, Skill Leaderboard, the panes |
-| Jobbers, Atlantis | 23 | the above plus the Atlantis Stats box |
-| Jobbers, Vampirates | 26 | the Vampirates Stats box and the distribution button |
-| Jobbers, Vikings | 26 | leaderboard beside the panes, under its stats box |
-| Jobbers, Cursed Isles | 27 | the Fight Statistics box, the tallest of them |
+| Jobbers, Atlantis | 23 | Voyage box, Skill Leaderboard, the panes |
+| Jobbers, Pillage | 24 | the same, and the swabbie tally its Aboard pane pins |
 | Profits | 29 | four boxes stacked under the Inventory's nine rows |
+| Jobbers, Vikings | 29 | leaderboard beside the panes, under its stats box |
+| Jobbers, Vampirates | 31 | the Vampirates Stats box and the distribution button |
+| Jobbers, Cursed Isles | 32 | the Fight Statistics box, the tallest of them |
 
 Unlike the 80-column ceiling of Rule 3, **no ceiling is set on height**. The
 consequence is deliberate and worth stating plainly: a conventional 80x24
-terminal is five rows too short for Profits, and two or three short of Jobbers
-on its longest voyage types, and shows the notice there while the rest draws.
+terminal is five rows too short for Profits, and five to eight short of Jobbers
+on its longer voyage types, and shows the notice there while the rest draws.
 
 ## Rule 5: An unmet prerequisite is a centered, wrapped notice
 

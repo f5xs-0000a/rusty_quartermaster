@@ -1285,7 +1285,8 @@ pub fn render(
     // Viewport rows: a leaderboard shows its top few, so the window is capped
     // whatever the voyage type and the rest of the ranking scrolls. At least
     // one row so the box never collapses flat.
-    let view_rows = total_rows.min(ui.leaderboard_size.unwrap_or(5)).max(1);
+    let view_cap = ui.leaderboard_size.unwrap_or(5).max(1);
+    let view_rows = total_rows.min(view_cap).max(1);
     let top_h = view_rows as u16 + 3;
     let top_panel_w = top_panel_width(&top_columns);
 
@@ -1662,47 +1663,36 @@ pub fn render(
     };
     let tip_h = tooltip_lines.len() as u16;
 
-    // Rows the panes come to. They share one height, so it must suit whichever
-    // of them is tallest. The Aboard pane pins a "Pirates (n):" header and its
-    // swabbie footer around a scrolling name list, so those are counted
-    // apart from the list: `cap` bounds the list alone. Mirrors the rows
-    // `render_panes` builds.
-    let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
-    let pane_rows = |cap: usize| {
-        panes
-            .iter()
-            .map(|p| {
-                let (pinned, list) = match p {
-                    JobberPane::Aboard => {
-                        (
-                            1 + usize::from(0 < swabbies),
-                            aboard_set.len(),
-                        )
-                    }
-                    JobberPane::Greedy => (0, greedy.len()),
-                    JobberPane::Planked => (0, planked_n),
-                    JobberPane::Enthralled => (0, enthralled.len()),
-                };
-                pinned + list.min(cap)
-            })
-            .max()
-            .unwrap_or(0) as u16
-            + 2 // borders
-    };
-    let pane_h = pane_rows(usize::MAX);
-    // The least the panes can be given: a list that fits whole needs only its
-    // own rows, while one that will scroll needs a scrollable view's worth of
-    // it on show.
-    let pane_min = pane_rows(crate::utils::SCROLL_MIN_ROWS as usize);
+    // The least the panes can be given. They share one height, so it must suit
+    // whichever of them pins the most rows around its list: the Aboard pane
+    // holds a "Pirates (n):" header and its swabbie footer still while the
+    // names between them scroll. Under those goes a scrollable view's worth of
+    // list whatever the rosters hold just now, so the panes show the room the
+    // names they do not hold yet would be read in. Mirrors the rows
+    // `render_panes` pins.
+    let pane_min = panes
+        .iter()
+        .map(|p| {
+            let pinned = match p {
+                JobberPane::Aboard => 1 + usize::from(0 < swabbies),
+                JobberPane::Greedy
+                | JobberPane::Planked
+                | JobberPane::Enthralled => 0,
+            };
+            pinned + crate::utils::SCROLL_MIN_ROWS as usize
+        })
+        .max()
+        .unwrap_or(0) as u16
+        + 2; // borders
     // The same floor for the Skill Leaderboard, whose header and borders are
-    // the 3 rows `top_h` adds to its ranking.
-    let top_min =
-        view_rows.min(crate::utils::SCROLL_MIN_ROWS as usize) as u16 + 3;
+    // the 3 rows `top_h` adds to its ranking. A window capped below the floor
+    // can never show four rows, so there the cap is the floor.
+    let top_min = crate::utils::SCROLL_MIN_ROWS.min(view_cap as u16) + 3;
 
-    // Room the page must have. Every box is as tall as its contents, so the sum
-    // of them is it, except where a list scrolls: there it is a scrollable
-    // view's worth of rows. The tooltip's rows are counted whether or not one
-    // is up, so what the page needs does not move as focus does.
+    // Room the page must have: the rows the boxes that cannot scroll come to,
+    // and a scrollable view's worth for each that can, whatever those views
+    // hold at the moment. The tooltip's rows are counted whether or not one is
+    // up, so what the page needs does not move as focus does.
     const TIP_RESERVE: u16 = 2;
     // Rows the boxes that cannot give way take between them.
     let pinned_h = if side_by_side {
@@ -1727,24 +1717,26 @@ pub fn render(
         return;
     }
 
-    // Nothing in the stack stretches to fill the page: each box takes the rows
-    // its contents come to and what is left over stays blank at the foot, so a
-    // pane holding three names is three names tall. Where they cannot all have
-    // that, the boxes whose lists scroll give way — first the panes, which hold
-    // the longer rosters, then the leaderboard — rather than the page dropping
-    // one of them.
+    // The boxes above the panes take the rows their contents come to — the
+    // leaderboard its ranking, capped, and never less than a scrollable
+    // view's worth whatever it ranks — and the panes take everything left
+    // over, holding the rosters that grow and so the lists worth the room. A
+    // window too short for all of that is given out the other way round: the
+    // boxes whose lists scroll give way, the panes first, then the
+    // leaderboard, rather than the page dropping one of them.
     let mut room = block.height.saturating_sub(pinned_h + tip_h);
-    let top_given = top_h.min(room.saturating_sub(pane_min));
+    let top_given = top_h.max(top_min).min(room.saturating_sub(pane_min));
     room -= top_given;
-    let panes_given = pane_h.min(room);
+    let panes_given = room;
 
     let rows = if side_by_side {
         // Vikings: Voyage, stats, then one row holding Top Jobbers beside the
-        // pane(s) (split horizontally at render time), then the tip.
+        // pane(s) (split horizontally at render time), then the tip. The row
+        // takes the rest of the page, the panes being what fills it.
         Layout::vertical([
             Constraint::Length(voyage_h),
             Constraint::Length(stats_h),
-            Constraint::Length(top_h.max(pane_h).min(room + top_given)),
+            Constraint::Length(room + top_given),
             Constraint::Length(tip_h),
         ])
         .flex(ratatui::layout::Flex::Start)
@@ -1793,7 +1785,9 @@ pub fn render(
             render_stats_box(frame, rows[1], s, focused);
         }
         // Skill Leaderboard (its natural width) on the left, the pane(s)
-        // filling the rest.
+        // filling the rest. The row is as tall as the panes are given, so the
+        // leaderboard is held to the rows it keeps rather than standing as
+        // tall as them with the rest of the box blank.
         let main = Layout::horizontal([
             Constraint::Length(top_panel_w),
             Constraint::Min(0),
@@ -1801,7 +1795,10 @@ pub fn render(
         .split(rows[2]);
         render_top_panel(
             frame,
-            main[0],
+            Rect {
+                height: top_h.max(top_min).min(main[0].height),
+                ..main[0]
+            },
             &top_columns,
             ui,
             focused,

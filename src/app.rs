@@ -4786,3 +4786,116 @@ mod topbar_tests {
         assert!(shell.jobbers_ui.roster_popup.is_none());
     }
 }
+
+/// How the Jobbers page answers for its height: the rows it asks of the window
+/// are the rows its scrolling views keep, whatever those views hold at the
+/// time, and the rows it has over them go to the panes.
+#[cfg(test)]
+mod jobber_room_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::{APP_LIST, AppId, AppShell};
+
+    /// A shell on the Jobbers page, aboard a pillage with `n` pirates listed
+    /// as aboard besides ourselves.
+    fn with_roster(n: usize) -> AppShell {
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Pillaging, Average to Hard \
+             Barbarians.",
+        ] {
+            shell.chatlog.process_line(line);
+        }
+        let names: Vec<String> = (0 .. n)
+            .map(|i| format!("Mate{}", char::from(b'a' + i as u8)))
+            .collect();
+        shell.chatlog.note_aboard(names.iter().map(String::as_str));
+        shell.sidebar_index = APP_LIST
+            .iter()
+            .position(|a| *a == AppId::Chatlog)
+            .expect("the Jobbers page");
+        shell
+    }
+
+    /// Draw the page in a window `height` rows tall, wide enough for anything
+    /// it would say, and hand back the screen as text.
+    fn screen(shell: &mut AppShell, height: u16) -> String {
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, height)).expect("terminal");
+        terminal.draw(|frame| shell.render(frame)).expect("draw");
+        format!("{}", terminal.backend())
+    }
+
+    /// The fewest rows the page will draw in rather than refuse.
+    fn rows_needed(shell: &mut AppShell) -> u16 {
+        (4 .. 60)
+            .find(|h| !screen(shell, *h).contains(crate::utils::TOO_SMALL))
+            .expect("a window the page draws in")
+    }
+
+    /// Rows of the Aboard pane's own list on show. A name of the list is
+    /// indented inside the pane's border, which is how that pane draws one and
+    /// nothing else on the page does.
+    fn names_shown(screen: &str) -> usize {
+        screen.matches("│   Mate").count()
+    }
+
+    /// Rows the Skill Leaderboard's box takes, its own borders counted: its
+    /// title row down to the first foot below it.
+    fn leaderboard_rows(screen: &str) -> usize {
+        let lines: Vec<&str> = screen.lines().collect();
+        let top = lines
+            .iter()
+            .position(|l| l.contains("Skill Leaderboard"))
+            .expect("the leaderboard");
+        lines[top ..]
+            .iter()
+            .position(|l| l.contains('└'))
+            .expect("the leaderboard's foot")
+            + 1
+    }
+
+    /// The rows a view keeps, and the title row, column header and foot that
+    /// its box spends on top of them.
+    const LEADERBOARD_MIN: usize = crate::utils::SCROLL_MIN_ROWS as usize + 3;
+
+    #[test]
+    fn what_the_page_needs_does_not_move_with_the_roster() {
+        assert_eq!(
+            rows_needed(&mut with_roster(1)),
+            rows_needed(&mut with_roster(20)),
+        );
+    }
+
+    /// In the least room the page draws in, both the views that scroll keep
+    /// their four rows: the leaderboard's are its own whether or not its
+    /// ranking fills them, and the panes get only what is over.
+    #[test]
+    fn the_views_that_scroll_keep_four_rows_in_the_least_room() {
+        let mut shell = with_roster(20);
+        let rows = rows_needed(&mut shell);
+        let text = screen(&mut shell, rows);
+        assert_eq!(leaderboard_rows(&text), LEADERBOARD_MIN);
+        let shown = names_shown(&text);
+        assert!(
+            crate::utils::SCROLL_MIN_ROWS as usize <= shown,
+            "the Aboard pane shows {shown} of its names",
+        );
+    }
+
+    /// The panes are where the page's spare rows go, so a window with room to
+    /// spare lists the whole roster rather than scrolling most of it out of
+    /// sight; the leaderboard keeps the rows it keeps.
+    #[test]
+    fn the_panes_take_the_rows_the_page_has_over() {
+        let mut shell = with_roster(20);
+        let rows = rows_needed(&mut shell);
+        let text = screen(&mut shell, rows + 20);
+        assert_eq!(names_shown(&text), 20);
+        assert_eq!(leaderboard_rows(&text), LEADERBOARD_MIN);
+    }
+}
