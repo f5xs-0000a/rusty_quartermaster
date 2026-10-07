@@ -417,8 +417,7 @@ async fn main() -> io::Result<()> {
 
     // -- Auto-fetch missing market data (only on oceans the market serves, and
     //    only when market querying is enabled) --
-    if let Some(o) =
-        ocean.filter(|o| o.market_supported() && args.query_market)
+    if let Some(o) = ocean.filter(|o| o.market_supported() && args.query_market)
         && !shell.profits.rows.is_empty()
     {
         let missing: Vec<String> = shell
