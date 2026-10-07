@@ -5109,6 +5109,38 @@ mod topbar_tests {
         );
     }
 
+    /// A run we walk off is as finished as one that tied up - nothing more
+    /// will ever be learned about it - so it can be saved, and its reports are
+    /// not stranded aboard a ship we have left. Which is how a voyage that
+    /// fights nothing usually ends: jobbing home rather than porting.
+    #[test]
+    fn a_run_we_walked_off_can_still_be_saved() {
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Evading.",
+            "[01:00:10] Playerone issued an order to set the vessel to sail.",
+        ] {
+            shell.feed_chat_line(line);
+        }
+        deliver(&mut shell, &["Mateone"]);
+        shell.feed_chat_line("[01:20:00] Ye have left 'Test Crew'.");
+
+        assert!(shell.build_voyage_view().saveable);
+        shell.save_displayed_voyage(
+            crate::voyage::persistence::SaveParts::default(),
+        );
+        let saved = &shell.persistence.voyages[0];
+        assert_eq!(saved.duty_reports.len(), 1);
+        assert_eq!(saved.duration_secs, Some(1190));
+        // we left before the booty, so the figures have gaps and say so
+        assert!(saved.poisoned);
+        assert!(!saved.divvied);
+    }
+
     /// A copy we could not read is kept only once it names somebody of ours.
     /// Our own pirate alone is enough; a crew we have never sailed with is
     /// somebody else's report, whatever it is shaped like.

@@ -1311,13 +1311,33 @@ impl GameState {
 
     /// Player left the current vessel (left the crew, or was planked). If the
     /// vessel's run wasn't finished (booty not yet divided), it's now poisoned.
+    ///
+    /// Walking off a ship ends the run as surely as porting does: we learn
+    /// nothing more about it, so it is closed out here rather than left open
+    /// where nothing could ever finish it. The run keeps whatever it had
+    /// gathered - its reports above all, which on a voyage that fights
+    /// nothing are the whole of its record - and [`Voyage::poisoned`] says
+    /// the figures have gaps.
     fn leave_vessel(&mut self) {
+        let now = self.now;
         if let Some(v) = self.current_vessel_mut() {
             if v.job_kind.is_some() {
                 v.poisoned = true;
             }
-            if let Some(voy) = v.current_voyage.as_mut() {
+            if let Some(mut voy) = v.current_voyage.take() {
                 voy.poisoned = true;
+                // the run ended when we walked off it, whatever the vessel
+                // went on to do
+                if voy.ported_at.is_none() {
+                    voy.ported_at = now;
+                }
+                // a fight we left in the middle of keeps the outcome it stood
+                // at: the melee carried on without us, so we are in no
+                // position to call it
+                if let Some(b) = voy.current_battle.take() {
+                    voy.battles.push(b);
+                }
+                v.voyages.push(voy);
             }
         }
         self.current = None;
@@ -3204,6 +3224,30 @@ mod tests {
         assert_eq!(gs.current, None);
         let v = &gs.vessels["Sugared Bass"];
         assert!(v.poisoned);
+    }
+
+    /// Walking off a ship closes its run. Nothing else would: no port order
+    /// is coming, and a run left open can never be finished, so never saved.
+    #[test]
+    fn leaving_closes_the_run() {
+        let mut gs = GameState::new();
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Evading.",
+            "[01:00:10] Playerone issued an order to set the vessel to sail.",
+            "[01:20:00] Ye have left 'Test Crew'.",
+        ] {
+            gs.process_line(line);
+        }
+        let v = &gs.vessels["Test Vessel"];
+        assert!(v.current_voyage.is_none());
+        let voyage = v.voyages.last().expect("a closed run");
+        assert!(voyage.ported_at.is_some());
+        assert_eq!(voyage.duration_secs(), Some(1190));
+        // left before the booty: the figures have gaps and say so
+        assert!(voyage.poisoned);
+        assert!(!voyage.divvied);
     }
 
     #[test]
