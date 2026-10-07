@@ -342,8 +342,9 @@ impl VoyageType {
     }
 
     /// The bottom panes this voyage type shows, in left-to-right order. Pillage
-    /// gets all three; Atlantis and Cursed Isles drop Greedy. Unimplemented
-    /// types get none (they render the "coming soon" placeholder instead).
+    /// gets all three; the rest drop Greedy, there being no greedy brigands to
+    /// bash anywhere but a pillage. Unimplemented types get none (they render
+    /// the "coming soon" placeholder instead).
     pub fn panes(self) -> &'static [JobberPane] {
         match self {
             VoyageType::Pillage => PILLAGE_PANES,
@@ -352,8 +353,8 @@ impl VoyageType {
             VoyageType::Flotilla
             | VoyageType::Blockade
             | VoyageType::Atlantis
-            | VoyageType::HauntedSeas => ATLANTIS_PANES,
-            VoyageType::CursedIsles => CURSED_ISLES_PANES,
+            | VoyageType::HauntedSeas
+            | VoyageType::CursedIsles => ATLANTIS_PANES,
         }
     }
 
@@ -376,17 +377,43 @@ impl VoyageType {
         matches!(self, VoyageType::Vampirates)
     }
 
-    /// Whether this voyage type is the Atlantis one, whose layout stands its
-    /// panes one over the other to make room for the Tokens and Chests box.
-    /// Only Atlantis does; see [`boards`] for the rest of what the box waits
-    /// on.
-    pub fn tracks_atlantis(self) -> bool {
-        matches!(self, VoyageType::Atlantis)
+    /// The token shapes this voyage type's Tokens board columns, in display
+    /// order, or none at all where nothing it does pays tokens and the board
+    /// is no part of its layout.
+    ///
+    /// Tokens are earned where maneuvers are, which is every voyage fought
+    /// under sail: a blockade, a flotilla, the Haunted Seas, Atlantis, and
+    /// the run out to the Cursed Isles. The isles pay a shape of their own
+    /// and it leads their columns; see [`boards`] for what that leads to.
+    pub fn board_tokens(self) -> &'static [crate::duty::TokenShape] {
+        match self {
+            VoyageType::Atlantis
+            | VoyageType::Flotilla
+            | VoyageType::Blockade
+            | VoyageType::HauntedSeas => MANEUVER_TOKENS,
+            VoyageType::CursedIsles => CURSED_ISLES_TOKENS,
+            VoyageType::Pillage
+            | VoyageType::Vampirates
+            | VoyageType::Vikings => &[],
+        }
     }
 
-    /// Whether this voyage type runs the Cursed Isles tracking (the Enthralled
-    /// leaderboard in place of Aboard, plus the Fight Statistics box). Only
-    /// Cursed Isles does.
+    /// Whether chests are hauled under this voyage type, so its box reads a
+    /// Treasures board beside the Tokens one. The blockade is the one voyage
+    /// that maneuvers and hauls nothing: it is fought over a chart, and
+    /// nothing is carried off it.
+    pub fn hauls_chests(self) -> bool {
+        matches!(
+            self,
+            VoyageType::Atlantis
+                | VoyageType::Flotilla
+                | VoyageType::HauntedSeas
+                | VoyageType::CursedIsles
+        )
+    }
+
+    /// Whether this voyage type runs the Cursed Isles tracking (the island
+    /// wave engine and the Fight Statistics box). Only Cursed Isles does.
     pub fn tracks_cursed_isles(self) -> bool {
         matches!(self, VoyageType::CursedIsles)
     }
@@ -404,15 +431,10 @@ const PILLAGE_PANES: &[JobberPane] =
     &[JobberPane::Aboard, JobberPane::Greedy, JobberPane::Planked];
 
 /// Bottom panes for an Atlantis run: aboard and planked, no greedy tally. The
-/// Haunted Seas, a blockade and a flotilla are crewed the same way, none of
-/// them having greedy brigands to bash.
+/// Haunted Seas, a blockade, a flotilla and the Cursed Isles are crewed the
+/// same way, none of them having greedy brigands to bash.
 const ATLANTIS_PANES: &[JobberPane] =
     &[JobberPane::Aboard, JobberPane::Planked];
-
-/// Bottom panes for a Cursed Isles run: the Enthralled leaderboard (replacing
-/// the usual Aboard list) beside Planked.
-const CURSED_ISLES_PANES: &[JobberPane] =
-    &[JobberPane::Enthralled, JobberPane::Planked];
 
 /// Bottom panes for a Vampirates run: aboard and planked, pinned short below
 /// the headline Top Jobbers list (see [`VoyageType::top_jobbers_fills`]).
@@ -430,10 +452,6 @@ pub enum JobberPane {
     Aboard,
     Greedy,
     Planked,
-    /// Cursed Isles only: a leaderboard of who enthralled the most zombies,
-    /// shown in place of the Aboard list. Rows are `name  alive/total`,
-    /// ranked by total.
-    Enthralled,
 }
 
 // ---------------------------------------------------------------------------
@@ -738,11 +756,9 @@ pub enum JobberFocus {
     Aboard,
     Greedy,
     Planked,
-    /// The Enthralled leaderboard pane (Cursed Isles only).
-    Enthralled,
-    /// The Tokens and Chests box (Atlantis only, and only once there is
-    /// something in it — see [`boards`]). Its list scrolls and its tabs and
-    /// column heads answer to keys of their own.
+    /// The Tokens and Chests box (only on the layouts that count figures, and
+    /// only once there is something in it — see [`boards`]). Its list scrolls
+    /// and its tabs and column heads answer to keys of their own.
     Board,
     /// The Boochers box, which stands over the Planked pane wherever that
     /// pane sits. Drawn only once the reports have something against someone
@@ -761,12 +777,10 @@ pub struct JobbersUi {
     pub aboard_offset: usize,
     pub greedy_offset: usize,
     pub planked_offset: usize,
-    pub enthralled_offset: usize,
     /// Selected pirate index within each pane (into that pane's pirate list).
     pub aboard_sel: usize,
     pub greedy_sel: usize,
     pub planked_sel: usize,
-    pub enthralled_sel: usize,
     /// Skill Leaderboard cursor: which column (`top_col`) and which rank
     /// within it (`top_sel`), plus the shared vertical scroll offset
     /// (`top_offset`) — all columns share one window so their ranks stay
@@ -780,9 +794,11 @@ pub struct JobbersUi {
     pub board_tab: BoardTab,
     /// How each board is ranked, and how far down each is scrolled. Kept per
     /// board: a ranking is about the figures it ranks, so one tab's has no
-    /// business moving the other's.
-    pub tokens_ranking: Ranking,
-    pub treasures_ranking: Ranking,
+    /// business moving the other's. `None` until the officer ranks it
+    /// themselves, the board standing as it opens until then
+    /// ([`Board::opening`]).
+    pub tokens_ranking: Option<Ranking>,
+    pub treasures_ranking: Option<Ranking>,
     pub tokens_offset: usize,
     pub treasures_offset: usize,
     /// How far down the Boochers box is scrolled, and how far down it can be
@@ -848,21 +864,24 @@ pub struct RosterPrompt {
 }
 
 impl JobbersUi {
-    /// How `tab`'s board is ranked.
-    pub fn board_ranking(&self, tab: BoardTab) -> Ranking {
-        match tab {
+    /// How `board` is ranked: as the officer last asked, or as the board
+    /// opens where they have not asked anything of it.
+    pub fn board_ranking(&self, board: &Board) -> Ranking {
+        match board.tab {
             BoardTab::Tokens => self.tokens_ranking,
             BoardTab::Treasures => self.treasures_ranking,
         }
+        .unwrap_or_else(|| board.opening())
     }
 
-    /// Rank `tab`'s board as a click on the column `key` names asks.
-    pub fn rank_board(&mut self, tab: BoardTab, key: BoardKey) {
-        let ranking = match tab {
+    /// Rank `board` as a click on the column `key` names asks.
+    pub fn rank_board(&mut self, board: &Board, key: BoardKey) {
+        let asked = self.board_ranking(board).clicked(key);
+        let ranking = match board.tab {
             BoardTab::Tokens => &mut self.tokens_ranking,
             BoardTab::Treasures => &mut self.treasures_ranking,
         };
-        *ranking = ranking.clicked(key);
+        *ranking = Some(asked);
     }
 
     /// How far down the board on show is scrolled.
@@ -1135,7 +1154,14 @@ fn skill_dist_data(
 }
 
 /// Bottom-bar tooltip lines for the current focus (empty when nothing to say).
-pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
+///
+/// `boards` is what the box is drawing, which is the only thing that knows
+/// whether it has a second board to offer.
+pub fn tooltip(
+    state: &GameState,
+    ui: &JobbersUi,
+    boards: Option<&Boards>,
+) -> Vec<&'static str> {
     match ui.focus {
         JobberFocus::Vessels => vec!["Press Enter to pick a vessel."],
         JobberFocus::ShipType => {
@@ -1160,10 +1186,7 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
                  \u{00b7} \u{2191}/\u{2193} scroll",
             ]
         }
-        JobberFocus::Aboard
-        | JobberFocus::Greedy
-        | JobberFocus::Planked
-        | JobberFocus::Enthralled => {
+        JobberFocus::Aboard | JobberFocus::Greedy | JobberFocus::Planked => {
             vec![
                 "Enter: pirate stats \u{00b7} \u{2190}/\u{2192} panes \
                  \u{00b7} \u{2191}/\u{2193} select",
@@ -1173,10 +1196,18 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
             vec!["Press Enter to view the skill distribution plot."]
         }
         JobberFocus::Board => {
-            vec![
-                "Tab: boards \u{00b7} s: ranking \u{00b7} \u{2190}/\u{2192} \
-                 panes \u{00b7} \u{2191}/\u{2193} scroll",
-            ]
+            // Tab is worth reading only where there is a board to flip to.
+            let many = boards.is_some_and(|boards| 1 < boards.tabs().len());
+            vec![match many {
+                true => {
+                    "Tab: boards \u{00b7} s: ranking \u{00b7} \
+                     \u{2190}/\u{2192} panes \u{00b7} \u{2191}/\u{2193} scroll"
+                }
+                false => {
+                    "s: ranking \u{00b7} \u{2190}/\u{2192} panes \u{00b7} \
+                     \u{2191}/\u{2193} scroll"
+                }
+            }]
         }
         JobberFocus::Boochers => {
             vec![
@@ -1510,7 +1541,6 @@ pub fn render(
         JobberFocus::Aboard => Some(JobberPane::Aboard),
         JobberFocus::Greedy => Some(JobberPane::Greedy),
         JobberFocus::Planked => Some(JobberPane::Planked),
-        JobberFocus::Enthralled => Some(JobberPane::Enthralled),
         _ => None,
     };
     if focused_pane.is_some_and(|p| !panes.contains(&p)) {
@@ -1647,13 +1677,6 @@ pub fn render(
                 .unwrap_or(0)
         })
         .unwrap_or(0);
-    // The Enthralled leaderboard (Cursed Isles) replaces the Aboard pane: `name
-    // alive/total`, ranked by lifetime enthralled.
-    let enthralled: Vec<(String, u32, u32)> = selected
-        .as_ref()
-        .map(|k| enthralled_ranked(state, k))
-        .unwrap_or_default();
-    let enthralled_cw = enthralled_col_width(&enthralled);
     // Every pane's list scrolls, so each reserves the scrollbar's columns on
     // top of its frame — the pane is then one width whether the roster is
     // long enough for a bar or not.
@@ -1664,7 +1687,6 @@ pub fn render(
     let aboard_w = pane_w(aboard_cw, "Aboard");
     let greedy_w = pane_w(greedy_cw, "Greedy");
     let planked_w = pane_w(planked_cw, "Planked");
-    let enthralled_w = pane_w(enthralled_cw, "Enthralled");
     // Only the panes this voyage type shows contribute to the block width.
     let pane_widths: Vec<u16> = panes
         .iter()
@@ -1673,7 +1695,6 @@ pub fn render(
                 JobberPane::Aboard => aboard_w,
                 JobberPane::Greedy => greedy_w,
                 JobberPane::Planked => planked_w,
-                JobberPane::Enthralled => enthralled_w,
             }
         })
         .collect();
@@ -2008,7 +2029,7 @@ pub fn render(
     {
         Vec::new()
     } else {
-        tooltip(state, ui)
+        tooltip(state, ui, boards.as_ref())
     };
     let tip_h = tooltip_lines.len() as u16;
 
@@ -2018,9 +2039,7 @@ pub fn render(
     let pinned = |pane: &JobberPane| -> u16 {
         match pane {
             JobberPane::Aboard => 1 + u16::from(0 < swabbies),
-            JobberPane::Greedy
-            | JobberPane::Planked
-            | JobberPane::Enthralled => 0,
+            JobberPane::Greedy | JobberPane::Planked => 0,
         }
     };
     // The least each pane can be given: what it pins, a scrollable view's
@@ -2039,7 +2058,6 @@ pub fn render(
                 JobberPane::Aboard => aboard_set.len(),
                 JobberPane::Greedy => greedy.len(),
                 JobberPane::Planked => planked_n,
-                JobberPane::Enthralled => enthralled.len(),
             };
             (rows as u16).saturating_add(pinned(pane) + 2)
         })
@@ -2055,7 +2073,7 @@ pub fn render(
         .max()
         .unwrap_or(0)
         .max(last_col_min)
-        .max(boards.as_ref().map_or(0, |_| board_box_min_height()));
+        .max(boards.as_ref().map_or(0, board_box_min_height));
     // The same floor for the Skill Leaderboard, whose header and borders are
     // the 3 rows `top_h` adds to its ranking. A window capped below the floor
     // can never show four rows, so there the cap is the floor.
@@ -3311,7 +3329,6 @@ fn pane_focus_target(pane: JobberPane) -> ClickTarget {
         JobberPane::Aboard => ClickTarget::JobberAboardList,
         JobberPane::Greedy => ClickTarget::JobberGreedyList,
         JobberPane::Planked => ClickTarget::JobberPlankedList,
-        JobberPane::Enthralled => ClickTarget::JobberEnthralledList,
     }
 }
 
@@ -3358,40 +3375,7 @@ pub fn pane_pirates(
                 .map(|v| v.planked_by_us.iter().cloned().collect())
                 .unwrap_or_default()
         }
-        JobberPane::Enthralled => {
-            enthralled_ranked(state, key)
-                .into_iter()
-                .map(|(n, ..)| n)
-                .collect()
-        }
     }
-}
-
-/// The Enthralled leaderboard rows for a vessel: `(pirate, live thralls,
-/// lifetime enthralled)`, ranked by lifetime total descending, then name. Every
-/// pirate who has ever enthralled appears (even with zero alive now). The
-/// single source of truth for both the rendered order and the pane's
-/// index→pirate mapping.
-fn enthralled_ranked(
-    state: &GameState,
-    key: &Arc<str>,
-) -> Vec<(String, u32, u32)> {
-    let Some(v) = state.vessels.get(key) else {
-        return Vec::new();
-    };
-    let mut rows: Vec<(String, u32, u32)> = v
-        .thralls_total
-        .iter()
-        .map(|(n, total)| {
-            (
-                n.clone(),
-                v.thralls_alive.get(n).copied().unwrap_or(0),
-                *total,
-            )
-        })
-        .collect();
-    rows.sort_by(|a, b| b.2.cmp(&a.2).then(a.0.cmp(&b.0)));
-    rows
 }
 
 /// The pirate names in each Skill Leaderboard column, ranked exactly as
@@ -3460,19 +3444,11 @@ fn render_panes(
 
     let vessel = selected.and_then(|k| state.vessels.get(k));
 
-    // The Enthralled leaderboard rows: (pirate, live thralls, lifetime
-    // enthralled), ranked by total. Built once here for both clamping and
-    // rendering.
-    let enthralled: Vec<(String, u32, u32)> = selected
-        .map(|k| enthralled_ranked(state, k))
-        .unwrap_or_default();
-
     // Clamp every pane's selection up front, whether or not it's shown.
     ui.aboard_sel = clamp_sel(ui.aboard_sel, aboard_set.len());
     ui.greedy_sel = clamp_sel(ui.greedy_sel, greedy.len());
     let planked_n = vessel.map(|v| v.planked_by_us.len()).unwrap_or(0);
     ui.planked_sel = clamp_sel(ui.planked_sel, planked_n);
-    ui.enthralled_sel = clamp_sel(ui.enthralled_sel, enthralled.len());
 
     // Render only the panes this voyage type asks for, in order.
     for (i, pane) in panes.iter().enumerate() {
@@ -3590,41 +3566,6 @@ fn render_panes(
                     focused,
                     ui.focus == JobberFocus::Planked,
                     JobberPane::Planked,
-                    regions,
-                );
-            }
-            // -- Enthralled (Cursed Isles): "name  alive/total", ranked by
-            // total. --
-            JobberPane::Enthralled => {
-                let inner_w = (col.width.saturating_sub(4) as usize)
-                    .max(enthralled_col_width(&enthralled));
-                let rows: Vec<PaneRow> = enthralled
-                    .iter()
-                    .enumerate()
-                    .map(|(i, (name, alive, total))| {
-                        PaneRow {
-                            line: enthralled_line(
-                                name,
-                                *alive,
-                                *total,
-                                inner_w,
-                                style_for(name),
-                            ),
-                            pirate: Some(i),
-                            tags: Vec::new(),
-                        }
-                    })
-                    .collect();
-                render_pane(
-                    frame,
-                    col,
-                    "Enthralled",
-                    rows,
-                    ui.enthralled_sel,
-                    &mut ui.enthralled_offset,
-                    focused,
-                    ui.focus == JobberFocus::Enthralled,
-                    JobberPane::Enthralled,
                     regions,
                 );
             }
@@ -3773,10 +3714,25 @@ fn stacked_pane_areas(area: Rect, wants: &[u16], floors: &[u16]) -> Vec<Rect> {
 // Tokens and Chests: what a run's duty reports counted
 // ---------------------------------------------------------------------------
 
-/// The token shapes an Atlantis board columns, in slot order. The flower is
-/// earned only while attacking the Cursed Isles, so it is no column of this
-/// one; the encounter that pays it would board it itself.
-const ATLANTIS_TOKENS: &[crate::duty::TokenShape] = &[
+/// The token shapes a maneuvering board columns, in slot order. What every
+/// voyage fought under sail pays, the Cursed Isles' own flower aside.
+const MANEUVER_TOKENS: &[crate::duty::TokenShape] = &[
+    crate::duty::TokenShape::Circle,
+    crate::duty::TokenShape::Diamond,
+    crate::duty::TokenShape::Plus,
+    crate::duty::TokenShape::Cross,
+];
+
+/// The token shapes a Cursed Isles board columns: the flower first, then the
+/// four any maneuver pays.
+///
+/// The flower is the one worth having - it is what the isles are sailed for -
+/// so it leads the columns and the board opens ranked on it. The rest are
+/// earned on the same approach and are columned behind it rather than
+/// dropped: a shape nobody earned reads as a column of noughts, which is
+/// itself the answer to how the approach went.
+const CURSED_ISLES_TOKENS: &[crate::duty::TokenShape] = &[
+    crate::duty::TokenShape::Flower,
     crate::duty::TokenShape::Circle,
     crate::duty::TokenShape::Diamond,
     crate::duty::TokenShape::Plus,
@@ -3804,8 +3760,16 @@ const BOARD_MARK_W: usize = 2;
 /// Blank columns between a board's columns.
 const BOARD_GAP: usize = 2;
 
-/// Title of the box both boards are shown in.
-const BOARD_BOX_TITLE: &str = "Tokens and Chests";
+/// The box's title, naming the boards it actually holds. A box of one board is
+/// titled for that board alone: nothing is flipped to from it, so there is
+/// nothing else for its title to answer for.
+fn board_box_title(boards: &Boards) -> &'static str {
+    match (&boards.tokens, &boards.treasures) {
+        (Some(_), Some(_)) => "Tokens and Chests",
+        (Some(_), None) => "Tokens",
+        _ => "Chests",
+    }
+}
 
 /// Blank columns either side of a tab's label within its slot.
 const BOARD_TAB_PADDING: u16 = 1;
@@ -3832,29 +3796,19 @@ impl BoardTab {
 ///
 /// The sum is a key and not a column index so that it means the same thing on
 /// a board of four figures as on one of three.
-#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoardKey {
-    #[default]
     Sum,
     /// Index into the board's figure columns, the sum aside.
     Figure(usize),
 }
 
-/// How a board is ranked: on what, and which way.
+/// How a board is ranked: on what, and which way. Where a board stands before
+/// anyone ranks it is the board's own to say ([`Board::opening`]).
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub struct Ranking {
     pub key: BoardKey,
     pub desc: bool,
-}
-
-impl Default for Ranking {
-    /// Most of whatever it counts first — what a leaderboard is for.
-    fn default() -> Self {
-        Self {
-            key: BoardKey::Sum,
-            desc: true,
-        }
-    }
 }
 
 impl Ranking {
@@ -3885,6 +3839,15 @@ pub struct Board {
     /// [`BOARD_SUM_HEAD`] and no part of this.
     pub heads: Vec<&'static str>,
     pub rows: Vec<BoardRow>,
+    /// The column the board stands ranked on until the officer ranks it
+    /// otherwise. Most boards open on their sum, that being the whole of what
+    /// the figure says; one whose columns are not alike opens on the column
+    /// worth reading first.
+    pub opens: BoardKey,
+    /// Figure columns a tie on the ranked column falls through, in order,
+    /// before the name decides it. Empty where the columns count the same
+    /// kind of thing and one of them says nothing about another.
+    pub ties: Vec<usize>,
 }
 
 /// Both of the box's leaderboards, each present only where the run has that
@@ -3895,23 +3858,43 @@ pub struct Boards {
 }
 
 impl Board {
-    /// The rows ranked as `ranking` asks, ties by name so the order is the
-    /// same board every frame.
+    /// How the board stands before anyone ranks it: its own column, most
+    /// first, a leaderboard being for the most of whatever it counts.
+    pub fn opening(&self) -> Ranking {
+        Ranking {
+            key: self.opens,
+            desc: true,
+        }
+    }
+
+    /// The rows ranked as `ranking` asks: on the column it names, then
+    /// through [`ties`](Self::ties), then by name so the order is the same
+    /// board every frame.
+    ///
+    /// A tie falls through the same way round as the ranking itself, so a
+    /// board turned on its head is read as the whole of its own mirror.
     fn ranked(&self, ranking: Ranking) -> Vec<&BoardRow> {
-        let figure = |row: &BoardRow| {
-            match ranking.key {
+        use std::cmp::Ordering;
+
+        let figure = |row: &BoardRow, key: BoardKey| {
+            match key {
                 BoardKey::Sum => row.sum,
                 BoardKey::Figure(i) => row.figures.get(i).copied().unwrap_or(0),
             }
         };
         let mut rows: Vec<&BoardRow> = self.rows.iter().collect();
         rows.sort_by(|a, b| {
-            let (x, y) = (figure(a), figure(b));
-            if ranking.desc {
-                y.cmp(&x).then_with(|| a.name.cmp(&b.name))
-            } else {
-                x.cmp(&y).then_with(|| a.name.cmp(&b.name))
+            let keys = std::iter::once(ranking.key)
+                .chain(self.ties.iter().copied().map(BoardKey::Figure));
+            let mut order = Ordering::Equal;
+            for key in keys {
+                let (x, y) = (figure(a, key), figure(b, key));
+                order = if ranking.desc { y.cmp(&x) } else { x.cmp(&y) };
+                if order != Ordering::Equal {
+                    break;
+                }
             }
+            order.then_with(|| a.name.cmp(&b.name))
         });
         rows
     }
@@ -4072,46 +4055,84 @@ pub fn marks(state: &GameState, selected: Option<&Arc<str>>) -> Marks {
 /// The Tokens and Chests boards for the selected vessel, or `None` where the
 /// box is not drawn at all.
 ///
-/// Three things have to hold. The page must be the Atlantis one, since this
-/// is the layout the box belongs to. The run must be an Atlantis one *by its
-/// own tells* — a dragoon boarding says so and the voyage-type picker is only
-/// the quartermaster's word, and the tells re-arm per run. And a report of the
-/// run must have carried maneuver tokens or a haul, because a board of nobody
+/// Two things have to hold. The voyage type must count something — tokens
+/// ([`VoyageType::board_tokens`]), chests ([`VoyageType::hauls_chests`]), or
+/// both — since the box is no part of the layout of one that counts neither.
+/// And a report of the run must have carried some, because a board of nobody
 /// says nothing worth the room.
 ///
-/// Until all three hold the figures are still kept: every copied report joins
-/// the run and reaches disk whatever the page is drawing, so the board that
+/// The picker's word is enough for the first of them. Only Atlantis and the
+/// Cursed Isles ever announce themselves in the log, and a flotilla, a
+/// blockade and the Haunted Seas would then be the only voyages whose figures
+/// could never be read — so what the reports themselves carry is the tell.
+///
+/// Until both hold the figures are still kept: every copied report joins the
+/// run and reaches disk whatever the page is drawing, so the board that
 /// finally appears has everything set aside before it in its sums.
 pub fn boards(
     state: &GameState,
     selected: Option<&Arc<str>>,
     voyage_type: VoyageType,
 ) -> Option<Boards> {
-    if !voyage_type.tracks_atlantis() {
+    let shapes = voyage_type.board_tokens();
+    if shapes.is_empty() && !voyage_type.hauls_chests() {
         return None;
     }
     let vessel = selected.and_then(|key| state.vessels.get(key))?;
-    if vessel.encounter != crate::chatlog::EncounterKind::Atlantis {
-        return None;
-    }
     let reports = &latest_run(vessel)?.duty_reports;
 
-    let tokens = board(
-        BoardTab::Tokens,
-        ATLANTIS_TOKENS
-            .iter()
-            .map(|shape| (shape.glyph(), shape.slot()))
-            .collect(),
-        crate::duty::maneuvers(reports),
-    );
-    let treasures = board(
-        BoardTab::Treasures,
-        CHEST_TIERS
-            .iter()
-            .map(|tier| (tier.initial(), tier.slot()))
-            .collect(),
-        crate::duty::treasure(reports),
-    );
+    // The isles' flower leads its columns and is what that board opens on;
+    // every other token column counts the same kind of thing as its
+    // neighbours, so the sum is the whole of what they say.
+    let tokens = (!shapes.is_empty())
+        .then(|| {
+            board(
+                BoardTab::Tokens,
+                shapes
+                    .iter()
+                    .map(|shape| (shape.glyph(), shape.slot()))
+                    .collect(),
+                crate::duty::maneuvers(reports),
+                if voyage_type.tracks_cursed_isles() {
+                    BoardKey::Figure(0)
+                } else {
+                    BoardKey::Sum
+                },
+                Vec::new(),
+            )
+        })
+        .flatten();
+    let treasures = voyage_type
+        .hauls_chests()
+        .then(|| {
+            // A chest is worth more than a locker and a locker more than a
+            // box, and the isles' chests are foraged for between waves
+            // rather than hauled out of a hold - so there whoever brought
+            // the biggest ones back is read first, and a tie on those falls
+            // to the tier below. What the tiers are worth against each other
+            // we do not know, so the sum stays an honest count of chests and
+            // the ranking carries the reading instead.
+            let (opens, ties) = match voyage_type.tracks_cursed_isles() {
+                true => {
+                    (
+                        BoardKey::Figure(CHEST_TIERS.len() - 1),
+                        (0 .. CHEST_TIERS.len()).rev().collect(),
+                    )
+                }
+                false => (BoardKey::Sum, Vec::new()),
+            };
+            board(
+                BoardTab::Treasures,
+                CHEST_TIERS
+                    .iter()
+                    .map(|tier| (tier.initial(), tier.slot()))
+                    .collect(),
+                crate::duty::treasure(reports),
+                opens,
+                ties,
+            )
+        })
+        .flatten();
     (tokens.is_some() || treasures.is_some()).then_some(Boards {
         tokens,
         treasures,
@@ -4123,11 +4144,14 @@ pub fn boards(
 /// `columns` names each column and the slot of the figure it shows, so a
 /// board shows the slots its encounter pays and leaves the game's spare ones
 /// out without the sums losing anything: the sum is of the columns shown,
-/// which is what the rows are ranked on.
+/// which is what the rows are ranked on. `opens` and `ties` are the board's
+/// own, for which see [`Board`].
 fn board<const N: usize>(
     tab: BoardTab,
     columns: Vec<(&'static str, usize)>,
     counted: Vec<crate::duty::Counted<N>>,
+    opens: BoardKey,
+    ties: Vec<usize>,
 ) -> Option<Board> {
     let rows: Vec<BoardRow> = counted
         .into_iter()
@@ -4151,6 +4175,8 @@ fn board<const N: usize>(
             tab,
             heads: columns.into_iter().map(|(head, _)| head).collect(),
             rows,
+            opens,
+            ties,
         }
     })
 }
@@ -4253,23 +4279,31 @@ fn board_content_width(boards: &Boards) -> u16 {
 /// margins, the room its list keeps for a scrollbar, and never less than what
 /// its title or its tab strip needs.
 fn board_box_width(boards: &Boards) -> u16 {
-    let labels: Vec<u16> = boards
-        .tabs()
-        .iter()
-        .map(|tab| tab.label().len() as u16)
-        .collect();
-    let strip: u16 = labels.iter().map(|w| w + 2 * BOARD_TAB_PADDING).sum();
+    let tabs = boards.tabs();
+    // A box of one board draws no strip, so it asks nothing for one.
+    let strip: u16 = match 1 < tabs.len() {
+        true => {
+            tabs.iter()
+                .map(|tab| tab.label().len() as u16 + 2 * BOARD_TAB_PADDING)
+                .sum()
+        }
+        false => 0,
+    };
     (board_content_width(boards)
         + crate::utils::BOX_MARGIN
         + crate::utils::SCROLLBAR_W)
         .max(strip + crate::utils::BOX_MARGIN)
-        .max(offset_title_width(BOARD_BOX_TITLE))
+        .max(offset_title_width(board_box_title(
+            boards,
+        )))
 }
 
-/// Rows the box cannot do without: its tab strip and the blank under it, the
-/// column heads, a scrollable view's worth of ranking, and its borders.
-fn board_box_min_height() -> u16 {
-    3 + crate::utils::SCROLL_MIN_ROWS + 2
+/// Rows the box cannot do without: its tab strip and the blank under it where
+/// it draws one, the column heads, a scrollable view's worth of ranking, and
+/// its borders.
+fn board_box_min_height(boards: &Boards) -> u16 {
+    let strip = 2 * u16::from(1 < boards.tabs().len());
+    strip + 1 + crate::utils::SCROLL_MIN_ROWS + 2
 }
 
 /// Title of the Boochers box, which reads both of its lists.
@@ -4387,8 +4421,9 @@ fn render_marks_box(
     );
 }
 
-/// Render the Tokens and Chests box: a tab strip over a ranked table of what
-/// the run's duty reports counted.
+/// Render the Tokens and Chests box: a ranked table of what the run's duty
+/// reports counted, under a tab strip where there is more than one board to
+/// flip between.
 fn render_board_box(
     frame: &mut Frame,
     area: Rect,
@@ -4404,7 +4439,7 @@ fn render_board_box(
         .padding(Padding::horizontal(
             crate::utils::PADDING,
         ))
-        .title(offset_title(BOARD_BOX_TITLE).0);
+        .title(offset_title(board_box_title(boards)).0);
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
@@ -4422,27 +4457,32 @@ fn render_board_box(
     // one it has rather than drawing a strip nothing is under.
     ui.board_tab = boards.showing(ui.board_tab);
     let tabs = boards.tabs();
-    render_board_tabs(
-        frame,
-        inner,
-        &tabs,
-        ui.board_tab,
-        regions,
-    );
+    // One board is flipped to from nowhere: the title names it and the strip
+    // is left off, there being no choice for it to offer.
+    let strip = 1 < tabs.len();
+    if strip {
+        render_board_tabs(
+            frame,
+            inner,
+            &tabs,
+            ui.board_tab,
+            regions,
+        );
+    }
     let Some(board) = boards.tab_board(ui.board_tab) else {
         return;
     };
-    // Tab strip, a blank under it, then the heads: the ranking is read under
+    // The strip, a blank under it, then the heads: the ranking is read under
     // its own columns rather than under the tabs.
     let rows = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Length(1),
+        Constraint::Length(u16::from(strip)),
+        Constraint::Length(u16::from(strip)),
         Constraint::Length(1),
         Constraint::Min(0),
     ])
     .split(inner);
 
-    let ranking = ui.board_ranking(board.tab);
+    let ranking = ui.board_ranking(board);
     let cells = board_cells(board);
     // One name column over both boards, so the figures of either stand in the
     // same place and a flip of the tab moves nothing but the figures.
@@ -4630,41 +4670,6 @@ fn board_head_regions(
         x += span;
     }
     regions
-}
-
-/// Minimum width for the Enthralled pane: widest name + 2-space gap + widest
-/// `alive/total` value.
-fn enthralled_col_width(rows: &[(String, u32, u32)]) -> usize {
-    let name_col = rows
-        .iter()
-        .map(|(n, ..)| n.chars().count())
-        .max()
-        .unwrap_or(0);
-    let val_col = rows
-        .iter()
-        .map(|(_, a, t)| format!("{a}/{t}").len())
-        .max()
-        .unwrap_or(0);
-    name_col + 2 + val_col
-}
-
-/// Build an Enthralled row: name left, `alive/total` thralls right-aligned.
-fn enthralled_line(
-    name: &str,
-    alive: u32,
-    total: u32,
-    width: usize,
-    style: Style,
-) -> Line<'static> {
-    let value = format!("{alive}/{total}");
-    let name_max = width.saturating_sub(value.len() + 1);
-    let nm = truncate(name, name_max);
-    let pad = width.saturating_sub(nm.chars().count() + value.len());
-    Line::from(vec![
-        Span::styled(nm, style),
-        Span::raw(" ".repeat(pad)),
-        Span::raw(value),
-    ])
 }
 
 /// `line` with its `tags` laid against the right edge of a row `width` columns
@@ -6848,16 +6853,15 @@ fn render_trophy_popup(
 mod board_tests {
     use super::*;
 
-    /// An Atlantis run: the dragoon tell has fired, so the run is one by its
-    /// own account and not just by the picker's.
-    fn atlantis() -> (GameState, Arc<str>) {
+    /// A run under way: a vessel, an order to sail, and nothing that says
+    /// what kind of voyage it is - which is what every voyage but Atlantis and
+    /// the isles looks like in the log.
+    fn a_run() -> (GameState, Arc<str>) {
         let mut state = GameState::new();
         for line in [
             "====== 2026/06/16 ======",
             "[01:00:00] Going aboard the Test Vessel...",
             "[01:00:06] Playerone issued an order to set the vessel to sail.",
-            "[01:01:00] Dragoons from the monster took advantage of their \
-             proximity to board yer vessel!",
         ] {
             state.process_line(line);
         }
@@ -6879,37 +6883,146 @@ mod board_tests {
         "maneuver_tokens":[1,6,0,0,0,0,0]},
         "Bar":{"performance":2,"maneuver_tokens":[3,0,0,0,0,0,0]}}}"#;
 
-    /// The box waits on the tells: the same reports on a run that has shown
-    /// no sign of Atlantis draw nothing, however much the picker says
-    /// Atlantis. The figures are kept all the same — the run holds them, so
-    /// the board that finally appears has them in its sums.
+    /// The picker's word and the figures are between them enough: a run that
+    /// has shown no sign of anything still boards what its reports counted.
+    ///
+    /// Only Atlantis and the Cursed Isles ever announce themselves, so a tell
+    /// would leave a flotilla, a blockade and the Haunted Seas unable to show
+    /// figures they plainly have.
     #[test]
-    fn a_run_with_no_tells_has_no_board() {
-        let mut state = GameState::new();
-        for line in [
-            "====== 2026/06/16 ======",
-            "[01:00:00] Going aboard the Test Vessel...",
-            "[01:00:06] Playerone issued an order to set the vessel to sail.",
-        ] {
-            state.process_line(line);
-        }
-        let key = state.vessels_by_recency().first().cloned().expect("vessel");
+    fn a_run_with_no_tells_still_boards_its_figures() {
+        let (mut state, key) = a_run();
         copy(&mut state, FIRST);
-        assert!(boards(&state, Some(&key), VoyageType::Atlantis).is_none());
+        assert!(boards(&state, Some(&key), VoyageType::Flotilla).is_some());
+    }
+
+    /// A blockade is fought over a chart and nothing is carried off it, so its
+    /// box stands with the one tab however much a report says about a haul.
+    ///
+    /// A box of one board is titled for that board and draws no strip, so it
+    /// asks two rows less of the row the panes share.
+    #[test]
+    fn a_blockade_boards_its_tokens_alone() {
+        let (mut state, key) = a_run();
+        copy(&mut state, FIRST);
+        let one =
+            boards(&state, Some(&key), VoyageType::Blockade).expect("boards");
+        assert_eq!(one.tabs(), vec![BoardTab::Tokens]);
+        assert_eq!(board_box_title(&one), "Tokens");
+
+        let both =
+            boards(&state, Some(&key), VoyageType::Atlantis).expect("boards");
         assert_eq!(
-            latest_run(state.vessels.get(&key).expect("vessel"))
-                .expect("run")
-                .duty_reports
-                .len(),
-            1
+            board_box_title(&both),
+            "Tokens and Chests"
         );
+        assert_eq!(
+            board_box_min_height(&one) + 2,
+            board_box_min_height(&both)
+        );
+    }
+
+    /// The isles pay a shape of their own: it leads the token columns, the
+    /// board opens ranked on it, and the four any maneuver pays stand behind
+    /// it.
+    #[test]
+    fn the_isles_board_their_flower_first() {
+        let (mut state, key) = a_run();
+        copy(
+            &mut state,
+            r#"{"sail":{"Foo":{"performance":4,
+                "maneuver_tokens":[9,0,0,0,2,0,0]},
+                "Bar":{"performance":3,
+                "maneuver_tokens":[1,0,0,0,7,0,0]}}}"#,
+        );
+        let boards = boards(
+            &state,
+            Some(&key),
+            VoyageType::CursedIsles,
+        )
+        .expect("boards");
+        let tokens = boards.tab_board(BoardTab::Tokens).expect("tokens");
+        assert_eq!(
+            tokens.heads,
+            vec![
+                crate::duty::TokenShape::Flower.glyph(),
+                crate::duty::TokenShape::Circle.glyph(),
+                crate::duty::TokenShape::Diamond.glyph(),
+                crate::duty::TokenShape::Plus.glyph(),
+                crate::duty::TokenShape::Cross.glyph(),
+            ]
+        );
+        // Foo made the most tokens; Bar made the most of the one worth
+        // having, and the board opens on that.
+        assert_eq!(
+            tokens.opening().key,
+            BoardKey::Figure(0)
+        );
+        let names: Vec<_> = tokens
+            .ranked(tokens.opening())
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Bar", "Foo"]);
+    }
+
+    /// And its chests are read by the tier: whoever brought the biggest ones
+    /// back is first, a tie on those falls to the tier below, and the count
+    /// they add up to decides nothing.
+    #[test]
+    fn the_isles_board_their_chests_by_the_tier() {
+        let (mut state, key) = a_run();
+        copy(
+            &mut state,
+            r#"{"forage":{"Foo":{"performance":4,
+                "m.treasure_hauled":[9,1,1]},
+                "Bar":{"performance":3,
+                "m.treasure_hauled":[1,0,2]},
+                "Baz":{"performance":2,
+                "m.treasure_hauled":[4,0,2]}}}"#,
+        );
+        let boards = boards(
+            &state,
+            Some(&key),
+            VoyageType::CursedIsles,
+        )
+        .expect("boards");
+        let chests = boards.tab_board(BoardTab::Treasures).expect("chests");
+        assert_eq!(
+            chests.opening().key,
+            BoardKey::Figure(2)
+        );
+        let ranked: Vec<_> = chests
+            .ranked(chests.opening())
+            .iter()
+            .map(|row| (row.name.as_str(), row.sum))
+            .collect();
+        // Two chests each puts Bar and Baz over Foo's eleven pieces, and
+        // Baz's boxes break the tie between them.
+        assert_eq!(
+            ranked,
+            vec![("Baz", 6), ("Bar", 3), ("Foo", 11)]
+        );
+    }
+
+    /// Everywhere else a haul is a count of chests, the tiers saying nothing
+    /// about one another.
+    #[test]
+    fn a_haul_elsewhere_is_read_as_a_count() {
+        let (mut state, key) = a_run();
+        copy(&mut state, FIRST);
+        let boards =
+            boards(&state, Some(&key), VoyageType::Atlantis).expect("boards");
+        let chests = boards.tab_board(BoardTab::Treasures).expect("chests");
+        assert_eq!(chests.opening().key, BoardKey::Sum);
+        assert!(chests.ties.is_empty());
     }
 
     /// And on the figures: an Atlantis run whose reports have rated people
     /// without counting anything has nothing to put on a board.
     #[test]
     fn a_run_with_no_figures_has_no_board() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         copy(
             &mut state,
             r#"{"bilge":{"Foo":{"performance":4}}}"#,
@@ -6920,7 +7033,7 @@ mod board_tests {
     /// Nor is it the Atlantis box on another voyage type's page.
     #[test]
     fn another_layout_has_no_board() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         copy(&mut state, FIRST);
         assert!(boards(&state, Some(&key), VoyageType::Pillage).is_none());
     }
@@ -6929,7 +7042,7 @@ mod board_tests {
     /// them on the sum of it, summed over every report of the run.
     #[test]
     fn each_board_ranks_who_produced_its_figure() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         copy(&mut state, FIRST);
         copy(&mut state, SECOND);
         let boards =
@@ -6941,7 +7054,7 @@ mod board_tests {
 
         let tokens = boards.tab_board(BoardTab::Tokens).expect("tokens");
         let ranked: Vec<_> = tokens
-            .ranked(Ranking::default())
+            .ranked(tokens.opening())
             .iter()
             .map(|row| {
                 (
@@ -6960,7 +7073,7 @@ mod board_tests {
         // pirate is on the board of what they made and no other.
         let hauled = boards.tab_board(BoardTab::Treasures).expect("haul");
         let ranked: Vec<_> = hauled
-            .ranked(Ranking::default())
+            .ranked(hauled.opening())
             .iter()
             .map(|row| {
                 (
@@ -6977,7 +7090,7 @@ mod board_tests {
     /// turns around rather than starting over.
     #[test]
     fn a_column_ranks_on_itself_and_then_turns_around() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         copy(&mut state, FIRST);
         copy(&mut state, SECOND);
         let boards =
@@ -6985,7 +7098,7 @@ mod board_tests {
         let tokens = boards.tab_board(BoardTab::Tokens).expect("tokens");
 
         // Circles: Foo made 5 of them to Bar's 3.
-        let circles = Ranking::default().clicked(tokens.key_at(0));
+        let circles = tokens.opening().clicked(tokens.key_at(0));
         assert_eq!(
             circles,
             Ranking {
@@ -7020,7 +7133,7 @@ mod board_tests {
     /// out, so its figures stay on show until the next one begins.
     #[test]
     fn a_ported_run_keeps_its_board() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         copy(&mut state, FIRST);
         state.process_line(
             "[01:30:00] Playerone issued an order to put into port.",
@@ -7078,7 +7191,7 @@ mod board_tests {
     /// so one who comes back is read at the tally they left on.
     #[test]
     fn only_those_still_aboard_are_named() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         state.process_line("[01:02:00] Foo has come aboard.");
         state.process_line("[01:02:01] Bar has come aboard.");
         copy(
@@ -7110,7 +7223,7 @@ mod board_tests {
     /// interval is not the habit the box is there to show.
     #[test]
     fn the_worst_are_read_first_and_once_is_read_quietly() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         for name in ["Foo", "Bar", "Baz"] {
             state.process_line(&format!(
                 "[01:02:00] {name} has come aboard."
@@ -7148,7 +7261,7 @@ mod board_tests {
     /// one; and a run with nothing against anybody draws no box.
     #[test]
     fn a_heading_over_nobody_is_not_read() {
-        let (mut state, key) = atlantis();
+        let (mut state, key) = a_run();
         state.process_line("[01:02:00] Foo has come aboard.");
         copy(
             &mut state,

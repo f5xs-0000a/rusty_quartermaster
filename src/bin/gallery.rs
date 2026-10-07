@@ -671,6 +671,26 @@ const ATLANTIS_REPORTS: [&str; 2] = [
                 "Matethree":{"performance":4,"m.treasure_hauled":[5,1,0]}}}"#,
 ];
 
+/// Two intervals of a Cursed Isles run: the approach at sea, where the flower
+/// is paid, and a foraging phase between island waves, where the chests are.
+///
+/// The hauls are picked so the tiers and the count disagree: Matetwo carried
+/// the most chests by a wide margin and the fewest of the biggest ones.
+const CURSED_ISLES_REPORTS: [&str; 2] = [
+    r#"{"sail":{"Matetwo":{"performance":4,
+                           "maneuver_tokens":[3,1,0,2,14,0,0]},
+               "Playerone":{"performance":3,
+                            "maneuver_tokens":[2,4,1,0,9,0,0]}},
+        "rigging":{"Matethree":{"performance":5,
+                                "maneuver_tokens":[1,0,2,0,11,0,0]}}}"#,
+    r#"{"forage":{"Matetwo":{"performance":5,
+                             "m.treasure_hauled":[6,2,1]},
+                  "Playerone":{"performance":4,
+                               "m.treasure_hauled":[2,0,3]},
+                  "Matethree":{"performance":3,
+                               "m.treasure_hauled":[1,0,3]}}}"#,
+];
+
 /// Three intervals of an Atlantis that leave somebody under each of the
 /// Boochers box's headings: Matetwo booched twice and so is read plainly,
 /// Matethree once and so is read quietly, and Playerone - at the helm, which
@@ -751,7 +771,7 @@ fn timelapse_reports(shell: &mut AppShell, name: &str) {
 }
 
 /// A Cursed Isles run: the fog tell, a raft phase, then two island waves so
-/// the Enthralled pane and Fight Statistics both have numbers.
+/// the Fight Statistics box has numbers.
 const CURSED_ISLES: &[&str] = &[
     "====== 2026/06/18 ======",
     "[03:00:00] Going aboard the Cursed Tuna...",
@@ -1669,10 +1689,10 @@ fn jobbers_states(states: &mut Vec<State>) {
         ),
         (
             "jobbers-cursed-isles",
-            "Jobbers, Cursed Isles layout (Enthralled + Fight Statistics)",
+            "Jobbers, Cursed Isles layout (Aboard/Planked + Fight Statistics)",
             CURSED_ISLES,
             VoyageType::CursedIsles,
-            JobberFocus::Enthralled,
+            JobberFocus::Aboard,
         ),
     ] {
         states.push(state(slug, description, move |shell| {
@@ -1711,6 +1731,56 @@ fn jobbers_states(states: &mut Vec<State>) {
             shell.jobbers_ui.focus = JobberFocus::Board;
         }));
     }
+
+    // The same box on the Cursed Isles, whose boards are read differently:
+    // the flower leads the token columns and the board opens ranked on it,
+    // and the foraged chests are ranked by the biggest tier a pirate brought
+    // back rather than by how many they brought.
+    for (slug, description, tab) in [
+        (
+            "jobbers-cursed-isles-tokens",
+            "Jobbers, Cursed Isles token leaderboard (flower first)",
+            BoardTab::Tokens,
+        ),
+        (
+            "jobbers-cursed-isles-treasures",
+            "Jobbers, Cursed Isles chest leaderboard (biggest tier first)",
+            BoardTab::Treasures,
+        ),
+    ] {
+        states.push(state(slug, description, move |shell| {
+            feed(shell, CURSED_ISLES);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::CursedIsles;
+            for text in CURSED_ISLES_REPORTS {
+                let report =
+                    rusty_quartermaster::duty::parse(text).expect("report");
+                shell.take_duty_report(&report, chrono::Utc::now());
+            }
+            shell.jobbers_ui.board_tab = tab;
+            shell.jobbers_ui.focus = JobberFocus::Board;
+        }));
+    }
+
+    // A blockade: nothing in the log says one is under way, so the box stands
+    // on the picker's word and on what the reports themselves carried. It
+    // stands with one tab, nothing being carried off a blockade - the haul in
+    // these reports is there to be left out.
+    states.push(state(
+        "jobbers-blockade-tokens",
+        "Jobbers, Blockade token leaderboard (no Treasures tab)",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::Blockade;
+            for text in ATLANTIS_REPORTS {
+                let report =
+                    rusty_quartermaster::duty::parse(text).expect("report");
+                shell.take_duty_report(&report, chrono::Utc::now());
+            }
+            shell.jobbers_ui.focus = JobberFocus::Board;
+        },
+    ));
 
     // The Boochers box with somebody under each of its headings. The box
     // stands on every layout whether or not it has anything to say, so the

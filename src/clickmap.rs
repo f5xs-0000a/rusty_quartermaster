@@ -120,7 +120,6 @@ pub enum ClickTarget {
     JobberAboardList,
     JobberGreedyList,
     JobberPlankedList,
-    JobberEnthralledList,
     /// The Tokens and Chests box as a whole (focus it).
     JobberBoard,
     /// One of its tabs, by place in the strip.

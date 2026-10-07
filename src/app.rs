@@ -1805,7 +1805,7 @@ impl AppShell {
             self.jump_to_vampirate_jobbers();
         }
         // The Cursed Isles tell (the noxious fog) does the same for the Cursed
-        // Isles layout (Enthralled leaderboard + Fight Statistics).
+        // Isles layout (the Fight Statistics box and the flower tokens).
         if self.chatlog.take_cursed_isles_detected() {
             self.jump_to_cursed_isles_jobbers();
         }
@@ -2123,8 +2123,8 @@ impl AppShell {
     }
 
     /// The Cursed Isles tell fired: surface the Jobbers page and switch it to
-    /// the Cursed Isles voyage layout (Enthralled leaderboard + Fight
-    /// Statistics).
+    /// the Cursed Isles voyage layout (the Fight Statistics box, and the
+    /// flower leading the token board).
     fn jump_to_cursed_isles_jobbers(&mut self) {
         self.jobbers_ui.voyage_type = VoyageType::CursedIsles;
         self.switch_to(AppId::Chatlog);
@@ -2608,7 +2608,7 @@ impl AppShell {
                     }
                     // The button sits below the leaderboard; ↑ returns to it.
                     SkillDist => self.jobbers_ui.focus = Leaderboard,
-                    Aboard | Greedy | Planked | Enthralled => {
+                    Aboard | Greedy | Planked => {
                         let pane =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
                         // At the top of a pane (or an empty one), ↑ leaves for
@@ -2684,7 +2684,7 @@ impl AppShell {
                     }
                     // The panes stand side by side, so there is nothing under
                     // one of them: ↓ walks the list and stops at its end.
-                    Aboard | Greedy | Planked | Enthralled => {
+                    Aboard | Greedy | Planked => {
                         let pane =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
                         self.jobbers_pane_select_delta(pane, 1);
@@ -2712,7 +2712,7 @@ impl AppShell {
                             self.leaderboard_clamp();
                         }
                     }
-                    Aboard | Greedy | Planked | Enthralled | Boochers => {
+                    Aboard | Greedy | Planked | Boochers => {
                         // The Boochers box shares its column with the last
                         // pane, so it crosses left to whatever that pane does.
                         let cur = Self::focus_pane(self.jobbers_ui.focus)
@@ -2762,7 +2762,7 @@ impl AppShell {
                             self.leaderboard_clamp();
                         }
                     }
-                    Aboard | Greedy | Planked | Enthralled => {
+                    Aboard | Greedy | Planked => {
                         let cur =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
                         if let Some(at) = panes.iter().position(|p| *p == cur)
@@ -2800,8 +2800,8 @@ impl AppShell {
                 if let Some(board) =
                     boards.as_ref().and_then(|b| b.tab_board(tab))
                 {
-                    let key = self.jobbers_ui.board_ranking(tab).key;
-                    self.jobbers_ui.rank_board(tab, board.next_key(key));
+                    let key = self.jobbers_ui.board_ranking(board).key;
+                    self.jobbers_ui.rank_board(board, board.next_key(key));
                 }
             }
             KeyCode::Enter => {
@@ -2815,7 +2815,7 @@ impl AppShell {
                     }
                     Leaderboard => self.open_leaderboard_popup(),
                     SkillDist => self.open_skill_dist_popup(),
-                    Aboard | Greedy | Planked | Enthralled => {
+                    Aboard | Greedy | Planked => {
                         let pane =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
                         self.open_pirate_popup(pane);
@@ -3376,7 +3376,6 @@ impl AppShell {
             JobberFocus::Aboard => Some(JobberPane::Aboard),
             JobberFocus::Greedy => Some(JobberPane::Greedy),
             JobberFocus::Planked => Some(JobberPane::Planked),
-            JobberFocus::Enthralled => Some(JobberPane::Enthralled),
             _ => None,
         }
     }
@@ -3387,7 +3386,6 @@ impl AppShell {
             JobberPane::Aboard => JobberFocus::Aboard,
             JobberPane::Greedy => JobberFocus::Greedy,
             JobberPane::Planked => JobberFocus::Planked,
-            JobberPane::Enthralled => JobberFocus::Enthralled,
         }
     }
 
@@ -3410,12 +3408,6 @@ impl AppShell {
                     .get(key)
                     .map_or(0, |v| v.planked_by_us.len())
             }
-            JobberPane::Enthralled => {
-                self.chatlog
-                    .vessels
-                    .get(key)
-                    .map_or(0, |v| v.thralls_total.len())
-            }
         }
     }
 
@@ -3424,7 +3416,6 @@ impl AppShell {
             JobberPane::Aboard => &mut self.jobbers_ui.aboard_sel,
             JobberPane::Greedy => &mut self.jobbers_ui.greedy_sel,
             JobberPane::Planked => &mut self.jobbers_ui.planked_sel,
-            JobberPane::Enthralled => &mut self.jobbers_ui.enthralled_sel,
         }
     }
 
@@ -3435,7 +3426,6 @@ impl AppShell {
             JobberPane::Aboard => self.jobbers_ui.aboard_sel,
             JobberPane::Greedy => self.jobbers_ui.greedy_sel,
             JobberPane::Planked => self.jobbers_ui.planked_sel,
-            JobberPane::Enthralled => self.jobbers_ui.enthralled_sel,
         };
         if n == 0 { 0 } else { raw.min(n - 1) }
     }
@@ -4068,10 +4058,6 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Planked;
             }
-            ClickTarget::JobberEnthralledList => {
-                self.global_focus = GlobalFocus::Content;
-                self.jobbers_ui.focus = JobberFocus::Enthralled;
-            }
             ClickTarget::JobberBoard => {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Board;
@@ -4094,13 +4080,10 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Board;
                 let tab = self.jobbers_ui.board_tab;
-                if let Some(key) = self
-                    .jobbers_boards()
-                    .as_ref()
-                    .and_then(|boards| boards.tab_board(tab))
-                    .map(|board| board.key_at(col))
+                if let Some(boards) = self.jobbers_boards()
+                    && let Some(board) = boards.tab_board(tab)
                 {
-                    self.jobbers_ui.rank_board(tab, key);
+                    self.jobbers_ui.rank_board(board, board.key_at(col));
                 }
             }
             ClickTarget::JobberPirate {
@@ -4442,11 +4425,6 @@ impl AppShell {
                         pane: JobberPane::Planked,
                         ..
                     }) => JobberPane::Planked,
-                    Some(ClickTarget::JobberEnthralledList)
-                    | Some(ClickTarget::JobberPirate {
-                        pane: JobberPane::Enthralled,
-                        ..
-                    }) => JobberPane::Enthralled,
                     _ => return,
                 };
                 self.jobbers_pane_select_delta(pane, delta.signum());
@@ -5790,6 +5768,18 @@ mod jobber_duty_tests {
         );
     }
 
+    /// What `tab`'s board is ranked on just now, read off the boards the page
+    /// draws - a board that has not been ranked stands as it opens, which is
+    /// the board's own to say and not the view state's.
+    fn ranked_on(
+        shell: &AppShell,
+        tab: crate::jobbers::BoardTab,
+    ) -> crate::jobbers::BoardKey {
+        let boards = shell.jobbers_boards().expect("the box is drawn");
+        let board = boards.tab_board(tab).expect("the board is drawn");
+        shell.jobbers_ui.board_ranking(board).key
+    }
+
     /// The row a box's title is drawn on.
     fn row_of(text: &str, title: &str) -> usize {
         text.lines()
@@ -5841,6 +5831,19 @@ mod jobber_duty_tests {
         shell.jobbers_ui.board_tab = crate::jobbers::BoardTab::Treasures;
         let text = screen(&mut shell);
         assert!(text.contains("Matethree"));
+    }
+
+    /// A box with one board to show is titled for that board and draws no
+    /// strip: nothing is carried off a blockade, so the same reports leave it
+    /// the tokens alone.
+    #[test]
+    fn a_box_of_one_board_is_titled_for_it() {
+        let mut shell = aboard_atlantis(Some(REPORT));
+        shell.jobbers_ui.voyage_type = crate::jobbers::VoyageType::Blockade;
+        let text = screen(&mut shell);
+        assert!(text.contains("Tokens"));
+        assert!(!text.contains("Tokens and Chests"));
+        assert!(!text.contains("Treasures"));
     }
 
     /// ←/→ walk the row the boxes share with the panes, the box standing
@@ -5908,19 +5911,20 @@ mod jobber_duty_tests {
             BoardTab::Tokens
         );
 
-        // The sum is where a board starts; `s` moves on to the figures.
+        // The sum is where an Atlantis board starts; `s` moves on to the
+        // figures.
         assert_eq!(
-            shell.jobbers_ui.board_ranking(BoardTab::Tokens).key,
+            ranked_on(&shell, BoardTab::Tokens),
             BoardKey::Sum
         );
         press(&mut shell, KeyCode::Char('s'));
         assert_eq!(
-            shell.jobbers_ui.board_ranking(BoardTab::Tokens).key,
+            ranked_on(&shell, BoardTab::Tokens),
             BoardKey::Figure(0)
         );
         // And the other board's ranking is no business of this one's.
         assert_eq!(
-            shell.jobbers_ui.board_ranking(BoardTab::Treasures).key,
+            ranked_on(&shell, BoardTab::Treasures),
             BoardKey::Sum
         );
     }
@@ -6043,7 +6047,7 @@ mod jobber_duty_tests {
         });
         click(&mut shell, head);
         assert_eq!(
-            shell.jobbers_ui.board_ranking(BoardTab::Treasures).key,
+            ranked_on(&shell, BoardTab::Treasures),
             BoardKey::Figure(0)
         );
     }

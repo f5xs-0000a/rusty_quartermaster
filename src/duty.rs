@@ -62,8 +62,9 @@ pub const MANEUVER_SLOTS: usize = 7;
 /// Slots in a `treasure_hauled` array, one per [`ChestTier`].
 pub const TREASURE_SLOTS: usize = 3;
 
-/// A maneuver token's shape. Tokens are earned only where maneuvers are:
-/// blockades, flotillas, and sea monster hunts.
+/// A maneuver token's shape. Tokens are earned only where maneuvers are: a
+/// blockade, a flotilla, a sea monster hunt, the Haunted Seas, and the
+/// approach to the Cursed Isles.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TokenShape {
     Circle,
@@ -246,13 +247,13 @@ impl TokenShape {
     /// The shape itself, for a column that counts it. A token is known by its
     /// shape and has no name the game ever shows, so the shape is the heading.
     ///
-    /// Each is one column wide in a Latin context and none has an emoji face,
-    /// the lozenge standing in for the diamond because the diamonds of the
-    /// Geometric Shapes block are drawn double-width by too many fonts.
+    /// Each is one column wide in a Latin context and none has an emoji face.
+    /// The circle and the diamond are both drawn hollow so that neither reads
+    /// as the heavier shape of the two.
     pub fn glyph(self) -> &'static str {
         match self {
             Self::Circle => "\u{25cb}",
-            Self::Diamond => "\u{25ca}",
+            Self::Diamond => "\u{2b26}",
             Self::Plus => "+",
             Self::Cross => "\u{00d7}",
             Self::Flower => "\u{2740}",
