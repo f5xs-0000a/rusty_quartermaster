@@ -376,6 +376,14 @@ impl VoyageType {
         matches!(self, VoyageType::Vampirates)
     }
 
+    /// Whether this voyage type is the Atlantis one, whose layout stands its
+    /// panes one over the other to make room for the Tokens and Chests box.
+    /// Only Atlantis does; see [`boards`] for the rest of what the box waits
+    /// on.
+    pub fn tracks_atlantis(self) -> bool {
+        matches!(self, VoyageType::Atlantis)
+    }
+
     /// Whether this voyage type runs the Cursed Isles tracking (the Enthralled
     /// leaderboard in place of Aboard, plus the Fight Statistics box). Only
     /// Cursed Isles does.
@@ -713,7 +721,7 @@ impl PirateCache {
 /// Which widget on the page has keyboard focus. The Unpoison button is only
 /// reachable when the selected vessel is actually poisoned; the three panes
 /// only exist on the Pillage layout.
-#[derive(Default, Clone, Copy, PartialEq, Eq)]
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum JobberFocus {
     #[default]
     Vessels,
@@ -732,6 +740,10 @@ pub enum JobberFocus {
     Planked,
     /// The Enthralled leaderboard pane (Cursed Isles only).
     Enthralled,
+    /// The Tokens and Chests box (Atlantis only, and only once there is
+    /// something in it — see [`boards`]). Its list scrolls and its tabs and
+    /// column heads answer to keys of their own.
+    Board,
 }
 
 #[derive(Default)]
@@ -760,6 +772,15 @@ pub struct JobbersUi {
     pub top_offset: usize,
     /// The voyage type being crewed; gates the Pillage-only layout.
     pub voyage_type: VoyageType,
+    /// Which of the Tokens and Chests box's leaderboards is up.
+    pub board_tab: BoardTab,
+    /// How each board is ranked, and how far down each is scrolled. Kept per
+    /// board: a ranking is about the figures it ranks, so one tab's has no
+    /// business moving the other's.
+    pub tokens_ranking: Ranking,
+    pub treasures_ranking: Ranking,
+    pub tokens_offset: usize,
+    pub treasures_offset: usize,
     /// How many entries each Top Jobbers column shows. `None` (the default)
     /// shows the whole ranked list with no cap.
     pub leaderboard_size: Option<usize>,
@@ -818,6 +839,53 @@ pub struct RosterPrompt {
 }
 
 impl JobbersUi {
+    /// How `tab`'s board is ranked.
+    pub fn board_ranking(&self, tab: BoardTab) -> Ranking {
+        match tab {
+            BoardTab::Tokens => self.tokens_ranking,
+            BoardTab::Treasures => self.treasures_ranking,
+        }
+    }
+
+    /// Rank `tab`'s board as a click on the column `key` names asks.
+    pub fn rank_board(&mut self, tab: BoardTab, key: BoardKey) {
+        let ranking = match tab {
+            BoardTab::Tokens => &mut self.tokens_ranking,
+            BoardTab::Treasures => &mut self.treasures_ranking,
+        };
+        *ranking = ranking.clicked(key);
+    }
+
+    /// How far down the board on show is scrolled.
+    pub fn board_offset(&self) -> usize {
+        match self.board_tab {
+            BoardTab::Tokens => self.tokens_offset,
+            BoardTab::Treasures => self.treasures_offset,
+        }
+    }
+
+    /// How far down `tab`'s board is scrolled.
+    fn board_offset_mut(&mut self, tab: BoardTab) -> &mut usize {
+        match tab {
+            BoardTab::Tokens => &mut self.tokens_offset,
+            BoardTab::Treasures => &mut self.treasures_offset,
+        }
+    }
+
+    /// Scroll the board on show by `delta` rows. What it may not pass is the
+    /// render's to say, the window being known there and nowhere earlier.
+    pub fn scroll_board(&mut self, delta: isize) {
+        let tab = self.board_tab;
+        let offset = self.board_offset_mut(tab);
+        *offset = offset.saturating_add_signed(delta);
+    }
+
+    /// Park the board on show at `offset` rows down, for a drag of its bar.
+    pub fn seek_board(&mut self, offset: usize) {
+        let tab = self.board_tab;
+        *self.board_offset_mut(tab) = offset;
+    }
+
     /// Whether any of the page's modal popups holds the slot.
     fn popup_open(&self) -> bool {
         self.ship_popup.is_some()
@@ -1087,6 +1155,12 @@ pub fn tooltip(state: &GameState, ui: &JobbersUi) -> Vec<&'static str> {
         }
         JobberFocus::SkillDist => {
             vec!["Press Enter to view the skill distribution plot."]
+        }
+        JobberFocus::Board => {
+            vec![
+                "Tab: boards \u{00b7} s: ranking \u{00b7} \u{2190}/\u{2192} \
+                 panes \u{00b7} \u{2191}/\u{2193} scroll",
+            ]
         }
     }
 }
@@ -1390,6 +1464,11 @@ pub fn render(
 
     let implemented = ui.voyage_type.implemented();
     let panes = ui.voyage_type.panes();
+    // The Tokens and Chests box, where the run has earned one. It stands
+    // beside the panes, which stack one over the other to make the column for
+    // it, so its presence is the layout's and not just a widget's.
+    let boards = boards(state, selected.as_ref(), ui.voyage_type);
+    let stacked = boards.is_some();
 
     // The Unpoison button is only focusable while the vessel is poisoned, and a
     // pane is only focusable when this voyage type actually shows it — bounce
@@ -1413,6 +1492,10 @@ pub fn render(
         _ => None,
     };
     if focused_pane.is_some_and(|p| !panes.contains(&p)) {
+        ui.focus = JobberFocus::VoyageType;
+    }
+    // The Tokens and Chests box is only focusable while it is drawn.
+    if ui.focus == JobberFocus::Board && !stacked {
         ui.focus = JobberFocus::VoyageType;
     }
     // The Skill Distribution button is only focusable on voyage types that show
@@ -1524,6 +1607,7 @@ pub fn render(
         })
         .unwrap_or_default();
     let greedy_cw = name_col_plus_value(&greedy);
+    let planked_n = vessel.map_or(0, |v| v.planked_by_us.len());
     // Planked carries the same rank tags as Aboard, so it reserves their
     // columns the same way.
     let planked_cw = vessel
@@ -1570,7 +1654,15 @@ pub fn render(
             }
         })
         .collect();
-    let panes_w: u16 = pane_widths.iter().sum();
+    // Stacked, the panes share one column as wide as the widest of them, and
+    // the box stands beside it; side by side they each take their own width.
+    let pane_col_w = pane_widths.iter().copied().max().unwrap_or(0);
+    let board_w = boards.as_ref().map_or(0, board_box_width);
+    let panes_w: u16 = if stacked {
+        pane_col_w + board_w
+    } else {
+        pane_widths.iter().sum()
+    };
 
     // ---- Stats box sizing (Vampirates waves) ----
     // A small non-selectable `label | value` table between Voyage and Top
@@ -1886,27 +1978,46 @@ pub fn render(
     };
     let tip_h = tooltip_lines.len() as u16;
 
-    // The least the panes can be given. They share one height, so it must suit
-    // whichever of them pins the most rows around its list: the Aboard pane
-    // holds a "Pirates (n):" header and its swabbie footer still while the
-    // names between them scroll. Under those goes a scrollable view's worth of
-    // list whatever the rosters hold just now, so the panes show the room the
-    // names they do not hold yet would be read in. Mirrors the rows
-    // `render_panes` pins.
-    let pane_min = panes
+    // Rows each pane pins around its scrolling list: the Aboard pane holds a
+    // "Pirates (n):" header and its swabbie footer still while the names
+    // between them scroll. Mirrors the rows `render_panes` pins.
+    let pinned = |pane: &JobberPane| -> u16 {
+        match pane {
+            JobberPane::Aboard => 1 + u16::from(0 < swabbies),
+            JobberPane::Greedy
+            | JobberPane::Planked
+            | JobberPane::Enthralled => 0,
+        }
+    };
+    // The least each pane can be given: what it pins, a scrollable view's
+    // worth of list under that whatever the rosters hold just now — so the
+    // panes show the room the names they do not hold yet would be read in —
+    // and its borders.
+    let pane_floors: Vec<u16> = panes
         .iter()
-        .map(|p| {
-            let pinned = match p {
-                JobberPane::Aboard => 1 + usize::from(0 < swabbies),
-                JobberPane::Greedy
-                | JobberPane::Planked
-                | JobberPane::Enthralled => 0,
+        .map(|pane| pinned(pane) + crate::utils::SCROLL_MIN_ROWS + 2)
+        .collect();
+    // What each pane would fill: every row of its list, pins and borders.
+    let pane_wants: Vec<u16> = panes
+        .iter()
+        .map(|pane| {
+            let rows = match pane {
+                JobberPane::Aboard => aboard_set.len(),
+                JobberPane::Greedy => greedy.len(),
+                JobberPane::Planked => planked_n,
+                JobberPane::Enthralled => enthralled.len(),
             };
-            pinned + crate::utils::SCROLL_MIN_ROWS as usize
+            (rows as u16).saturating_add(pinned(pane) + 2)
         })
-        .max()
-        .unwrap_or(0) as u16
-        + 2; // borders
+        .collect();
+    // Side by side the panes share one height, so it must suit whichever of
+    // them pins the most; stacked they each take their own, so the column
+    // must hold every floor at once.
+    let pane_min = if stacked {
+        pane_floors.iter().sum::<u16>().max(board_box_min_height())
+    } else {
+        pane_floors.iter().copied().max().unwrap_or(0)
+    };
     // The same floor for the Skill Leaderboard, whose header and borders are
     // the 3 rows `top_h` adds to its ranking. A window capped below the floor
     // can never show four rows, so there the cap is the floor.
@@ -2028,7 +2139,6 @@ pub fn render(
         );
         render_panes(
             frame,
-            main[1],
             state,
             cache,
             selected.as_ref(),
@@ -2037,7 +2147,7 @@ pub fn render(
             ui,
             focused,
             panes,
-            &pane_widths,
+            &pane_areas(main[1], &pane_widths),
             regions,
         );
         rows[3]
@@ -2084,9 +2194,27 @@ pub fn render(
                 regions,
             );
         }
+        // Stacked, the panes take a column of their own and the Tokens and
+        // Chests box the rest of the row: it runs the whole way down beside
+        // them, a box that stopped level with the upper pane reading as a
+        // hole in the page rather than as one that had said its piece.
+        let pane_cols = if stacked {
+            let split = Layout::horizontal([
+                Constraint::Length(pane_col_w),
+                Constraint::Min(0),
+            ])
+            .split(rows[5]);
+            if let Some(boards) = &boards {
+                render_board_box(
+                    frame, split[1], boards, ui, focused, regions,
+                );
+            }
+            stacked_pane_areas(split[0], &pane_wants, &pane_floors)
+        } else {
+            pane_areas(rows[5], &pane_widths)
+        };
         render_panes(
             frame,
-            rows[5],
             state,
             cache,
             selected.as_ref(),
@@ -2095,7 +2223,7 @@ pub fn render(
             ui,
             focused,
             panes,
-            &pane_widths,
+            &pane_cols,
             regions,
         );
         rows[6]
@@ -3234,9 +3362,11 @@ pub fn leaderboard_columns(
 }
 
 #[allow(clippy::too_many_arguments)]
+/// Render each pane into the area `cols` gives it, in `panes` order. Where
+/// they sit is the caller's: side by side ([`pane_areas`]) or one over the
+/// other ([`stacked_pane_areas`]).
 fn render_panes(
     frame: &mut Frame,
-    area: Rect,
     state: &GameState,
     cache: &PirateCache,
     selected: Option<&Arc<str>>,
@@ -3245,36 +3375,12 @@ fn render_panes(
     ui: &mut JobbersUi,
     focused: bool,
     panes: &[JobberPane],
-    pane_widths: &[u16],
+    cols: &[Rect],
     regions: &mut ClickMap,
 ) {
-    let n = panes.len();
-    if n == 0 {
+    if panes.is_empty() {
         return;
     }
-
-    // Start from each pane's natural (content) width, then spread any slack —
-    // the block may be wider than the panes combined when Top Jobbers or
-    // the Voyage box is the widest piece — evenly so it doesn't all dump
-    // into the last pane.
-    let natural: u16 = pane_widths.iter().sum();
-    let slack = area.width.saturating_sub(natural);
-    let add = slack / n as u16;
-    let rem = slack % n as u16;
-    let constraints: Vec<Constraint> = pane_widths
-        .iter()
-        .enumerate()
-        .map(|(i, w)| {
-            if i + 1 == n {
-                // The last pane absorbs the remainder so rounding leaves no
-                // gap.
-                Constraint::Min(0)
-            } else {
-                Constraint::Length(w + add + u16::from((i as u16) < rem))
-            }
-        })
-        .collect();
-    let cols = Layout::horizontal(constraints).split(area);
 
     let my_crew = my_crew_name(state, cache);
     let is_player = |name: &str| {
@@ -3314,7 +3420,9 @@ fn render_panes(
 
     // Render only the panes this voyage type asks for, in order.
     for (i, pane) in panes.iter().enumerate() {
-        let col = cols[i];
+        let Some(col) = cols.get(i).copied() else {
+            break;
+        };
         match pane {
             // -- Aboard: a pinned "Pirates (n):" header, an indented scrollable
             // name    list, then a pinned swabbie footer. --
@@ -3466,6 +3574,731 @@ fn render_panes(
             }
         }
     }
+}
+
+/// Where each pane goes in a row they share side by side.
+///
+/// Each starts from its natural (content) width, and any slack — the block may
+/// be wider than the panes combined when Top Jobbers or the Voyage box is the
+/// widest piece — is spread evenly rather than all dumped into the last pane.
+fn pane_areas(area: Rect, widths: &[u16]) -> Vec<Rect> {
+    let n = widths.len();
+    if n == 0 {
+        return Vec::new();
+    }
+    let slack = area.width.saturating_sub(widths.iter().sum());
+    let add = slack / n as u16;
+    let rem = slack % n as u16;
+    let constraints: Vec<Constraint> = widths
+        .iter()
+        .enumerate()
+        .map(|(i, w)| {
+            if i + 1 == n {
+                // The last pane absorbs the remainder so rounding leaves no
+                // gap.
+                Constraint::Min(0)
+            } else {
+                Constraint::Length(w + add + u16::from((i as u16) < rem))
+            }
+        })
+        .collect();
+    Layout::horizontal(constraints).split(area).to_vec()
+}
+
+/// Where each pane goes in a column they share one over the other.
+///
+/// The panes fight each other for the rows: each is floored at what it cannot
+/// read without (`floors`), and what is left over is shared in proportion to
+/// the rows each would fill (`wants`), so the longer roster draws the larger
+/// share. Neither is given more than it can fill while the other still has a
+/// list to scroll, and rows nobody can fill go to the first pane, the page
+/// reading better with its slack at the top than between the two.
+fn stacked_pane_areas(area: Rect, wants: &[u16], floors: &[u16]) -> Vec<Rect> {
+    let mut given: Vec<u16> = floors.to_vec();
+    let mut spare = area.height.saturating_sub(floors.iter().sum::<u16>());
+    let needs: Vec<u16> = wants
+        .iter()
+        .zip(floors)
+        .map(|(want, floor)| want.saturating_sub(*floor))
+        .collect();
+    let total: u16 = needs.iter().sum();
+    if total <= spare {
+        // Room for every pane's whole list: the rest goes to the first.
+        for (give, need) in given.iter_mut().zip(&needs) {
+            *give += need;
+        }
+        spare -= total;
+        if let Some(first) = given.first_mut() {
+            *first += spare;
+        }
+    } else if 0 < total {
+        // Short of that, each takes a share of the spare rows in proportion
+        // to the list it has waiting, the odd rows going to the hungriest.
+        let mut shared = 0;
+        for (give, need) in given.iter_mut().zip(&needs) {
+            let share = (spare as u32 * *need as u32 / total as u32) as u16;
+            *give += share;
+            shared += share;
+        }
+        let mut left = spare - shared;
+        let mut order: Vec<usize> = (0 .. needs.len()).collect();
+        order.sort_by_key(|i| std::cmp::Reverse(needs[*i]));
+        for i in order {
+            if left == 0 {
+                break;
+            }
+            given[i] += 1;
+            left -= 1;
+        }
+    }
+    Layout::vertical(given.into_iter().map(Constraint::Length))
+        .split(area)
+        .to_vec()
+}
+
+// ---------------------------------------------------------------------------
+// Tokens and Chests: what a run's duty reports counted
+// ---------------------------------------------------------------------------
+
+/// The token shapes an Atlantis board columns, in slot order. The flower is
+/// earned only while attacking the Cursed Isles, so it is no column of this
+/// one; the encounter that pays it would board it itself.
+const ATLANTIS_TOKENS: &[crate::duty::TokenShape] = &[
+    crate::duty::TokenShape::Circle,
+    crate::duty::TokenShape::Diamond,
+    crate::duty::TokenShape::Plus,
+    crate::duty::TokenShape::Cross,
+];
+
+/// The chest tiers a haul board columns, smallest first.
+const CHEST_TIERS: &[crate::duty::ChestTier] = &[
+    crate::duty::ChestTier::Box,
+    crate::duty::ChestTier::Locker,
+    crate::duty::ChestTier::Chest,
+];
+
+/// The head over a board's name column.
+const BOARD_NAME_HEAD: &str = "Pirate";
+
+/// Head of the column holding a row's figures added together.
+const BOARD_SUM_HEAD: &str = "\u{03a3}";
+
+/// Columns the ranking mark takes ahead of a column's head: the arrow and the
+/// blank between. Every figure cell keeps them, so the mark can move from
+/// column to column without a cell moving with it.
+const BOARD_MARK_W: usize = 2;
+
+/// Blank columns between a board's columns.
+const BOARD_GAP: usize = 2;
+
+/// Title of the box both boards are shown in.
+const BOARD_BOX_TITLE: &str = "Tokens and Chests";
+
+/// Blank columns either side of a tab's label within its slot.
+const BOARD_TAB_PADDING: u16 = 1;
+
+/// Which leaderboard the Tokens and Chests box is showing.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoardTab {
+    #[default]
+    Tokens,
+    Treasures,
+}
+
+impl BoardTab {
+    /// The tab's label on the strip.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Tokens => "Tokens",
+            Self::Treasures => "Treasures",
+        }
+    }
+}
+
+/// What a board is ranked on: one of its figure columns, or their sum.
+///
+/// The sum is a key and not a column index so that it means the same thing on
+/// a board of four figures as on one of three.
+#[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoardKey {
+    #[default]
+    Sum,
+    /// Index into the board's figure columns, the sum aside.
+    Figure(usize),
+}
+
+/// How a board is ranked: on what, and which way.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub struct Ranking {
+    pub key: BoardKey,
+    pub desc: bool,
+}
+
+impl Default for Ranking {
+    /// Most of whatever it counts first — what a leaderboard is for.
+    fn default() -> Self {
+        Self {
+            key: BoardKey::Sum,
+            desc: true,
+        }
+    }
+}
+
+impl Ranking {
+    /// This ranking after a click on the column `key` names: the same column
+    /// turns around, a different one starts from the top.
+    fn clicked(self, key: BoardKey) -> Self {
+        Self {
+            key,
+            desc: self.key != key || !self.desc,
+        }
+    }
+}
+
+/// One pirate's standing on a board: their figures in column order and the
+/// sum of them.
+pub struct BoardRow {
+    pub name: String,
+    pub figures: Vec<u32>,
+    pub sum: u32,
+}
+
+/// One leaderboard of the Tokens and Chests box: a column per figure the
+/// encounter counts, the sum last, and a row per pirate who produced some of
+/// it.
+pub struct Board {
+    pub tab: BoardTab,
+    /// Heads over the figure columns, left to right. The sum's own head is
+    /// [`BOARD_SUM_HEAD`] and no part of this.
+    pub heads: Vec<&'static str>,
+    pub rows: Vec<BoardRow>,
+}
+
+/// Both of the box's leaderboards, each present only where the run has that
+/// figure to show. Never both absent: the box is not drawn then.
+pub struct Boards {
+    pub tokens: Option<Board>,
+    pub treasures: Option<Board>,
+}
+
+impl Board {
+    /// The rows ranked as `ranking` asks, ties by name so the order is the
+    /// same board every frame.
+    fn ranked(&self, ranking: Ranking) -> Vec<&BoardRow> {
+        let figure = |row: &BoardRow| {
+            match ranking.key {
+                BoardKey::Sum => row.sum,
+                BoardKey::Figure(i) => row.figures.get(i).copied().unwrap_or(0),
+            }
+        };
+        let mut rows: Vec<&BoardRow> = self.rows.iter().collect();
+        rows.sort_by(|a, b| {
+            let (x, y) = (figure(a), figure(b));
+            if ranking.desc {
+                y.cmp(&x).then_with(|| a.name.cmp(&b.name))
+            } else {
+                x.cmp(&y).then_with(|| a.name.cmp(&b.name))
+            }
+        });
+        rows
+    }
+
+    /// The key a click on column `col` ranks by, counting the sum's own
+    /// column at the end.
+    pub fn key_at(&self, col: usize) -> BoardKey {
+        if col < self.heads.len() {
+            BoardKey::Figure(col)
+        } else {
+            BoardKey::Sum
+        }
+    }
+
+    /// The key after `key`, walking the figure columns in turn and then the
+    /// sum, round again. What the keyboard ranks by, a column at a time.
+    pub fn next_key(&self, key: BoardKey) -> BoardKey {
+        let col = match key {
+            BoardKey::Figure(i) if i + 1 < self.heads.len() => {
+                BoardKey::Figure(i + 1)
+            }
+            BoardKey::Figure(_) => BoardKey::Sum,
+            BoardKey::Sum => BoardKey::Figure(0),
+        };
+        // A board of no figure columns can only ever rank by its sum.
+        if self.heads.is_empty() {
+            BoardKey::Sum
+        } else {
+            col
+        }
+    }
+}
+
+impl Boards {
+    /// The tabs on show, in strip order. A figure the run has nothing of has
+    /// no tab: there is nothing it would say.
+    pub fn tabs(&self) -> Vec<BoardTab> {
+        [&self.tokens, &self.treasures]
+            .into_iter()
+            .flatten()
+            .map(|board| board.tab)
+            .collect()
+    }
+
+    /// The board `tab` shows, if that tab is on show at all.
+    pub fn tab_board(&self, tab: BoardTab) -> Option<&Board> {
+        match tab {
+            BoardTab::Tokens => self.tokens.as_ref(),
+            BoardTab::Treasures => self.treasures.as_ref(),
+        }
+    }
+
+    /// The tab after the one on show, round the strip. The same tab back
+    /// where it is the only one: there is nowhere else to be.
+    pub fn next_tab(&self, showing: BoardTab) -> BoardTab {
+        let tabs = self.tabs();
+        let next = tabs
+            .iter()
+            .position(|tab| *tab == showing)
+            .map_or(0, |i| (i + 1) % tabs.len());
+        tabs.get(next).copied().unwrap_or(showing)
+    }
+
+    /// The tab the box draws: the one asked for, or the first on the strip
+    /// where that one has nothing to show.
+    pub fn showing(&self, asked: BoardTab) -> BoardTab {
+        if self.tab_board(asked).is_some() {
+            return asked;
+        }
+        self.tabs().first().copied().unwrap_or(asked)
+    }
+}
+
+/// The Tokens and Chests boards for the selected vessel, or `None` where the
+/// box is not drawn at all.
+///
+/// Three things have to hold. The page must be the Atlantis one, since this
+/// is the layout the box belongs to. The run must be an Atlantis one *by its
+/// own tells* — a dragoon boarding says so and the voyage-type picker is only
+/// the quartermaster's word, and the tells re-arm per run. And a report of the
+/// run must have carried maneuver tokens or a haul, because a board of nobody
+/// says nothing worth the room.
+///
+/// Until all three hold the figures are still kept: every copied report joins
+/// the run and reaches disk whatever the page is drawing, so the board that
+/// finally appears has everything set aside before it in its sums.
+pub fn boards(
+    state: &GameState,
+    selected: Option<&Arc<str>>,
+    voyage_type: VoyageType,
+) -> Option<Boards> {
+    if !voyage_type.tracks_atlantis() {
+        return None;
+    }
+    let vessel = selected.and_then(|key| state.vessels.get(key))?;
+    if vessel.encounter != crate::chatlog::EncounterKind::Atlantis {
+        return None;
+    }
+    let reports = &latest_run(vessel)?.duty_reports;
+
+    let tokens = board(
+        BoardTab::Tokens,
+        ATLANTIS_TOKENS
+            .iter()
+            .map(|shape| (shape.glyph(), shape.slot()))
+            .collect(),
+        crate::duty::maneuvers(reports),
+    );
+    let treasures = board(
+        BoardTab::Treasures,
+        CHEST_TIERS
+            .iter()
+            .map(|tier| (tier.initial(), tier.slot()))
+            .collect(),
+        crate::duty::treasure(reports),
+    );
+    (tokens.is_some() || treasures.is_some()).then_some(Boards {
+        tokens,
+        treasures,
+    })
+}
+
+/// A board of `counted`, or `None` where nobody counted any.
+///
+/// `columns` names each column and the slot of the figure it shows, so a
+/// board shows the slots its encounter pays and leaves the game's spare ones
+/// out without the sums losing anything: the sum is of the columns shown,
+/// which is what the rows are ranked on.
+fn board<const N: usize>(
+    tab: BoardTab,
+    columns: Vec<(&'static str, usize)>,
+    counted: Vec<crate::duty::Counted<N>>,
+) -> Option<Board> {
+    let rows: Vec<BoardRow> = counted
+        .into_iter()
+        .map(|counted| {
+            let figures: Vec<u32> = columns
+                .iter()
+                .map(|(_, slot)| {
+                    counted.counts.get(*slot).copied().unwrap_or(0)
+                })
+                .collect();
+            BoardRow {
+                sum: figures.iter().sum(),
+                figures,
+                name: counted.name,
+            }
+        })
+        .filter(|row| 0 < row.sum)
+        .collect();
+    (!rows.is_empty()).then(|| {
+        Board {
+            tab,
+            heads: columns.into_iter().map(|(head, _)| head).collect(),
+            rows,
+        }
+    })
+}
+
+/// The run a vessel's figures are read from: the one under way, or the last it
+/// finished where none is.
+///
+/// A run that has put into port is the run whose rewards are being handed out,
+/// so it stays the one on show until the next begins.
+fn latest_run(vessel: &Vessel) -> Option<&crate::voyage::Voyage> {
+    vessel
+        .current_voyage
+        .as_ref()
+        .or_else(|| vessel.voyages.last())
+}
+
+/// Columns each of a board's figure cells takes, in column order with the
+/// sum's last: its head and whatever its widest figure needs.
+fn board_cells(board: &Board) -> Vec<usize> {
+    let digits = |n: u32| n.to_string().len();
+    let mut cells: Vec<usize> = board
+        .heads
+        .iter()
+        .enumerate()
+        .map(|(i, head)| {
+            let widest = board
+                .rows
+                .iter()
+                .map(|row| digits(row.figures.get(i).copied().unwrap_or(0)))
+                .max()
+                .unwrap_or(0);
+            widest.max(head.chars().count() + BOARD_MARK_W)
+        })
+        .collect();
+    let sums = board
+        .rows
+        .iter()
+        .map(|row| digits(row.sum))
+        .max()
+        .unwrap_or(0);
+    cells.push(sums.max(BOARD_SUM_HEAD.chars().count() + BOARD_MARK_W));
+    cells
+}
+
+/// Columns the name column takes: the longest name either board holds, and
+/// never less than its own head.
+///
+/// Measured over both boards at once so that the figures stand in the same
+/// columns on each, and a flip of the tab moves nothing but the figures.
+fn board_name_width(boards: &Boards) -> usize {
+    [&boards.tokens, &boards.treasures]
+        .into_iter()
+        .flatten()
+        .flat_map(|board| board.rows.iter())
+        .map(|row| row.name.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(BOARD_NAME_HEAD.len())
+}
+
+/// Columns the box's contents occupy: the name column, then every figure cell
+/// behind its gap, the wider board deciding.
+///
+/// The box takes the width of its wider tab, so flipping tabs never reflows
+/// the page.
+fn board_content_width(boards: &Boards) -> u16 {
+    let cells = [&boards.tokens, &boards.treasures]
+        .into_iter()
+        .flatten()
+        .map(|board| {
+            board_cells(board)
+                .iter()
+                .map(|w| w + BOARD_GAP)
+                .sum::<usize>()
+        })
+        .max()
+        .unwrap_or(0);
+    (board_name_width(boards) + cells) as u16
+}
+
+/// The width the Tokens and Chests box must have: its contents inside their
+/// margins, the room its list keeps for a scrollbar, and never less than what
+/// its title or its tab strip needs.
+fn board_box_width(boards: &Boards) -> u16 {
+    let labels: Vec<u16> = boards
+        .tabs()
+        .iter()
+        .map(|tab| tab.label().len() as u16)
+        .collect();
+    let strip: u16 = labels.iter().map(|w| w + 2 * BOARD_TAB_PADDING).sum();
+    (board_content_width(boards)
+        + crate::utils::BOX_MARGIN
+        + crate::utils::SCROLLBAR_W)
+        .max(strip + crate::utils::BOX_MARGIN)
+        .max(offset_title_width(BOARD_BOX_TITLE))
+}
+
+/// Rows the box cannot do without: its tab strip and the blank under it, the
+/// column heads, a scrollable view's worth of ranking, and its borders.
+fn board_box_min_height() -> u16 {
+    3 + crate::utils::SCROLL_MIN_ROWS + 2
+}
+
+/// Render the Tokens and Chests box: a tab strip over a ranked table of what
+/// the run's duty reports counted.
+fn render_board_box(
+    frame: &mut Frame,
+    area: Rect,
+    boards: &Boards,
+    ui: &mut JobbersUi,
+    page_focused: bool,
+    regions: &mut ClickMap,
+) {
+    let active = ui.focus == JobberFocus::Board;
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_style(box_border(page_focused, active))
+        .padding(Padding::horizontal(
+            crate::utils::PADDING,
+        ))
+        .title(offset_title(BOARD_BOX_TITLE).0);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Whole-box focus region first, so the strip's and the heads' regions
+    // pushed below win the reverse-iterating hit test where they overlap.
+    regions.push(ClickRegion {
+        rect: area,
+        target: ClickTarget::JobberBoard,
+    });
+    if inner.height == 0 {
+        return;
+    }
+
+    // A tab the run has nothing for is no tab, so the box falls back to the
+    // one it has rather than drawing a strip nothing is under.
+    ui.board_tab = boards.showing(ui.board_tab);
+    let tabs = boards.tabs();
+    render_board_tabs(
+        frame,
+        inner,
+        &tabs,
+        ui.board_tab,
+        regions,
+    );
+    let Some(board) = boards.tab_board(ui.board_tab) else {
+        return;
+    };
+    // Tab strip, a blank under it, then the heads: the ranking is read under
+    // its own columns rather than under the tabs.
+    let rows = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .split(inner);
+
+    let ranking = ui.board_ranking(board.tab);
+    let cells = board_cells(board);
+    // One name column over both boards, so the figures of either stand in the
+    // same place and a flip of the tab moves nothing but the figures.
+    let names = board_name_width(boards);
+    let indent = board_indent(inner, &cells, names);
+    frame.render_widget(
+        Paragraph::new(board_head_line(
+            board, &cells, names, indent, ranking,
+        )),
+        rows[2],
+    );
+    for (col, rect) in board_head_regions(rows[2], &cells, names, indent) {
+        regions.push(ClickRegion {
+            rect,
+            target: ClickTarget::JobberBoardColumn(col),
+        });
+    }
+
+    let ranked = board.ranked(ranking);
+    let offset = ui.board_offset_mut(board.tab);
+    let height = rows[3].height as usize;
+    let max_off = ranked.len().saturating_sub(height);
+    if max_off < *offset {
+        *offset = max_off;
+    }
+    let offset = *offset;
+    let body = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        rows[3],
+        crate::clickmap::ScrollView::JobberBoard,
+        offset,
+        ranked.len(),
+    );
+    for (vis, row) in ranked.iter().enumerate().skip(offset).take(height) {
+        frame.render_widget(
+            Paragraph::new(board_row_line(
+                row, &cells, names, indent,
+            )),
+            Rect::new(
+                body.x,
+                body.y + (vis - offset) as u16,
+                body.width,
+                1,
+            ),
+        );
+    }
+}
+
+/// Render the tab strip: a slot per tab across the box, each label centered in
+/// its own and the whole slot the click region for it. The strip the top bar
+/// is, one box down.
+fn render_board_tabs(
+    frame: &mut Frame,
+    inner: Rect,
+    tabs: &[BoardTab],
+    showing: BoardTab,
+    regions: &mut ClickMap,
+) {
+    let labels: Vec<u16> =
+        tabs.iter().map(|tab| tab.label().len() as u16).collect();
+    let slots =
+        crate::utils::bar_slots(inner.width, &labels, BOARD_TAB_PADDING);
+    let areas =
+        Layout::horizontal(slots.into_iter().map(Constraint::Length)).split(
+            Rect::new(inner.x, inner.y, inner.width, 1),
+        );
+    for ((i, tab), slot) in tabs.iter().enumerate().zip(areas.iter()) {
+        let style = if *tab == showing {
+            Style::default().bg(Color::White).fg(Color::Black).bold()
+        } else {
+            Style::default().fg(Color::DarkGray)
+        };
+        frame.render_widget(
+            Paragraph::new(tab.label()).style(style).centered(),
+            *slot,
+        );
+        regions.push(ClickRegion {
+            rect: *slot,
+            target: ClickTarget::JobberBoardTab(i),
+        });
+    }
+}
+
+/// Columns the table itself occupies: the name column and every figure cell
+/// behind its gap.
+fn board_table_width(cells: &[usize], names: usize) -> usize {
+    names + cells.iter().map(|width| width + BOARD_GAP).sum::<usize>()
+}
+
+/// Blank columns before the table so it stands centered in the box.
+///
+/// Measured against the room the list has less the columns it keeps for a
+/// scrollbar, so the table stands where it stands whether or not the ranking
+/// has outgrown its window — a board that shifted sideways as it filled would
+/// read as two different tables.
+fn board_indent(inner: Rect, cells: &[usize], names: usize) -> usize {
+    let room = inner.width.saturating_sub(crate::utils::SCROLLBAR_W) as usize;
+    room.saturating_sub(board_table_width(cells, names)) / 2
+}
+
+/// A board's head row: the name column, then a head to each figure cell with
+/// the ranking's arrow ahead of whichever it ranks on.
+///
+/// Each head is underlined over its own text and no further, the way the
+/// Skill Leaderboard heads its columns.
+fn board_head_line(
+    board: &Board,
+    cells: &[usize],
+    names: usize,
+    indent: usize,
+    ranking: Ranking,
+) -> Line<'static> {
+    let style = Style::default().bold().underlined();
+    let mut spans = vec![Span::raw(" ".repeat(indent))];
+
+    // The name's head stands centered over its column, where the names
+    // themselves are read down the left.
+    let pad = names.saturating_sub(BOARD_NAME_HEAD.len());
+    spans.push(Span::raw(" ".repeat(pad / 2)));
+    spans.push(Span::styled(BOARD_NAME_HEAD, style));
+    spans.push(Span::raw(" ".repeat(pad - pad / 2)));
+
+    for (col, width) in cells.iter().enumerate() {
+        let head = board.heads.get(col).copied().unwrap_or(BOARD_SUM_HEAD);
+        let marked = if board.key_at(col) == ranking.key {
+            let arrow = if ranking.desc { "\u{2193}" } else { "\u{2191}" };
+            format!("{arrow} {head}")
+        } else {
+            head.to_owned()
+        };
+        // The cell's own columns count glyphs, not bytes: a token's shape is
+        // one column and more than one byte.
+        let pad = width.saturating_sub(marked.chars().count()) + BOARD_GAP;
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.push(Span::styled(marked, style));
+    }
+    Line::from(spans)
+}
+
+/// One ranked row: the pirate, their figures under the heads, their sum last.
+fn board_row_line(
+    row: &BoardRow,
+    cells: &[usize],
+    names: usize,
+    indent: usize,
+) -> Line<'static> {
+    let mut line = format!("{:indent$}{:<names$}", "", row.name);
+    for (col, width) in cells.iter().enumerate() {
+        let figure = row.figures.get(col).copied().unwrap_or(row.sum);
+        line.push_str(&format!(
+            "{:>w$}",
+            figure,
+            w = width + BOARD_GAP
+        ));
+    }
+    Line::from(line)
+}
+
+/// Where each of a board's heads was drawn, so a click on one can rank by it.
+/// The name column is no part of this: the board ranks on figures.
+fn board_head_regions(
+    row: Rect,
+    cells: &[usize],
+    names: usize,
+    indent: usize,
+) -> Vec<(usize, Rect)> {
+    let mut x = row.x + (indent + names) as u16;
+    let mut regions = Vec::with_capacity(cells.len());
+    for (col, width) in cells.iter().enumerate() {
+        let span = (width + BOARD_GAP) as u16;
+        if row.x + row.width <= x {
+            break;
+        }
+        regions.push((
+            col,
+            Rect::new(
+                x,
+                row.y,
+                span.min(row.x + row.width - x),
+                1,
+            ),
+        ));
+        x += span;
+    }
+    regions
 }
 
 /// Minimum width for the Enthralled pane: widest name + 2-space gap + widest
@@ -5329,6 +6162,231 @@ fn render_trophy_popup(
     let visible: Vec<Line> =
         lines.into_iter().skip(tp.offset).take(view_h).collect();
     frame.render_widget(Paragraph::new(visible), body);
+}
+
+#[cfg(test)]
+mod board_tests {
+    use super::*;
+
+    /// An Atlantis run: the dragoon tell has fired, so the run is one by its
+    /// own account and not just by the picker's.
+    fn atlantis() -> (GameState, Arc<str>) {
+        let mut state = GameState::new();
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+            "[01:01:00] Dragoons from the monster took advantage of their \
+             proximity to board yer vessel!",
+        ] {
+            state.process_line(line);
+        }
+        let key = state.vessels_by_recency().first().cloned().expect("vessel");
+        (state, key)
+    }
+
+    /// Hand the run a copied report, as the clipboard watcher would.
+    fn copy(state: &mut GameState, text: &str) {
+        let report = crate::duty::parse(text).expect("report");
+        state.note_duty_report(&report, DateTime::UNIX_EPOCH);
+    }
+
+    /// Tokens at the sails, a haul below, over two intervals of one run.
+    const FIRST: &str = r#"{"sail":{"Foo":{"performance":4,
+        "maneuver_tokens":[4,1,0,2,0,0,0]}},
+        "haul":{"Bar":{"performance":3,"m.treasure_hauled":[2,1,0]}}}"#;
+    const SECOND: &str = r#"{"sail":{"Foo":{"performance":3,
+        "maneuver_tokens":[1,6,0,0,0,0,0]},
+        "Bar":{"performance":2,"maneuver_tokens":[3,0,0,0,0,0,0]}}}"#;
+
+    /// The box waits on the tells: the same reports on a run that has shown
+    /// no sign of Atlantis draw nothing, however much the picker says
+    /// Atlantis. The figures are kept all the same — the run holds them, so
+    /// the board that finally appears has them in its sums.
+    #[test]
+    fn a_run_with_no_tells_has_no_board() {
+        let mut state = GameState::new();
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+        ] {
+            state.process_line(line);
+        }
+        let key = state.vessels_by_recency().first().cloned().expect("vessel");
+        copy(&mut state, FIRST);
+        assert!(boards(&state, Some(&key), VoyageType::Atlantis).is_none());
+        assert_eq!(
+            latest_run(state.vessels.get(&key).expect("vessel"))
+                .expect("run")
+                .duty_reports
+                .len(),
+            1
+        );
+    }
+
+    /// And on the figures: an Atlantis run whose reports have rated people
+    /// without counting anything has nothing to put on a board.
+    #[test]
+    fn a_run_with_no_figures_has_no_board() {
+        let (mut state, key) = atlantis();
+        copy(
+            &mut state,
+            r#"{"bilge":{"Foo":{"performance":4}}}"#,
+        );
+        assert!(boards(&state, Some(&key), VoyageType::Atlantis).is_none());
+    }
+
+    /// Nor is it the Atlantis box on another voyage type's page.
+    #[test]
+    fn another_layout_has_no_board() {
+        let (mut state, key) = atlantis();
+        copy(&mut state, FIRST);
+        assert!(boards(&state, Some(&key), VoyageType::Pillage).is_none());
+    }
+
+    /// Each board lists whoever produced some of its own figure and ranks
+    /// them on the sum of it, summed over every report of the run.
+    #[test]
+    fn each_board_ranks_who_produced_its_figure() {
+        let (mut state, key) = atlantis();
+        copy(&mut state, FIRST);
+        copy(&mut state, SECOND);
+        let boards =
+            boards(&state, Some(&key), VoyageType::Atlantis).expect("boards");
+        assert_eq!(
+            boards.tabs(),
+            vec![BoardTab::Tokens, BoardTab::Treasures]
+        );
+
+        let tokens = boards.tab_board(BoardTab::Tokens).expect("tokens");
+        let ranked: Vec<_> = tokens
+            .ranked(Ranking::default())
+            .iter()
+            .map(|row| {
+                (
+                    row.name.as_str(),
+                    row.figures.clone(),
+                    row.sum,
+                )
+            })
+            .collect();
+        assert_eq!(
+            ranked,
+            vec![("Foo", vec![5, 7, 0, 2], 14), ("Bar", vec![3, 0, 0, 0], 3),]
+        );
+
+        // Bar hauled and Foo did not, so the haul board is Bar's alone: a
+        // pirate is on the board of what they made and no other.
+        let hauled = boards.tab_board(BoardTab::Treasures).expect("haul");
+        let ranked: Vec<_> = hauled
+            .ranked(Ranking::default())
+            .iter()
+            .map(|row| {
+                (
+                    row.name.as_str(),
+                    row.figures.clone(),
+                    row.sum,
+                )
+            })
+            .collect();
+        assert_eq!(ranked, vec![("Bar", vec![2, 1, 0], 3)]);
+    }
+
+    /// A figure column ranks on itself, and the column already ranked on
+    /// turns around rather than starting over.
+    #[test]
+    fn a_column_ranks_on_itself_and_then_turns_around() {
+        let (mut state, key) = atlantis();
+        copy(&mut state, FIRST);
+        copy(&mut state, SECOND);
+        let boards =
+            boards(&state, Some(&key), VoyageType::Atlantis).expect("boards");
+        let tokens = boards.tab_board(BoardTab::Tokens).expect("tokens");
+
+        // Circles: Foo made 5 of them to Bar's 3.
+        let circles = Ranking::default().clicked(tokens.key_at(0));
+        assert_eq!(
+            circles,
+            Ranking {
+                key: BoardKey::Figure(0),
+                desc: true,
+            }
+        );
+        let names: Vec<_> = tokens
+            .ranked(circles)
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Foo", "Bar"]);
+
+        let again = circles.clicked(tokens.key_at(0));
+        assert!(!again.desc);
+        let names: Vec<_> = tokens
+            .ranked(again)
+            .iter()
+            .map(|row| row.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["Bar", "Foo"]);
+
+        // The sum's own column is the one after the figures.
+        assert_eq!(
+            tokens.key_at(tokens.heads.len()),
+            BoardKey::Sum
+        );
+    }
+
+    /// A run that has put into port is the run whose rewards are being handed
+    /// out, so its figures stay on show until the next one begins.
+    #[test]
+    fn a_ported_run_keeps_its_board() {
+        let (mut state, key) = atlantis();
+        copy(&mut state, FIRST);
+        state.process_line(
+            "[01:30:00] Playerone issued an order to put into port.",
+        );
+        assert!(
+            state
+                .vessels
+                .get(&key)
+                .expect("vessel")
+                .current_voyage
+                .is_none()
+        );
+        assert!(boards(&state, Some(&key), VoyageType::Atlantis).is_some());
+    }
+
+    /// Stacked, the panes are floored at a scrollable view's worth each and
+    /// the rows left over go to the pane with the longer list waiting.
+    #[test]
+    fn stacked_panes_are_floored_before_they_are_shared() {
+        let area = Rect::new(0, 0, 20, 25);
+        let floors = [7, 6];
+
+        // Neither has a list the room cannot hold: the slack goes to the
+        // first, and both keep their floor.
+        let areas = stacked_pane_areas(area, &[6, 2], &floors);
+        assert_eq!(areas.len(), 2);
+        assert_eq!(
+            areas[0].height + areas[1].height,
+            area.height
+        );
+        assert_eq!(areas[1].height, floors[1]);
+        assert_eq!(areas[0].y, area.y);
+        assert_eq!(areas[1].y, area.y + areas[0].height);
+
+        // Both have more list than will fit: the longer one draws the larger
+        // share of what is over their floors, and neither falls below its
+        // own.
+        let areas = stacked_pane_areas(area, &[30, 14], &floors);
+        assert_eq!(
+            areas[0].height + areas[1].height,
+            area.height
+        );
+        assert!(floors[0] < areas[0].height);
+        assert!(floors[1] < areas[1].height);
+        assert!(areas[1].height < areas[0].height);
+    }
 }
 
 #[cfg(test)]

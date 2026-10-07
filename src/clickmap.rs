@@ -14,6 +14,9 @@ pub enum ScrollView {
     /// The Jobbers Skill Leaderboard, whose columns share one window. Follows
     /// the ranked selection.
     JobberLeaderboard,
+    /// The ranking in the Tokens and Chests box. Keeps its own window, there
+    /// being no cursor in it to follow.
+    JobberBoard,
     /// The skill tables in the pirate-stats popup. Keeps its own window.
     JobberPirateSkills,
     /// The category grid in the trophies popup. Keeps its own window.
@@ -109,6 +112,13 @@ pub enum ClickTarget {
     JobberGreedyList,
     JobberPlankedList,
     JobberEnthralledList,
+    /// The Tokens and Chests box as a whole (focus it).
+    JobberBoard,
+    /// One of its tabs, by place in the strip.
+    JobberBoardTab(usize),
+    /// The head of one of its figure columns, the sum's counting last; a click
+    /// ranks the board on it.
+    JobberBoardColumn(usize),
     JobberPirate {
         pane: JobberPane,
         idx: usize,

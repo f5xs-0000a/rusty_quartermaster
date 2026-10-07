@@ -40,6 +40,7 @@ use rusty_quartermaster::{
     damage::{BattlePrompt, ShipSelectPopup, Side},
     islands::{CachedIslands, IslandInfo, parse_island_list},
     jobbers::{
+        BoardTab,
         JobberFocus,
         NoteFocus,
         NotePopup,
@@ -646,6 +647,28 @@ const ATLANTIS: &[&str] = &[
     "[02:02:00] Dragoons from the monster took advantage of their proximity \
      to board yer vessel!",
     "[02:02:10] Playerone has driven Bellator from the ship!",
+];
+
+/// Two intervals of the Atlantis run above, as the game copies them: tokens
+/// off the maneuvering stations and chests off the haul. Two reports rather
+/// than one because a run's figures are summed over the reports it produced,
+/// and one report would never show that.
+const ATLANTIS_REPORTS: [&str; 2] = [
+    r#"{"sail":{"Matetwo":{"performance":4,
+                           "maneuver_tokens":[12,7,3,2,0,0,0]},
+               "Playerone":{"performance":3,
+                            "maneuver_tokens":[5,9,1,4,0,0,0]}},
+        "rigging":{"Matethree":{"performance":4,
+                                "maneuver_tokens":[4,2,8,0,0,0,0]}},
+        "haul":{"Matethree":{"performance":5,"m.treasure_hauled":[6,3,1]},
+                "Matetwo":{"performance":2,"m.treasure_hauled":[2,1,0]}}}"#,
+    r#"{"sail":{"Playerone":{"performance":5,
+                             "maneuver_tokens":[9,14,2,6,0,0,0]},
+               "Matethree":{"performance":2,
+                            "maneuver_tokens":[3,1,0,1,0,0,0]}},
+        "gunnery":{"Matetwo":{"performance":4,"cannons_loaded":31}},
+        "haul":{"Playerone":{"performance":3,"m.treasure_hauled":[4,2,2]},
+                "Matethree":{"performance":4,"m.treasure_hauled":[5,1,0]}}}"#,
 ];
 
 /// A Cursed Isles run: the fog tell, a raft phase, then two island waves so
@@ -1578,6 +1601,35 @@ fn jobbers_states(states: &mut Vec<State>) {
             open(shell, AppId::Chatlog, true);
             shell.jobbers_ui.voyage_type = voyage_type;
             shell.jobbers_ui.focus = focus;
+        }));
+    }
+
+    // The Atlantis run once its duty reports have carried figures: the panes
+    // stand one over the other and the Tokens and Chests box takes the column
+    // beside them. One state per board, since each ranks its own figures.
+    for (slug, description, tab) in [
+        (
+            "jobbers-atlantis-tokens",
+            "Jobbers, Atlantis token leaderboard",
+            BoardTab::Tokens,
+        ),
+        (
+            "jobbers-atlantis-treasures",
+            "Jobbers, Atlantis treasure leaderboard",
+            BoardTab::Treasures,
+        ),
+    ] {
+        states.push(state(slug, description, move |shell| {
+            feed(shell, ATLANTIS);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::Atlantis;
+            for text in ATLANTIS_REPORTS {
+                let report =
+                    rusty_quartermaster::duty::parse(text).expect("report");
+                shell.take_duty_report(&report, chrono::Utc::now());
+            }
+            shell.jobbers_ui.board_tab = tab;
+            shell.jobbers_ui.focus = JobberFocus::Board;
         }));
     }
 

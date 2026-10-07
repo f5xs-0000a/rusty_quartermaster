@@ -132,21 +132,9 @@ fn topbar_min_width() -> u16 {
 /// Width of each top-bar slot at `width`: its label and padding, plus an even
 /// share of whatever is left over so the bar still spans the full width.
 fn topbar_slots(width: u16) -> Vec<u16> {
-    let mut slots: Vec<u16> = APP_LIST
-        .iter()
-        .map(|app| app.label_width() + 2 * TOPBAR_PADDING)
-        .collect();
-    let mut slack = width.saturating_sub(slots.iter().sum());
-    let share = slack / slots.len() as u16;
-    for slot in slots.iter_mut() {
-        *slot += share;
-        slack -= share;
-    }
-    // Whatever doesn't divide evenly goes out a column at a time.
-    for slot in slots.iter_mut().take(slack as usize) {
-        *slot += 1;
-    }
-    slots
+    let labels: Vec<u16> =
+        APP_LIST.iter().map(|app| app.label_width()).collect();
+    crate::utils::bar_slots(width, &labels, TOPBAR_PADDING)
 }
 
 #[derive(PartialEq)]
@@ -2555,6 +2543,11 @@ impl AppShell {
         // rather than above them, so ←/→ — not ↑/↓ — cross between the two.
         let panes_beside =
             self.jobbers_ui.voyage_type.panes_beside_top_jobbers();
+        // The keys follow the layout: where the Tokens and Chests box is
+        // drawn the panes stand one over the other, so ↑/↓ cross between them
+        // and ←/→ cross to the box, rather than ←/→ walking the panes.
+        let boards = self.jobbers_boards();
+        let stacked = boards.is_some();
         // The voyage box's bottom row: Unpoison when poisoned, else Voyage
         // Type.
         let box_bottom = if poisoned { Unpoison } else { VoyageType };
@@ -2601,14 +2594,21 @@ impl AppShell {
                     Aboard | Greedy | Planked | Enthralled => {
                         let pane =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
+                        let above = panes
+                            .iter()
+                            .position(|p| *p == pane)
+                            .filter(|i| stacked && 0 < *i)
+                            .map(|i| Self::pane_focus(panes[i - 1]));
                         // At the top of a pane (or an empty one), ↑ leaves for
-                        // whatever's above the panes:
-                        // the button if shown, else (side-by-side) the
+                        // whatever's above it: the pane it is stacked under,
+                        // else the button if shown, else (side-by-side) the
                         // box's bottom row, else the leaderboard stacked above.
                         if self.jobbers_pane_count(pane) == 0
                             || self.jobbers_pane_sel(pane) == 0
                         {
-                            self.jobbers_ui.focus = if has_button {
+                            self.jobbers_ui.focus = if let Some(up) = above {
+                                up
+                            } else if has_button {
                                 SkillDist
                             } else if panes_beside {
                                 box_bottom
@@ -2617,6 +2617,16 @@ impl AppShell {
                             };
                         } else {
                             self.jobbers_pane_select_delta(pane, -1);
+                        }
+                    }
+                    // The box keeps its own window rather than a cursor, so
+                    // ↑ scrolls it and leaves for the leaderboard above only
+                    // once there is nothing more above the window.
+                    Board => {
+                        if self.jobbers_ui.board_offset() == 0 {
+                            self.jobbers_ui.focus = Leaderboard;
+                        } else {
+                            self.jobbers_ui.scroll_board(-1);
                         }
                     }
                 }
@@ -2659,8 +2669,24 @@ impl AppShell {
                     Aboard | Greedy | Planked | Enthralled => {
                         let pane =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
-                        self.jobbers_pane_select_delta(pane, 1);
+                        let count = self.jobbers_pane_count(pane);
+                        let below = panes
+                            .iter()
+                            .position(|p| *p == pane)
+                            .filter(|_| stacked)
+                            .and_then(|i| panes.get(i + 1))
+                            .map(|pane| Self::pane_focus(*pane));
+                        // At the bottom of a stacked pane ↓ leaves for the one
+                        // under it; otherwise it walks the list.
+                        match below.filter(|_| {
+                            count == 0
+                                || self.jobbers_pane_sel(pane) + 1 == count
+                        }) {
+                            Some(down) => self.jobbers_ui.focus = down,
+                            None => self.jobbers_pane_select_delta(pane, 1),
+                        }
                     }
+                    Board => self.jobbers_ui.scroll_board(1),
                 }
             }
             KeyCode::Left => {
@@ -2672,6 +2698,9 @@ impl AppShell {
                             self.leaderboard_clamp();
                         }
                     }
+                    // Stacked, the panes are one column and there is nothing
+                    // to their left; the box is what ←/→ cross to.
+                    Aboard | Greedy | Planked | Enthralled if stacked => {}
                     Aboard | Greedy | Planked | Enthralled => {
                         let cur =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
@@ -2684,6 +2713,11 @@ impl AppShell {
                                 // leaderboard.
                                 self.jobbers_ui.focus = Leaderboard;
                             }
+                        }
+                    }
+                    Board => {
+                        if let Some(pane) = first_pane {
+                            self.jobbers_ui.focus = pane;
                         }
                     }
                     _ => {}
@@ -2704,6 +2738,10 @@ impl AppShell {
                             self.leaderboard_clamp();
                         }
                     }
+                    // Stacked, → leaves the pane column for the box beside it.
+                    Aboard | Greedy | Planked | Enthralled if stacked => {
+                        self.jobbers_ui.focus = Board;
+                    }
                     Aboard | Greedy | Planked | Enthralled => {
                         let cur =
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
@@ -2715,6 +2753,24 @@ impl AppShell {
                         }
                     }
                     _ => {}
+                }
+            }
+            // The box's own keys: its boards and what they are ranked on.
+            KeyCode::Tab | KeyCode::Char('t')
+                if self.jobbers_ui.focus == Board =>
+            {
+                if let Some(boards) = &boards {
+                    self.jobbers_ui.board_tab =
+                        boards.next_tab(self.jobbers_ui.board_tab);
+                }
+            }
+            KeyCode::Char('s') if self.jobbers_ui.focus == Board => {
+                let tab = self.jobbers_ui.board_tab;
+                if let Some(board) =
+                    boards.as_ref().and_then(|b| b.tab_board(tab))
+                {
+                    let key = self.jobbers_ui.board_ranking(tab).key;
+                    self.jobbers_ui.rank_board(tab, board.next_key(key));
                 }
             }
             KeyCode::Enter => {
@@ -2733,11 +2789,34 @@ impl AppShell {
                             Self::focus_pane(self.jobbers_ui.focus).unwrap();
                         self.open_pirate_popup(pane);
                     }
+                    // The box opens nothing: it is the figures themselves.
+                    Board => {}
                 }
             }
             _ => {}
         }
         InputResult::Consumed
+    }
+
+    /// The Tokens and Chests boards as the page would draw them now, or
+    /// `None` where the box is not drawn — which is also the answer to
+    /// whether the panes are stacked.
+    fn jobbers_boards(&self) -> Option<crate::jobbers::Boards> {
+        // The selection is resolved against the live vessels the way the
+        // render resolves it, so a key arriving before the first frame reads
+        // the same page the next frame will draw.
+        let ordered = self.chatlog.vessels_by_recency();
+        let selected = self
+            .jobbers_ui
+            .selected
+            .as_ref()
+            .filter(|key| self.chatlog.vessels.contains_key(*key))
+            .or_else(|| ordered.first());
+        crate::jobbers::boards(
+            &self.chatlog,
+            selected,
+            self.jobbers_ui.voyage_type,
+        )
     }
 
     /// Open the ship-type popup for the selected vessel, highlighting its
@@ -3494,6 +3573,13 @@ impl AppShell {
                 let next = hit.resolve(self.jobbers_pane_sel(pane), count - 1);
                 *self.jobbers_pane_sel_mut(pane) = next;
             }
+            ScrollView::JobberBoard => {
+                let last = total.saturating_sub(bar.height as usize);
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Board;
+                let at = hit.resolve(self.jobbers_ui.board_offset(), last);
+                self.jobbers_ui.seek_board(at);
+            }
             ScrollView::JobberLeaderboard => {
                 let count = self.leaderboard_current_len();
                 if count == 0 {
@@ -3923,6 +4009,33 @@ impl AppShell {
                 self.global_focus = GlobalFocus::Content;
                 self.jobbers_ui.focus = JobberFocus::Enthralled;
             }
+            ClickTarget::JobberBoard => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Board;
+            }
+            ClickTarget::JobberBoardTab(i) => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Board;
+                if let Some(tab) =
+                    self.jobbers_boards().as_ref().map(|b| b.tabs())
+                    && let Some(tab) = tab.get(i)
+                {
+                    self.jobbers_ui.board_tab = *tab;
+                }
+            }
+            ClickTarget::JobberBoardColumn(col) => {
+                self.global_focus = GlobalFocus::Content;
+                self.jobbers_ui.focus = JobberFocus::Board;
+                let tab = self.jobbers_ui.board_tab;
+                if let Some(key) = self
+                    .jobbers_boards()
+                    .as_ref()
+                    .and_then(|boards| boards.tab_board(tab))
+                    .map(|board| board.key_at(col))
+                {
+                    self.jobbers_ui.rank_board(tab, key);
+                }
+            }
             ClickTarget::JobberPirate {
                 pane,
                 idx,
@@ -4187,6 +4300,20 @@ impl AppShell {
                     } else {
                         pp.offset = pp.offset.saturating_add(1);
                     }
+                    return;
+                }
+                // The wheel over the Tokens and Chests box scrolls its
+                // ranking. The box keeps its own window rather than a cursor
+                // for one to follow, so the notch is the window's, and it
+                // answers over the whole box — the tab strip and the column
+                // heads included, those being parts of the same list.
+                if let Some(
+                    ClickTarget::JobberBoard
+                    | ClickTarget::JobberBoardTab(_)
+                    | ClickTarget::JobberBoardColumn(_),
+                ) = self.click_regions.hit(col, row)
+                {
+                    self.jobbers_ui.scroll_board(delta.signum() as isize);
                     return;
                 }
                 // The wheel over the Skill Leaderboard moves its selection
@@ -5484,6 +5611,347 @@ mod jobber_room_tests {
         let text = screen(&mut shell, rows + 20);
         assert_eq!(names_shown(&text), 20);
         assert_eq!(leaderboard_rows(&text), LEADERBOARD_MIN);
+    }
+}
+
+/// The Tokens and Chests box as the page draws it, and the keys that reach
+/// it. What belongs on each board is [`crate::jobbers`]'s own to test; these
+/// are about the layout the box brings with it.
+#[cfg(test)]
+mod jobber_board_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::{APP_LIST, AppId, AppShell, JobberFocus, KeyCode, KeyEvent};
+
+    /// Tokens at the sails and a haul below, one interval of an Atlantis run.
+    const REPORT: &str = r#"{"sail":{"Matetwo":{"performance":4,
+        "maneuver_tokens":[4,1,0,2,0,0,0]}},
+        "haul":{"Matethree":{"performance":3,"m.treasure_hauled":[2,1,0]}}}"#;
+
+    /// A shell on the Jobbers page, on an Atlantis run by its own tells, with
+    /// `report` copied into it where one is given.
+    fn aboard_atlantis(report: Option<&str>) -> AppShell {
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:01] Matetwo has come aboard.",
+            "[01:00:02] Matethree has come aboard.",
+            "[01:00:06] Playerone issued an order to set the vessel to sail.",
+            "[01:01:00] Dragoons from the monster took advantage of their \
+             proximity to board yer vessel!",
+        ] {
+            shell.chatlog.process_line(line);
+        }
+        if let Some(text) = report {
+            let report = crate::duty::parse(text).expect("report");
+            shell.take_duty_report(&report, chrono::Utc::now());
+        }
+        shell.sidebar_index = APP_LIST
+            .iter()
+            .position(|a| *a == AppId::Chatlog)
+            .expect("the Jobbers page");
+        shell.jobbers_ui.voyage_type = crate::jobbers::VoyageType::Atlantis;
+        shell
+    }
+
+    fn screen(shell: &mut AppShell) -> String {
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal.draw(|frame| shell.render(frame)).expect("draw");
+        format!("{}", terminal.backend())
+    }
+
+    fn press(shell: &mut AppShell, code: KeyCode) {
+        shell.handle_jobbers_key(KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    /// Where the last frame drew the region a predicate picks out.
+    fn region(
+        shell: &AppShell,
+        wanted: impl Fn(&crate::clickmap::ClickTarget) -> bool,
+    ) -> ratatui::layout::Rect {
+        shell
+            .click_regions
+            .top()
+            .iter()
+            .find(|region| wanted(&region.target))
+            .map(|region| region.rect)
+            .expect("the region is drawn")
+    }
+
+    /// Click the top-left cell of `rect`, as the mouse would.
+    fn click(shell: &mut AppShell, rect: ratatui::layout::Rect) {
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+        shell.handle_mouse(
+            crossterm::event::MouseEvent {
+                kind: crossterm::event::MouseEventKind::Down(
+                    crossterm::event::MouseButton::Left,
+                ),
+                column: rect.x,
+                row: rect.y,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+            },
+            &tx,
+        );
+    }
+
+    /// The row a box's title is drawn on.
+    fn row_of(text: &str, title: &str) -> usize {
+        text.lines()
+            .position(|line| line.contains(title))
+            .unwrap_or_else(|| panic!("{title} is drawn"))
+    }
+
+    /// With figures in the run's reports the box is drawn, and the panes it
+    /// makes room for stand one over the other rather than side by side.
+    #[test]
+    fn the_box_stacks_the_panes_beside_it() {
+        let mut shell = aboard_atlantis(Some(REPORT));
+        let text = screen(&mut shell);
+        assert!(text.contains("Tokens and Chests"));
+        // Aboard and the box share the box's title row; Planked is under
+        // Aboard rather than beside it.
+        assert_eq!(
+            row_of(&text, "Aboard"),
+            row_of(&text, "Tokens and Chests")
+        );
+        assert!(row_of(&text, "Aboard") < row_of(&text, "Planked"));
+    }
+
+    /// Without them the page is the one it has always been: no box, and the
+    /// two panes abreast.
+    #[test]
+    fn no_figures_no_box_and_no_stacking() {
+        let mut shell = aboard_atlantis(None);
+        let text = screen(&mut shell);
+        assert!(!text.contains("Tokens and Chests"));
+        assert_eq!(
+            row_of(&text, "Aboard"),
+            row_of(&text, "Planked")
+        );
+    }
+
+    /// The figures reach the screen ranked, each board under its own tab.
+    #[test]
+    fn each_board_is_drawn_under_its_own_tab() {
+        let mut shell = aboard_atlantis(Some(REPORT));
+        let text = screen(&mut shell);
+        assert!(text.contains("Tokens"));
+        assert!(text.contains("Treasures"));
+        // Σ last, the ranking's arrow on it, and the tokens under their
+        // shapes.
+        assert!(text.contains("\u{2193} \u{03a3}"));
+        assert!(text.contains("Matetwo"));
+
+        shell.jobbers_ui.board_tab = crate::jobbers::BoardTab::Treasures;
+        let text = screen(&mut shell);
+        assert!(text.contains("Matethree"));
+    }
+
+    /// → crosses from the pane column to the box and ← comes back, the panes
+    /// being one column now and not a row of them.
+    #[test]
+    fn the_keys_cross_between_the_panes_and_the_box() {
+        let mut shell = aboard_atlantis(Some(REPORT));
+        shell.jobbers_ui.focus = JobberFocus::Aboard;
+        press(&mut shell, KeyCode::Right);
+        assert_eq!(
+            shell.jobbers_ui.focus,
+            JobberFocus::Board
+        );
+        press(&mut shell, KeyCode::Left);
+        assert_eq!(
+            shell.jobbers_ui.focus,
+            JobberFocus::Aboard
+        );
+    }
+
+    /// Tab flips the board on show, and `s` walks what it is ranked on.
+    #[test]
+    fn the_box_answers_for_its_tabs_and_its_ranking() {
+        use crate::jobbers::{BoardKey, BoardTab};
+
+        let mut shell = aboard_atlantis(Some(REPORT));
+        shell.jobbers_ui.focus = JobberFocus::Board;
+        assert_eq!(
+            shell.jobbers_ui.board_tab,
+            BoardTab::Tokens
+        );
+        press(&mut shell, KeyCode::Tab);
+        assert_eq!(
+            shell.jobbers_ui.board_tab,
+            BoardTab::Treasures
+        );
+        press(&mut shell, KeyCode::Tab);
+        assert_eq!(
+            shell.jobbers_ui.board_tab,
+            BoardTab::Tokens
+        );
+
+        // The sum is where a board starts; `s` moves on to the figures.
+        assert_eq!(
+            shell.jobbers_ui.board_ranking(BoardTab::Tokens).key,
+            BoardKey::Sum
+        );
+        press(&mut shell, KeyCode::Char('s'));
+        assert_eq!(
+            shell.jobbers_ui.board_ranking(BoardTab::Tokens).key,
+            BoardKey::Figure(0)
+        );
+        // And the other board's ranking is no business of this one's.
+        assert_eq!(
+            shell.jobbers_ui.board_ranking(BoardTab::Treasures).key,
+            BoardKey::Sum
+        );
+    }
+
+    /// A report rating more pirates than the box can show at once, each with
+    /// fewer tokens than the last, so the top and the foot of the board are
+    /// known names.
+    fn crowded_report(n: usize) -> String {
+        let rated: Vec<String> = (0 .. n)
+            .map(|i| {
+                format!(
+                    "\"Mate{}\":{{\"performance\":3,\"maneuver_tokens\":[{},0,\
+                     0,0,0,0,0]}}",
+                    char::from(b'a' + i as u8),
+                    n - i,
+                )
+            })
+            .collect();
+        format!("{{\"sail\":{{{}}}}}", rated.join(","))
+    }
+
+    /// The wheel over the box scrolls its ranking, down to the foot of it and
+    /// no further. The box keeps its own window, so the notch is the
+    /// window's; nothing else on the page moves.
+    #[test]
+    fn the_wheel_scrolls_the_ranking() {
+        use crate::clickmap::ClickTarget;
+
+        let mut shell = aboard_atlantis(Some(&crowded_report(26)));
+        // The report names a crew we have no record of, which is its own
+        // prompt; this test is about the wheel.
+        shell.jobbers_ui.pending_roster = None;
+        shell.jobbers_ui.roster_popup = None;
+        let text = screen(&mut shell);
+        assert!(
+            text.contains("Matea"),
+            "the board opens at its top"
+        );
+        assert!(
+            !text.contains("Matez"),
+            "and its foot is below the window",
+        );
+
+        let body = region(&shell, |target| {
+            matches!(target, ClickTarget::JobberBoard)
+        });
+        let wheel = |shell: &mut AppShell, delta: i32| {
+            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+            shell.handle_mouse(
+                crossterm::event::MouseEvent {
+                    kind: if delta < 0 {
+                        crossterm::event::MouseEventKind::ScrollUp
+                    } else {
+                        crossterm::event::MouseEventKind::ScrollDown
+                    },
+                    column: body.x + body.width / 2,
+                    row: body.y + body.height / 2,
+                    modifiers: crossterm::event::KeyModifiers::NONE,
+                },
+                &tx,
+            );
+        };
+
+        wheel(&mut shell, 1);
+        assert_eq!(shell.jobbers_ui.board_offset(), 1);
+        wheel(&mut shell, -1);
+        assert_eq!(shell.jobbers_ui.board_offset(), 0);
+        // Already at the top: the wheel has nowhere to take it.
+        wheel(&mut shell, -1);
+        assert_eq!(shell.jobbers_ui.board_offset(), 0);
+
+        for _ in 0 .. 50 {
+            wheel(&mut shell, 1);
+        }
+        let text = screen(&mut shell);
+        assert!(
+            text.contains("Matez"),
+            "the foot of the board is reached"
+        );
+        assert!(
+            shell.jobbers_ui.board_offset() < 26,
+            "and the window stops at the last row rather than past it",
+        );
+    }
+
+    /// A click on a tab's slot shows that board, and one on a column's head
+    /// ranks by it — the regions being where the strip and the heads were
+    /// actually drawn.
+    #[test]
+    fn the_mouse_finds_the_tabs_and_the_heads() {
+        use crate::{
+            clickmap::ClickTarget,
+            jobbers::{BoardKey, BoardTab},
+        };
+
+        let mut shell = aboard_atlantis(Some(REPORT));
+        screen(&mut shell);
+
+        // The second slot of the strip is the Treasures board.
+        let slot = region(&shell, |target| {
+            matches!(target, ClickTarget::JobberBoardTab(1))
+        });
+        click(&mut shell, slot);
+        assert_eq!(
+            shell.jobbers_ui.board_tab,
+            BoardTab::Treasures
+        );
+        assert_eq!(
+            shell.jobbers_ui.focus,
+            JobberFocus::Board
+        );
+
+        // And the first column of the board now on show.
+        screen(&mut shell);
+        let head = region(&shell, |target| {
+            matches!(
+                target,
+                ClickTarget::JobberBoardColumn(0)
+            )
+        });
+        click(&mut shell, head);
+        assert_eq!(
+            shell.jobbers_ui.board_ranking(BoardTab::Treasures).key,
+            BoardKey::Figure(0)
+        );
+    }
+
+    /// The box is only focusable while it is drawn: a page that stops drawing
+    /// it does not leave the keys on a box that is not there.
+    #[test]
+    fn focus_leaves_a_box_that_is_no_longer_drawn() {
+        let mut shell = aboard_atlantis(Some(REPORT));
+        shell.jobbers_ui.focus = JobberFocus::Board;
+        screen(&mut shell);
+        assert_eq!(
+            shell.jobbers_ui.focus,
+            JobberFocus::Board
+        );
+
+        shell.jobbers_ui.voyage_type = crate::jobbers::VoyageType::Pillage;
+        screen(&mut shell);
+        assert_ne!(
+            shell.jobbers_ui.focus,
+            JobberFocus::Board
+        );
     }
 }
 

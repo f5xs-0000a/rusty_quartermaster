@@ -30,10 +30,16 @@
 //! folds the pirates it names into the vessel's roster, for which see
 //! `AppShell::take_duty_report`.
 //!
-//! Nothing reads the kept ones yet: the ratings and figures are parsed,
-//! filed, and waiting for a reader.
+//! What the reports counted is read back per pirate over a whole run
+//! ([`maneuvers`], [`treasure`]), which is what the Jobbers page's Tokens and
+//! Chests box ranks. The ratings have no reader yet: a rating is relative to
+//! the pirate's own standing, so it ranks nobody against anybody.
 
-use std::{collections::BTreeSet, fmt, marker::PhantomData};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    fmt,
+    marker::PhantomData,
+};
 
 use chrono::{DateTime, Utc};
 use serde::{
@@ -223,6 +229,22 @@ impl TokenShape {
             Self::Flower => 4,
         }
     }
+
+    /// The shape itself, for a column that counts it. A token is known by its
+    /// shape and has no name the game ever shows, so the shape is the heading.
+    ///
+    /// Each is one column wide in a Latin context and none has an emoji face,
+    /// the lozenge standing in for the diamond because the diamonds of the
+    /// Geometric Shapes block are drawn double-width by too many fonts.
+    pub fn glyph(self) -> &'static str {
+        match self {
+            Self::Circle => "\u{25cb}",
+            Self::Diamond => "\u{25ca}",
+            Self::Plus => "+",
+            Self::Cross => "\u{00d7}",
+            Self::Flower => "\u{2740}",
+        }
+    }
 }
 
 impl ChestTier {
@@ -232,6 +254,17 @@ impl ChestTier {
             Self::Box => 0,
             Self::Locker => 1,
             Self::Chest => 2,
+        }
+    }
+
+    /// The letter a column counting this tier is headed with. The tiers are
+    /// named differently by every encounter (see the type's own docs), so a
+    /// heading can only be as specific as the initial they share.
+    pub fn initial(self) -> &'static str {
+        match self {
+            Self::Box => "B",
+            Self::Locker => "L",
+            Self::Chest => "C",
         }
     }
 }
@@ -325,6 +358,83 @@ impl DutyReport {
             .map(|pirate| pirate.name.as_str())
             .collect()
     }
+}
+
+/// What a run's reports counted for one pirate, of one kind of figure.
+///
+/// The slots are the figure's own, so a maneuver tally is read with
+/// [`TokenShape::slot`] and a haul with [`ChestTier::slot`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Counted<const N: usize> {
+    pub name: String,
+    pub counts: [u32; N],
+}
+
+impl<const N: usize> Counted<N> {
+    /// Every slot together. Each slot counts the same kind of thing, so the
+    /// total is what the pirate produced.
+    pub fn sum(&self) -> u32 {
+        self.counts.iter().sum()
+    }
+}
+
+/// The maneuver tokens each pirate generated over `reports`, in name order.
+///
+/// A pirate who generated none is not listed: the figure is what they made,
+/// and a row of noughts says only that they were rated at something else.
+pub fn maneuvers(reports: &[CopiedReport]) -> Vec<Counted<MANEUVER_SLOTS>> {
+    tally(reports, |metric| {
+        match metric {
+            Metric::Maneuvers(counts) => Some(counts),
+            _ => None,
+        }
+    })
+}
+
+/// The chests each pirate hauled over `reports`, in name order. Listed on the
+/// same terms as [`maneuvers`]: a pirate who hauled nothing is not.
+pub fn treasure(reports: &[CopiedReport]) -> Vec<Counted<TREASURE_SLOTS>> {
+    tally(reports, |metric| {
+        match metric {
+            Metric::TreasureHauled(counts) => Some(counts),
+            _ => None,
+        }
+    })
+}
+
+/// Add up one kind of figure across a run's reports, a pirate to an entry.
+///
+/// One report rates a pirate at as many stations as they worked, and a run
+/// hands us a report an interval, so the figures of one pirate arrive spread
+/// across both and are summed over the lot. Summing is all that may be done
+/// with them: how long an interval ran is nowhere in the report, so no rate
+/// can be had from these.
+fn tally<const N: usize>(
+    reports: &[CopiedReport],
+    pick: impl Fn(&Metric) -> Option<&[u32; N]>,
+) -> Vec<Counted<N>> {
+    let mut totals: BTreeMap<&str, [u32; N]> = BTreeMap::new();
+    for station in reports.iter().flat_map(|r| r.stations.iter()) {
+        for pirate in &station.pirates {
+            for counts in pirate.metrics.iter().filter_map(&pick) {
+                let total =
+                    totals.entry(pirate.name.as_str()).or_insert([0; N]);
+                for (slot, count) in total.iter_mut().zip(counts) {
+                    *slot = slot.saturating_add(*count);
+                }
+            }
+        }
+    }
+    totals
+        .into_iter()
+        .filter(|(_, counts)| counts.iter().any(|count| 0 < *count))
+        .map(|(name, counts)| {
+            Counted {
+                name: name.to_owned(),
+                counts,
+            }
+        })
+        .collect()
 }
 
 /// The duty a report's station key names. `None` for a key we have not seen
@@ -783,6 +893,66 @@ mod tests {
         assert_eq!(suspect(r#"["sail","bilge"]"#), None);
         assert_eq!(suspect("hello"), None);
         assert_eq!(suspect(""), None);
+    }
+
+    /// A run's figures are what a pirate did over the whole of it, so they
+    /// are summed across the reports and across the stations within each —
+    /// Foo earns tokens at the sails and hauls below in the same report.
+    #[test]
+    fn a_runs_figures_are_summed_per_pirate() {
+        let report = parse(REPORT).expect("report");
+        let at = DateTime::UNIX_EPOCH;
+        let run = vec![
+            CopiedReport::new(&report, at),
+            CopiedReport::new(&report, at),
+        ];
+
+        let tokens = maneuvers(&run);
+        let listed: Vec<_> = tokens
+            .iter()
+            .map(|c| (c.name.as_str(), c.counts, c.sum()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![
+                ("Bar", [2, 2, 0, 0, 0, 0, 0], 4),
+                ("Foo", [6, 4, 4, 6, 0, 0, 0], 20),
+            ]
+        );
+
+        let hauled = treasure(&run);
+        let listed: Vec<_> = hauled
+            .iter()
+            .map(|c| (c.name.as_str(), c.counts, c.sum()))
+            .collect();
+        assert_eq!(
+            listed,
+            vec![("Foo", [10, 0, 0], 10), ("Qux", [6, 2, 2], 10)]
+        );
+    }
+
+    /// A figure lists whoever produced some of it and nobody else: a pirate
+    /// rated at a station that counts something else, or rated with nothing
+    /// counted at all, is no part of that figure's reckoning.
+    #[test]
+    fn only_those_who_made_some_are_counted() {
+        let report = parse(REPORT).expect("report");
+        let run = vec![CopiedReport::new(&report, DateTime::UNIX_EPOCH)];
+
+        let named = |counted: Vec<Counted<{ MANEUVER_SLOTS }>>| {
+            counted.into_iter().map(|c| c.name).collect::<Vec<_>>()
+        };
+        assert_eq!(
+            named(maneuvers(&run)),
+            vec!["Bar", "Foo"]
+        );
+        assert_eq!(
+            treasure(&run)
+                .into_iter()
+                .map(|c| c.name)
+                .collect::<Vec<_>>(),
+            vec!["Foo", "Qux"]
+        );
     }
 
     #[test]

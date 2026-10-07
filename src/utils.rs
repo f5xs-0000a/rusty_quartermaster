@@ -414,6 +414,33 @@ pub const fn offset_title_width(title: &str) -> u16 {
     (title.len() + 2 * TITLE_DASHES + 4) as u16
 }
 
+/// Widths for a row of labelled slots spanning `width`, a slot per label.
+///
+/// Each slot takes its own label and `padding` either side of it before any
+/// slack is shared out, so no label is ever clipped to keep the slots equal;
+/// what is left over is divided evenly and the odd columns go out one at a
+/// time, leftmost first, so the row spans the whole width with no gap. The
+/// label is then centered in the slot it was measured for.
+///
+/// This is the shape of the top bar and of a tab strip: slots side by side,
+/// contiguous, each one the click region for what it names.
+pub fn bar_slots(width: u16, labels: &[u16], padding: u16) -> Vec<u16> {
+    if labels.is_empty() {
+        return Vec::new();
+    }
+    let mut slots: Vec<u16> = labels.iter().map(|w| w + 2 * padding).collect();
+    let mut slack = width.saturating_sub(slots.iter().sum());
+    let share = slack / slots.len() as u16;
+    for slot in slots.iter_mut() {
+        *slot += share;
+        slack -= share;
+    }
+    for slot in slots.iter_mut().take(slack as usize) {
+        *slot += 1;
+    }
+    slots
+}
+
 /// Columns a boxed widget spends on its frame: a border and a blank column on
 /// each side, the blanks holding the contents off the border.
 pub const BOX_MARGIN: u16 = 2 * (1 + PADDING);
