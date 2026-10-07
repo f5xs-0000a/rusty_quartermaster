@@ -1807,7 +1807,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 view_h: 0,
                 note: Some(NOTE.to_owned()),
             });
-            let mut field = PromptField::new("Note", FieldKind::Text);
+            let mut field = PromptField::new("Note", FieldKind::Paragraph);
             field.value = NOTE.to_owned();
             field.cursor = field.value.len();
             shell.jobbers_ui.note_popup = Some(NotePopup {
@@ -1838,7 +1838,7 @@ fn jobbers_states(states: &mut Vec<State>) {
             });
             shell.jobbers_ui.note_popup = Some(NotePopup {
                 name: "Matetwo".to_owned(),
-                field: PromptField::new("Note", FieldKind::Text),
+                field: PromptField::new("Note", FieldKind::Paragraph),
                 focus: NoteFocus::Text,
                 offset: 0,
                 wrap_w: 0,
@@ -1890,7 +1890,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 view_h: 0,
                 note: Some(long.clone()),
             });
-            let mut field = PromptField::new("Note", FieldKind::Text);
+            let mut field = PromptField::new("Note", FieldKind::Paragraph);
             field.value = long;
             shell.jobbers_ui.note_popup = Some(NotePopup {
                 name: "Matetwo".to_owned(),

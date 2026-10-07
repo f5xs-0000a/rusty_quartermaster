@@ -5587,7 +5587,7 @@ mod tests {
             name: "Playerone".to_owned(),
             field: crate::utils::PromptField::new(
                 "Note",
-                crate::utils::FieldKind::Text,
+                crate::utils::FieldKind::Paragraph,
             ),
             focus: NoteFocus::Text,
             offset: 0,

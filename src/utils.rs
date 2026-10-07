@@ -6,7 +6,11 @@
 pub enum FieldKind {
     PositiveInt,
     Rate,
+    /// One line of free text: every character that prints, and no other.
     Text,
+    /// Free text that may run to several lines. The newline is the one control
+    /// character it takes, a line having to be started somehow.
+    Paragraph,
 }
 
 #[derive(Clone)]
@@ -42,6 +46,7 @@ impl PromptField {
                 }
             }
             FieldKind::Text => !c.is_control(),
+            FieldKind::Paragraph => c == '\n' || !c.is_control(),
         }
     }
 
@@ -605,29 +610,31 @@ const BUTTON_BRACKETS: u16 = 4;
 /// Blank columns kept between two buttons, and at each end of their row.
 const BUTTON_GAP: u16 = 2;
 
-/// Columns a row of the given buttons needs: each of them as wide as the widest
-/// label, with a [`BUTTON_GAP`] between them and at both ends. A popup takes
+/// Columns a row of the given buttons needs: each one its own label in
+/// brackets, with a [`BUTTON_GAP`] between them and at both ends. A popup takes
 /// its width from this so its buttons are never the thing that gets squeezed.
 pub fn buttons_width(labels: &[&str]) -> u16 {
     let n = labels.len() as u16;
     if n == 0 {
         return 0;
     }
-    let label_w =
-        labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
-    n * (label_w + BUTTON_BRACKETS) + (n + 1) * BUTTON_GAP
+    let labels: u16 = labels
+        .iter()
+        .map(|l| l.chars().count() as u16 + BUTTON_BRACKETS)
+        .sum();
+    labels + (n + 1) * BUTTON_GAP
 }
 
 /// Draw a row of buttons and hand back each one's rect, in order, for the
 /// caller to hang a click region on. `focused` is the one the keyboard is
 /// resting on.
 ///
-/// Every label is padded to the widest of them, so the buttons in a row are all
-/// one width however long their words are; the gaps between them and at both
-/// ends of the row are equal, so the row reads as one group rather than as
-/// text that happens to be spaced out. A focused button is drawn in reverse,
-/// the same mark of "this is where you are" that the top bar and the table
-/// cursor use.
+/// A button is its label in brackets with one blank inside each of them, so the
+/// brackets say where the word begins and ends rather than how long the longest
+/// of them is. The gaps between the buttons and at both ends of the row are
+/// equal, so the row reads as one group rather than as text that happens to be
+/// spaced out. A focused button is drawn in reverse, the same mark of "this is
+/// where you are" that the top bar and the table cursor use.
 pub fn render_buttons(
     frame: &mut ratatui::Frame,
     row: ratatui::layout::Rect,
@@ -645,20 +652,30 @@ pub fn render_buttons(
         return Vec::new();
     }
 
-    let label_w =
-        labels.iter().map(|l| l.chars().count()).max().unwrap_or(0) as u16;
     let n = labels.len() as u16;
-    // Too little room for the brackets and the words is a layout fault
-    // elsewhere; share out what there is rather than overflow the row.
-    let button_w = (label_w + BUTTON_BRACKETS).min(row.width / n);
+    // Each button is as wide as its own label in brackets.
+    let want: Vec<u16> = labels
+        .iter()
+        .map(|l| l.chars().count() as u16 + BUTTON_BRACKETS)
+        .collect();
+    let wanted: u16 = want.iter().sum();
+    // A row too narrow for the labels is a layout fault elsewhere, a popup
+    // taking its width from [`buttons_width`]: share out what there is equally
+    // rather than overflow the row, which would cut a bracket off the longest
+    // label.
+    let widths: Vec<u16> = if row.width < wanted {
+        vec![row.width / n; labels.len()]
+    } else {
+        want
+    };
     // One gap more than there are buttons: between each pair, and at each end.
-    let free = row.width - button_w * n;
+    let free = row.width - widths.iter().sum::<u16>().min(row.width);
     let gap = free / (n + 1);
     let mut x = row.x + gap + (free - gap * (n + 1)) / 2;
 
     let mut rects = Vec::with_capacity(labels.len());
     for (i, label) in labels.iter().enumerate() {
-        let rect = Rect::new(x, row.y, button_w, 1);
+        let rect = Rect::new(x, row.y, widths[i], 1);
         let style = if focused == Some(i) {
             Style::default().bg(Color::White).fg(Color::Black).bold()
         } else {
@@ -666,17 +683,14 @@ pub fn render_buttons(
         };
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
-                format!(
-                    "[ {label:^width$} ]",
-                    width = label_w as usize
-                ),
+                format!("[ {label} ]"),
                 style,
             )))
             .centered(),
             rect,
         );
         rects.push(rect);
-        x += button_w + gap;
+        x += widths[i] + gap;
     }
     rects
 }
@@ -1172,6 +1186,60 @@ mod tests {
     // The width is const-evaluable, so widgets can build `const` floors from
     // it.
     const _: () = assert!(offset_title_width("Ocean") == 15);
+
+    /// A paragraph field takes the newline that starts a line; a one-line field
+    /// takes no control character at all, that being what makes it one line.
+    #[test]
+    fn only_a_paragraph_field_takes_a_newline() {
+        let mut note = PromptField::new("Note", FieldKind::Paragraph);
+        note.insert_char('a');
+        note.insert_char('\n');
+        note.insert_char('b');
+        assert_eq!(note.value, "a\nb");
+        assert_eq!(note.cursor, note.value.len());
+
+        let mut line = PromptField::new("Find", FieldKind::Text);
+        line.insert_char('a');
+        line.insert_char('\n');
+        assert_eq!(line.value, "a");
+    }
+
+    /// A button is its own label in brackets with one blank inside each: the
+    /// brackets say where the word begins and ends, not how long the longest
+    /// word in the row is. The row asks for exactly what it draws.
+    #[test]
+    fn a_button_is_its_own_label_in_brackets() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        const LABELS: [&str; 3] = ["Add Note", "See Trophies", "Close"];
+        let width = buttons_width(&LABELS);
+        assert_eq!(
+            width as usize,
+            LABELS.iter().map(|l| l.len() + 4).sum::<usize>() + 4 * 2,
+        );
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(width, 1)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_buttons(
+                    frame,
+                    Rect::new(0, 0, width, 1),
+                    &LABELS,
+                    Some(2),
+                );
+            })
+            .expect("draw");
+        let screen = format!("{}", terminal.backend());
+        assert!(
+            screen.contains("[ Add Note ]"),
+            "the brackets hug the label: {screen}"
+        );
+        assert!(
+            screen.contains("[ Close ]"),
+            "a short label is not stretched to a long one: {screen}"
+        );
+    }
 
     /// The highlight marks the block of labels: one column either side of
     /// them, inside the blank each edge of the box keeps, with as many

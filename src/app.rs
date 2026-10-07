@@ -2864,7 +2864,7 @@ impl AppShell {
         };
         let mut field = crate::utils::PromptField::new(
             "Note",
-            crate::utils::FieldKind::Text,
+            crate::utils::FieldKind::Paragraph,
         );
         field.value = note.to_owned();
         field.cursor = field.value.len();

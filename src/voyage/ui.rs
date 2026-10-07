@@ -3614,7 +3614,7 @@ mod tests {
             );
         }
         assert!(
-            screen.contains("[ Cancel ]") && screen.contains("[  Save  ]"),
+            screen.contains("[ Cancel ]") && screen.contains("[ Save ]"),
             "the buttons are never scrolled away: {screen}"
         );
         assert!(
@@ -3647,7 +3647,7 @@ mod tests {
             "the end of the list is reachable: {screen}"
         );
         assert!(
-            screen.contains("[ Cancel ]") && screen.contains("[  Save  ]"),
+            screen.contains("[ Cancel ]") && screen.contains("[ Save ]"),
             "the buttons sit outside the window: {screen}"
         );
         assert!(
