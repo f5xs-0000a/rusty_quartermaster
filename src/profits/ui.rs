@@ -33,7 +33,7 @@ use super::{
 use crate::{
     api::Commodity,
     app::{self, SharedState},
-    clickmap::{ClickRegion, ClickTarget},
+    clickmap::{ClickMap, ClickRegion, ClickTarget},
     utils::{offset_title, offset_title_width},
 };
 
@@ -74,7 +74,7 @@ pub fn render(
     app: &mut ProfitsApp,
     shared: &SharedState,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // -- Widths ------------------------------------------------------------
     let item_width = app
@@ -237,6 +237,7 @@ pub fn render(
     let show_co = app.show_co_rate;
     let show_donation = app.show_donation;
     if let Some(ref popup) = app.popup {
+        regions.layer();
         render_popup(
             frame,
             popup,
@@ -256,7 +257,7 @@ fn render_parameters(
     shared: &SharedState,
     focused: bool,
     label_width: u16,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -438,7 +439,7 @@ fn render_inventory(
     shared: &SharedState,
     focused: bool,
     item_width: u16,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Sell/Buy Price columns are editable only when Market is unavailable;
     // otherwise prices come from Market and the columns are hidden.
@@ -723,7 +724,7 @@ fn render_search(
     app: &ProfitsApp,
     shared: &SharedState,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     if app.focus == Focus::Input {
         // The commodity the query resolves to — the fuzzy match is the
@@ -1041,7 +1042,7 @@ fn render_hold_import(
     frame: &mut Frame,
     import: &HoldImport,
     commodities: &[Commodity],
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     const CAP: usize = 8; // goods listed before "...and N more"
     let area = frame.area();
@@ -1176,7 +1177,7 @@ fn render_hold_import(
 /// Hang the popup's No / Yes click regions on a two-button row, in that order.
 /// Every confirm popup on this page answers to the same two targets, whatever
 /// its buttons are called.
-fn push_yes_no_regions(regions: &mut Vec<ClickRegion>, buttons: Vec<Rect>) {
+fn push_yes_no_regions(regions: &mut ClickMap, buttons: Vec<Rect>) {
     for (rect, target) in buttons
         .into_iter()
         .zip([ClickTarget::ProfitsPopupNo, ClickTarget::ProfitsPopupYes])
@@ -1195,7 +1196,7 @@ fn render_popup(
     show_co: bool,
     show_donation: bool,
     commodities: &[Commodity],
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
 
@@ -1619,7 +1620,7 @@ mod inventory_tests {
     use crate::{
         api::Commodity,
         app::SharedState,
-        clickmap::{ClickRegion, ClickTarget},
+        clickmap::{ClickMap, ClickRegion, ClickTarget},
     };
 
     /// Render the Profits page and hand back the cell click regions, the
@@ -1666,7 +1667,7 @@ mod inventory_tests {
         app.focus = focus;
         app.popup = popup;
 
-        let mut regions = Vec::new();
+        let mut regions = ClickMap::new();
         let mut terminal =
             Terminal::new(TestBackend::new(width, height)).expect("terminal");
         let area = Rect::new(0, 0, width, height);
@@ -1694,13 +1695,15 @@ mod inventory_tests {
             })
             .expect("draw");
         let cells = regions
-            .into_iter()
+            .top()
+            .iter()
             .filter(|r| {
                 matches!(
                     r.target,
                     ClickTarget::ProfitsTableCell { .. }
                 )
             })
+            .cloned()
             .collect();
         (
             cells,

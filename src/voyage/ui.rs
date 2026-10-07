@@ -21,7 +21,7 @@ use ratatui::{
 };
 
 use crate::{
-    clickmap::{ClickRegion, ClickTarget},
+    clickmap::{ClickMap, ClickRegion, ClickTarget},
     damage::DamageApp,
     ships::SHIPS,
     utils::offset_title,
@@ -505,7 +505,7 @@ pub fn render(
     view: &VoyageView,
     ui: &mut VoyageStatsUi,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Nothing to frame until a voyage exists, so the notice saying so stands in
     // for the whole page rather than sitting inside an empty widget.
@@ -916,7 +916,14 @@ pub fn render(
     // Modal popups, every one of them laid out over the full content rect
     // rather than the narrow body column: the room is theirs to use, and a
     // modal that stopped at the column's edge left the page's own scrollbar
-    // showing beside it. Only one is ever open at a time.
+    // showing beside it. Only one is ever open at a time, and it opens a layer
+    // of the click map, so the page beneath it answers to nothing.
+    if ui.battles_popup.is_some()
+        || ui.chart_popup.is_some()
+        || ui.prompt.is_some()
+    {
+        regions.layer();
+    }
     if ui.battles_popup.is_some() {
         render_battles_popup(frame, full, view, ui, regions);
     } else if let Some(i) = ui.chart_popup {
@@ -954,7 +961,7 @@ fn render_voyage_pager(
     frame: &mut Frame,
     area: Rect,
     view: &VoyageView,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let nav = Layout::horizontal([
         Constraint::Length(8),
@@ -1167,7 +1174,7 @@ fn render_save_prompt(
     page_w: u16,
     view: &VoyageView,
     prompt: &mut SavePrompt,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Backdrop swallows clicks outside the box (acts as cancel).
     regions.push(ClickRegion {
@@ -1393,7 +1400,7 @@ fn render_battles_popup(
     area: Rect,
     view: &VoyageView,
     ui: &VoyageStatsUi,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Backdrop swallows outside clicks (acts as close).
     regions.push(ClickRegion {
@@ -1738,7 +1745,7 @@ fn render_chart_popup(
     area: Rect,
     idx: usize,
     data: &ChartData,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     regions.push(ClickRegion {
         rect: area,
@@ -1942,7 +1949,7 @@ fn render_winrate_popup(
     area: Rect,
     wr: &ShipWinrate,
     hover: Option<(usize, usize)>,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Backdrop closes on click; registered first so per-cell hovers win the
     // hit-test.
@@ -3575,7 +3582,7 @@ mod tests {
                     view,
                     &mut ui,
                     true,
-                    &mut Vec::new(),
+                    &mut crate::clickmap::ClickMap::new(),
                 );
             })
             .expect("draw");

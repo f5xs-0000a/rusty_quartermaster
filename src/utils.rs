@@ -883,7 +883,7 @@ pub fn scrolls(room: u16, total: usize) -> bool {
 /// behind it.
 pub fn render_scrollbar(
     frame: &mut ratatui::Frame,
-    regions: &mut Vec<crate::clickmap::ClickRegion>,
+    regions: &mut crate::clickmap::ClickMap,
     area: ratatui::layout::Rect,
     view: crate::clickmap::ScrollView,
     offset: usize,
@@ -908,7 +908,7 @@ pub fn render_scrollbar(
 /// blank.
 pub fn render_hscrollbar(
     frame: &mut ratatui::Frame,
-    regions: &mut Vec<crate::clickmap::ClickRegion>,
+    regions: &mut crate::clickmap::ClickMap,
     area: ratatui::layout::Rect,
     view: crate::clickmap::ScrollView,
     offset: usize,
@@ -931,7 +931,7 @@ pub fn render_hscrollbar(
 /// place and only the glyphs and the edge differ.
 fn render_bar(
     frame: &mut ratatui::Frame,
-    regions: &mut Vec<crate::clickmap::ClickRegion>,
+    regions: &mut crate::clickmap::ClickMap,
     area: ratatui::layout::Rect,
     view: crate::clickmap::ScrollView,
     axis: crate::clickmap::ScrollAxis,
@@ -1651,10 +1651,10 @@ mod tests {
     ) -> (Vec<String>, u16) {
         use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
-        use crate::clickmap::ScrollView;
+        use crate::clickmap::{ClickMap, ScrollView};
 
         let mut content_w = width;
-        let mut regions = Vec::new();
+        let mut regions = ClickMap::new();
         let mut terminal =
             Terminal::new(TestBackend::new(width, 6)).expect("terminal");
         terminal
@@ -1725,13 +1725,13 @@ mod tests {
     fn a_scrollbar_is_two_ends_and_a_thumb_inside_the_track() {
         use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
-        use crate::clickmap::{ScrollAxis, ScrollView};
+        use crate::clickmap::{ClickMap, ScrollAxis, ScrollView};
 
         for axis in [ScrollAxis::Vertical, ScrollAxis::Horizontal] {
             for room in 3u16 ..= 30 {
                 for total in room as usize + 1 ..= room as usize + 36 {
                     for offset in 0 ..= total - room as usize {
-                        let mut regions = Vec::new();
+                        let mut regions = ClickMap::new();
                         let (w, h) = match axis {
                             ScrollAxis::Vertical => (1, room),
                             ScrollAxis::Horizontal => (room, 1),
@@ -1830,9 +1830,9 @@ mod tests {
     fn a_scrollbar_is_a_click_region_on_its_own_column() {
         use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
-        use crate::clickmap::{ClickTarget, ScrollView};
+        use crate::clickmap::{ClickMap, ClickTarget, ScrollView};
 
-        let mut regions = Vec::new();
+        let mut regions = ClickMap::new();
         let mut terminal =
             Terminal::new(TestBackend::new(10, 6)).expect("terminal");
         terminal
@@ -1848,10 +1848,10 @@ mod tests {
             })
             .expect("draw");
 
-        let [region] = regions.as_slice() else {
+        let [region] = regions.top() else {
             panic!(
                 "one region for the bar, got {}",
-                regions.len()
+                regions.top().len()
             );
         };
         assert_eq!(region.rect, Rect::new(9, 0, 1, 6));

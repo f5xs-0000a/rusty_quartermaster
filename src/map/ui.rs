@@ -64,7 +64,7 @@ use ratatui::{
 
 use crate::{
     bare,
-    clickmap::{ClickRegion, ClickTarget},
+    clickmap::{ClickMap, ClickRegion, ClickTarget},
     islands::CachedIslands,
     map::{
         MOVE_KEYS,
@@ -806,7 +806,7 @@ pub fn render(
     app: &mut MapApp,
     ctx: OceanContext<'_>,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let OceanContext {
         map,
@@ -953,6 +953,7 @@ pub fn render(
     }
 
     if app.help {
+        regions.layer();
         render_help(frame, area, app, regions);
     }
 }
@@ -974,7 +975,7 @@ fn render_metadata(
     map: &'static Map,
     sources: Sources<'_>,
     border: Style,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -1334,7 +1335,7 @@ fn render_help(
     frame: &mut Frame,
     area: Rect,
     app: &mut MapApp,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     regions.push(ClickRegion {
         rect: area,
@@ -1652,7 +1653,7 @@ fn draw_map(
     view: Rect,
     app: &mut MapApp,
     map: &'static Map,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let Some(cursor) = app.cursor_on(map) else {
         return;
@@ -2016,7 +2017,7 @@ mod tests {
         app.memorized.insert(first.at());
         let mut terminal =
             Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
-        let mut regions = Vec::new();
+        let mut regions = ClickMap::new();
         terminal
             .draw(|frame| {
                 let ctx = OceanContext {
@@ -2068,7 +2069,7 @@ mod tests {
                         app,
                         ctx,
                         true,
-                        &mut Vec::new(),
+                        &mut ClickMap::new(),
                     );
                 })
                 .expect("draw");
@@ -2113,7 +2114,7 @@ mod tests {
         app.cursor_on(map);
         let mut terminal =
             Terminal::new(TestBackend::new(120, 40)).expect("test terminal");
-        let mut regions = Vec::new();
+        let mut regions = ClickMap::new();
         terminal
             .draw(|frame| {
                 let ctx = OceanContext {
@@ -2134,6 +2135,7 @@ mod tests {
             })
             .expect("draw");
         let boxes: Vec<Rect> = regions
+            .top()
             .iter()
             .filter(|r| matches!(r.target, ClickTarget::MapPoint { .. }))
             .map(|r| r.rect)
@@ -2178,7 +2180,7 @@ mod tests {
                         app,
                         ctx,
                         true,
-                        &mut Vec::new(),
+                        &mut ClickMap::new(),
                     );
                 })
                 .expect("draw");
@@ -2531,7 +2533,7 @@ mod tests {
         let (w, h) = (120, 20);
         let mut terminal =
             Terminal::new(TestBackend::new(w, h)).expect("test terminal");
-        let mut regions = Vec::new();
+        let mut regions = ClickMap::new();
         terminal
             .draw(|frame| {
                 let ctx = OceanContext {
@@ -2554,6 +2556,7 @@ mod tests {
         // the column is where it registered itself, so the reading does not
         // have to know how wide the ocean's names made it
         let column = regions
+            .top()
             .iter()
             .find_map(|r| {
                 matches!(r.target, ClickTarget::MapIslandInfo).then_some(r.rect)

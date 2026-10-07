@@ -531,7 +531,7 @@ pub struct AppShell {
     /// Where that lives on disk (set by `--persistence`).
     pub persistence_path: Option<std::path::PathBuf>,
     // click regions rebuilt each render
-    click_regions: Vec<ClickRegion>,
+    click_regions: clickmap::ClickMap,
 }
 
 impl AppShell {
@@ -557,7 +557,7 @@ impl AppShell {
             island_list_wanted: false,
             persistence: crate::persistence::SavedPersistence::default(),
             persistence_path: None,
-            click_regions: Vec::new(),
+            click_regions: clickmap::ClickMap::new(),
         }
     }
 
@@ -3209,11 +3209,9 @@ impl AppShell {
     ) {
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                if let Some(target) = clickmap::hit_test(
-                    &self.click_regions,
-                    mouse.column,
-                    mouse.row,
-                ) {
+                if let Some(target) =
+                    self.click_regions.hit(mouse.column, mouse.row)
+                {
                     // A scrollbar is the one target whose answer depends on
                     // where in it the click landed, so it is read here where
                     // the row is still at hand.
@@ -3255,11 +3253,7 @@ impl AppShell {
                     && let Some(ClickTarget::JobberSkillDistCell {
                         th,
                         carp,
-                    }) = clickmap::hit_test(
-                        &self.click_regions,
-                        mouse.column,
-                        mouse.row,
-                    )
+                    }) = self.click_regions.hit(mouse.column, mouse.row)
                     && let Some(sd) = self.jobbers_ui.skill_dist_popup.as_mut()
                 {
                     sd.cursor = (th, carp);
@@ -3268,17 +3262,14 @@ impl AppShell {
                 // and its row/column headers; leaving the grid
                 // clears the highlight.
                 if self.voyage_ui.chart_popup == Some(0) {
-                    self.voyage_ui.winrate_hover = match clickmap::hit_test(
-                        &self.click_regions,
-                        mouse.column,
-                        mouse.row,
-                    ) {
-                        Some(ClickTarget::VoyageWinrateCell {
-                            row,
-                            col,
-                        }) => Some((row, col)),
-                        _ => None,
-                    };
+                    self.voyage_ui.winrate_hover =
+                        match self.click_regions.hit(mouse.column, mouse.row) {
+                            Some(ClickTarget::VoyageWinrateCell {
+                                row,
+                                col,
+                            }) => Some((row, col)),
+                            _ => None,
+                        };
                 }
                 // Live hover over a Profit Breakdown row parks the tooltip
                 // cursor.
@@ -3288,11 +3279,7 @@ impl AppShell {
                         _
                     ))
                 ) && let Some(ClickTarget::ProfitsBreakdownRow(i)) =
-                    clickmap::hit_test(
-                        &self.click_regions,
-                        mouse.column,
-                        mouse.row,
-                    )
+                    self.click_regions.hit(mouse.column, mouse.row)
                 {
                     self.profits.breakdown_cursor = i;
                 }
@@ -3954,7 +3941,7 @@ impl AppShell {
             axis,
             bar,
             total,
-        }) = clickmap::hit_test(&self.click_regions, col, row)
+        }) = self.click_regions.hit(col, row)
         {
             self.scroll_bar(
                 view,
@@ -4054,7 +4041,7 @@ impl AppShell {
                     | ClickTarget::JobberLeaderboardPirate {
                         ..
                     },
-                ) = clickmap::hit_test(&self.click_regions, col, row)
+                ) = self.click_regions.hit(col, row)
                 {
                     let len = self.leaderboard_current_len();
                     if len > 0 {
@@ -4069,30 +4056,29 @@ impl AppShell {
                 // Otherwise move the selection of whichever pane the cursor is
                 // over (the panes auto-scroll to follow the
                 // selection).
-                let pane =
-                    match clickmap::hit_test(&self.click_regions, col, row) {
-                        Some(ClickTarget::JobberAboardList)
-                        | Some(ClickTarget::JobberPirate {
-                            pane: JobberPane::Aboard,
-                            ..
-                        }) => JobberPane::Aboard,
-                        Some(ClickTarget::JobberGreedyList)
-                        | Some(ClickTarget::JobberPirate {
-                            pane: JobberPane::Greedy,
-                            ..
-                        }) => JobberPane::Greedy,
-                        Some(ClickTarget::JobberPlankedList)
-                        | Some(ClickTarget::JobberPirate {
-                            pane: JobberPane::Planked,
-                            ..
-                        }) => JobberPane::Planked,
-                        Some(ClickTarget::JobberEnthralledList)
-                        | Some(ClickTarget::JobberPirate {
-                            pane: JobberPane::Enthralled,
-                            ..
-                        }) => JobberPane::Enthralled,
-                        _ => return,
-                    };
+                let pane = match self.click_regions.hit(col, row) {
+                    Some(ClickTarget::JobberAboardList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Aboard,
+                        ..
+                    }) => JobberPane::Aboard,
+                    Some(ClickTarget::JobberGreedyList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Greedy,
+                        ..
+                    }) => JobberPane::Greedy,
+                    Some(ClickTarget::JobberPlankedList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Planked,
+                        ..
+                    }) => JobberPane::Planked,
+                    Some(ClickTarget::JobberEnthralledList)
+                    | Some(ClickTarget::JobberPirate {
+                        pane: JobberPane::Enthralled,
+                        ..
+                    }) => JobberPane::Enthralled,
+                    _ => return,
+                };
                 self.jobbers_pane_select_delta(pane, delta.signum());
             }
             AppId::Voyage => {
@@ -4131,7 +4117,7 @@ impl AppShell {
                 }
                 // over the Island column it scrolls what the column says
                 if let Some(ClickTarget::MapIslandInfo) =
-                    clickmap::hit_test(&self.click_regions, col, row)
+                    self.click_regions.hit(col, row)
                 {
                     self.map.info_scroll = if delta < 0 {
                         self.map.info_scroll.saturating_sub(1)
@@ -4526,6 +4512,7 @@ mod voyage_scroll_tests {
         terminal.draw(|frame| shell.render(frame)).expect("draw");
         shell
             .click_regions
+            .top()
             .iter()
             .find_map(|r| {
                 match r.target {
@@ -4673,6 +4660,7 @@ mod map_scroll_tests {
         terminal.draw(|frame| shell.render(frame)).expect("draw");
         let column = shell
             .click_regions
+            .top()
             .iter()
             .find_map(|r| {
                 matches!(r.target, ClickTarget::MapIslandInfo).then_some(r.rect)
@@ -5181,5 +5169,91 @@ mod trophy_filter_tests {
 
         press(&mut shell, KeyCode::Esc);
         assert!(shell.jobbers_ui.trophy_popup.is_none());
+    }
+}
+
+#[cfg(test)]
+mod modal_mouse_tests {
+    use ratatui::{Terminal, backend::TestBackend};
+
+    use super::{APP_LIST, AppId, AppShell, ClickTarget};
+    use crate::profits::{InventoryRow, PopupKind};
+
+    /// A shell on the Profits page with a commodity in the Inventory, so the
+    /// page has cells of its own for the mouse.
+    fn with_a_row() -> AppShell {
+        let mut shell = AppShell::new(vec![crate::api::Commodity {
+            id: 1,
+            name: "Rum".to_owned(),
+        }]);
+        shell.profits.rows.push(InventoryRow::new(1));
+        shell.sidebar_index = APP_LIST
+            .iter()
+            .position(|a| *a == AppId::Profits)
+            .expect("the Profits page");
+        shell
+    }
+
+    fn draw(shell: &mut AppShell) {
+        let mut terminal =
+            Terminal::new(TestBackend::new(120, 40)).expect("terminal");
+        terminal.draw(|frame| shell.render(frame)).expect("draw");
+    }
+
+    /// A popup takes the frame while it is up: a click on the page beneath it
+    /// lands on nothing, whether the popup covers that spot or not, and so does
+    /// one on the top bar - the keys are already the popup's, and the mouse is
+    /// no way around that.
+    #[test]
+    fn a_popup_takes_the_mouse_from_the_page_under_it() {
+        let mut shell = with_a_row();
+        draw(&mut shell);
+
+        // Where a cell of the page is, and where the bar is, with no popup up.
+        let cell = shell
+            .click_regions
+            .top()
+            .iter()
+            .find(|r| {
+                matches!(
+                    r.target,
+                    ClickTarget::ProfitsTableCell { .. }
+                )
+            })
+            .map(|r| r.rect)
+            .expect("a cell of the Inventory");
+        assert!(
+            shell.click_regions.hit(cell.x, cell.y).is_some(),
+            "the cell answers while the page is the topmost thing drawn",
+        );
+        assert!(matches!(
+            shell.click_regions.hit(1, 0),
+            Some(ClickTarget::SidebarItem(_))
+        ));
+
+        shell.profits.popup = Some(PopupKind::DeleteConfirm {
+            row_idx: 0,
+            name: "Rum".to_owned(),
+            yes_focused: true,
+        });
+        draw(&mut shell);
+
+        assert!(
+            shell.click_regions.hit(cell.x, cell.y).is_none(),
+            "a cell of the page beneath a popup answers to nothing",
+        );
+        assert!(
+            shell.click_regions.hit(1, 0).is_none(),
+            "nor does the bar over it",
+        );
+        // The popup's own buttons are what the mouse can still reach.
+        assert!(
+            shell
+                .click_regions
+                .top()
+                .iter()
+                .any(|r| matches!(r.target, ClickTarget::ProfitsPopupYes)),
+            "the popup hung its buttons on the mouse",
+        );
     }
 }

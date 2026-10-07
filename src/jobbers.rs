@@ -45,7 +45,7 @@ use crate::{
         vargas_in_wave,
         wave_kind_for,
     },
-    clickmap::{ClickRegion, ClickTarget},
+    clickmap::{ClickMap, ClickRegion, ClickTarget},
     pirate::{
         self,
         BasicInfo,
@@ -1361,7 +1361,7 @@ pub fn render(
     cache: &PirateCache,
     ui: &mut JobbersUi,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Nothing to frame without a log to read, so the notice saying so stands in
     // for the whole page.
@@ -2113,38 +2113,39 @@ pub fn render(
         );
     }
 
-    // Modal popups, drawn last so they sit atop the page and their click
-    // regions win the reverse-iterating hit test.
+    // Modal popups, drawn last so they sit atop the page, each opening a layer
+    // of the click map so the page beneath it answers to nothing.
     if let Some(sel) = ui.ship_popup {
+        regions.layer();
         render_ship_popup(frame, sel, regions);
     } else if let Some(sel) = ui.vessel_popup {
+        regions.layer();
         render_vessel_popup(frame, sel, &ordered, state, regions);
     } else if let Some(sel) = ui.voyage_popup {
+        regions.layer();
         render_voyage_popup(frame, sel, regions);
     }
 
     // The pirate-stats popup, and the two popups layered over it: the trophies
     // and the note editor. Either is drawn over it rather than instead of it,
-    // so the pirate it is about is still named behind it.
-    //
-    // Only the topmost popup answers to the mouse, though: the regions of the
-    // one underneath go to a list that is thrown away, so a click cannot reach
-    // a button that is half-covered.
-    let layered = ui.trophy_popup.is_some() || ui.note_popup.is_some();
-    let mut buried = Vec::new();
+    // so the pirate it is about is still named behind it — and each opens a
+    // layer of its own, so only the topmost of them answers to the mouse.
     if let Some(pp) = ui.pirate_popup.as_mut() {
-        let under = if layered { &mut buried } else { &mut *regions };
-        render_pirate_popup(frame, pp, cache, focused, under);
+        regions.layer();
+        render_pirate_popup(frame, pp, cache, focused, regions);
     }
     if let Some(tp) = ui.trophy_popup.as_mut() {
+        regions.layer();
         render_trophy_popup(frame, tp, cache, regions);
     }
     if let Some(np) = ui.note_popup.as_mut() {
+        regions.layer();
         render_note_popup(frame, np, cache, regions);
     }
 
     // The Vampirates skill-distribution scatterplot (its own modal).
     if let Some(sd) = ui.skill_dist_popup {
+        regions.layer();
         render_skill_dist_popup(frame, sd, &aboard_set, cache, regions);
     }
 
@@ -2154,12 +2155,14 @@ pub fn render(
             .as_ref()
             .map(|k| fight_timelines(state, k))
             .unwrap_or_default();
+        regions.layer();
         render_per_fight_popup(frame, pf, &fights, regions);
     }
 
     // The roster prompt (its own modal), raised only when no other holds the
     // slot, so it is drawn last and nothing lands on top of it.
     if let Some(rp) = ui.roster_popup.as_ref() {
+        regions.layer();
         render_roster_prompt(frame, rp, regions);
     }
 }
@@ -2170,7 +2173,7 @@ pub fn render(
 fn render_roster_prompt(
     frame: &mut Frame,
     prompt: &RosterPrompt,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     const CAP: usize = 8; // names listed before "...and N more"
     let area = frame.area();
@@ -2344,7 +2347,7 @@ fn render_per_fight_popup(
     frame: &mut Frame,
     popup: PerFightPopup,
     fights: &[(String, crate::voyage::FightTimeline)],
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
     // Backdrop closes; pushed first so inner controls win the reverse hit test.
@@ -2490,7 +2493,7 @@ fn render_voyage_box(
     warn_lines: &[String],
     label_w: u16,
     page_focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -2767,7 +2770,7 @@ fn render_skill_dist_button(
     area: Rect,
     page_focused: bool,
     active: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let label_style = if page_focused && active {
         Style::default().bg(Color::White).fg(Color::Black).bold()
@@ -2799,7 +2802,7 @@ fn render_skill_dist_popup(
     popup: SkillDistPopup,
     aboard: &HashSet<String>,
     cache: &PirateCache,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // Plot geometry. The left margin holds the vertical "Carpentry" axis title
     // (its 9 letters line up with the 9 standing rows) and the per-row standing
@@ -3243,7 +3246,7 @@ fn render_panes(
     focused: bool,
     panes: &[JobberPane],
     pane_widths: &[u16],
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let n = panes.len();
     if n == 0 {
@@ -3545,7 +3548,7 @@ fn render_pane(
     page_focused: bool,
     active: bool,
     pane: JobberPane,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3641,7 +3644,7 @@ fn render_aboard_pane(
     offset: &mut usize,
     page_focused: bool,
     active: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
@@ -3988,7 +3991,7 @@ fn render_top_panel(
     columns: &[RankedColumn],
     ui: &mut JobbersUi,
     page_focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     // The panel fills its region: the region's width was derived from this
     // panel's natural width back in `render`, so it already hugs the content.
@@ -4155,7 +4158,7 @@ fn render_top_panel(
 fn render_ship_popup(
     frame: &mut Frame,
     selected: usize,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
 
@@ -4202,7 +4205,7 @@ fn render_vessel_popup(
     selected: usize,
     ordered: &[Arc<str>],
     state: &GameState,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
 
@@ -4275,7 +4278,7 @@ fn render_vessel_popup(
 fn render_voyage_popup(
     frame: &mut Frame,
     selected: usize,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
 
@@ -4403,7 +4406,7 @@ fn render_pirate_popup(
     pp: &mut PiratePopup,
     cache: &PirateCache,
     page_focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let screen = frame.area();
     let cached = cache.get_cached(&pp.name);
@@ -4964,7 +4967,7 @@ fn render_note_popup(
     frame: &mut Frame,
     np: &mut NotePopup,
     cache: &PirateCache,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     const BUTTONS: [&str; 2] = ["Cancel", "Save"];
     /// Lines the box keeps for the text however little of it there is.
@@ -5141,7 +5144,7 @@ fn render_trophy_popup(
     frame: &mut Frame,
     tp: &mut TrophyPopup,
     cache: &PirateCache,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let screen = frame.area();
 

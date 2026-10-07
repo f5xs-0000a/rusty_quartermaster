@@ -221,21 +221,114 @@ pub struct ClickRegion {
     pub target: ClickTarget,
 }
 
-/// Reverse-iterates so popup regions (pushed last) get priority.
-pub fn hit_test(
-    regions: &[ClickRegion],
-    col: u16,
-    row: u16,
-) -> Option<ClickTarget> {
-    regions.iter().rev().find_map(|r| {
-        if r.rect.x <= col
-            && col < r.rect.x + r.rect.width
-            && r.rect.y <= row
-            && row < r.rect.y + r.rect.height
-        {
-            Some(r.target.clone())
-        } else {
-            None
+/// What a frame drew for the mouse, as the stack of layers that drew it.
+///
+/// The page draws into the bottom layer, and anything modal over it — a popup,
+/// a prompt, a popup over a popup — opens another. Only the topmost layer is
+/// live: a modal takes the frame while it is up, so nothing beneath it answers
+/// to a click, a hover or the wheel, however much of it is still on show around
+/// the edges. That is the same thing the keys already do, each modal eating
+/// them until it is dismissed.
+#[derive(Default)]
+pub struct ClickMap {
+    /// Never empty: the page's own layer is the first, in draw order within
+    /// it.
+    layers: Vec<Vec<ClickRegion>>,
+}
+
+impl ClickMap {
+    pub fn new() -> Self {
+        Self {
+            layers: vec![Vec::new()],
         }
-    })
+    }
+
+    /// Drop every layer and start a fresh frame on the page's own.
+    pub fn clear(&mut self) {
+        self.layers.clear();
+        self.layers.push(Vec::new());
+    }
+
+    /// Open a layer over the ones drawn so far: everything pushed from here on
+    /// belongs to it, and nothing under it can be reached while it stands.
+    pub fn layer(&mut self) {
+        self.layers.push(Vec::new());
+    }
+
+    pub fn push(&mut self, region: ClickRegion) {
+        self.layers
+            .last_mut()
+            .expect("the page's layer")
+            .push(region);
+    }
+
+    /// What a click at `col`, `row` lands on: the last region drawn over that
+    /// cell in the topmost layer, later regions winning where they overlap
+    /// earlier ones.
+    pub fn hit(&self, col: u16, row: u16) -> Option<ClickTarget> {
+        self.layers
+            .last()
+            .expect("the page's layer")
+            .iter()
+            .rev()
+            .find(|r| {
+                r.rect.x <= col
+                    && col < r.rect.x + r.rect.width
+                    && r.rect.y <= row
+                    && row < r.rect.y + r.rect.height
+            })
+            .map(|r| r.target.clone())
+    }
+
+    /// The regions of the topmost layer, in draw order — what a test reads to
+    /// assert what a widget hung on the mouse. Nothing in the app asks: a click
+    /// is answered by [`Self::hit`] alone.
+    #[cfg(test)]
+    pub fn top(&self) -> &[ClickRegion] {
+        self.layers.last().expect("the page's layer")
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A modal takes the frame: a click lands only on the topmost layer, so
+    /// nothing drawn under one answers to the mouse however much of it is still
+    /// on show. Later regions within a layer win over earlier ones, which is
+    /// what lets a widget hang a target over a region it sits inside.
+    #[test]
+    fn only_the_topmost_layer_answers_to_a_click() {
+        let region = |x, target| {
+            ClickRegion {
+                rect: Rect::new(x, 0, 4, 1),
+                target,
+            }
+        };
+        let mut map = ClickMap::new();
+        map.push(region(0, ClickTarget::ProfitsButton));
+        map.push(region(0, ClickTarget::ProfitsInput));
+        assert!(matches!(
+            map.hit(1, 0),
+            Some(ClickTarget::ProfitsInput)
+        ));
+
+        // A popup over it: its own button answers, and the page under it does
+        // not - neither where the popup covers it nor where it does not.
+        map.layer();
+        map.push(region(8, ClickTarget::ProfitsPopupYes));
+        assert!(matches!(
+            map.hit(9, 0),
+            Some(ClickTarget::ProfitsPopupYes)
+        ));
+        assert!(map.hit(1, 0).is_none());
+
+        // And a frame starts again on the page's own layer.
+        map.clear();
+        map.push(region(0, ClickTarget::ProfitsInput));
+        assert!(matches!(
+            map.hit(1, 0),
+            Some(ClickTarget::ProfitsInput)
+        ));
+    }
 }

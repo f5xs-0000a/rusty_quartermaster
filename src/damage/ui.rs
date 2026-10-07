@@ -26,7 +26,7 @@ use super::{
     Side,
 };
 use crate::{
-    clickmap::{ClickRegion, ClickTarget},
+    clickmap::{ClickMap, ClickRegion, ClickTarget},
     ships::SHIPS,
     utils::offset_title,
 };
@@ -68,7 +68,7 @@ pub fn render_calculator(
     box_area: Rect,
     app: &DamageApp,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
     show_manpower: bool,
 ) {
     let max_ship_name =
@@ -133,14 +133,17 @@ pub fn render_calculator(
 
     // Ship-select popup (modal over the whole screen) when open.
     if let Some(ref popup) = app.popup {
+        regions.layer();
         render_ship_popup(frame, popup, regions);
     }
     // "Reset Values?" confirm (after a ship change) sits over everything.
     if let Some(yes) = app.reset_prompt {
+        regions.layer();
         render_reset_prompt(frame, yes, regions);
     }
     // "New Battle" prompt (raised when a fight begins) sits over everything.
     if let Some(ref prompt) = app.battle_prompt {
+        regions.layer();
         render_battle_prompt(frame, app, prompt, regions);
     }
 }
@@ -152,7 +155,7 @@ pub fn render(
     area: Rect,
     app: &mut DamageApp,
     focused: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let (box_width, box_height) = calc_box_size(true);
 
@@ -220,7 +223,7 @@ fn render_standard_row(
     app: &DamageApp,
     widths: RowWidths,
     cells_active: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let row_cols = Layout::horizontal([
         Constraint::Length(widths.max_ship_name),
@@ -392,7 +395,7 @@ fn render_value_with_buttons(
     value_style: Style,
     row: usize,
     side: Side,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let sub_cols = Layout::horizontal([
         Constraint::Length(BTN_WIDTH),
@@ -448,7 +451,7 @@ fn render_ram_row(
     max_ship_name: u16,
     center_width: u16,
     cells_active: bool,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let merged_width = max_ship_name + COL_GAP + center_width;
 
@@ -606,11 +609,7 @@ fn apply_damage_bar(
 }
 
 /// Modal: "Reset Values?" with Yes/No buttons (`yes` = the focused choice).
-fn render_reset_prompt(
-    frame: &mut Frame,
-    yes: bool,
-    regions: &mut Vec<ClickRegion>,
-) {
+fn render_reset_prompt(frame: &mut Frame, yes: bool, regions: &mut ClickMap) {
     const QUESTION: &str = "Clear the hit tallies for this fight?";
 
     let area = frame.area();
@@ -666,7 +665,7 @@ fn render_battle_prompt(
     frame: &mut Frame,
     app: &super::DamageApp,
     prompt: &super::BattlePrompt,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
 
@@ -770,7 +769,7 @@ fn render_battle_prompt(
 fn render_ship_popup(
     frame: &mut Frame,
     popup: &super::ShipSelectPopup,
-    regions: &mut Vec<ClickRegion>,
+    regions: &mut ClickMap,
 ) {
     let area = frame.area();
 
