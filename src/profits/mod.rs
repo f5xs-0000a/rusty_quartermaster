@@ -35,7 +35,7 @@ pub(crate) const P_STOCKING: usize = 6;
 pub(crate) const fn is_place_field(idx: usize) -> bool {
     idx == P_RESTOCK_PLACE || idx == P_SELL_PLACE
 }
-/// Rightmost editable column when prices come from Market (Booty).
+/// Rightmost editable column when prices come from the market (Booty).
 pub const LAST_COL: usize = 3;
 /// Rightmost editable column when prices are entered manually (Buy Price).
 pub const LAST_COL_OFFLINE: usize = 5;
@@ -275,7 +275,7 @@ pub struct InventoryRow {
     pub restock: String,
     pub stock: String,
     pub booty: String,
-    /// Manual prices used when Market is unavailable. `sell` is what you
+    /// Manual prices used when the market is unavailable. `sell` is what you
     /// sell excess goods for; `buy` is what you pay to restock.
     pub sell: String,
     pub buy: String,
@@ -386,7 +386,7 @@ impl ProfitsApp {
     // -- visible parameter rows --
 
     /// Panel indices that are actually shown (and thus navigable), in order.
-    /// The Restocking/Selling Place rows only matter with Market pricing;
+    /// The Restocking/Selling Place rows only matter with market pricing;
     /// the C.O. Rate and Crew Donation rows are revealed by CLI flags.
     pub fn visible_panels(&self, market_supported: bool) -> Vec<usize> {
         (0 .. PANEL_COUNT)
@@ -719,8 +719,8 @@ impl ProfitsApp {
         }
     }
 
-    /// The rightmost editable column: Booty when prices come from Market, or
-    /// Buy Price when prices are entered manually (offline).
+    /// The rightmost editable column: Booty when prices come from the market,
+    /// or Buy Price when prices are entered manually (offline).
     pub fn last_editable_col(&self, market_supported: bool) -> usize {
         if market_supported {
             LAST_COL
@@ -887,7 +887,7 @@ impl ProfitsApp {
 
             if !shared.market_supported {
                 // Offline: value the excess/shortfall at the manually-entered
-                // Sell/Buy prices instead of Market offers.
+                // Sell/Buy prices instead of the market's offers.
                 if restock < booty + stock {
                     let sell_price = row.sell.parse::<u64>().unwrap_or(0);
                     goods_value += (booty + stock - restock) * sell_price;

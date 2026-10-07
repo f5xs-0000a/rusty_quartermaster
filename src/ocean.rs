@@ -28,7 +28,7 @@ impl Ocean {
         "midnight",
         "cobalt",
     ];
-    /// All live oceans, in canonical order (Market ones first).
+    /// All live oceans, in canonical order (the ones with market data first).
     pub const LIVE: [Ocean; 7] = [
         Ocean::Emerald,
         Ocean::Meridian,
@@ -73,7 +73,7 @@ impl Ocean {
         )
     }
 
-    /// Whether the Market market API serves prices for this ocean.
+    /// Whether the market API serves prices for this ocean.
     pub fn market_supported(self) -> bool {
         matches!(
             self,
@@ -151,7 +151,7 @@ mod tests {
     }
 
     #[test]
-    fn only_three_oceans_are_market_supported() {
+    fn only_three_oceans_have_market_prices() {
         for ocean in Ocean::LIVE {
             let expected = matches!(
                 ocean,

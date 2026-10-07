@@ -1144,8 +1144,8 @@ fn top_bar_states(states: &mut Vec<State>) {
 }
 
 fn profits_states(states: &mut Vec<State>) {
-    // Market off (no ocean) shows the manual Sell/Buy price columns; with
-    // a supported ocean those columns give way to the place fields.
+    // Market querying off (no ocean) shows the manual Sell/Buy price columns;
+    // with a supported ocean those columns give way to the place fields.
     states.push(state(
         "profits-empty-manual",
         "Profits, empty, no ocean (manual price columns)",
@@ -1153,7 +1153,7 @@ fn profits_states(states: &mut Vec<State>) {
     ));
     states.push(state(
         "profits-empty-market",
-        "Profits, empty, Market ocean (no price columns)",
+        "Profits, empty, market ocean (no price columns)",
         |shell| {
             shell.ocean = Some(Ocean::Emerald);
             shell.query_market = true;
@@ -2583,7 +2583,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             (state.build)(&mut shell);
 
             // The gallery must stay offline: it renders states for inspection
-            // and has no business touching Market or yoweb. `loading` is
+            // and has no business touching the market or yoweb. `loading` is
             // raised the moment a fetch is asked for, so it catches a state
             // that starts one however indirectly.
             if shell.loading {

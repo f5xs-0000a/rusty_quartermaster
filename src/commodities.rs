@@ -1,14 +1,14 @@
 //! Authoritative commodity ordering.
 //!
 //! This is *our* source of truth for how commodities are grouped and ordered —
-//! seeded from the in-game canonical order. Market supplies live data (ids,
-//! prices); we own the display order. Where our list drifts from the game we
-//! nudge it here.
+//! seeded from the in-game canonical order. The market supplies live data
+//! (ids, prices); we own the display order. Where our list drifts from the
+//! game we nudge it here.
 //!
-//! Names match Market's exact spelling (including its lowercase quirks like
-//! "fine brown cloth"); lookups are case-insensitive. A commodity Market
-//! returns that isn't in the list sorts *last* — that's the signal to come add
-//! it to the right place.
+//! Names match the market's exact spelling (including its lowercase quirks
+//! like "fine brown cloth"); lookups are case-insensitive. A commodity the
+//! market returns that isn't in the list sorts *last* — that's the signal to
+//! come add it to the right place.
 //!
 //! The grouping and ordering themselves live in the embedded bare cache
 //! (`data/bare_cache.json`, see [`crate::bare`]); this module just indexes it.

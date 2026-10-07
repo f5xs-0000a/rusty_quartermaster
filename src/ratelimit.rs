@@ -1,7 +1,8 @@
 //! Per-service request throttling.
 //!
 //! We talk to two external hosts — puzzlepirates (yoweb pirate/trophy pages)
-//! and market (commodity market data) — and don't want to hammer either.
+//! and the commodity market (prices and the commodity list) — and don't want
+//! to hammer either.
 //! Each service gets its own gate so requests to it are spaced at least one
 //! interval apart. The interval is measured from the *start of the previous
 //! response* to the *next request*: the moment a send resolves (headers in) we
@@ -11,7 +12,7 @@
 //! each gate's `Mutex` doubles as the serialization lock — only one request
 //! per service is in flight (or waiting out the interval) at a time.
 //!
-//! Intervals default to 1s (Market) and 60s (puzzlepirates) but can be
+//! Intervals default to 1s (the market) and 60s (puzzlepirates) but can be
 //! overridden once at startup via [`configure`] (wired to CLI flags).
 
 use std::{
@@ -28,7 +29,7 @@ use tokio::sync::Mutex;
 pub enum Service {
     /// puzzlepirates yoweb (pirate stats, trophies).
     PuzzlePirates,
-    /// market API (commodity market data).
+    /// The commodity market API (prices and the commodity list).
     Market,
 }
 

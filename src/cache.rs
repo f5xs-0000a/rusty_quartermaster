@@ -145,7 +145,7 @@ impl NameSegments {
 pub struct SavedCache {
     #[serde(default)]
     pub inventory: SavedInventory,
-    /// Commodity id<->name list. Market's commodity list is
+    /// Commodity id<->name list. The market's commodity list is
     /// ocean-independent, so it lives once at the top level rather than
     /// under each ocean.
     #[serde(default)]

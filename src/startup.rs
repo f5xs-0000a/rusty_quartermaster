@@ -27,7 +27,7 @@ use crate::{
 // ---------------------------------------------------------------------------
 
 /// The ocean picker's master layout: every live ocean keyed by its grid slot
-/// `(row, column)`. Column 0 is the three Market oceans (live market data);
+/// `(row, column)`. Column 0 is the three oceans the market serves prices for;
 /// column 1 is the rest. This single map is the source of truth for both the
 /// set of oceans and where each sits — rendering and navigation read it by
 /// explicit `(row, col)` index, so the map's iteration order never matters.
@@ -458,7 +458,7 @@ fn tooltip_lines(state: &Setup) -> Vec<String> {
         Field::Ocean => {
             let ocean = state.highlighted_ocean();
             let mut v = Vec::new();
-            // The Market note only applies when it would actually take
+            // The market note only applies when it would actually take
             // effect.
             if state.query_market && ocean.market_supported() {
                 v.push("Pick this to fetch market prices.".to_owned());

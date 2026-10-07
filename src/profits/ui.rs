@@ -90,7 +90,7 @@ pub fn render(
         .max("Item".len()) as u16;
 
     // The Sell/Buy Price columns are only shown when prices are entered
-    // manually (Market unavailable). Otherwise the table is the four
+    // manually (the market unavailable). Otherwise the table is the four
     // base columns.
     let show_prices = !shared.market_supported;
     let (price_w, gaps) = if show_prices {
@@ -441,8 +441,8 @@ fn render_inventory(
     item_width: u16,
     regions: &mut ClickMap,
 ) {
-    // Sell/Buy Price columns are editable only when Market is unavailable;
-    // otherwise prices come from Market and the columns are hidden.
+    // Sell/Buy Price columns are editable only when the market is unavailable;
+    // otherwise prices come from the market and the columns are hidden.
     let show_prices = !shared.market_supported;
 
     let mut header_cells = vec!["Item", "Restock", "Stock", "Booty"];

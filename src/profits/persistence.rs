@@ -9,7 +9,7 @@ pub struct SavedInventoryRow {
     pub restock: String,
     pub stock: String,
     pub booty: String,
-    /// Manually-entered prices (used when Market is unavailable). Default
+    /// Manually-entered prices (used when the market is unavailable). Default
     /// to empty when absent so older cache files still deserialize.
     #[serde(default)]
     pub sell: String,

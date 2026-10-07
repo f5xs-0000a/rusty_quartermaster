@@ -187,8 +187,7 @@ pub struct SharedState<'a> {
     /// in the bare cache.
     pub ocean_geo: Option<&'static bare::Ocean>,
     pub loading: bool,
-    /// Whether the selected ocean has Market market data (profit calc
-    /// works).
+    /// Whether the selected ocean has market data (profit calc works).
     pub market_supported: bool,
     /// Gross PoE plundered, PoE stolen from us, and the retained booty chest
     /// (per-fight halves) over the current pillage, from the battle ledger.
@@ -505,8 +504,8 @@ pub struct AppShell {
     pub loading: bool,
     /// Selected ocean, or `None` if the user skipped selection.
     pub ocean: Option<Ocean>,
-    /// Whether Market querying is enabled at all (the `--query-market`
-    /// flag). Gated together with the ocean's Market support.
+    /// Whether market querying is enabled at all (the `--query-market`
+    /// flag). Gated together with the ocean's market support.
     pub query_market: bool,
     // app routing
     sidebar_index: usize,
@@ -561,12 +560,11 @@ impl AppShell {
         }
     }
 
-    /// Whether profit calculation is available: Market querying is enabled
-    /// *and* the selected ocean has Market data. If either is false we never
-    /// hit Market.
+    /// Whether profit calculation is available: market querying is enabled
+    /// *and* the selected ocean has market data. If either is false we never
+    /// reach for the market.
     fn market_ok(&self) -> bool {
-        self.query_market
-            && self.ocean.is_some_and(Ocean::market_supported)
+        self.query_market && self.ocean.is_some_and(Ocean::market_supported)
     }
 
     /// The selected ocean's geography from the baked-in [bare

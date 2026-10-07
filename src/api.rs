@@ -67,7 +67,7 @@ impl From<RawOffer> for Offer {
 #[derive(Serialize, Deserialize)]
 pub struct CachedOffers {
     pub offers: Vec<Offer>,
-    /// When these offers were last fetched from Market.
+    /// When these offers were last fetched from the market.
     pub fetched_at: DateTime<Utc>,
 }
 

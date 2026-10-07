@@ -1,11 +1,11 @@
 //! The bare (default) cache: hard-coded reference data baked into the binary.
 //!
-//! Everything the app needs to bootstrap *before* it has ever talked to
-//! Market or yoweb lives here, embedded at compile time via
+//! Everything the app needs to bootstrap *before* it has ever talked to the
+//! market or yoweb lives here, embedded at compile time via
 //! [`include_str!`]:
 //!
 //! - **goods** — the canonical commodity grouping and ordering (our source of
-//!   truth for display order; ids come from Market at runtime),
+//!   truth for display order; ids come from the market at runtime),
 //! - **adjectives** / **swabbie names** — the seed NPC name vocabulary used to
 //!   tell a swabbie (`[adjective] [name]`) from a mercenary (`[name]
 //!   [epithet]`),

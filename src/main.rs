@@ -113,10 +113,10 @@ struct Args {
     #[arg(long, value_name = "DAYS", default_value_t = 7)]
     trophy_ttl_days: i64,
 
-    /// Whether to query the Market API at all. Combined with the ocean's
-    /// Market support: if either is false, we never hit Market. Hidden;
-    /// off by default — pass `--query-market` to enable Market traffic
-    /// (market prices and commodity list).
+    /// Whether to query the market API at all. Combined with the ocean's
+    /// market support: if either is false, we never reach for it. Hidden; off
+    /// by default — pass `--query-market` to enable market traffic (prices
+    /// and commodity list).
     #[arg(long, hide = true)]
     query_market: bool,
 
@@ -134,7 +134,7 @@ struct Args {
     #[arg(long, hide = true)]
     pay_commanding_officer: bool,
 
-    /// Minimum seconds between requests to the Market API. Hidden.
+    /// Minimum seconds between requests to the market API. Hidden.
     #[arg(long, value_name = "SECONDS", default_value_t = 1, hide = true)]
     market_query_rate: u64,
 
@@ -316,7 +316,7 @@ async fn main() -> io::Result<()> {
         .unwrap_or_default();
 
     // Commodities are ocean-independent: reuse the cached list, or fetch it
-    // (only if Market querying is enabled).
+    // (only if market querying is enabled).
     let commodities: Vec<Commodity> = if !saved_commodities.is_empty() {
         saved_commodities
             .into_iter()
@@ -415,8 +415,8 @@ async fn main() -> io::Result<()> {
         }
     }
 
-    // -- Auto-fetch missing market data (only on Market oceans, and only
-    //    when Market querying is enabled) --
+    // -- Auto-fetch missing market data (only on oceans the market serves, and
+    //    only when market querying is enabled) --
     if let Some(o) =
         ocean.filter(|o| o.market_supported() && args.query_market)
         && !shell.profits.rows.is_empty()
