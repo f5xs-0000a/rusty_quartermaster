@@ -768,6 +768,20 @@ fn cache_greenie(shell: &mut AppShell, name: &str) {
     cache_jobber(shell, name, None);
 }
 
+/// Re-crew a cached pirate, which is what the Aboard pane's rank tags read. A
+/// pirate the cache has not got yet is left alone, there being nothing to crew.
+fn set_crew(shell: &mut AppShell, name: &str, rank: &str, crew: &str) {
+    use rusty_quartermaster::pirate::normalize_name;
+
+    let Ok(norm) = normalize_name(name) else {
+        return;
+    };
+    if let Some(entry) = shell.pirate_cache.fetched.get_mut(&norm) {
+        entry.basic.crew_rank = rank.to_owned();
+        entry.basic.crew_name = crew.to_owned();
+    }
+}
+
 /// The body of both: `shift` starts the pirate that far along the skill
 /// ladders, or, as `None`, holds every skill at a greenie's.
 fn cache_jobber(shell: &mut AppShell, name: &str, shift: Option<usize>) {
@@ -1575,6 +1589,44 @@ fn jobbers_states(states: &mut Vec<State>) {
                 // them would leave it empty however long the roster is.
                 cache_pirate(shell, name, i);
             }
+            open(shell, AppId::Chatlog, true);
+        },
+    ));
+
+    // The Aboard and Planked panes tag our own crew with each pirate's rank.
+    // Every rank is aboard here, with one pirate of another crew and one
+    // jobbing with ours — neither of which a tag speaks for.
+    states.push(state(
+        "jobbers-crew-ranks",
+        "Jobbers, crew ranks tagged on the roster",
+        |shell| {
+            const CREW: &str = "The Example Crew";
+            const RANKS: [(&str, &str, &str); 8] = [
+                ("Matea", "Captain", CREW),
+                ("Mateb", "Senior Officer", CREW),
+                ("Matec", "Fleet Officer", CREW),
+                ("Mated", "Officer", CREW),
+                ("Matee", "Pirate", CREW),
+                ("Matef", "Cabin Person", CREW),
+                ("Mateg", "Jobbing Pirate", CREW),
+                ("Mateh", "Officer", "The Other Crew"),
+            ];
+            feed(shell, PILLAGE);
+            // Our own pirate's crew is what the tags are measured against, so
+            // the roster goes untagged until the cache has them.
+            cache_pirate(shell, ME, 0);
+            set_crew(shell, ME, "Fleet Officer", CREW);
+            for (i, (name, rank, crew)) in RANKS.iter().enumerate() {
+                shell.chatlog.process_line(&format!(
+                    "[01:00:30] {name} has come aboard."
+                ));
+                cache_pirate(shell, name, i);
+                set_crew(shell, name, rank, crew);
+            }
+            // The pirate this run planks is one of ours too, Planked being the
+            // other pane that tags.
+            cache_pirate(shell, "Matefour", 0);
+            set_crew(shell, "Matefour", "Pirate", CREW);
             open(shell, AppId::Chatlog, true);
         },
     ));

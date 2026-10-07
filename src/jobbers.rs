@@ -49,6 +49,7 @@ use crate::{
         self,
         BasicInfo,
         CachedPirate,
+        CrewRank,
         Experience,
         FetchPlan,
         PirateUpdate,
@@ -1128,6 +1129,52 @@ fn name_colour(cache: &PirateCache, name: &str) -> Style {
     )
 }
 
+/// Columns a crew-rank tag spends, and the blank between it and the longest
+/// name beside it.
+const TAG_W: usize = 2;
+const TAG_GAP: usize = 2;
+
+/// The crew our own pirate sails with, if the cache has them and they sail with
+/// one. This is what a roster measures another pirate's crew against.
+fn my_crew_name(state: &GameState, cache: &PirateCache) -> Option<String> {
+    state
+        .player_name
+        .as_deref()
+        .and_then(|me| cache.get(me))
+        .map(|p| p.crew_name.clone())
+        .filter(|crew| !crew.is_empty())
+}
+
+/// The tag marking a pirate's rank in our own crew, and the emphasis it
+/// carries: bold from a fleet officer up, and the captain underlined on top of
+/// it.
+///
+/// `None` for anyone the tag has nothing to say about — a pirate of another
+/// crew, one of no crew, one the cache has yet to fetch, and one jobbing with
+/// ours rather than sailing in it, a jobber being no rank.
+fn crew_tag(
+    cache: &PirateCache,
+    my_crew: Option<&str>,
+    name: &str,
+) -> Option<(&'static str, Style)> {
+    let mine = my_crew?;
+    let theirs = cache.get(name)?;
+    if !theirs.crew_name.eq_ignore_ascii_case(mine) {
+        return None;
+    }
+    let plain = Style::default();
+    let bold = plain.bold();
+    match CrewRank::from_str(&theirs.crew_rank) {
+        CrewRank::Captain => Some(("Ca", bold.underlined())),
+        CrewRank::SeniorOfficer => Some(("SO", bold)),
+        CrewRank::FleetOfficer => Some(("FO", bold)),
+        CrewRank::Officer => Some(("Of", plain)),
+        CrewRank::Pirate => Some(("Pi", plain)),
+        CrewRank::CabinPerson => Some(("CP", plain)),
+        CrewRank::JobbingPirate | CrewRank::Other(_) => None,
+    }
+}
+
 /// Experience emphasis: bold from Broad, bold+italic from Sublime.
 fn experience_style(e: Experience) -> Style {
     if e >= Experience::Sublime {
@@ -1365,10 +1412,17 @@ pub fn render(
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at
     // title. The Aboard pane leads with a "Pirates (n):" header and indents
-    // each name two spaces.
+    // each name two spaces. A crewmate's row also ends in a rank tag, which the
+    // width counts so the longest name keeps the two blanks before it.
+    let my_crew = my_crew_name(state, cache);
     let aboard_cw = aboard_set
         .iter()
-        .map(|n| n.chars().count() + ABOARD_INDENT)
+        .map(|n| {
+            let tagged = crew_tag(cache, my_crew.as_deref(), n).is_some();
+            n.chars().count()
+                + ABOARD_INDENT
+                + if tagged { TAG_GAP + TAG_W } else { 0 }
+        })
         .max()
         .unwrap_or(0)
         .max(aboard_header(aboard_set.len()).len())
@@ -1391,11 +1445,17 @@ pub fn render(
         })
         .unwrap_or_default();
     let greedy_cw = name_col_plus_value(&greedy);
+    // Planked carries the same rank tags as Aboard, so it reserves their
+    // columns the same way.
     let planked_cw = vessel
         .map(|v| {
             v.planked_by_us
                 .iter()
-                .map(|n| n.chars().count())
+                .map(|n| {
+                    let tagged =
+                        crew_tag(cache, my_crew.as_deref(), n).is_some();
+                    n.chars().count() + if tagged { TAG_GAP + TAG_W } else { 0 }
+                })
                 .max()
                 .unwrap_or(0)
         })
@@ -3122,29 +3182,24 @@ fn render_panes(
         .collect();
     let cols = Layout::horizontal(constraints).split(area);
 
-    // Same-crew / self emphasis, consistent with the other rosters.
-    let my_crew: Option<String> = state
-        .player_name
-        .as_deref()
-        .and_then(|me| cache.get(me))
-        .map(|p| p.crew_name.clone())
-        .filter(|c| !c.is_empty());
-    let style_for = |name: &str| -> Style {
-        // Green says what the pirate is, emphasis says who they are to us, so
-        // the two stack rather than compete for the name.
-        let colour = name_colour(cache, name);
-        let is_player = state
+    let my_crew = my_crew_name(state, cache);
+    let is_player = |name: &str| {
+        state
             .player_name
             .as_deref()
-            .is_some_and(|me| name.eq_ignore_ascii_case(me));
-        if is_player {
-            return colour.bold().italic();
+            .is_some_and(|me| name.eq_ignore_ascii_case(me))
+    };
+    // Green says what the pirate is and emphasis says who they are to us, so
+    // the two stack rather than compete for the name. Crew membership is
+    // not among them: a tag naming the rank says it where there is room for
+    // one, and bold could say neither which crew nor what rank.
+    let style_for = |name: &str| -> Style {
+        let colour = name_colour(cache, name);
+        if is_player(name) {
+            colour.bold().italic()
+        } else {
+            colour
         }
-        let is_crewmate = match (&my_crew, cache.get(name)) {
-            (Some(mine), Some(p)) => p.crew_name.eq_ignore_ascii_case(mine),
-            _ => false,
-        };
-        if is_crewmate { colour.bold() } else { colour }
     };
 
     let vessel = selected.and_then(|k| state.vessels.get(k));
@@ -3173,13 +3228,16 @@ fn render_panes(
                 let mut aboard: Vec<&String> = aboard_set.iter().collect();
                 aboard.sort_unstable();
                 let header = Line::from(Span::raw(aboard_header(aboard.len())));
-                let names: Vec<Line> = aboard
+                let names: Vec<(Line, Option<(&str, Style)>)> = aboard
                     .iter()
                     .map(|n| {
-                        Line::from(vec![
-                            Span::raw(" ".repeat(ABOARD_INDENT)),
-                            Span::styled((*n).clone(), style_for(n)),
-                        ])
+                        (
+                            Line::from(vec![
+                                Span::raw(" ".repeat(ABOARD_INDENT)),
+                                Span::styled((*n).clone(), style_for(n)),
+                            ]),
+                            crew_tag(cache, my_crew.as_deref(), n),
+                        )
                     })
                     .collect();
                 let mut footers: Vec<Line> = Vec::new();
@@ -3213,20 +3271,21 @@ fn render_panes(
                 });
                 let inner_w = (col.width.saturating_sub(4) as usize)
                     .max(name_col_plus_value(&greedy_sorted));
-                let rows: Vec<(Line, Option<usize>)> = greedy_sorted
+                let rows: Vec<PaneRow> = greedy_sorted
                     .iter()
                     .enumerate()
                     .map(|(i, (name, total, current))| {
-                        (
-                            greedy_line(
+                        PaneRow {
+                            line: greedy_line(
                                 name,
                                 *total,
                                 *current,
                                 inner_w,
                                 style_for(name),
                             ),
-                            Some(i),
-                        )
+                            pirate: Some(i),
+                            tag: None,
+                        }
                     })
                     .collect();
                 render_pane(
@@ -3247,14 +3306,18 @@ fn render_panes(
                 let planked: Vec<String> = vessel
                     .map(|v| v.planked_by_us.iter().cloned().collect())
                     .unwrap_or_default();
-                let rows: Vec<(Line, Option<usize>)> = planked
+                let rows: Vec<PaneRow> = planked
                     .iter()
                     .enumerate()
                     .map(|(i, n)| {
-                        (
-                            Line::from(Span::styled(n.clone(), style_for(n))),
-                            Some(i),
-                        )
+                        PaneRow {
+                            line: Line::from(Span::styled(
+                                n.clone(),
+                                style_for(n),
+                            )),
+                            pirate: Some(i),
+                            tag: crew_tag(cache, my_crew.as_deref(), n),
+                        }
                     })
                     .collect();
                 render_pane(
@@ -3275,20 +3338,21 @@ fn render_panes(
             JobberPane::Enthralled => {
                 let inner_w = (col.width.saturating_sub(4) as usize)
                     .max(enthralled_col_width(&enthralled));
-                let rows: Vec<(Line, Option<usize>)> = enthralled
+                let rows: Vec<PaneRow> = enthralled
                     .iter()
                     .enumerate()
                     .map(|(i, (name, alive, total))| {
-                        (
-                            enthralled_line(
+                        PaneRow {
+                            line: enthralled_line(
                                 name,
                                 *alive,
                                 *total,
                                 inner_w,
                                 style_for(name),
                             ),
-                            Some(i),
-                        )
+                            pirate: Some(i),
+                            tag: None,
+                        }
                     })
                     .collect();
                 render_pane(
@@ -3343,16 +3407,44 @@ fn enthralled_line(
     ])
 }
 
-/// Render a single pane: a bordered, auto-scrolling list of pirate rows. `rows`
-/// pairs each display line with its pirate index (or `None` for non-selectable
-/// rows like the swabbie footer). The selected pirate is highlighted and the
-/// offset is nudged to keep it visible.
+/// `line` with `tag` drawn at the right edge of a row `width` columns wide: the
+/// line is padded out to it, so the tags of a roster stand in one column. A row
+/// with no tag is its line unchanged.
+fn with_tag(
+    line: &Line<'static>,
+    tag: Option<(&'static str, Style)>,
+    width: u16,
+) -> Line<'static> {
+    let mut line = line.clone();
+    if let Some((tag, style)) = tag {
+        let written: usize =
+            line.spans.iter().map(|s| s.content.chars().count()).sum();
+        let pad =
+            (width as usize).saturating_sub(written + tag.chars().count());
+        line.spans.push(Span::raw(" ".repeat(pad)));
+        line.spans.push(Span::styled(tag, style));
+    }
+    line
+}
+
+/// One row of a pane.
+struct PaneRow {
+    line: Line<'static>,
+    /// The pirate the row names, or `None` for a row that is no pirate's and
+    /// so cannot be selected or clicked.
+    pirate: Option<usize>,
+    /// Drawn at the row's right edge (see [`with_tag`]).
+    tag: Option<(&'static str, Style)>,
+}
+
+/// Render a single pane: a bordered, auto-scrolling list of pirate rows. The
+/// selected pirate is highlighted and the offset is nudged to keep it visible.
 #[allow(clippy::too_many_arguments)]
 fn render_pane(
     frame: &mut Frame,
     area: Rect,
     title: &'static str,
-    rows: Vec<(Line<'static>, Option<usize>)>,
+    rows: Vec<PaneRow>,
     sel: usize,
     offset: &mut usize,
     page_focused: bool,
@@ -3381,7 +3473,7 @@ fn render_pane(
     }
 
     // Auto-scroll: keep the selected pirate's line within the visible window.
-    if let Some(sel_line) = rows.iter().position(|(_, p)| *p == Some(sel)) {
+    if let Some(sel_line) = rows.iter().position(|r| r.pirate == Some(sel)) {
         if sel_line < *offset {
             *offset = sel_line;
         } else if sel_line >= *offset + height {
@@ -3402,24 +3494,28 @@ fn render_pane(
         rows.len(),
     );
 
-    for (vis, (line, pidx)) in
-        rows.iter().enumerate().skip(*offset).take(height)
-    {
+    // A tag stands in the column the pane reserved for it, which is inside the
+    // bar's: the pane's width counts the bar whether one is up or not, so a
+    // roster growing past its window must not shift the tags.
+    let tag_edge = inner.width.saturating_sub(crate::utils::SCROLLBAR_W);
+
+    for (vis, row) in rows.iter().enumerate().skip(*offset).take(height) {
         let row_area = Rect::new(
             body.x,
             body.y + (vis - *offset) as u16,
             body.width,
             1,
         );
-        let is_sel = page_focused && active && *pidx == Some(sel);
+        let is_sel = page_focused && active && row.pirate == Some(sel);
+        let line = with_tag(&row.line, row.tag, tag_edge);
         let para = if is_sel {
-            Paragraph::new(line.clone())
+            Paragraph::new(line)
                 .style(Style::default().bg(Color::White).fg(Color::Black))
         } else {
-            Paragraph::new(line.clone())
+            Paragraph::new(line)
         };
         frame.render_widget(para, row_area);
-        if let Some(idx) = pidx {
+        if let Some(idx) = &row.pirate {
             regions.push(ClickRegion {
                 rect: row_area,
                 target: ClickTarget::JobberPirate {
@@ -3436,12 +3532,18 @@ fn render_pane(
 /// `footers` (the swabbie tally) at the bottom. Only the name list scrolls;
 /// the header and footers stay put. `sel` is the selected name index; `offset`
 /// the name window.
+///
+/// A name paired with a tag has it drawn at the right edge of its row, the
+/// row's width being known here and nowhere earlier.
 #[allow(clippy::too_many_arguments)]
 fn render_aboard_pane(
     frame: &mut Frame,
     area: Rect,
     header: Line<'static>,
-    names: Vec<Line<'static>>,
+    names: Vec<(
+        Line<'static>,
+        Option<(&'static str, Style)>,
+    )>,
     footers: Vec<Line<'static>>,
     sel: usize,
     offset: &mut usize,
@@ -3513,7 +3615,13 @@ fn render_aboard_pane(
         names.len(),
     );
 
-    for (vis, line) in names.iter().enumerate().skip(*offset).take(body_h) {
+    // As in [`render_pane`]: the tags stand in the column the pane reserved,
+    // bar or no bar.
+    let tag_edge = inner.width.saturating_sub(crate::utils::SCROLLBAR_W);
+
+    for (vis, (line, tag)) in
+        names.iter().enumerate().skip(*offset).take(body_h)
+    {
         let row_area = Rect::new(
             body.x,
             body.y + (vis - *offset) as u16,
@@ -3521,11 +3629,12 @@ fn render_aboard_pane(
             1,
         );
         let is_sel = page_focused && active && vis == sel;
+        let line = with_tag(line, *tag, tag_edge);
         let para = if is_sel {
-            Paragraph::new(line.clone())
+            Paragraph::new(line)
                 .style(Style::default().bg(Color::White).fg(Color::Black))
         } else {
-            Paragraph::new(line.clone())
+            Paragraph::new(line)
         };
         frame.render_widget(para, row_area);
         regions.push(ClickRegion {
@@ -4843,5 +4952,123 @@ mod tests {
             staffing(sloop(), 5, 4),
             Some(Staffing::Invalid)
         );
+    }
+
+    /// A cache holding one pirate of the given rank and crew.
+    fn crewed(name: &str, rank: &str, crew: &str) -> PirateCache {
+        let mut cache = PirateCache::new();
+        cache.fetched.insert(
+            pirate::normalize_name(name).expect("a pirate name"),
+            CachedPirate {
+                basic: BasicInfo {
+                    name: name.to_owned(),
+                    crew_rank: rank.to_owned(),
+                    crew_role: None,
+                    crew_name: crew.to_owned(),
+                    flag_rank: "Member".to_owned(),
+                    flag_name: "Example Flag".to_owned(),
+                    reputation: Default::default(),
+                    skills: Default::default(),
+                },
+                trophies: Default::default(),
+                basic_fetched_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+                trophies_fetched_at: chrono::DateTime::<chrono::Utc>::MIN_UTC,
+            },
+        );
+        cache
+    }
+
+    const OUR_CREW: &str = "The Example Crew";
+
+    #[test]
+    fn a_crewmate_is_tagged_with_their_rank() {
+        let bold = Style::default().bold();
+        for (rank, tag, style) in [
+            ("Captain", "Ca", bold.underlined()),
+            ("Senior Officer", "SO", bold),
+            ("Fleet Officer", "FO", bold),
+            ("Officer", "Of", Style::default()),
+            ("Pirate", "Pi", Style::default()),
+            ("Cabin Person", "CP", Style::default()),
+        ] {
+            let cache = crewed("Playerone", rank, OUR_CREW);
+            assert_eq!(
+                crew_tag(&cache, Some(OUR_CREW), "Playerone"),
+                Some((tag, style)),
+                "a {rank} of our own crew",
+            );
+        }
+    }
+
+    /// The tag says "ours, and this is their rank", so it has nothing to say
+    /// about anyone else aboard.
+    #[test]
+    fn only_our_own_crew_is_tagged() {
+        let ours = crewed("Playerone", "Officer", OUR_CREW);
+        // Another crew, and no crew at all.
+        assert_eq!(
+            crew_tag(
+                &crewed("Playerone", "Officer", "The Other Crew"),
+                Some(OUR_CREW),
+                "Playerone",
+            ),
+            None,
+        );
+        assert_eq!(
+            crew_tag(
+                &crewed("Playerone", "Officer", ""),
+                Some(OUR_CREW),
+                "Playerone"
+            ),
+            None,
+        );
+        // A jobber sails with us without being one of us, and a rank we don't
+        // know is no rank to tag.
+        assert_eq!(
+            crew_tag(
+                &crewed("Playerone", "Jobbing Pirate", OUR_CREW),
+                Some(OUR_CREW),
+                "Playerone",
+            ),
+            None,
+        );
+        assert_eq!(
+            crew_tag(
+                &crewed("Playerone", "Deckhand", OUR_CREW),
+                Some(OUR_CREW),
+                "Playerone",
+            ),
+            None,
+        );
+        // A pirate the cache has yet to fetch, and a crew of our own we don't
+        // know either.
+        assert_eq!(
+            crew_tag(&ours, Some(OUR_CREW), "Playertwo"),
+            None
+        );
+        assert_eq!(crew_tag(&ours, None, "Playerone"), None);
+    }
+
+    /// The tag is laid against the right edge of the row it is given, so a
+    /// column of them lines up however long the names are.
+    #[test]
+    fn a_tag_is_laid_against_the_right_edge() {
+        let row = |name: &str| {
+            let line = Line::from(Span::raw(name.to_owned()));
+            let tagged = with_tag(
+                &line,
+                Some(("Ca", Style::default())),
+                12,
+            );
+            tagged
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect::<String>()
+        };
+        assert_eq!(row("Playerone"), "Playerone Ca");
+        assert_eq!(row("Mate"), "Mate      Ca");
+        // Nothing to pad with leaves the tag where it will fit.
+        assert_eq!(row("Playertwelve"), "PlayertwelveCa");
     }
 }
