@@ -39,6 +39,13 @@ pub struct SavedPersistence {
 pub struct OceanMemory {
     #[serde(default)]
     pub pirates: HashMap<String, PirateMemory>,
+    /// What the user has written down about the pirates they have sailed with,
+    /// keyed by normalized name. Unlike [`Self::pirates`], these are notes
+    /// *about* other pirates and belong to the human rather than to any one of
+    /// their own pirates; the ocean keys them because a name is an ocean's
+    /// own.
+    #[serde(default)]
+    pub notes: HashMap<String, String>,
 }
 
 /// What one pirate knows about one ocean.
@@ -66,6 +73,37 @@ impl SavedPersistence {
             .unwrap_or_default()
     }
 
+    /// What the user has written down about `pirate` on `ocean`, or `None` for
+    /// a pirate they have written nothing about. A note of blanks is
+    /// nothing written, so it answers `None` too.
+    pub fn note(&self, ocean: &str, pirate: &str) -> Option<&str> {
+        self.oceans
+            .get(ocean)?
+            .notes
+            .get(&note_key(pirate))
+            .map(String::as_str)
+            .filter(|note| !note.trim().is_empty())
+    }
+
+    /// Write down `note` about `pirate` on `ocean`, replacing whatever stood
+    /// there. A note of blanks is an erasure: the entry is dropped rather than
+    /// kept as an empty string, so the file holds only what was actually
+    /// written.
+    pub fn set_note(&mut self, ocean: &str, pirate: &str, note: &str) {
+        let note = note.trim();
+        if note.is_empty() {
+            if let Some(o) = self.oceans.get_mut(ocean) {
+                o.notes.remove(&note_key(pirate));
+            }
+            return;
+        }
+        self.oceans
+            .entry(ocean.to_owned())
+            .or_default()
+            .notes
+            .insert(note_key(pirate), note.to_owned());
+    }
+
     /// Put `pirate`'s memorized league points on `ocean` back, creating the
     /// ocean's entry if this is their first mark there.
     pub fn set_memorized(
@@ -85,6 +123,15 @@ impl SavedPersistence {
                 },
             );
     }
+}
+
+/// The key a note is filed under: the pirate's name as the rest of the program
+/// normalizes names, so one pirate cannot end up with two notes for having been
+/// typed two ways. A name too malformed to normalize is filed as it came, there
+/// being nothing better to call it.
+fn note_key(pirate: &str) -> String {
+    crate::pirate::normalize_name(pirate)
+        .unwrap_or_else(|_| pirate.trim().to_owned())
 }
 
 /// Load the persistence file. A missing or unparseable file yields an empty
@@ -173,6 +220,73 @@ mod tests {
         );
         assert_eq!(
             saved.take_memorized("Test", "Otherone").len(),
+            1
+        );
+    }
+
+    /// A note is the human's own and belongs to the pirate it is about, on the
+    /// ocean that pirate's name belongs to. It survives the file, and however
+    /// the name was typed it is filed once.
+    #[test]
+    fn notes_are_kept_per_pirate_within_an_ocean() {
+        let mut saved = SavedPersistence::default();
+        saved.set_note("Test", "Playerone", "  Fine gunner  ");
+        saved.set_note("Test", "Playertwo", "Jumped ship");
+        saved.set_note("Other", "Playerone", "Someone else's");
+
+        let json = serde_json::to_string(&saved).unwrap();
+        let back: SavedPersistence = serde_json::from_str(&json).unwrap();
+        // Written down trimmed, and found however the name was typed.
+        assert_eq!(
+            back.note("Test", "playerONE"),
+            Some("Fine gunner")
+        );
+        assert_eq!(
+            back.note("Test", "Playertwo"),
+            Some("Jumped ship")
+        );
+        assert_eq!(
+            back.note("Other", "Playerone"),
+            Some("Someone else's")
+        );
+        // Nothing written about them, nowhere.
+        assert_eq!(back.note("Test", "Playerthree"), None);
+        assert_eq!(back.note("Nowhere", "Playerone"), None);
+    }
+
+    /// An empty note is no note: writing blanks erases the entry rather than
+    /// leaving a blank one behind.
+    #[test]
+    fn a_note_of_blanks_erases_it() {
+        let mut saved = SavedPersistence::default();
+        saved.set_note("Test", "Playerone", "Fine gunner");
+        saved.set_note("Test", "Playerone", "   ");
+        assert_eq!(saved.note("Test", "Playerone"), None);
+        assert!(saved.oceans["Test"].notes.is_empty());
+        // Erasing what was never written leaves the file alone.
+        saved.set_note("Nowhere", "Playerone", "");
+        assert!(!saved.oceans.contains_key("Nowhere"));
+    }
+
+    /// Notes and memorization share an ocean's entry, so writing one keeps the
+    /// other.
+    #[test]
+    fn notes_and_memorization_share_an_ocean() {
+        let mut saved = SavedPersistence::default();
+        saved.set_memorized(
+            "Test",
+            "Someone",
+            [(1, 1)].into_iter().collect(),
+        );
+        saved.set_note("Test", "Playerone", "Fine gunner");
+        let json = serde_json::to_string(&saved).unwrap();
+        let mut back: SavedPersistence = serde_json::from_str(&json).unwrap();
+        assert_eq!(
+            back.note("Test", "Playerone"),
+            Some("Fine gunner")
+        );
+        assert_eq!(
+            back.take_memorized("Test", "Someone").len(),
             1
         );
     }

@@ -936,6 +936,7 @@ impl AppShell {
                     || self.jobbers_ui.voyage_popup.is_some()
                     || self.jobbers_ui.pirate_popup.is_some()
                     || self.jobbers_ui.trophy_popup.is_some()
+                    || self.jobbers_ui.note_popup.is_some()
                     || self.jobbers_ui.skill_dist_popup.is_some()
                     || self.jobbers_ui.per_fight_popup.is_some()
             }
@@ -2368,6 +2369,9 @@ impl AppShell {
         if self.jobbers_ui.trophy_popup.is_some() {
             return self.handle_trophy_popup_key(key);
         }
+        if self.jobbers_ui.note_popup.is_some() {
+            return self.handle_note_popup_key(key);
+        }
         if self.jobbers_ui.pirate_popup.is_some() {
             return self.handle_pirate_popup_key(key);
         }
@@ -2718,11 +2722,13 @@ impl AppShell {
         if let Some(name) = names.get(sel) {
             // On-demand: jump this pirate to the top of the fetch queue.
             self.pirate_cache.force_requery(name);
+            let note = self.note_for(name);
             self.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: name.clone(),
-                button: 0,
+                button: jobbers::pirate_popup_default_button(note.as_deref()),
                 offset: 0,
                 view_h: 0,
+                note,
             });
         }
     }
@@ -2783,24 +2789,30 @@ impl AppShell {
             return;
         };
         self.pirate_cache.force_requery(name);
+        let note = self.note_for(name);
         self.jobbers_ui.pirate_popup = Some(PiratePopup {
             name: name.clone(),
-            button: 0,
+            button: jobbers::pirate_popup_default_button(note.as_deref()),
             offset: 0,
             view_h: 0,
+            note,
         });
     }
 
-    /// Modal key handling for the pirate-stats popup: ←/→ toggle the two
-    /// buttons, ↑/↓ scroll the skill tables, Enter activates, Esc closes.
+    /// Modal key handling for the pirate-stats popup: ←/→ walk the buttons,
+    /// ↑/↓ scroll the skill tables, Enter activates, Esc closes.
     fn handle_pirate_popup_key(&mut self, key: KeyEvent) -> InputResult {
         let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() else {
             return InputResult::Consumed;
         };
+        // The buttons on show decide what ← / → walk and what Enter does, the
+        // note's being absent where no note can be kept.
+        let buttons = jobbers::pirate_popup_buttons(pp.note.as_deref());
+        let last = buttons.len().saturating_sub(1);
         match key.code {
             KeyCode::Esc => self.jobbers_ui.pirate_popup = None,
-            KeyCode::Left => pp.button = 0,
-            KeyCode::Right => pp.button = 1,
+            KeyCode::Left => pp.button = pp.button.saturating_sub(1),
+            KeyCode::Right => pp.button = (pp.button + 1).min(last),
             KeyCode::Up => pp.offset = pp.offset.saturating_sub(1),
             KeyCode::Down => pp.offset = pp.offset.saturating_add(1),
             KeyCode::PageUp => {
@@ -2812,10 +2824,133 @@ impl AppShell {
                 pp.offset = pp.offset.saturating_add(half);
             }
             KeyCode::Enter => {
-                if pp.button == 0 {
-                    self.open_trophy_popup();
-                } else {
-                    self.jobbers_ui.pirate_popup = None;
+                match buttons.get(pp.button).map(|(_, target)| target.clone()) {
+                    Some(ClickTarget::JobberPirateNote) => {
+                        self.open_note_popup()
+                    }
+                    Some(ClickTarget::JobberPirateSeeTrophies) => {
+                        self.open_trophy_popup()
+                    }
+                    _ => self.jobbers_ui.pirate_popup = None,
+                }
+            }
+            _ => {}
+        }
+        InputResult::Consumed
+    }
+
+    /// What the user has written down about `pirate`, ready for a popup to
+    /// show. `None` where notes have nowhere to live: they are filed under
+    /// an ocean, and a run told of none can neither read nor keep them. An
+    /// empty string is a pirate nothing has been written about yet.
+    fn note_for(&self, pirate: &str) -> Option<String> {
+        let ocean = self.ocean?;
+        Some(
+            self.persistence
+                .note(ocean.name(), pirate)
+                .unwrap_or_default()
+                .to_owned(),
+        )
+    }
+
+    /// Open the note editor over the pirate popup, starting from whatever is
+    /// written down about them, with the caret at the end of it.
+    fn open_note_popup(&mut self) {
+        let Some(pp) = self.jobbers_ui.pirate_popup.as_ref() else {
+            return;
+        };
+        let Some(note) = pp.note.as_deref() else {
+            return;
+        };
+        let mut field = crate::utils::PromptField::new(
+            "Note",
+            crate::utils::FieldKind::Text,
+        );
+        field.value = note.to_owned();
+        field.cursor = field.value.len();
+        self.jobbers_ui.note_popup = Some(jobbers::NotePopup {
+            name: pp.name.clone(),
+            field,
+            focus: jobbers::NoteFocus::Text,
+            offset: 0,
+            wrap_w: 0,
+            view_h: 0,
+        });
+    }
+
+    /// Write the open editor's note down under the ocean it belongs to, save
+    /// the file, and let the popup behind it show what was written. A note
+    /// of blanks erases what stood there.
+    fn save_note(&mut self) {
+        let Some(np) = self.jobbers_ui.note_popup.take() else {
+            return;
+        };
+        let Some(ocean) = self.ocean else {
+            return;
+        };
+        let note = np.field.value.trim().to_owned();
+        self.persistence.set_note(ocean.name(), &np.name, &note);
+        if let Some(path) = self.persistence_path.clone() {
+            crate::persistence::save(&path, &self.persistence);
+        }
+        if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut()
+            && pp.name == np.name
+        {
+            pp.note = Some(note);
+        }
+    }
+
+    /// Modal key handling for the note editor.
+    ///
+    /// While the text has the keys they go into it, Enter included — a note is
+    /// written in lines, so Enter breaks one. The caret keys move within it,
+    /// and ↓ off the last line hands the keys to Save, from where ← / →
+    /// pick a button and ↑ gives them back to the text. Esc leaves what was
+    /// written before.
+    fn handle_note_popup_key(&mut self, key: KeyEvent) -> InputResult {
+        use jobbers::NoteFocus;
+
+        if key.code == KeyCode::Esc {
+            self.jobbers_ui.note_popup = None;
+            return InputResult::Consumed;
+        }
+        let Some(np) = self.jobbers_ui.note_popup.as_mut() else {
+            return InputResult::Consumed;
+        };
+        if np.focus != NoteFocus::Text {
+            match key.code {
+                KeyCode::Left => np.focus = NoteFocus::Cancel,
+                KeyCode::Right => np.focus = NoteFocus::Save,
+                KeyCode::Up => np.focus = NoteFocus::Text,
+                KeyCode::Enter => {
+                    if np.focus == NoteFocus::Save {
+                        self.save_note();
+                    } else {
+                        self.jobbers_ui.note_popup = None;
+                    }
+                }
+                _ => {}
+            }
+            return InputResult::Consumed;
+        }
+        match key.code {
+            KeyCode::Char(c) => np.field.insert_char(c),
+            KeyCode::Enter => np.field.insert_char('\n'),
+            KeyCode::Backspace => np.field.delete_char_before(),
+            KeyCode::Delete => np.field.delete_char_at(),
+            KeyCode::Left => np.field.move_left(),
+            KeyCode::Right => np.field.move_right(),
+            KeyCode::Home => np.field.cursor = 0,
+            KeyCode::End => np.field.cursor = np.field.value.len(),
+            KeyCode::Up => {
+                jobbers::note_caret_step(np, false);
+            }
+            // The last line is the foot of the text, so stepping off it is how
+            // the user reaches the buttons.
+            KeyCode::Down => {
+                let stepped = jobbers::note_caret_step(np, true);
+                if !stepped {
+                    np.focus = NoteFocus::Save;
                 }
             }
             _ => {}
@@ -3214,6 +3349,12 @@ impl AppShell {
                 let last = total.saturating_sub(bar.height as usize);
                 if let Some(tp) = self.jobbers_ui.trophy_popup.as_mut() {
                     tp.offset = hit.resolve(tp.offset, last);
+                }
+            }
+            ScrollView::JobberNoteText => {
+                let last = total.saturating_sub(bar.height as usize);
+                if let Some(np) = self.jobbers_ui.note_popup.as_mut() {
+                    np.offset = hit.resolve(np.offset, last);
                 }
             }
             ScrollView::JobberPane(pane) => {
@@ -3669,8 +3810,18 @@ impl AppShell {
                 }
                 self.open_trophy_popup();
             }
+            ClickTarget::JobberPirateNote => {
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    pp.button = 0;
+                }
+                self.open_note_popup();
+            }
             ClickTarget::JobberPirateClose => {
                 self.jobbers_ui.pirate_popup = None;
+            }
+            ClickTarget::JobberNoteSave => self.save_note(),
+            ClickTarget::JobberNoteCancel => {
+                self.jobbers_ui.note_popup = None;
             }
             // A click on the body of the trophies popup is a no-op (the region
             // exists only so the scroll wheel has a target there); its Close

@@ -780,6 +780,9 @@ pub struct JobbersUi {
     pub pirate_popup: Option<PiratePopup>,
     /// When `Some`, the trophies popup is open (layered over the stats popup).
     pub trophy_popup: Option<TrophyPopup>,
+    /// When `Some`, the note editor is open (layered over the stats popup, as
+    /// the trophies are, and reached from the same button row).
+    pub note_popup: Option<NotePopup>,
     /// When `Some`, the Vampirates skill-distribution scatterplot is open,
     /// with the cursor parked on a grid cell.
     pub skill_dist_popup: Option<SkillDistPopup>,
@@ -868,9 +871,39 @@ pub struct PerFightPopup {
 #[derive(Clone)]
 pub struct PiratePopup {
     pub name: String,
-    /// 0 = See Trophies, 1 = Close.
+    /// Which of [`pirate_popup_buttons`] is marked, left to right.
     pub button: usize,
     pub offset: usize,
+    pub view_h: usize,
+    /// What the user has written down about this pirate, as the persistence
+    /// file had it when the popup opened. `None` where no note can be kept
+    /// at all: notes are filed under an ocean, and a run told of none has
+    /// nowhere to file them, so the popup then offers nothing and shows
+    /// nothing.
+    pub note: Option<String>,
+}
+
+/// What the note editor's keys are going to: the text itself, or one of the
+/// buttons under it. ↓ off the last line of the text hands them to Save, and ↑
+/// from a button hands them back.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum NoteFocus {
+    Text,
+    Cancel,
+    Save,
+}
+
+/// State of the open note editor: whose note, the text as it stands, which part
+/// of the box has the keys, and what the last render made of it — the width it
+/// wrapped to and the rows it had, which is what ↑/↓ and the scroll are
+/// measured in.
+pub struct NotePopup {
+    pub name: String,
+    pub field: crate::utils::PromptField,
+    pub focus: NoteFocus,
+    /// First wrapped line on show, for a note too long for the box.
+    pub offset: usize,
+    pub wrap_w: usize,
     pub view_h: usize,
 }
 
@@ -2090,13 +2123,24 @@ pub fn render(
         render_voyage_popup(frame, sel, regions);
     }
 
-    // The pirate-stats popup, and the trophies popup layered over it.
-    let trophies_up = ui.trophy_popup.is_some();
-    if !trophies_up && let Some(pp) = ui.pirate_popup.as_mut() {
-        render_pirate_popup(frame, pp, cache, focused, regions);
+    // The pirate-stats popup, and the two popups layered over it: the trophies
+    // and the note editor. Either is drawn over it rather than instead of it,
+    // so the pirate it is about is still named behind it.
+    //
+    // Only the topmost popup answers to the mouse, though: the regions of the
+    // one underneath go to a list that is thrown away, so a click cannot reach
+    // a button that is half-covered.
+    let layered = ui.trophy_popup.is_some() || ui.note_popup.is_some();
+    let mut buried = Vec::new();
+    if let Some(pp) = ui.pirate_popup.as_mut() {
+        let under = if layered { &mut buried } else { &mut *regions };
+        render_pirate_popup(frame, pp, cache, focused, under);
     }
     if let Some(tp) = ui.trophy_popup.as_mut() {
         render_trophy_popup(frame, tp, cache, regions);
+    }
+    if let Some(np) = ui.note_popup.as_mut() {
+        render_note_popup(frame, np, cache, regions);
     }
 
     // The Vampirates skill-distribution scatterplot (its own modal).
@@ -4323,6 +4367,37 @@ fn skill_row(
 /// The pirate-stats popup: name, crew/flag boxes, three skill tables, and the
 /// [See Trophies] / [Close] buttons. Sized to its content, with the skill
 /// tables scrolling when the window cannot hold all of them.
+/// The Pirate popup's buttons, left to right, each with what clicking it does.
+/// The note button says which of the two things it will do, and is absent
+/// altogether where no note can be kept (see [`PiratePopup::note`]) — a button
+/// that cannot do anything is not drawn.
+pub fn pirate_popup_buttons(
+    note: Option<&str>,
+) -> Vec<(&'static str, ClickTarget)> {
+    let mut buttons = Vec::with_capacity(3);
+    if let Some(note) = note {
+        let label = if note.trim().is_empty() {
+            "Add Note"
+        } else {
+            "Edit Note"
+        };
+        buttons.push((label, ClickTarget::JobberPirateNote));
+    }
+    buttons.push((
+        "See Trophies",
+        ClickTarget::JobberPirateSeeTrophies,
+    ));
+    buttons.push(("Close", ClickTarget::JobberPirateClose));
+    buttons
+}
+
+/// Which button a freshly-opened Pirate popup marks: Close, the last of them.
+/// Opening a popup to read it should not leave Enter poised to do anything but
+/// undo the opening.
+pub fn pirate_popup_default_button(note: Option<&str>) -> usize {
+    pirate_popup_buttons(note).len().saturating_sub(1)
+}
+
 fn render_pirate_popup(
     frame: &mut Frame,
     pp: &mut PiratePopup,
@@ -4333,10 +4408,11 @@ fn render_pirate_popup(
     let screen = frame.area();
     let cached = cache.get_cached(&pp.name);
 
-    // Buttons line (always present); compute its width up front. Both are as
-    // wide as the longer label, with a gap between them and at each end.
-    const BUTTONS: [&str; 2] = ["See Trophies", "Close"];
-    let buttons_w = crate::utils::buttons_width(&BUTTONS) as usize;
+    // Buttons line (always present); compute its width up front. Each is as
+    // wide as the longest label, with a gap between them and at each end.
+    let buttons = pirate_popup_buttons(pp.note.as_deref());
+    let labels: Vec<&str> = buttons.iter().map(|(l, _)| *l).collect();
+    let buttons_w = crate::utils::buttons_width(&labels) as usize;
 
     // --- Build the unboxed crew/flag columns (no header label). Each column's
     //     width is its widest line. ---
@@ -4501,7 +4577,6 @@ fn render_pirate_popup(
             }
         }
     }
-    let skills_h = skill_lines.len() as u16;
     let skill_row_w = if skill_w > 0 {
         skill_w + 2 + exp_w + 2 + sta_w
     } else {
@@ -4523,9 +4598,61 @@ fn render_pirate_popup(
         .max(skills_block_w + crate::utils::SCROLLBAR_W as usize)
         .max(buttons_w) as u16;
     let box_w = (content_w + 4).min(screen.width.max(1));
-    // name + gap + affil + gap + skills + gap + buttons, plus borders(2).
-    let box_h =
-        (1 + 1 + affil_h + 1 + skills_h + 1 + 1 + 2).min(screen.height.max(1));
+    // The note is read above the standings, under a heading of its own. It
+    // wraps to the width the rest of the popup asked for rather than
+    // setting one: a sentence about a pirate is longer than anything else
+    // in the box, and a box as wide as a sentence would dwarf what it is
+    // about. Nothing written means no heading and no rows.
+    // The note is read above the standings and scrolls with them: what is known
+    // about a pirate is one body of text, and a long note must not be able to
+    // push the standings or the buttons out of the box. It wraps to the body's
+    // full width rather than to the standings' column - a sentence about a
+    // pirate is longer than anything else here, and the popup is no wider for
+    // it. Nothing written means no heading and no rows.
+    let body_w = content_w.saturating_sub(crate::utils::SCROLLBAR_W) as usize;
+    let note_lines: Vec<Line> = pp
+        .note
+        .as_deref()
+        .map(str::trim)
+        .filter(|note| !note.is_empty())
+        .map(|note| {
+            let mut lines = vec![
+                Line::from(Span::styled(
+                    "Note",
+                    Style::default().bold().underlined(),
+                ))
+                .centered(),
+            ];
+            lines.extend(
+                wrap_offsets(note, body_w)
+                    .into_iter()
+                    .map(|(_, text)| Line::from(text.to_owned())),
+            );
+            // A blank under it, so the note and the first table are not read as
+            // one block.
+            lines.push(Line::from(""));
+            lines
+        })
+        .unwrap_or_default();
+    // The standings keep the column they are centered in; the note spans the
+    // body, so the two are laid out in one block as wide as the body and the
+    // tables are indented into their place within it.
+    let indent = body_w.saturating_sub(skills_block_w) / 2;
+    let scroll_lines: Vec<Line> = note_lines
+        .into_iter()
+        .chain(skill_lines.into_iter().map(|line| {
+            if indent == 0 {
+                return line;
+            }
+            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            spans.extend(line.spans);
+            Line::from(spans)
+                .alignment(line.alignment.unwrap_or(Alignment::Left))
+        }))
+        .collect();
+    // name + gap + affil + gap + body + gap + buttons, plus borders(2).
+    let box_h = (1 + 1 + affil_h + 1 + scroll_lines.len() as u16 + 1 + 1 + 2)
+        .min(screen.height.max(1));
     let x = screen.x + screen.width.saturating_sub(box_w) / 2;
     let y = screen.y + screen.height.saturating_sub(box_h) / 2;
     let popup = Rect::new(x, y, box_w, box_h);
@@ -4543,7 +4670,7 @@ fn render_pirate_popup(
         Constraint::Length(1),       // gap
         Constraint::Length(affil_h), // crew | flag
         Constraint::Length(1),       // gap
-        Constraint::Min(0),          // skills
+        Constraint::Min(0),          // the note and the standings, scrolling
         Constraint::Length(1),       // gap
         Constraint::Length(1),       // buttons
     ])
@@ -4580,46 +4707,42 @@ fn render_pirate_popup(
         affil_cols[2],
     );
 
-    // The skill tables are the one part of the popup that scrolls, so a window
-    // too short for all of them shows a bar beside them rather than cutting
-    // them off. Clamp the offset to what is left to show, then center the
-    // section in the room the bar leaves.
+    // The note and the standings are the one part of the popup that scrolls, so
+    // a window too short for them shows a bar beside them rather than cutting
+    // them off. Clamp the offset to what is left to show.
     pp.view_h = rows[4].height as usize;
-    pp.offset = pp.offset.min(skill_lines.len().saturating_sub(pp.view_h));
+    pp.offset = pp.offset.min(scroll_lines.len().saturating_sub(pp.view_h));
     let body = crate::utils::render_scrollbar(
         frame,
         regions,
         rows[4],
         crate::clickmap::ScrollView::JobberPirateSkills,
         pp.offset,
-        skill_lines.len(),
+        scroll_lines.len(),
     );
-    let sb_w = (skills_block_w as u16).min(body.width);
-    let sb_x = body.x + body.width.saturating_sub(sb_w) / 2;
     frame.render_widget(
         Paragraph::new(
-            skill_lines
+            scroll_lines
                 .into_iter()
                 .skip(pp.offset)
                 .take(pp.view_h)
                 .collect::<Vec<Line>>(),
         ),
-        Rect::new(sb_x, body.y, sb_w, body.height),
+        body,
     );
 
     // Buttons; each gets a click region. The page's own focus decides whether
     // either is marked, so a popup behind an unfocused page shows neither.
-    for (rect, target) in crate::utils::render_buttons(
+    pp.button = pp.button.min(buttons.len().saturating_sub(1));
+    for (rect, (_, target)) in crate::utils::render_buttons(
         frame,
         rows[6],
-        &BUTTONS,
+        &labels,
         page_focused.then_some(pp.button),
     )
     .into_iter()
-    .zip([
-        ClickTarget::JobberPirateSeeTrophies,
-        ClickTarget::JobberPirateClose,
-    ]) {
+    .zip(buttons)
+    {
         regions.push(ClickRegion {
             rect,
             target,
@@ -4736,6 +4859,282 @@ fn trophy_section_lines(
     lines
 }
 
+/// Wrap `text` into lines of at most `width` columns, each paired with the byte
+/// offset in `text` where it begins. It breaks at a blank where it can and
+/// inside a word that is longer than a line, and the blank it breaks on belongs
+/// to the line it ended — so the offsets run forward over the whole text and a
+/// cursor counted in bytes is found in exactly one line.
+///
+/// This is [`crate::utils::wrap_words`] with the offsets kept, which is what an
+/// editable paragraph needs to put its caret where the typing is.
+fn wrap_offsets(text: &str, width: usize) -> Vec<(usize, &str)> {
+    let width = width.max(1);
+    let mut lines = Vec::new();
+    let mut start = 0;
+    loop {
+        let rest = &text[start ..];
+        // Where the line must end: the newline that closes it, or the byte past
+        // the last column it has room for.
+        let newline = rest.find('\n');
+        let over = rest.char_indices().nth(width).map(|(i, _)| i);
+        // `skip` is the newline the break swallows, which no line draws.
+        let (end, skip) = match (newline, over) {
+            (Some(nl), None) => (nl, 1),
+            (Some(nl), Some(limit)) if nl <= limit => (nl, 1),
+            (_, None) => (rest.len(), 0),
+            // The line fills its columns exactly and a blank follows, so that
+            // blank is the break.
+            (_, Some(limit)) if rest[limit ..].starts_with(' ') => (limit, 0),
+            (_, Some(limit)) => {
+                match rest[.. limit].rfind(' ') {
+                    // Break at the last blank that leaves something on the
+                    // line.
+                    Some(blank) if 0 < blank => (blank, 0),
+                    // A word longer than the line is broken at the margin.
+                    _ => (limit, 0),
+                }
+            }
+        };
+        lines.push((start, rest[.. end].trim_end()));
+        let mut next = start + end + skip;
+        // The blanks a line broke at belong to it; blanks after a newline are
+        // the next line's own.
+        if skip == 0 {
+            while text[next ..].starts_with(' ') {
+                next += 1;
+            }
+        }
+        if text.len() <= next {
+            // A text ending in a newline earns the empty line under it, which
+            // is where the caret sits once one is typed.
+            if 0 < skip {
+                lines.push((text.len(), ""));
+            }
+            break;
+        }
+        start = next;
+    }
+    lines
+}
+
+/// Where a cursor at byte `at` falls in wrapped `lines`: which line holds it
+/// and how many columns into that line it sits. A cursor on a blank a line
+/// broke at rests at the end of that line, there being no column of its own for
+/// it.
+fn caret_in(lines: &[(usize, &str)], at: usize) -> (usize, usize) {
+    let row = lines
+        .iter()
+        .rposition(|(start, _)| *start <= at)
+        .unwrap_or(0);
+    let (start, text) = lines[row];
+    let col = match at.checked_sub(start).filter(|off| *off <= text.len()) {
+        Some(off) => text[.. off].chars().count(),
+        None => text.chars().count(),
+    };
+    (row, col)
+}
+
+/// Step the note's caret one wrapped line up (`down` false) or down, keeping
+/// the column it was in as far as the new line reaches. Answers whether it
+/// moved: at the top or bottom line there is nowhere to step, which is what
+/// tells the editor to hand the keys to its buttons instead.
+///
+/// The lines are the ones the last render drew, [`NotePopup::wrap_w`] being the
+/// width it wrapped them to: what ↑ and ↓ mean in a wrapping box is a question
+/// about what is on the screen.
+pub fn note_caret_step(np: &mut NotePopup, down: bool) -> bool {
+    let lines = wrap_offsets(&np.field.value, np.wrap_w.max(1));
+    let (row, col) = caret_in(&lines, np.field.cursor);
+    let target = if down { row + 1 } else { row.wrapping_sub(1) };
+    let Some((start, text)) = lines.get(target).copied() else {
+        return false;
+    };
+    let within = text
+        .char_indices()
+        .nth(col)
+        .map_or(text.len(), |(offset, _)| offset);
+    np.field.cursor = start + within;
+    true
+}
+
+/// The note editor: a wrapping text box over the pirate whose note it is, as
+/// wide as the Trophies popup it shares a button row with and at least four
+/// lines tall, with Cancel and Save beneath.
+fn render_note_popup(
+    frame: &mut Frame,
+    np: &mut NotePopup,
+    cache: &PirateCache,
+    regions: &mut Vec<ClickRegion>,
+) {
+    const BUTTONS: [&str; 2] = ["Cancel", "Save"];
+    /// Lines the box keeps for the text however little of it there is.
+    const MIN_LINES: u16 = 4;
+
+    let screen = frame.area();
+    let title = format!("Notes on {}", np.name);
+    let box_w = trophy_popup_width(screen, cache.get_cached(&np.name))
+        .max(offset_title_width(&title))
+        .max(crate::utils::buttons_width(&BUTTONS) + crate::utils::BOX_MARGIN)
+        .min(screen.width.max(1));
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .padding(Padding::horizontal(1))
+        .title(offset_title(&title).0);
+    // The text wraps to the room inside the frame less the scrollbar's column,
+    // which it keeps whether a bar is up or not: a note growing past the box
+    // must not re-wrap what is already written.
+    let wrap_w = box_w
+        .saturating_sub(crate::utils::BOX_MARGIN + crate::utils::SCROLLBAR_W)
+        .max(1) as usize;
+    np.wrap_w = wrap_w;
+    let lines = wrap_offsets(&np.field.value, wrap_w);
+
+    // The box grows with the note, down to four lines and up to what the screen
+    // can hold; past that the text scrolls within it.
+    let room = screen
+        .height
+        .saturating_sub(
+            1 /*blank*/ + 1 /*buttons*/ + 2, // borders
+        )
+        .max(1);
+    let text_h = (lines.len() as u16).clamp(MIN_LINES.min(room), room);
+    let box_h = (text_h + 1 + 1 + 2).min(screen.height.max(1));
+
+    let x = screen.x + screen.width.saturating_sub(box_w) / 2;
+    let y = screen.y + screen.height.saturating_sub(box_h) / 2;
+    let popup = Rect::new(x, y, box_w, box_h);
+
+    frame.render_widget(Clear, popup);
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let rows = Layout::vertical([
+        Constraint::Min(0),    // the text
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // buttons
+    ])
+    .split(inner);
+
+    // Keep the caret in view: typing at the foot of a long note scrolls to it
+    // rather than leaving the user writing off the bottom of the box.
+    let (row, col) = caret_in(&lines, np.field.cursor);
+    np.view_h = rows[0].height as usize;
+    if np.view_h <= row {
+        np.offset = row + 1 - np.view_h;
+    } else if row < np.offset {
+        np.offset = row;
+    }
+    np.offset = np.offset.min(lines.len().saturating_sub(np.view_h));
+
+    let text = crate::utils::render_scrollbar(
+        frame,
+        regions,
+        rows[0],
+        crate::clickmap::ScrollView::JobberNoteText,
+        np.offset,
+        lines.len(),
+    );
+
+    // An empty note says what the box is for rather than sitting blank.
+    if np.field.value.is_empty() {
+        frame.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                "Write what ye know of this pirate.",
+                Style::default().fg(Color::DarkGray),
+            ))),
+            text,
+        );
+    } else {
+        frame.render_widget(
+            Paragraph::new(
+                lines
+                    .iter()
+                    .skip(np.offset)
+                    .take(np.view_h)
+                    .map(|(_, line)| Line::from((*line).to_owned()))
+                    .collect::<Vec<Line>>(),
+            ),
+            text,
+        );
+    }
+
+    // The caret is the only thing marking the text as editable, the box being
+    // nothing but text: it sits where the typing will land, and only while the
+    // text is what the keys are going to.
+    if np.focus == NoteFocus::Text && np.offset <= row {
+        let line = (row - np.offset) as u16;
+        if line < text.height {
+            frame.set_cursor_position((
+                text.x + col.min(wrap_w.saturating_sub(1)) as u16,
+                text.y + line,
+            ));
+        }
+    }
+
+    // Neither button is marked while the text has the keys: Enter is a newline
+    // there, and marking Save would say otherwise.
+    let marked = match np.focus {
+        NoteFocus::Text => None,
+        NoteFocus::Cancel => Some(0),
+        NoteFocus::Save => Some(1),
+    };
+    for (rect, target) in
+        crate::utils::render_buttons(frame, rows[2], &BUTTONS, marked)
+            .into_iter()
+            .zip([ClickTarget::JobberNoteCancel, ClickTarget::JobberNoteSave])
+    {
+        regions.push(ClickRegion {
+            rect,
+            target,
+        });
+    }
+}
+
+/// The width the Trophies popup takes over `screen` for `cached`'s trophies.
+///
+/// The grid reflows into three columns of whatever width it is given, so it has
+/// no width of its own; what it must not be is wider than the names in it.
+/// Three columns of the longest name with their gaps is that width, and 80
+/// columns is as far as it goes however long a trophy's name runs. The
+/// scrollbar's column is counted whether or not the grid is long enough to need
+/// a bar, so the box does not change width as the user scrolls into the rows
+/// that call for one.
+///
+/// The Notes popup takes this width too: both are opened from the Pirate popup
+/// and read as one pair over it rather than as two boxes of their own sizes.
+fn trophy_popup_width(screen: Rect, cached: Option<&CachedPirate>) -> u16 {
+    const GRID_GAP: u16 = 2;
+    let has_trophies = cached.is_some_and(|c| {
+        c.trophies.sections.iter().any(|s| !s.trophies.is_empty())
+    });
+    let longest = cached
+        .map(|c| {
+            c.trophies
+                .sections
+                .iter()
+                .flat_map(|s| s.trophies.iter().map(|t| t.chars().count()))
+                .chain(
+                    c.trophies
+                        .sections
+                        .iter()
+                        .map(|s| s.category.chars().count()),
+                )
+                .max()
+                .unwrap_or(0) as u16
+        })
+        .unwrap_or(0);
+    let content_w = if has_trophies {
+        3 * longest + 2 * GRID_GAP + crate::utils::SCROLLBAR_W
+    } else {
+        "Trophies not loaded yet.".len() as u16
+    };
+    (content_w + crate::utils::BOX_MARGIN)
+        .max(offset_title_width("Trophies"))
+        .min(80)
+        .min(screen.width.max(1))
+}
+
 /// The trophies popup: 80 wide, a pinned search box, then the pirate's trophy
 /// categories (each a centered name + 3-column grid), vertically scrollable.
 fn render_trophy_popup(
@@ -4755,39 +5154,7 @@ fn render_trophy_popup(
         c.trophies.sections.iter().any(|s| !s.trophies.is_empty())
     });
 
-    // The grid reflows into three columns of whatever width it is given, so it
-    // has no width of its own; what it must not be is wider than the names in
-    // it. Three columns of the longest name with their gaps is that width, and
-    // 80 columns is as far as it goes however long a trophy's name runs.
-    const GRID_GAP: u16 = 2;
-    let longest = cached
-        .map(|c| {
-            c.trophies
-                .sections
-                .iter()
-                .flat_map(|s| s.trophies.iter().map(|t| t.chars().count()))
-                .chain(
-                    c.trophies
-                        .sections
-                        .iter()
-                        .map(|s| s.category.chars().count()),
-                )
-                .max()
-                .unwrap_or(0) as u16
-        })
-        .unwrap_or(0);
-    let content_w = if has_trophies {
-        // The scrollbar's column is reserved whether or not the grid is long
-        // enough to need it, so the box does not change width as the user
-        // scrolls into the rows that call for one.
-        3 * longest + 2 * GRID_GAP + crate::utils::SCROLLBAR_W
-    } else {
-        "Trophies not loaded yet.".len() as u16
-    };
-    let box_w = (content_w + crate::utils::BOX_MARGIN)
-        .max(offset_title_width("Trophies"))
-        .min(80)
-        .min(screen.width.max(1));
+    let box_w = trophy_popup_width(screen, cached);
     let box_h = if has_trophies {
         screen
             .height
@@ -5144,6 +5511,129 @@ mod tests {
         assert_eq!(
             tags_w(&vec![tag, tag]),
             TAG_GAP + TAG_W + TAG_SEP + TAG_W,
+        );
+    }
+
+    /// A note wraps at the blanks and at its newlines, and every byte of it
+    /// lands in exactly one line: the offsets are what lets the caret be found
+    /// in the lines later.
+    #[test]
+    fn a_note_wraps_at_the_blanks_and_keeps_its_offsets() {
+        let text = "one two three four";
+        assert_eq!(
+            wrap_offsets(text, 9),
+            vec![(0, "one two"), (8, "three"), (14, "four")],
+        );
+        // Each line starts where the one before it left off, blanks and all.
+        for (start, line) in wrap_offsets(text, 9) {
+            assert!(text[start ..].starts_with(line));
+        }
+        // A word longer than the line is broken at the margin rather than
+        // hanging over it.
+        assert_eq!(
+            wrap_offsets("unbreakable", 4),
+            vec![(0, "unbr"), (4, "eaka"), (8, "ble")],
+        );
+        // Nothing written is one empty line, not no lines: the caret has to sit
+        // somewhere.
+        assert_eq!(wrap_offsets("", 10), vec![(0, "")]);
+    }
+
+    /// A newline ends its line however much room is left on it, and one typed
+    /// at the end of the note earns the empty line under it.
+    #[test]
+    fn a_note_breaks_at_its_newlines() {
+        assert_eq!(
+            wrap_offsets("one\ntwo", 20),
+            vec![(0, "one"), (4, "two")]
+        );
+        // A blank line between two paragraphs is a line of its own.
+        assert_eq!(
+            wrap_offsets("one\n\ntwo", 20),
+            vec![(0, "one"), (4, ""), (5, "two")],
+        );
+        // The caret has somewhere to sit after the newline just typed.
+        assert_eq!(
+            wrap_offsets("one\n", 20),
+            vec![(0, "one"), (4, "")]
+        );
+    }
+
+    /// The caret is found on the line that holds it, and rests at a line's end
+    /// when it sits on the blank that line broke at.
+    #[test]
+    fn the_caret_is_found_in_the_wrapped_lines() {
+        let text = "one two three";
+        let lines = wrap_offsets(text, 7);
+        assert_eq!(
+            lines,
+            vec![(0, "one two"), (8, "three")]
+        );
+        assert_eq!(caret_in(&lines, 0), (0, 0));
+        assert_eq!(caret_in(&lines, 4), (0, 4));
+        // The blank at offset 7 was eaten by the break, so the caret rests at
+        // the end of the line it ended.
+        assert_eq!(caret_in(&lines, 7), (0, 7));
+        assert_eq!(caret_in(&lines, 8), (1, 0));
+        assert_eq!(caret_in(&lines, text.len()), (1, 5));
+    }
+
+    /// ↑ and ↓ step a wrapped line at a time, keeping the column as far as the
+    /// line reaches, and answer whether there was a line to step to — which is
+    /// how ↓ off the last line comes to hand the keys to the buttons.
+    #[test]
+    fn the_notes_caret_steps_by_wrapped_line() {
+        let mut np = NotePopup {
+            name: "Playerone".to_owned(),
+            field: crate::utils::PromptField::new(
+                "Note",
+                crate::utils::FieldKind::Text,
+            ),
+            focus: NoteFocus::Text,
+            offset: 0,
+            wrap_w: 7,
+            view_h: 4,
+        };
+        np.field.value = "one two three".to_owned();
+        np.field.cursor = 4; // "one |two"
+
+        assert!(note_caret_step(&mut np, true));
+        assert_eq!(np.field.cursor, 12); // "thre|e", clamped to the line's end
+        assert!(note_caret_step(&mut np, false));
+        assert_eq!(np.field.cursor, 4);
+        // Nowhere to step from the first line, nor from the last.
+        assert!(!note_caret_step(&mut np, false));
+        assert_eq!(np.field.cursor, 4);
+        np.field.cursor = np.field.value.len();
+        assert!(!note_caret_step(&mut np, true));
+        assert_eq!(np.field.cursor, np.field.value.len());
+    }
+
+    /// The popup offers to add a note where none is written, to edit one where
+    /// there is, and offers nothing at all where no note can be kept.
+    #[test]
+    fn the_note_button_says_which_of_the_two_it_does() {
+        let labels = |note: Option<&str>| {
+            pirate_popup_buttons(note)
+                .into_iter()
+                .map(|(label, _)| label)
+                .collect::<Vec<&str>>()
+        };
+        assert_eq!(
+            labels(Some("")),
+            vec!["Add Note", "See Trophies", "Close"]
+        );
+        assert_eq!(
+            labels(Some("   ")),
+            vec!["Add Note", "See Trophies", "Close"]
+        );
+        assert_eq!(
+            labels(Some("Fine gunner")),
+            vec!["Edit Note", "See Trophies", "Close"],
+        );
+        assert_eq!(
+            labels(None),
+            vec!["See Trophies", "Close"]
         );
     }
 

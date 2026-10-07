@@ -18,6 +18,9 @@ pub enum ScrollView {
     JobberPirateSkills,
     /// The category grid in the trophies popup. Keeps its own window.
     JobberTrophies,
+    /// The text in the note editor, for a note longer than the box it grew to.
+    /// Follows the caret as it is typed.
+    JobberNoteText,
     /// Everything under the Voyage Statistics page's pinned header. Keeps its
     /// own window, which the focused stat or chart also nudges.
     VoyageBody,
@@ -111,7 +114,13 @@ pub enum ClickTarget {
         idx: usize,
     },
     JobberPirateSeeTrophies,
+    /// The Pirate popup's Add / Edit Note button, which opens the note editor.
+    JobberPirateNote,
     JobberPirateClose,
+    /// The note editor's buttons: Save writes the note down, Cancel leaves what
+    /// was written before it alone.
+    JobberNoteSave,
+    JobberNoteCancel,
     JobberTrophyArea,
     /// The Trophies popup's Close button.
     JobberTrophyClose,

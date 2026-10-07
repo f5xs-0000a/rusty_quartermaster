@@ -41,6 +41,8 @@ use rusty_quartermaster::{
     islands::{CachedIslands, IslandInfo, parse_island_list},
     jobbers::{
         JobberFocus,
+        NoteFocus,
+        NotePopup,
         PerFightPopup,
         PiratePopup,
         SkillDistPopup,
@@ -1744,9 +1746,10 @@ fn jobbers_states(states: &mut Vec<State>) {
             open(shell, AppId::Chatlog, true);
             shell.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: "Matetwo".to_owned(),
-                button: 0,
+                button: 2, // Close, as a freshly-opened popup marks
                 offset: 0,
                 view_h: 0,
+                note: Some(String::new()),
             });
         },
     ));
@@ -1759,8 +1762,142 @@ fn jobbers_states(states: &mut Vec<State>) {
             cache_pirate(shell, "Matetwo", 0);
             shell.jobbers_ui.pirate_popup = Some(PiratePopup {
                 name: "Matetwo".to_owned(),
+                button: 2, // Close, as a freshly-opened popup marks
+                offset: 0,
+                view_h: 0,
+                note: Some(String::new()),
+            });
+        },
+    ));
+    // A note read on the pirate it is about: the Note section sits above the
+    // standings and the button offers to edit rather than to add. The note
+    // wraps to the popup's width, which the note itself never widens.
+    const NOTE: &str = "Fine gunner, but drifts off station when the fight \
+                        runs long. Jobbed with us twice; planked once for \
+                        taking the helm uninvited.";
+    states.push(state(
+        "jobbers-popup-pirate-note",
+        "Jobbers, pirate stats popup with a note written down",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
                 button: 0,
                 offset: 0,
+                view_h: 0,
+                note: Some(NOTE.to_owned()),
+            });
+        },
+    ));
+    // The editor itself, as wide as the trophies popup beside it and at least
+    // four lines tall, with the caret at the end of what has been written.
+    states.push(state(
+        "jobbers-popup-note",
+        "Jobbers, the note editor over a pirate",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 0,
+                offset: 0,
+                view_h: 0,
+                note: Some(NOTE.to_owned()),
+            });
+            let mut field = PromptField::new("Note", FieldKind::Text);
+            field.value = NOTE.to_owned();
+            field.cursor = field.value.len();
+            shell.jobbers_ui.note_popup = Some(NotePopup {
+                name: "Matetwo".to_owned(),
+                field,
+                focus: NoteFocus::Text,
+                offset: 0,
+                wrap_w: 0,
+                view_h: 0,
+            });
+        },
+    ));
+    // Nothing written yet: the box says what it is for, and keeps its four
+    // lines so it does not open as a slit.
+    states.push(state(
+        "jobbers-popup-note-empty",
+        "Jobbers, the note editor with nothing written yet",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 0,
+                offset: 0,
+                view_h: 0,
+                note: Some(String::new()),
+            });
+            shell.jobbers_ui.note_popup = Some(NotePopup {
+                name: "Matetwo".to_owned(),
+                field: PromptField::new("Note", FieldKind::Text),
+                focus: NoteFocus::Text,
+                offset: 0,
+                wrap_w: 0,
+                view_h: 0,
+            });
+        },
+    ));
+    // A note long enough to outgrow the box it opened at: the editor grew to
+    // the screen and the text scrolls within it, with the keys on Save
+    // after a step down off the last line.
+    states.push(state(
+        "jobbers-popup-note-long",
+        "Jobbers, the note editor on a note longer than the box",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            let long = [
+                "Fine gunner, but drifts off station when the fight runs long.",
+                "Jobbed with us twice; planked once for taking the helm \
+                 uninvited.",
+                "Sails a sloop better than anything larger, and says so at \
+                 every chance.",
+                "Asked after the crew twice; told them we would think on it.",
+                "Keeps a tidy hold and will restock without being asked, \
+                 which is worth the rest of this.",
+                "Will not take the guns on a frigate; says the reload is a \
+                 carpenter's job and leaves it at that.",
+                "Good in a fray, better in a rumble, and will swap station to \
+                 be in one.",
+                "Turned up for the Vikings run two hours late and bought the \
+                 rum for it afterwards.",
+                "Knows the Emerald archipelagos well enough to navigate \
+                 without the chart, which is rarer than it sounds.",
+                "Keeps asking after a sloop of their own; would job less if \
+                 they had one.",
+                "Owes the crew nothing and says so often enough that it is \
+                 worth writing down.",
+                "Bilges without being told when the hold is taking water, and \
+                 says nothing about it afterwards.",
+                "Would make an officer if they turned up when they said they \
+                 would.",
+            ]
+            .join("\n");
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 0,
+                offset: 0,
+                view_h: 0,
+                note: Some(long.clone()),
+            });
+            let mut field = PromptField::new("Note", FieldKind::Text);
+            field.value = long;
+            shell.jobbers_ui.note_popup = Some(NotePopup {
+                name: "Matetwo".to_owned(),
+                field,
+                focus: NoteFocus::Save,
+                offset: 0,
+                wrap_w: 0,
                 view_h: 0,
             });
         },
@@ -1776,6 +1913,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 button: 1,
                 offset: 0,
                 view_h: 0,
+                note: Some(String::new()),
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),
@@ -1797,6 +1935,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 button: 1,
                 offset: 0,
                 view_h: 0,
+                note: Some(String::new()),
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),
@@ -1818,6 +1957,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 button: 1,
                 offset: 0,
                 view_h: 0,
+                note: Some(String::new()),
             });
             let mut search = PromptField::new("Search", FieldKind::Text);
             search.value = "Gun".to_owned();
@@ -1842,6 +1982,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 button: 1,
                 offset: 0,
                 view_h: 0,
+                note: Some(String::new()),
             });
             let mut search = PromptField::new("Search", FieldKind::Text);
             search.value = "Nosuchtrophy".to_owned();
