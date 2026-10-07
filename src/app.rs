@@ -529,6 +529,12 @@ pub struct AppShell {
     pub persistence: crate::persistence::SavedPersistence,
     /// Where that lives on disk (set by `--persistence`).
     pub persistence_path: Option<std::path::PathBuf>,
+    /// The selected ocean's pending duty reports as the cache had them, keyed
+    /// by our own pirates' normalized names. Carried so that what an earlier
+    /// session left waiting is written back rather than dropped; this
+    /// session's own are read off the runs themselves by
+    /// [`Self::pending_duty_reports`].
+    pub pending_voyages: HashMap<String, crate::cache::PiratePending>,
     // click regions rebuilt each render
     click_regions: clickmap::ClickMap,
 }
@@ -556,6 +562,7 @@ impl AppShell {
             island_list_wanted: false,
             persistence: crate::persistence::SavedPersistence::default(),
             persistence_path: None,
+            pending_voyages: HashMap::new(),
             click_regions: clickmap::ClickMap::new(),
         }
     }
@@ -1993,6 +2000,67 @@ impl AppShell {
                 .is_some_and(|me| me.eq_ignore_ascii_case(name))
                 || aboard.iter().any(|mate| mate.eq_ignore_ascii_case(name))
         })
+    }
+
+    /// The pending duty reports for the cache: every run of ours that has
+    /// reports the persistence file does not hold.
+    ///
+    /// Read off the runs rather than kept up to date alongside them, so it
+    /// cannot drift from what the runs actually hold. A run saved this session
+    /// drops out by being saved, and takes with it whatever an earlier session
+    /// had left waiting on that same run. What is left waiting on a run this
+    /// session never saw - the log may no longer reach back that far - is
+    /// carried on until it goes stale.
+    pub fn pending_duty_reports(
+        &self,
+        now: chrono::DateTime<chrono::Utc>,
+    ) -> HashMap<String, crate::cache::PiratePending> {
+        let mut pending = self.pending_voyages.clone();
+        let Some(pirate) = self.map.pirate.clone() else {
+            return pending;
+        };
+        let runs = self.chatlog.vessels.iter().flat_map(|(vessel, v)| {
+            v.voyages
+                .iter()
+                .chain(v.current_voyage.iter())
+                .map(move |voyage| (&**vessel, voyage))
+        });
+        let ours = pending.entry(pirate).or_default();
+        for (vessel, voyage) in runs {
+            let key = (Some(vessel), voyage.sailed_at);
+            let held = ours.voyages.iter().position(|p| p.key() == key);
+            if voyage.saved {
+                // the file has this run now, reports and all
+                if let Some(at) = held {
+                    ours.voyages.remove(at);
+                }
+                continue;
+            }
+            if voyage.duty_reports.is_empty() {
+                continue;
+            }
+            let Some(at) = held else {
+                ours.voyages.push(crate::cache::PendingVoyage {
+                    vessel: Some(vessel.to_owned()),
+                    sailed_at: voyage.sailed_at,
+                    duty_reports: voyage.duty_reports.clone(),
+                });
+                continue;
+            };
+            // an earlier session's reports for this run stay, since the run
+            // itself no longer holds them: only what is new joins them
+            let waiting = &mut ours.voyages[at].duty_reports;
+            for report in &voyage.duty_reports {
+                if !waiting.contains(report) {
+                    waiting.push(report.clone());
+                }
+            }
+        }
+        for ours in pending.values_mut() {
+            ours.voyages.retain(|voyage| !voyage.is_stale(now));
+        }
+        pending.retain(|_, ours| !ours.voyages.is_empty());
+        pending
     }
 
     /// Write the whole persistence file, the live memorization folded in
@@ -5139,6 +5207,70 @@ mod topbar_tests {
         // we left before the booty, so the figures have gaps and say so
         assert!(saved.poisoned);
         assert!(!saved.divvied);
+    }
+
+    /// A run's reports wait in the cache while the run is unsaved, under the
+    /// ocean, our pirate, and the run itself. Saving the run is what ends the
+    /// wait: the persistence file holds them from then on.
+    #[test]
+    fn a_runs_reports_wait_in_the_cache_until_it_is_saved() {
+        let now = chrono::Utc::now();
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        shell.map.pirate = Some("Playerone".to_owned());
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Evading.",
+            "[01:00:10] Playerone issued an order to set the vessel to sail.",
+        ] {
+            shell.feed_chat_line(line);
+        }
+        deliver(&mut shell, &["Mateone"]);
+        shell.feed_chat_line(
+            "[01:30:00] Playerone issued an order to put into port.",
+        );
+
+        let pending = shell.pending_duty_reports(now);
+        let waiting = &pending["Playerone"].voyages;
+        assert_eq!(waiting.len(), 1);
+        assert_eq!(
+            waiting[0].vessel.as_deref(),
+            Some("Test Vessel")
+        );
+        assert!(waiting[0].sailed_at.is_some());
+        assert_eq!(waiting[0].duty_reports.len(), 1);
+
+        shell.save_displayed_voyage(
+            crate::voyage::persistence::SaveParts::default(),
+        );
+        assert!(shell.pending_duty_reports(now).is_empty());
+    }
+
+    /// What an earlier session left waiting is written back, not dropped: the
+    /// run that holds those reports is long out of the log, and this session
+    /// never sees them to copy again.
+    #[test]
+    fn an_earlier_sessions_reports_are_carried_on() {
+        let now = chrono::Utc::now();
+        let mut shell = AppShell::new(Vec::new());
+        shell.map.pirate = Some("Playerone".to_owned());
+        shell.pending_voyages.insert(
+            "Playerone".to_owned(),
+            crate::cache::PiratePending {
+                voyages: vec![crate::cache::PendingVoyage {
+                    vessel: Some("Other Vessel".to_owned()),
+                    sailed_at: None,
+                    duty_reports: vec![crate::duty::CopiedReport::new(
+                        &report(&["Mateone"]),
+                        now - chrono::Duration::days(1),
+                    )],
+                }],
+            },
+        );
+        let pending = shell.pending_duty_reports(now);
+        assert_eq!(pending["Playerone"].voyages.len(), 1);
     }
 
     /// A copy we could not read is kept only once it names somebody of ours.

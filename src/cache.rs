@@ -15,13 +15,20 @@ use std::{
     path::Path,
 };
 
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 
 use crate::{
     api::{CachedOffers, SavedCommodity},
+    duty::CopiedReport,
     pirate::CachedPirate,
     profits::persistence::SavedInventory,
 };
+
+/// How long a run's duty reports stay pending. A week with nothing copied on
+/// a run says the run is never going to be saved, so its reports stop waiting
+/// on it and are dropped the next time the cache is read.
+const PENDING_DAYS: i64 = 7;
 
 /// Per-ocean cached data. Prices (`market`) and the playerbase are both
 /// specific to one ocean, so each ocean gets its own bucket.
@@ -44,6 +51,64 @@ pub struct OceanCache {
     /// lives in [`crate::persistence`]. `None` until the page is used.
     #[serde(default)]
     pub map_cursor: Option<(u16, u16)>,
+    /// What the user's **own** pirates have pending on this ocean, keyed by
+    /// normalized name - the same key their memorization uses in
+    /// [`crate::persistence`]. Ours, unlike [`Self::players`], which is the
+    /// playerbase we have looked up.
+    #[serde(default)]
+    pub pirates: HashMap<String, PiratePending>,
+}
+
+/// What one of the user's own pirates has gathered that is waiting on
+/// something it belongs to reaching [`crate::persistence`].
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct PiratePending {
+    /// The runs this pirate has duty reports for that the persistence file
+    /// does not hold yet.
+    #[serde(default)]
+    pub voyages: Vec<PendingVoyage>,
+}
+
+/// One run's duty reports, pending the run being saved.
+///
+/// A duty report is copied off the clipboard rather than read from the chat
+/// log, so it is the one part of a run that cannot be worked out again: a
+/// session that ends before the save prompt would lose it. It waits here
+/// instead, under what tells one run from another - the vessel and the hour it
+/// sailed, which the log rebuilds the same way every time.
+///
+/// This is a cache and not a record: the reports here are duplicates of what
+/// the run is holding in RAM, or leftovers of a run that was never saved, and
+/// losing the file costs only those.
+#[derive(Serialize, Deserialize, Default, Clone)]
+pub struct PendingVoyage {
+    /// The vessel the run was sailed on, as the log named it.
+    #[serde(default)]
+    pub vessel: Option<String>,
+    /// When the run set sail, by the log's clock. `None` for a run whose sail
+    /// order we never saw.
+    #[serde(default)]
+    pub sailed_at: Option<NaiveDateTime>,
+    #[serde(default)]
+    pub duty_reports: Vec<CopiedReport>,
+}
+
+impl PendingVoyage {
+    /// What tells this run from another of the same pirate's.
+    pub fn key(&self) -> (Option<&str>, Option<NaiveDateTime>) {
+        (self.vessel.as_deref(), self.sailed_at)
+    }
+
+    /// Whether this run has stopped being pending: nothing has been copied on
+    /// it for [`PENDING_DAYS`], so it is never going to be saved now. A run
+    /// holding no reports at all is nothing pending either.
+    pub fn is_stale(&self, now: DateTime<Utc>) -> bool {
+        let Some(last) = self.duty_reports.iter().map(|r| r.copied_at).max()
+        else {
+            return true;
+        };
+        Duration::days(PENDING_DAYS) <= now.signed_duration_since(last)
+    }
 }
 
 /// Learned NPC name-segment vocabulary, used to tell a **swabbie** from a
@@ -175,6 +240,18 @@ impl SavedCache {
             ..SavedCache::default()
         }
     }
+
+    /// Drop every run that has stopped being pending, and every pirate left
+    /// with nothing pending at all. Done on load, so the file sheds what it no
+    /// longer needs to carry without anything having to ask it to.
+    pub fn prune_pending(&mut self, now: DateTime<Utc>) {
+        for ocean in self.oceans.values_mut() {
+            for pirate in ocean.pirates.values_mut() {
+                pirate.voyages.retain(|voyage| !voyage.is_stale(now));
+            }
+            ocean.pirates.retain(|_, pirate| !pirate.voyages.is_empty());
+        }
+    }
 }
 
 /// Load the cache from `path`. A missing or unparseable file yields the bare
@@ -184,9 +261,10 @@ pub fn load(path: &Path) -> SavedCache {
     let Ok(data) = std::fs::read_to_string(path) else {
         return SavedCache::seeded();
     };
-    match serde_json::from_str(&data) {
-        Ok(cache) => {
+    match serde_json::from_str::<SavedCache>(&data) {
+        Ok(mut cache) => {
             eprintln!("Loaded cache from {}", path.display());
+            cache.prune_pending(Utc::now());
             cache
         }
         Err(e) => {
@@ -199,6 +277,61 @@ pub fn load(path: &Path) -> SavedCache {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A run stops being pending a week after the last thing copied on it: by
+    /// then it is never going to be saved, and the cache stops carrying it.
+    /// One still inside the week is left alone, reports and all.
+    #[test]
+    fn a_run_stops_being_pending_after_a_week() {
+        let now = chrono::Utc::now();
+        let report = |copied| {
+            crate::duty::CopiedReport::new(
+                &crate::duty::parse(r#"{"bilge":{"Foo":{"performance":3}}}"#)
+                    .expect("a report"),
+                copied,
+            )
+        };
+        let run = |copied| {
+            PendingVoyage {
+                vessel: Some("Test Vessel".to_owned()),
+                sailed_at: None,
+                duty_reports: vec![report(copied)],
+            }
+        };
+        let fresh = run(now - chrono::Duration::days(PENDING_DAYS - 1));
+        let stale = run(now - chrono::Duration::days(PENDING_DAYS));
+        assert!(!fresh.is_stale(now));
+        assert!(stale.is_stale(now));
+        // a run holding nothing is nothing pending
+        assert!(PendingVoyage::default().is_stale(now));
+
+        let mut cache = SavedCache::default();
+        cache.oceans.insert(
+            "Test".to_owned(),
+            OceanCache {
+                pirates: HashMap::from([
+                    (
+                        "Someone".to_owned(),
+                        PiratePending {
+                            voyages: vec![fresh, stale.clone()],
+                        },
+                    ),
+                    (
+                        "Otherone".to_owned(),
+                        PiratePending {
+                            voyages: vec![stale],
+                        },
+                    ),
+                ]),
+                ..OceanCache::default()
+            },
+        );
+        cache.prune_pending(now);
+        let pirates = &cache.oceans["Test"].pirates;
+        assert_eq!(pirates["Someone"].voyages.len(), 1);
+        // and a pirate left with nothing pending is dropped outright
+        assert!(!pirates.contains_key("Otherone"));
+    }
 
     /// Vocabulary learned from a handful of brigand victories (each entry is
     /// `[adjective] [name]`). "Red" deliberately lands on *both* sides.

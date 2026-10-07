@@ -359,6 +359,9 @@ async fn main() -> io::Result<()> {
     shell.cached_offers = this_ocean.market;
     shell.islands = this_ocean.islands;
     shell.ocean = ocean;
+    // Duty reports copied on a run that was never saved. Carried so they are
+    // written back rather than dropped; the stale ones were shed on load.
+    shell.pending_voyages = this_ocean.pirates;
     // the Map page reopens on the view it was left on; that belongs to the
     // ocean rather than to a pirate, so it rides in the cache
     shell.restore_map_cursor(this_ocean.map_cursor);
@@ -700,6 +703,8 @@ async fn main() -> io::Result<()> {
         // Fold the current ocean's market + players back into the per-ocean
         // map, leaving other oceans' buckets intact.
         if let Some(o) = shell.ocean {
+            // read off the runs before the fields below are moved out
+            let pirates = shell.pending_duty_reports(chrono::Utc::now());
             oceans.insert(
                 o.name().to_owned(),
                 OceanCache {
@@ -707,6 +712,7 @@ async fn main() -> io::Result<()> {
                     players: shell.pirate_cache.fetched,
                     islands: shell.islands,
                     map_cursor: shell.map.cursor,
+                    pirates,
                 },
             );
         }
