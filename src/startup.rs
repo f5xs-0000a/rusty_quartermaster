@@ -295,6 +295,16 @@ async fn run(
         // Any keypress dismisses a stale status line so the tooltip returns.
         state.status = None;
 
+        // Typing and the caret keys, Alt and all, are one set of keys wherever
+        // a field is edited — the name field included. What follows is
+        // the prompt's own keys, which it answers whichever field has
+        // the cursor.
+        if state.field == Field::Name
+            && crate::utils::edit_key(&mut state.name, &key).is_some()
+        {
+            continue;
+        }
+
         match key.code {
             KeyCode::Esc => return Ok(None),
             KeyCode::Tab => {
@@ -416,22 +426,6 @@ async fn run(
                         }
                     }
                 }
-            }
-            // Text editing for the name field.
-            KeyCode::Char(c) if state.field == Field::Name => {
-                state.name.insert_char(c)
-            }
-            KeyCode::Backspace if state.field == Field::Name => {
-                state.name.delete_char_before()
-            }
-            KeyCode::Delete if state.field == Field::Name => {
-                state.name.delete_char_at()
-            }
-            KeyCode::Left if state.field == Field::Name => {
-                state.name.move_left()
-            }
-            KeyCode::Right if state.field == Field::Name => {
-                state.name.move_right()
             }
             _ => {}
         }

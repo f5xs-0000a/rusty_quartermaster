@@ -93,6 +93,127 @@ impl PromptField {
                 .map_or(0, |c| c.len_utf8());
         }
     }
+
+    /// Where the word before the cursor begins: past the blanks the cursor sits
+    /// after, and then past the run of non-blanks before those. A newline is a
+    /// blank like any other, so a word step crosses the lines of a paragraph.
+    fn word_start(&self) -> usize {
+        let head = self.value[.. self.cursor].trim_end();
+        head.char_indices()
+            .rev()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(0, |(at, c)| at + c.len_utf8())
+    }
+
+    /// Where the word after the cursor ends: past the blanks it sits before,
+    /// and then past the run of non-blanks after those.
+    fn word_end(&self) -> usize {
+        let tail = &self.value[self.cursor ..];
+        let word = tail.trim_start();
+        let blanks = tail.len() - word.len();
+        let within = word
+            .char_indices()
+            .find(|(_, c)| c.is_whitespace())
+            .map_or(word.len(), |(at, _)| at);
+        self.cursor + blanks + within
+    }
+
+    pub fn delete_word_before(&mut self) {
+        let start = self.word_start();
+        self.value.replace_range(start .. self.cursor, "");
+        self.cursor = start;
+    }
+
+    pub fn delete_word_after(&mut self) {
+        let end = self.word_end();
+        self.value.replace_range(self.cursor .. end, "");
+    }
+
+    pub fn move_word_left(&mut self) {
+        self.cursor = self.word_start();
+    }
+
+    pub fn move_word_right(&mut self) {
+        self.cursor = self.word_end();
+    }
+}
+
+/// What a key did to a [`PromptField`]: moved its caret, or changed its text.
+/// Callers that follow an edit with something of their own — re-reading the
+/// query, scrolling back to the top of what it matches — need to tell the two
+/// apart.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+    Moved,
+    Changed,
+}
+
+/// Apply `key` to `field` if it is one of the keys that type into a field or
+/// move within it, answering what it did and `None` for anything else — which
+/// the caller then reads as one of its own.
+///
+/// **Alt makes the word the unit.** Alt+Backspace and Alt+Delete rub out a
+/// whole word, and Alt+←/→ step across one, which is what a terminal's other
+/// text fields do. Every field in the app is edited through here, so all of
+/// them answer to the same keys.
+pub fn edit_key(
+    field: &mut PromptField,
+    key: &crossterm::event::KeyEvent,
+) -> Option<Edit> {
+    use crossterm::event::{KeyCode, KeyModifiers};
+
+    let word = key.modifiers.contains(KeyModifiers::ALT);
+    match key.code {
+        KeyCode::Char(c) => {
+            // Alt+<letter> is a chord, not a letter to type.
+            if word {
+                return None;
+            }
+            field.insert_char(c);
+            Some(Edit::Changed)
+        }
+        KeyCode::Backspace => {
+            if word {
+                field.delete_word_before();
+            } else {
+                field.delete_char_before();
+            }
+            Some(Edit::Changed)
+        }
+        KeyCode::Delete => {
+            if word {
+                field.delete_word_after();
+            } else {
+                field.delete_char_at();
+            }
+            Some(Edit::Changed)
+        }
+        KeyCode::Left => {
+            if word {
+                field.move_word_left();
+            } else {
+                field.move_left();
+            }
+            Some(Edit::Moved)
+        }
+        KeyCode::Right => {
+            if word {
+                field.move_word_right();
+            } else {
+                field.move_right();
+            }
+            Some(Edit::Moved)
+        }
+        KeyCode::Home => {
+            field.cursor = 0;
+            Some(Edit::Moved)
+        }
+        KeyCode::End => {
+            field.cursor = field.value.len();
+            Some(Edit::Moved)
+        }
+        _ => None,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1186,6 +1307,64 @@ mod tests {
     // The width is const-evaluable, so widgets can build `const` floors from
     // it.
     const _: () = assert!(offset_title_width("Ocean") == 15);
+
+    /// Alt makes the word the unit: a rub-out takes the blanks the caret sits
+    /// after and the word before them, and a step lands at a word's edge. A
+    /// newline is a blank like any other, so both cross the lines of a
+    /// paragraph.
+    #[test]
+    fn alt_makes_a_word_the_unit() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let alt = |code| KeyEvent::new(code, KeyModifiers::ALT);
+        let mut field = PromptField::new("Note", FieldKind::Paragraph);
+        field.value = "one two three".to_owned();
+        field.cursor = field.value.len();
+
+        // A rub-out at the end of the text takes the last word with it.
+        assert_eq!(
+            edit_key(&mut field, &alt(KeyCode::Backspace)),
+            Some(Edit::Changed)
+        );
+        assert_eq!(field.value, "one two ");
+        assert_eq!(field.cursor, field.value.len());
+        // And again, blanks before the caret and the word beyond them.
+        edit_key(&mut field, &alt(KeyCode::Backspace));
+        assert_eq!(field.value, "one ");
+
+        // A step left lands at the start of the word before the caret, a step
+        // right at the end of the word after it.
+        field.value = "one two\nthree".to_owned();
+        field.cursor = field.value.len();
+        edit_key(&mut field, &alt(KeyCode::Left));
+        assert_eq!(field.cursor, "one two\n".len());
+        edit_key(&mut field, &alt(KeyCode::Left));
+        assert_eq!(field.cursor, "one ".len());
+        edit_key(&mut field, &alt(KeyCode::Right));
+        assert_eq!(field.cursor, "one two".len());
+        edit_key(&mut field, &alt(KeyCode::Right));
+        assert_eq!(field.cursor, field.value.len());
+        // Nowhere left to go either way.
+        edit_key(&mut field, &alt(KeyCode::Right));
+        assert_eq!(field.cursor, field.value.len());
+        field.cursor = 0;
+        edit_key(&mut field, &alt(KeyCode::Left));
+        assert_eq!(field.cursor, 0);
+
+        // Alt+Delete takes the word after the caret.
+        field.value = "one two three".to_owned();
+        field.cursor = "one".len();
+        edit_key(&mut field, &alt(KeyCode::Delete));
+        assert_eq!(field.value, "one three");
+
+        // Alt and a letter is a chord, not a letter to type.
+        let before = field.value.clone();
+        assert_eq!(
+            edit_key(&mut field, &alt(KeyCode::Char('x'))),
+            None
+        );
+        assert_eq!(field.value, before);
+    }
 
     /// A paragraph field takes the newline that starts a line; a one-line field
     /// takes no control character at all, that being what makes it one line.

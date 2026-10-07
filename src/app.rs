@@ -2933,15 +2933,11 @@ impl AppShell {
             }
             return InputResult::Consumed;
         }
+        if crate::utils::edit_key(&mut np.field, &key).is_some() {
+            return InputResult::Consumed;
+        }
         match key.code {
-            KeyCode::Char(c) => np.field.insert_char(c),
             KeyCode::Enter => np.field.insert_char('\n'),
-            KeyCode::Backspace => np.field.delete_char_before(),
-            KeyCode::Delete => np.field.delete_char_at(),
-            KeyCode::Left => np.field.move_left(),
-            KeyCode::Right => np.field.move_right(),
-            KeyCode::Home => np.field.cursor = 0,
-            KeyCode::End => np.field.cursor = np.field.value.len(),
             KeyCode::Up => {
                 jobbers::note_caret_step(np, false);
             }
@@ -3091,24 +3087,12 @@ impl AppShell {
                 let Some(search) = tp.search.as_mut() else {
                     return InputResult::Consumed;
                 };
-                match key.code {
-                    KeyCode::Left => search.move_left(),
-                    KeyCode::Right => search.move_right(),
-                    KeyCode::Home => search.cursor = 0,
-                    KeyCode::End => search.cursor = search.value.len(),
-                    KeyCode::Backspace => {
-                        search.delete_char_before();
-                        tp.offset = 0;
-                    }
-                    KeyCode::Delete => {
-                        search.delete_char_at();
-                        tp.offset = 0;
-                    }
-                    KeyCode::Char(c) => {
-                        search.insert_char(c);
-                        tp.offset = 0;
-                    }
-                    _ => {}
+                // What the filter now lets through is read from the top, so a
+                // changed query takes the grid back to it.
+                if crate::utils::edit_key(search, &key)
+                    == Some(crate::utils::Edit::Changed)
+                {
+                    tp.offset = 0;
                 }
             }
         }

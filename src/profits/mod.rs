@@ -1195,24 +1195,22 @@ impl ProfitsApp {
         key: KeyEvent,
         shared: &SharedState,
     ) -> InputResult {
+        if key.code == KeyCode::Enter {
+            if self.submit(shared.commodities) {
+                return InputResult::RebuildIslands;
+            }
+            return InputResult::Consumed;
+        }
+        // Typing and the caret keys, Alt and all, are one set of keys wherever
+        // a field is edited; what the words name is read again whenever
+        // they change.
+        if let Some(edit) = crate::utils::edit_key(&mut self.search, &key) {
+            if edit == crate::utils::Edit::Changed {
+                self.query_changed();
+            }
+            return InputResult::Consumed;
+        }
         match key.code {
-            KeyCode::Enter => {
-                if self.submit(shared.commodities) {
-                    return InputResult::RebuildIslands;
-                }
-            }
-            KeyCode::Backspace => {
-                self.search.delete_char_before();
-                self.query_changed();
-            }
-            KeyCode::Delete => {
-                self.search.delete_char_at();
-                self.query_changed();
-            }
-            KeyCode::Left => self.search.move_left(),
-            KeyCode::Right => self.search.move_right(),
-            KeyCode::Home => self.search.cursor = 0,
-            KeyCode::End => self.search.cursor = self.search.value.len(),
             KeyCode::Up => {
                 // The search sits at the Inventory's foot; ↑ from it dismisses
                 // it into the Inventory, rows or no rows.
@@ -1224,10 +1222,6 @@ impl ProfitsApp {
                 {
                     self.focus_panel(i);
                 }
-            }
-            KeyCode::Char(c) => {
-                self.search.insert_char(c);
-                self.query_changed();
             }
             _ => {}
         }
@@ -1323,6 +1317,21 @@ impl ProfitsApp {
         idx: usize,
         shared: &SharedState,
     ) -> InputResult {
+        // Typing and the caret keys, Alt and all, are one set of keys wherever
+        // a field is edited. A place field is a button until the market
+        // has been queried, so until then it takes none of them and ← /
+        // → are the page's to answer.
+        let editable =
+            !(is_place_field(idx) && shared.cached_offers.is_empty());
+        if editable
+            && let Some(edit) =
+                crate::utils::edit_key(&mut self.panel[idx], &key)
+        {
+            if edit == crate::utils::Edit::Changed {
+                self.calc_error = None;
+            }
+            return InputResult::Consumed;
+        }
         match key.code {
             KeyCode::Enter if idx == 0 => {
                 if shared.cached_offers.is_empty() {
@@ -1368,43 +1377,6 @@ impl ProfitsApp {
                     Some(next) => self.focus = Focus::Panel(next),
                     None => self.focus = Focus::Button,
                 }
-            }
-            KeyCode::Left => {
-                // The place fields are buttons until the market is queried;
-                // only move the text cursor once they accept
-                // input.
-                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
-                    self.panel[idx].move_left();
-                }
-            }
-            KeyCode::Right => {
-                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
-                    self.panel[idx].move_right();
-                }
-            }
-            KeyCode::Backspace => {
-                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
-                    self.panel[idx].delete_char_before();
-                    self.calc_error = None;
-                }
-            }
-            KeyCode::Delete => {
-                if !(is_place_field(idx) && shared.cached_offers.is_empty()) {
-                    self.panel[idx].delete_char_at();
-                    self.calc_error = None;
-                }
-            }
-            KeyCode::Home => self.panel[idx].cursor = 0,
-            KeyCode::End => {
-                let len = self.panel[idx].value.len();
-                self.panel[idx].cursor = len;
-            }
-            KeyCode::Char(c)
-                if !(is_place_field(idx)
-                    && shared.cached_offers.is_empty()) =>
-            {
-                self.panel[idx].insert_char(c);
-                self.calc_error = None;
             }
             _ => {}
         }

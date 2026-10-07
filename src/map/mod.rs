@@ -320,6 +320,12 @@ impl MapApp {
         let Some(search) = self.search.as_mut() else {
             return InputResult::Consumed;
         };
+        // Typing and the caret keys, Alt and all, are one set of keys wherever
+        // a field is edited; the search's own keys are the few left
+        // over.
+        if crate::utils::edit_key(search, &key).is_some() {
+            return InputResult::Consumed;
+        }
         match key.code {
             KeyCode::Esc | KeyCode::Up => self.search = None,
             KeyCode::Enter => {
@@ -327,13 +333,6 @@ impl MapApp {
                     self.jump_to(hit.at());
                 }
             }
-            KeyCode::Backspace => search.delete_char_before(),
-            KeyCode::Delete => search.delete_char_at(),
-            KeyCode::Left => search.move_left(),
-            KeyCode::Right => search.move_right(),
-            KeyCode::Home => search.cursor = 0,
-            KeyCode::End => search.cursor = search.value.len(),
-            KeyCode::Char(c) => search.insert_char(c),
             _ => {}
         }
         InputResult::Consumed
