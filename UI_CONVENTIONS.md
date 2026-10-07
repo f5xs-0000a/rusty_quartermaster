@@ -543,8 +543,11 @@ Nine views scroll, and each has a bar:
 A page counts the rows its tooltip would take whether or not one is showing.
 Were it to count them only when one is up, resting on a field would push a tight
 window past the page's requirement and the page would vanish under the user's
-hands — then come back when focus moved on. The same goes for the Search box's
-suggestion row.
+hands — then come back when focus moved on.
+
+A search's rows are not of that kind, and that is by design: the field's row
+holds the invitation to open one while none is open (`utils::SEARCH_H`), so it is
+never idle and never has to be reserved against a search the user might summon.
 
 The spare rows are not wasted while the transients are empty. Where a page has
 one box that takes the slack, they go to it: the Profits Inventory is guaranteed
@@ -597,20 +600,20 @@ a staffing warning, a stats box the voyage has filled:
 
 | page | rows | why |
 | ---- | ---- | --- |
-| Map | 11 | a four-row viewport, its sideways bar, the search row, its border, the hint under it |
+| Map | 12 | a four-row viewport, its sideways bar, the search's two rows, its border, the hint under it |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
 | Jobbers, Vikings | 20 | leaderboard beside the panes, under a stats box listing only the standings held |
 | Jobbers, Atlantis | 23 | Voyage box, Skill Leaderboard, the panes |
 | Jobbers, Pillage | 24 | the same, and the swabbie tally its Aboard pane pins |
 | Jobbers; Haunted Seas, Blockade, Flotilla | 24 | Atlantis's boxes, on a roster with a swabbie tally |
-| Profits | 29 | four boxes stacked under the Inventory's nine rows |
+| Profits | 26 | the Inventory's ten rows, the search's two among them, then three boxes and the tooltip |
 | Jobbers, Vampirates | 31 | the Vampirates Stats box and the distribution button |
 | Jobbers, Cursed Isles | 32 | the Fight Statistics box, the tallest of them |
 
 Unlike the 80-column ceiling of Rule 3, **no ceiling is set on height**. The
 consequence is deliberate and worth stating plainly: a conventional 80x24
-terminal is five rows too short for Profits, and five to eight short of Jobbers
+terminal is two rows too short for Profits, and five to eight short of Jobbers
 on its longer voyage types, and shows the notice there while the rest draws.
 
 ## Rule 5: An unmet prerequisite is a centered, wrapped notice
@@ -1011,12 +1014,84 @@ page *holds* — a pirate in the Aboard pane, a rank in the Skill Leaderboard �
 or the field a form's cursor rests on — a row of the Voyage box, a cell of the
 Profits Inventory — still spans the row or the column it belongs to.
 
+### A search is a row the page keeps, and it answers on it
+
+Three places take a query — the Map's island search, the Profits page's
+Add Commodity row and the Trophies popup's filter — and one shape serves all
+three. None of them is a box of its own: a frame titled `Search` around a field
+labelled `Search:` says the same thing twice, and a box nested in a popup has no
+precedent anywhere in the app.
+
+```
+Search: Admiral Island                  Search: Ss → Sayers Rock
+            >>>>>>>>>>                            >>>>>>>>>>>>>>
+            the rest of the name,                 an answer those letters
+            completed in place                    do not begin
+
+Search: Gun reveals 1 of 20 trophies    Press / to search for an island.
+           >>>>>>>>>>>>>>>>>>>>>>>>     >>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>>
+           an answer that is no          the row while no search is open
+           kind of name
+```
+
+(`>` marks the dim columns; what is left of them is what the user typed.)
+
+- **The field is a `utils::PromptField`.** The keys that move within a field are
+  the field's wherever one is drawn: Left and Right, Home and End, Backspace and
+  Delete. A filter that only appends and pops is a field the user cannot correct
+  a typo in the middle of.
+- **An underline marks it, from the label to the end of the row.** What a text
+  field's mark says is which columns the letters land in, which is the rest of
+  the row however little has been typed — this is the form-field case of the
+  subsection above, not the choice case; a mark drawn around the words would
+  vanish on an empty query, the moment it is most needed to say the field has the
+  keyboard. An underline and not a filled bar, because the answer shares the row
+  and a bar's ground is the worst place to read dim words on.
+- **The answer rides that row**, dim, because what it says is what the field
+  would hold if the user took it. Where the letters typed begin the name the
+  query resolves to, the rest of the name is completed in place and the two read
+  as one word; where they do not, the name follows an arrow; and an answer that
+  is no kind of name — the Trophies tally — carries on from the words as a
+  phrase. A query that resolves to nothing is answered the same way, `→ no
+  match` being as much an answer as an island is.
+- **`/` opens a search and Esc dismisses it.** One key for all three, so a search
+  is summoned the same way wherever the user is. An open search owns the letters,
+  so a `/` typed into one is a slash; Esc hands focus back where leaving the
+  field upward would, and a second Esc closes the popup a filter sits in. A
+  search is never a stop on a page's focus ring: walking the ring cannot land on
+  one, and nothing but the key, or a click on the row, opens one.
+- **The row says how to open a search while none is open**, `Press / to add a
+  commodity.` A summoned search is one nothing on the page points to, and the row
+  is counted either way, so the words cost nothing and no page needs a tooltip to
+  carry them.
+- **It sits inside the widget it acts on, at its foot**, under a blank row that
+  holds it off the contents: the commodities go into the Inventory, so the row
+  that puts one there is the Inventory's last, and the Map's is the last row
+  inside the chart's frame. The Trophies filter is the exception that proves it —
+  the grid it filters fills the popup, so the filter takes the row under the grid
+  and above the blank that Rule 7 keeps over the buttons.
+
+`utils::render_search` draws the row and `utils::render_search_invite` the
+invitation; `utils::SEARCH_H` is what both spend, the field's row and the blank
+above it. `utils::tests::a_search_answers_on_the_row_it_was_typed_on` holds the
+three forms of answer and the underline's extent,
+`utils::tests::the_unopened_search_row_says_how_to_open_one` the invitation,
+`profits::tests::only_a_slash_puts_the_cursor_in_the_search` that the focus ring
+skips it, and `app::trophy_filter_tests` that the letters are the grid's until
+`/` asks for a filter. In the gallery, `120x24-map-search-hit` completes a name,
+`120x40-profits-submit-failed` answers one that resolves to nothing,
+`80x24-jobbers-popup-trophy-filtered` tallies, and
+`120x40-profits-search-closed`, `80x24-jobbers-popup-trophy-list` and
+`120x24-map-ocean` show the invitation holding the row.
+
 ### Nothing to search is nothing to show
 
-A control that cannot do anything is not drawn. The Trophies popup hides its
-search box when the pirate has no trophies, or none fetched yet, and shrinks to
-the one line it has to say — but it keeps the box when a *filter* matches
-nothing, since clearing the filter is what the user needs it for.
+A control that cannot do anything is not drawn. The Trophies popup gives up the
+search's row — the invitation included — when the pirate has no trophies, or
+none fetched yet, and shrinks to the one line it has to say: there is nothing
+there to filter and so nothing to offer filtering. A *filter* that matches
+nothing is a different matter, and keeps its row, since dismissing the filter is
+what the user needs it for.
 
 ## Rule 8: Titles are in title case
 

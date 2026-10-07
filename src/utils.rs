@@ -288,9 +288,8 @@ pub const BOX_MARGIN: u16 = 2 * (1 + PADDING);
 pub const PADDING: u16 = 1;
 
 /// `area` less the blank column [`PADDING`] keeps at each of its edges — the
-/// room a widget with no border of its own draws in, so its contents line up
-/// with those of the boxed widgets above and below it.
-pub fn padded(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+/// room a widget with no border of its own draws in.
+fn padded(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
     ratatui::layout::Rect {
         x: area.x + PADDING.min(area.width),
         width: area.width.saturating_sub(2 * PADDING),

@@ -49,10 +49,11 @@ const COL_GAP: u16 = 2; // spacing between inventory columns
 /// it to wrap once.
 const TOOLTIP_H: u16 = 2;
 
-/// `area` inset to where the boxed widgets above and below draw their contents.
-/// A box spends a border and a blank column on each side, so a strip with no
-/// box of its own keeps both rather than only the blank, or its words would sit
-/// a column to the left of every other word in the stack.
+/// `area` inset to where the boxed widgets of the stack draw their contents. A
+/// box spends a border and a blank column on each side, so the tooltip strip
+/// beneath them, having no box of its own, keeps both rather than only the
+/// blank — otherwise its words sit a column to the left of every other word on
+/// the page.
 fn strip(area: Rect) -> Rect {
     Rect {
         x: area.x + crate::utils::BOX_MARGIN / 2,
