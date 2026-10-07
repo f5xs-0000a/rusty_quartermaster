@@ -9,6 +9,7 @@ pub enum FieldKind {
     Text,
 }
 
+#[derive(Clone)]
 pub struct PromptField {
     pub label: &'static str,
     pub kind: FieldKind,
@@ -286,6 +287,17 @@ pub const BOX_MARGIN: u16 = 2 * (1 + PADDING);
 /// it was given.
 pub const PADDING: u16 = 1;
 
+/// `area` less the blank column [`PADDING`] keeps at each of its edges — the
+/// room a widget with no border of its own draws in, so its contents line up
+/// with those of the boxed widgets above and below it.
+pub fn padded(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect {
+        x: area.x + PADDING.min(area.width),
+        width: area.width.saturating_sub(2 * PADDING),
+        ..area
+    }
+}
+
 /// A bordered, padded block titled in the house style, together with the width
 /// the widget must not go below.
 ///
@@ -378,6 +390,162 @@ pub fn choice_rows(
     }
 }
 
+/// Rows a search spends: a blank one holding it off whatever is above, and the
+/// field's own. The count does not move with what the user is doing — the
+/// answer rides the field's row, and the field's row holds the invitation to
+/// open a search while none is open.
+pub const SEARCH_H: u16 = 2;
+
+/// The row a search is drawn on inside `area`, the [`SEARCH_H`] rows it was
+/// given: the last of them, the one above being the blank that sets it apart
+/// from the contents it belongs to.
+fn search_row(area: ratatui::layout::Rect) -> ratatui::layout::Rect {
+    ratatui::layout::Rect {
+        y: area.y + area.height.saturating_sub(1),
+        height: 1.min(area.height),
+        ..area
+    }
+}
+
+/// What a query found, as the row it was typed on says it.
+pub enum SearchAnswer<'a> {
+    /// The one thing the query resolves to. Where what was typed begins the
+    /// name, the rest of it is completed in place so the two read as one word;
+    /// where it does not, the name follows an arrow. A query that resolves to
+    /// nothing is named too — `no match` is as much an answer as an island is.
+    Resolved(&'a str),
+    /// Words carrying on from the ones typed, for an answer that is no kind of
+    /// name: `reveals 4 of 253 trophies` after the word being filtered on.
+    Reading(&'a str),
+}
+
+/// Draw a search field, and on the same row what the query in it found.
+///
+/// `area` is the [`SEARCH_H`] rows the search spends; the field takes the last
+/// of them. Hands back that row, which is where a click on the field falls.
+///
+/// The field is marked by an underline from its label to the end of the row,
+/// not by a filled bar. What a text field's mark says is which columns the
+/// letters land in, which is the rest of the row however little has been typed
+/// — and a mark drawn around the words would vanish on an empty query, which is
+/// when it is most needed to say the field has the keyboard. A fill would say
+/// as much, but it would say it by taking the row's ground, and the answer
+/// written on that ground is the thing hardest to read there.
+///
+/// The caret is placed only while `focused`, a caret being how a page says
+/// which field owns the letters.
+pub fn render_search(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    field: &PromptField,
+    answer: Option<SearchAnswer<'_>>,
+    focused: bool,
+) -> ratatui::layout::Rect {
+    use ratatui::{
+        layout::{Constraint, Layout},
+        style::{Color, Style},
+        text::{Line, Span},
+        widgets::Paragraph,
+    };
+
+    let row = search_row(area);
+    let label = format!("{}: ", field.label);
+    let cols = Layout::horizontal([
+        Constraint::Length(label.chars().count() as u16),
+        Constraint::Min(0),
+    ])
+    .split(row);
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            label,
+            Style::default().bold(),
+        )),
+        cols[0],
+    );
+
+    let bar = if focused {
+        Style::default().underlined()
+    } else {
+        Style::default()
+    };
+    // The answer is the field's own reading of itself, so it is marked as the
+    // field is and set apart by being dim rather than by leaving the mark.
+    let said = bar.fg(Color::DarkGray);
+    let mut spans = vec![Span::styled(field.value.as_str(), bar)];
+    match answer {
+        Some(SearchAnswer::Resolved(name)) => {
+            spans.push(Span::styled(
+                match completes(&field.value, name) {
+                    Some(rest) => rest.to_owned(),
+                    None => format!(" → {name}"),
+                },
+                said,
+            ));
+        }
+        Some(SearchAnswer::Reading(words)) => {
+            spans.push(Span::styled(format!(" {words}"), said));
+        }
+        None => {}
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(bar),
+        cols[1],
+    );
+
+    if focused {
+        frame.set_cursor_position((
+            cols[1].x + field.value[.. field.cursor].chars().count() as u16,
+            cols[1].y,
+        ));
+    }
+    row
+}
+
+/// The tail of `name` that `typed` leaves to complete, if `typed` begins it
+/// however it was capitalized. `None` where the words share no such beginning,
+/// which is what sends the answer to the far side of an arrow.
+fn completes<'a>(typed: &str, name: &'a str) -> Option<&'a str> {
+    if typed.is_empty() {
+        return None;
+    }
+    let mut rest = name.char_indices();
+    for c in typed.chars() {
+        let (_, had) = rest.next()?;
+        if !had.eq_ignore_ascii_case(&c) {
+            return None;
+        }
+    }
+    Some(&name[rest.next().map_or(name.len(), |(i, _)| i) ..])
+}
+
+/// Draw, in the row a search would take, the invitation to open one — `Press /
+/// to search for an island`, where `does` is what this search does with what is
+/// typed into it.
+///
+/// A search summoned by a key is a search nothing on the page points to, so the
+/// row it will take says how to summon it for as long as it is unopened. The
+/// row is counted either way ([`SEARCH_H`]), so the words cost nothing.
+pub fn render_search_invite(
+    frame: &mut ratatui::Frame,
+    area: ratatui::layout::Rect,
+    does: &str,
+) {
+    use ratatui::{
+        style::{Color, Style},
+        text::Span,
+        widgets::Paragraph,
+    };
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            format!("Press / to {does}."),
+            Style::default().fg(Color::DarkGray),
+        )),
+        search_row(area),
+    );
+}
+
 /// Draw the notice that stands in for something unusable until a prerequisite
 /// is met — a missing argument, a window too small — centered on both axes of
 /// `area` and word-wrapped to its width. Each entry is wrapped on its own, so a
@@ -428,15 +596,7 @@ pub fn render_page_notice(
     area: ratatui::layout::Rect,
     paragraphs: &[(&str, ratatui::style::Style)],
 ) {
-    render_notice(
-        frame,
-        ratatui::layout::Rect {
-            x: area.x + PADDING.min(area.width),
-            width: area.width.saturating_sub(2 * PADDING),
-            ..area
-        },
-        paragraphs,
-    );
+    render_notice(frame, padded(area), paragraphs);
 }
 
 /// Columns a button spends on the brackets that mark it as one, `"[ "` and
@@ -1049,6 +1209,128 @@ mod tests {
                 "{title}: the bar is on the padding"
             );
         }
+    }
+
+    /// Render a 30-column search row holding `typed`, answered by `answer`, and
+    /// return what it reads together with the columns the field is marked
+    /// under.
+    #[cfg(test)]
+    fn search_row(
+        typed: &str,
+        answer: Option<SearchAnswer<'_>>,
+    ) -> (String, Vec<u16>) {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        const W: u16 = 30;
+        let mut field = PromptField::new("Find", FieldKind::Text);
+        field.value = typed.to_owned();
+        field.cursor = field.value.len();
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(W, SEARCH_H)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_search(
+                    frame,
+                    Rect::new(0, 0, W, SEARCH_H),
+                    &field,
+                    answer,
+                    true,
+                );
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        (
+            // The field is on the last of the rows a search spends, the ones
+            // above it being blank.
+            (0 .. W)
+                .map(|x| buffer[(x, SEARCH_H - 1)].symbol())
+                .collect(),
+            (0 .. W)
+                .filter(|x| {
+                    buffer[(*x, SEARCH_H - 1)]
+                        .modifier
+                        .contains(ratatui::style::Modifier::UNDERLINED)
+                })
+                .collect(),
+        )
+    }
+
+    /// The answer rides the row it was typed on: the rest of a name the words
+    /// begin is completed in place, and an answer those words do not begin
+    /// follows an arrow. Either way the underline marks the columns the letters
+    /// land in — from the label to the end of the row, the answer among them,
+    /// however little was typed.
+    #[test]
+    fn a_search_answers_on_the_row_it_was_typed_on() {
+        let (read, marked) = search_row(
+            "Admi",
+            Some(SearchAnswer::Resolved("Admiral Island")),
+        );
+        assert_eq!(read, "Find: Admiral Island          ");
+        assert_eq!(
+            marked,
+            ("Find: ".len() as u16 .. 30).collect::<Vec<_>>(),
+        );
+
+        // Capitalized as the user typed it, completed as the name has it.
+        let (read, _) = search_row(
+            "adMI",
+            Some(SearchAnswer::Resolved("Admiral Island")),
+        );
+        assert_eq!(read, "Find: adMIral Island          ");
+
+        let (read, _) = search_row(
+            "Ss",
+            Some(SearchAnswer::Resolved("Sayers Rock")),
+        );
+        assert_eq!(read, "Find: Ss → Sayers Rock        ");
+
+        let (read, _) = search_row(
+            "Frenetic",
+            Some(SearchAnswer::Reading("reveals 4")),
+        );
+        assert_eq!(read, "Find: Frenetic reveals 4      ");
+
+        // Nothing typed is nothing answered, and the bar is there regardless.
+        let (read, marked) = search_row("", None);
+        assert_eq!(read, "Find:                         ");
+        assert_eq!(
+            marked,
+            ("Find: ".len() as u16 .. 30).collect::<Vec<_>>(),
+        );
+    }
+
+    /// The invitation holds the row while no search is open in it, so the row
+    /// is never idle and what the page needs never moves.
+    #[test]
+    fn the_unopened_search_row_says_how_to_open_one() {
+        use ratatui::{Terminal, backend::TestBackend, layout::Rect};
+
+        let mut terminal =
+            Terminal::new(TestBackend::new(30, SEARCH_H)).expect("terminal");
+        terminal
+            .draw(|frame| {
+                render_search_invite(
+                    frame,
+                    Rect::new(0, 0, 30, SEARCH_H),
+                    "find an example",
+                );
+            })
+            .expect("draw");
+
+        let buffer = terminal.backend().buffer();
+        let rows: Vec<String> = (0 .. SEARCH_H)
+            .map(|y| (0 .. 30).map(|x| buffer[(x, y)].symbol()).collect())
+            .collect();
+        assert_eq!(
+            rows,
+            [
+                "                              ",
+                "Press / to find an example.   ",
+            ],
+        );
     }
 
     #[test]

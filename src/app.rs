@@ -920,7 +920,12 @@ impl AppShell {
     /// first claim on Esc instead of the universal jump-to-Exit).
     fn current_popup_open(&self) -> bool {
         match APP_LIST[self.sidebar_index] {
-            AppId::Profits => self.profits.popup.is_some(),
+            // The open search owns Esc as the Map's does, dismissing itself
+            // rather than the page.
+            AppId::Profits => {
+                self.profits.popup.is_some()
+                    || self.profits.focus == crate::profits::Focus::Input
+            }
             AppId::Damage => {
                 self.damage.popup.is_some()
                     || self.damage.battle_prompt.is_some()
@@ -2907,26 +2912,27 @@ impl AppShell {
         self.pirate_cache.force_requery(&name);
         self.jobbers_ui.trophy_popup = Some(TrophyPopup {
             name,
-            search: String::new(),
+            search: None,
             offset: 0,
             view_h: 0,
         });
     }
 
-    /// Modal key handling for the trophies popup: type to filter, ↑/↓ scroll,
-    /// Esc returns to the stats popup.
+    /// Modal key handling for the trophies popup: `/` opens the filter, ↑/↓
+    /// scroll, Esc returns to the stats popup. An open filter owns the letters
+    /// and the keys that move within a text field; the grid keeps ↑/↓ either
+    /// way, a filter being one line with nowhere to go up or down to.
     fn handle_trophy_popup_key(&mut self, key: KeyEvent) -> InputResult {
         let Some(tp) = self.jobbers_ui.trophy_popup.as_mut() else {
             return InputResult::Consumed;
         };
         match key.code {
-            // Esc clears a non-empty search first; only then closes the popup.
+            // Esc dismisses the filter first; only then closes the popup.
             KeyCode::Esc => {
-                if tp.search.is_empty() {
-                    self.jobbers_ui.trophy_popup = None;
-                } else {
-                    tp.search.clear();
+                if tp.search.take().is_some() {
                     tp.offset = 0;
+                } else {
+                    self.jobbers_ui.trophy_popup = None;
                 }
             }
             KeyCode::Up => tp.offset = tp.offset.saturating_sub(1),
@@ -2939,15 +2945,37 @@ impl AppShell {
                 let half = (tp.view_h / 2).max(1);
                 tp.offset = tp.offset.saturating_add(half);
             }
-            KeyCode::Backspace => {
-                tp.search.pop();
+            KeyCode::Char('/') if tp.search.is_none() => {
+                tp.search = Some(crate::utils::PromptField::new(
+                    "Search",
+                    crate::utils::FieldKind::Text,
+                ));
                 tp.offset = 0;
             }
-            KeyCode::Char(c) => {
-                tp.search.push(c);
-                tp.offset = 0;
+            _ => {
+                let Some(search) = tp.search.as_mut() else {
+                    return InputResult::Consumed;
+                };
+                match key.code {
+                    KeyCode::Left => search.move_left(),
+                    KeyCode::Right => search.move_right(),
+                    KeyCode::Home => search.cursor = 0,
+                    KeyCode::End => search.cursor = search.value.len(),
+                    KeyCode::Backspace => {
+                        search.delete_char_before();
+                        tp.offset = 0;
+                    }
+                    KeyCode::Delete => {
+                        search.delete_char_at();
+                        tp.offset = 0;
+                    }
+                    KeyCode::Char(c) => {
+                        search.insert_char(c);
+                        tp.offset = 0;
+                    }
+                    _ => {}
+                }
             }
-            _ => {}
         }
         InputResult::Consumed
     }
@@ -4945,5 +4973,78 @@ mod jobber_room_tests {
         let text = screen(&mut shell, rows + 20);
         assert_eq!(names_shown(&text), 20);
         assert_eq!(leaderboard_rows(&text), LEADERBOARD_MIN);
+    }
+}
+
+#[cfg(test)]
+mod trophy_filter_tests {
+    use super::*;
+
+    fn with_the_popup_open() -> AppShell {
+        let mut shell = AppShell::new(vec![]);
+        shell.jobbers_ui.trophy_popup = Some(crate::jobbers::TrophyPopup {
+            name: "Matea".to_owned(),
+            search: None,
+            offset: 0,
+            view_h: 10,
+        });
+        shell
+    }
+
+    fn press(shell: &mut AppShell, code: KeyCode) {
+        shell.handle_trophy_popup_key(KeyEvent::new(
+            code,
+            crossterm::event::KeyModifiers::NONE,
+        ));
+    }
+
+    fn filter(shell: &AppShell) -> Option<&crate::utils::PromptField> {
+        shell
+            .jobbers_ui
+            .trophy_popup
+            .as_ref()
+            .expect("the popup")
+            .search
+            .as_ref()
+    }
+
+    /// The letters are the grid's until a filter is asked for, and the filter
+    /// is a text field once there is one, so the caret reaches into the
+    /// middle of what was typed rather than only the end of it.
+    #[test]
+    fn the_trophy_filter_takes_a_correction_mid_word() {
+        let mut shell = with_the_popup_open();
+        press(&mut shell, KeyCode::Char('g'));
+        assert!(
+            filter(&shell).is_none(),
+            "a letter opened a filter nobody asked for"
+        );
+
+        press(&mut shell, KeyCode::Char('/'));
+        for c in "gunn".chars() {
+            press(&mut shell, KeyCode::Char(c));
+        }
+        press(&mut shell, KeyCode::Left);
+        press(&mut shell, KeyCode::Backspace);
+        press(&mut shell, KeyCode::Char('e'));
+
+        let search = filter(&shell).expect("a filter");
+        assert_eq!(search.value, "guen");
+        assert_eq!(search.cursor, 3);
+    }
+
+    #[test]
+    fn esc_dismisses_the_filter_before_it_closes_the_popup() {
+        let mut shell = with_the_popup_open();
+        press(&mut shell, KeyCode::Char('/'));
+        press(&mut shell, KeyCode::Char('g'));
+        press(&mut shell, KeyCode::Esc);
+        assert!(
+            filter(&shell).is_none(),
+            "the filter outlived Esc"
+        );
+
+        press(&mut shell, KeyCode::Esc);
+        assert!(shell.jobbers_ui.trophy_popup.is_none());
     }
 }

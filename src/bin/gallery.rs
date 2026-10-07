@@ -1212,13 +1212,32 @@ fn profits_states(states: &mut Vec<State>) {
 
     states.push(state(
         "profits-submit-failed",
-        "Profits with a rejected commodity search",
+        "Profits with a commodity search that resolves to nothing",
         move |shell| {
             populate(shell);
             shell.profits.focus = Focus::Input;
-            shell.profits.input = "Nosuchgood".to_owned();
-            shell.profits.submit_failed =
-                Some("No commodity matches \"Nosuchgood\".".to_owned());
+            // A query nothing answers is left in the box to be corrected, and
+            // the row says as much where a name would be completed.
+            shell.profits.search.value = "Nosuchgood".to_owned();
+            shell.profits.search.cursor = shell.profits.search.value.len();
+        },
+    ));
+    states.push(state(
+        "profits-search-completed",
+        "Profits completing a commodity name in the search row",
+        move |shell| {
+            populate(shell);
+            shell.profits.focus = Focus::Input;
+            shell.profits.search.value = "Ru".to_owned();
+            shell.profits.search.cursor = shell.profits.search.value.len();
+        },
+    ));
+    states.push(state(
+        "profits-search-closed",
+        "Profits inviting a search while the cursor is elsewhere",
+        move |shell| {
+            populate(shell);
+            shell.profits.focus_table_top();
         },
     ));
 
@@ -1628,7 +1647,7 @@ fn jobbers_states(states: &mut Vec<State>) {
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),
-                search: String::new(),
+                search: None,
                 offset: 0,
                 view_h: 10,
             });
@@ -1649,7 +1668,55 @@ fn jobbers_states(states: &mut Vec<State>) {
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),
-                search: String::new(),
+                search: None,
+                offset: 0,
+                view_h: 10,
+            });
+        },
+    ));
+    states.push(state(
+        "jobbers-popup-trophy-filtered",
+        "Jobbers, trophy browser with a filter typed into it",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 1,
+                offset: 0,
+                view_h: 0,
+            });
+            let mut search = PromptField::new("Search", FieldKind::Text);
+            search.value = "Gun".to_owned();
+            search.cursor = search.value.len();
+            shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
+                name: "Matetwo".to_owned(),
+                search: Some(search),
+                offset: 0,
+                view_h: 10,
+            });
+        },
+    ));
+    states.push(state(
+        "jobbers-popup-trophy-nomatch",
+        "Jobbers, trophy browser whose filter matches nothing",
+        |shell| {
+            feed(shell, PILLAGE);
+            open(shell, AppId::Chatlog, true);
+            cache_pirate(shell, "Matetwo", 0);
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 1,
+                offset: 0,
+                view_h: 0,
+            });
+            let mut search = PromptField::new("Search", FieldKind::Text);
+            search.value = "Nosuchtrophy".to_owned();
+            search.cursor = search.value.len();
+            shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
+                name: "Matetwo".to_owned(),
+                search: Some(search),
                 offset: 0,
                 view_h: 10,
             });
@@ -2090,13 +2157,15 @@ fn map_states(states: &mut Vec<State>) {
     ));
     states.push(state(
         "map-search-hit",
-        "Map search box with a match",
+        "Map search completing an island's name",
         |shell| {
             *shell = map_shell();
             let island = dump_ocean().islands.first().expect("an island");
-            let mut field = PromptField::new("Find", FieldKind::Text);
-            field.value = island.name.to_owned();
-            field.cursor = field.value.chars().count();
+            let mut field = PromptField::new("Search", FieldKind::Text);
+            // The first few letters, so the rest of the name is the completion
+            // the row draws for them.
+            field.value = island.name.chars().take(5).collect();
+            field.cursor = field.value.len();
             shell.map.search = Some(field);
         },
     ));
@@ -2105,7 +2174,7 @@ fn map_states(states: &mut Vec<State>) {
         "Map search box with no match",
         |shell| {
             *shell = map_shell();
-            let mut field = PromptField::new("Find", FieldKind::Text);
+            let mut field = PromptField::new("Search", FieldKind::Text);
             field.value = "Nowhere".to_owned();
             field.cursor = field.value.chars().count();
             shell.map.search = Some(field);

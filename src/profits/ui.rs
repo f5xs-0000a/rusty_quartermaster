@@ -49,6 +49,18 @@ const COL_GAP: u16 = 2; // spacing between inventory columns
 /// it to wrap once.
 const TOOLTIP_H: u16 = 2;
 
+/// `area` inset to where the boxed widgets above and below draw their contents.
+/// A box spends a border and a blank column on each side, so a strip with no
+/// box of its own keeps both rather than only the blank, or its words would sit
+/// a column to the left of every other word in the stack.
+fn strip(area: Rect) -> Rect {
+    Rect {
+        x: area.x + crate::utils::BOX_MARGIN / 2,
+        width: area.width.saturating_sub(crate::utils::BOX_MARGIN),
+        ..area
+    }
+}
+
 /// Columns a No / Yes button row spends. A confirm popup is never narrower than
 /// its own buttons.
 fn yes_no_width() -> u16 {
@@ -145,36 +157,31 @@ pub fn render(
     // -- Vertical stack ----------------------------------------------------
     let params_h = visible.len() as u16 + 1 /*blank*/ + 1 /*button*/ + 2 /*borders*/;
     let stats_h = 1 + 2; // 1 row + borders
-    // The suggestion row and the tooltip only take room when they have
-    // something to say. The Inventory is the one widget that grows into
-    // what the others leave, so a row reserved for nothing is a commodity
-    // row it loses.
-    let suggestion_h = u16::from(build_suggestion_line(app, shared).is_some());
-    let search_h = 1 /*input*/ + suggestion_h + 2 /*borders*/;
+    // The tooltip only takes room when it has something to say. The Inventory
+    // is the one widget that grows into what the others leave, so a row
+    // reserved for nothing is a commodity row it loses. The search's row, which
+    // the Inventory keeps at its foot, is not of that kind: it holds the
+    // invitation to open one while none is open, so it is never idle.
     let tooltip_h = if build_tooltip(app, shared).is_some() {
         TOOLTIP_H // up to two lines once it wraps
     } else {
         0
     };
 
-    // Room the page must have, counting the rows the suggestion and the tooltip
-    // take when they have something to say even while they have not: what the
-    // page needs cannot move as focus moves, or resting on a field would make
-    // the page disappear. The Inventory keeps a scrollable view's worth of
-    // commodities under its header, which is what the spare rows go to when the
-    // transient ones are empty.
+    // Room the page must have, counting the rows the tooltip takes when it has
+    // something to say even while it has not: what the page needs cannot move
+    // as focus moves, or resting on a field would make the page disappear. The
+    // Inventory keeps a scrollable view's worth of commodities under its
+    // header, which is what the spare rows go to when the tooltip is empty.
     // The sideways scrollbar's row is counted whether the table is wide enough
-    // to want one or not, for the same reason the transient rows are: a window
-    // the user widens or narrows must not be able to make the page vanish.
+    // to want one or not, for the same reason: a window the user widens or
+    // narrows must not be able to make the page vanish.
     let inventory_h = 2 /*borders*/
-        + 2 /*header and its blank*/
+        + 1 /*the header's row*/
         + crate::utils::SCROLL_MIN_ROWS
-        + crate::utils::SCROLLBAR_H;
-    let needed_height = inventory_h
-        + 1 /*input*/ + 1 /*suggestion*/ + 2 /*borders*/
-        + stats_h
-        + params_h
-        + TOOLTIP_H;
+        + crate::utils::SCROLLBAR_H
+        + crate::utils::SEARCH_H;
+    let needed_height = inventory_h + stats_h + params_h + TOOLTIP_H;
     if crate::utils::too_short(frame, area, needed_height) {
         return;
     }
@@ -182,8 +189,7 @@ pub fn render(
     // Inventory is the topmost widget and takes the Fill slot so it scrolls;
     // the others stack below it at fixed heights, with the tooltip last.
     let vchunks = Layout::vertical([
-        Constraint::Fill(1), // inventory
-        Constraint::Length(search_h),
+        Constraint::Fill(1), // inventory, the search at its foot
         Constraint::Length(stats_h),
         Constraint::Length(params_h),
         Constraint::Length(tooltip_h),
@@ -193,19 +199,16 @@ pub fn render(
     render_inventory(
         frame, vchunks[0], app, shared, focused, item_width, regions,
     );
-    render_search(
-        frame, vchunks[1], app, shared, focused, regions,
-    );
     render_hold_stats(
         frame,
-        vchunks[2],
+        vchunks[1],
         app,
         shared,
         label_width,
     );
     render_parameters(
         frame,
-        vchunks[3],
+        vchunks[2],
         app,
         shared,
         focused,
@@ -219,7 +222,7 @@ pub fn render(
             Paragraph::new(text).wrap(Wrap {
                 trim: true,
             }),
-            vchunks[4],
+            strip(vchunks[3]),
         );
     }
 
@@ -449,8 +452,7 @@ fn render_inventory(
             .into_iter()
             .map(|cell| Cell::new(Line::from(cell).centered())),
     )
-    .style(Style::default().bold())
-    .bottom_margin(1);
+    .style(Style::default().bold());
 
     let rows: Vec<Row> = app
         .rows
@@ -505,8 +507,21 @@ fn render_inventory(
         .borders(Borders::ALL)
         .padding(Padding::horizontal(1))
         .title(offset_title("Inventory").0);
-    let inner = block.inner(area);
+    let box_inner = block.inner(area);
     frame.render_widget(block, area);
+
+    // The box's last row is the search's. The commodities being added go in
+    // here, so the row that puts one in belongs inside the box they land in
+    // rather than adrift beneath it.
+    let stack = Layout::vertical([
+        Constraint::Min(0),
+        Constraint::Length(crate::utils::SEARCH_H),
+    ])
+    .split(box_inner);
+    let inner = stack[0];
+    render_search(
+        frame, stack[1], app, shared, focused, regions,
+    );
 
     // Column widths never shrink, so the table has one intrinsic width.
     let col_ws: Vec<u16> = widths
@@ -526,7 +541,7 @@ fn render_inventory(
     // the sideways window narrower, and the sideways one takes the bottom
     // row, which can only leave the rows window shorter. Taking room away
     // never un-needs a bar, so one pass over the pair settles both.
-    let rows_h = inner.height.saturating_sub(2); // header + its margin
+    let rows_h = inner.height.saturating_sub(1); // the header's row
     let mut vscrolls = crate::utils::scrolls(rows_h, app.rows.len());
     let hscrolls = crate::utils::scrolls(
         inner.width.saturating_sub(
@@ -560,11 +575,11 @@ fn render_inventory(
             0
         },
     );
-    // The window the rows scroll through: what is left under the header and its
-    // margin, above the sideways bar.
+    // The window the rows scroll through: what is left under the header, above
+    // the sideways bar.
     let body = Rect {
-        y: inner.y + 2,
-        height: table_h.saturating_sub(2),
+        y: inner.y + 1,
+        height: table_h.saturating_sub(1),
         ..inner
     };
 
@@ -662,7 +677,7 @@ fn render_inventory(
     // Register click regions for the name + editable cells. The Sell/Buy
     // columns are only present (and clickable) when prices are entered
     // manually.
-    let data_start_y = inner.y + 2; // header row + bottom_margin
+    let data_start_y = inner.y + 1; // under the header's row
     let visible_rows = body.height;
     for vis_row in 0 .. visible_rows as usize {
         let data_row = scroll_offset + vis_row;
@@ -694,6 +709,8 @@ fn render_inventory(
     }
 }
 
+/// The Inventory's last row: the search field while the page's cursor is on it,
+/// and otherwise how to put it there.
 fn render_search(
     frame: &mut Frame,
     area: Rect,
@@ -702,59 +719,34 @@ fn render_search(
     focused: bool,
     regions: &mut Vec<ClickRegion>,
 ) {
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1))
-        .title(offset_title("Search").0);
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    let rows = Layout::vertical([
-        Constraint::Length(1), // input
-        Constraint::Length(1), // suggestion (input-bound)
-    ])
-    .split(inner);
-
-    let label = "Add Commodity: ";
-    let input_style = if focused && app.focus == Focus::Input {
-        Style::default().bg(Color::White).fg(Color::Black)
+    if app.focus == Focus::Input {
+        // The commodity the query resolves to — the fuzzy match is the
+        // suggestion, and one that resolves to none says so where the name
+        // would be completed.
+        let answer = (!app.search.value.trim().is_empty()).then(|| {
+            app.suggest(shared.commodities).map_or("no match", |id| {
+                app::commod_name(shared.commodities, id)
+            })
+        });
+        crate::utils::render_search(
+            frame,
+            area,
+            &app.search,
+            answer.map(crate::utils::SearchAnswer::Resolved),
+            focused,
+        );
     } else {
-        Style::default()
-    };
-    let input_cols = Layout::horizontal([
-        Constraint::Length(label.len() as u16),
-        Constraint::Fill(1),
-    ])
-    .split(rows[0]);
-
-    frame.render_widget(
-        Paragraph::new(Span::styled(
-            label,
-            Style::default().bold(),
-        )),
-        input_cols[0],
-    );
-    // The input box fills the rest of the row, so the highlight spans the full
-    // available width rather than shrinking to the typed text.
-    frame.render_widget(
-        Paragraph::new(Span::raw(&app.input)).style(input_style),
-        input_cols[1],
-    );
-
-    if focused && app.focus == Focus::Input {
-        let cursor_x =
-            input_cols[1].x + app.input[.. app.cursor].chars().count() as u16;
-        frame.set_cursor_position((cursor_x, input_cols[1].y));
+        crate::utils::render_search_invite(frame, area, "add a commodity");
     }
-
+    // The row answers to a click either way: on the field it is where the caret
+    // goes, and on the invitation it is what the mouse has instead of `/`.
     regions.push(ClickRegion {
-        rect: rows[0],
+        rect: Rect {
+            height: crate::utils::SEARCH_H,
+            ..area
+        },
         target: ClickTarget::ProfitsInput,
     });
-
-    if let Some(line) = build_suggestion_line(app, shared) {
-        frame.render_widget(Paragraph::new(line), rows[1]);
-    }
 }
 
 /// The text a Parameters field draws on its value side: the value it was given,
@@ -839,52 +831,6 @@ fn render_island_field(
                 - field.value[.. field.cursor].chars().count())
                 as u16;
         frame.set_cursor_position((cx, area.y));
-    }
-}
-
-/// Input-bound commodity suggestion shown under the Search box.
-fn build_suggestion_line<'a>(
-    app: &'a ProfitsApp,
-    shared: &'a SharedState,
-) -> Option<Line<'a>> {
-    let suggestion = app.suggest(shared.commodities);
-    let query_lower = app.input.trim().to_lowercase();
-    match suggestion {
-        Some(id) => {
-            let name = app::commod_name(shared.commodities, id);
-            if name.eq_ignore_ascii_case(&query_lower) {
-                None
-            } else {
-                Some(Line::from(vec![
-                    Span::styled(
-                        "Did ye mean \"",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        name,
-                        Style::default().bold().italic().fg(Color::DarkGray),
-                    ),
-                    Span::styled(
-                        "\"? Press enter if yes.",
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]))
-            }
-        }
-        None => {
-            let query = app.submit_failed.as_ref()?;
-            Some(Line::from(vec![
-                Span::styled("No \"", Style::default().fg(Color::Red)),
-                Span::styled(
-                    query.as_str(),
-                    Style::default().bold().italic().fg(Color::Red),
-                ),
-                Span::styled(
-                    "\" found",
-                    Style::default().fg(Color::Red),
-                ),
-            ]))
-        }
     }
 }
 
@@ -1039,7 +985,9 @@ fn build_tooltip<'a>(
                  divvy.",
             )
         }
-        Focus::Input => hint("Type a commodity and press Enter to add it."),
+        Focus::Input => {
+            hint("Type a commodity and press Enter to add it; Esc dismisses.")
+        }
         Focus::Table => {
             // Per-column action for the selected inventory cell.
             let action =
@@ -1751,13 +1699,14 @@ mod inventory_tests {
     /// a field raises a tooltip, and a page that only counted those rows while
     /// one was up would disappear under the user's hands.
     ///
-    /// Without Market the panel shows three fields, so the page needs 25
-    /// rows: 9 for the Inventory (its sideways scrollbar's row among them), 4
-    /// for the Search, 3 for the Hold Stats, 7 for the Parameters and 2 for the
-    /// tooltip.
+    /// With prices entered by hand the panel shows three fields, so the page
+    /// needs 22 rows: 8 for the Inventory (its header, four commodity rows, its
+    /// sideways scrollbar's row and its borders), 2 more for the search at its
+    /// foot and the blank above it, 3 for the Hold Stats, 7 for the Parameters
+    /// and 2 for the tooltip.
     #[test]
     fn what_the_page_needs_does_not_move_with_the_focus() {
-        for (height, fits) in [(24, false), (25, true)] {
+        for (height, fits) in [(21, false), (22, true)] {
             // The table carries no tooltip; a panel field does.
             for focus in [Focus::Table, Focus::Panel(P_RESTOCK_RATE)] {
                 let screen = draw_at(&["Rum"], 80, height, focus).2;

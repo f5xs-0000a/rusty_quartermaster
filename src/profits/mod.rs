@@ -320,8 +320,10 @@ pub enum Focus {
 
 pub struct ProfitsApp {
     pub rows: Vec<InventoryRow>,
-    pub input: String,
-    pub cursor: usize,
+    /// The Search box's field. Its label says what Enter does with what is
+    /// typed into it, which here is add a commodity rather than filter the
+    /// rows on show.
+    pub search: PromptField,
     pub focus: Focus,
     pub table_state: TableState,
     /// Columns the inventory table is scrolled right by, when it is wider than
@@ -329,7 +331,6 @@ pub struct ProfitsApp {
     /// instead, so a narrow terminal costs reach rather than legibility.
     pub hscroll: u16,
     pub panel: [PromptField; PANEL_COUNT],
-    pub submit_failed: Option<String>,
     pub popup: Option<PopupKind>,
     /// A clipboard hold waiting for the popup slot to free up; see
     /// [`Self::raise_pending_hold`].
@@ -351,9 +352,10 @@ impl ProfitsApp {
     pub fn new() -> Self {
         Self {
             rows: Vec::new(),
-            input: String::new(),
-            cursor: 0,
-            focus: Focus::Input,
+            search: PromptField::new("Add Commodity", FieldKind::Text),
+            // The Inventory, never the search: a search is summoned, so the
+            // page is never found with one already open.
+            focus: Focus::Table,
             table_state: TableState::default(),
             hscroll: 0,
             panel: [
@@ -371,7 +373,6 @@ impl ProfitsApp {
                     FieldKind::PositiveInt,
                 ),
             ],
-            submit_failed: None,
             popup: None,
             pending_hold: None,
             calc_error: None,
@@ -428,7 +429,7 @@ impl ProfitsApp {
     // -- commodity suggestion & submit --
 
     pub fn suggest(&self, commodities: &[Commodity]) -> Option<u64> {
-        let query = self.input.trim().to_lowercase();
+        let query = self.search.value.trim().to_lowercase();
         if query.is_empty() {
             return None;
         }
@@ -481,31 +482,32 @@ impl ProfitsApp {
     }
 
     /// Returns true if the island list should be rebuilt (a new row was added).
+    ///
+    /// A query that resolves to nothing is left in the box: the row says so
+    /// where the name would be, which is a word to correct rather than one to
+    /// type again.
     pub fn submit(&mut self, commodities: &[Commodity]) -> bool {
-        let query = self.input.trim().to_lowercase();
+        let query = self.search.value.trim().to_lowercase();
         if query.is_empty() {
-            self.input.clear();
-            self.cursor = 0;
+            self.clear_search();
             return false;
         }
 
         let mut changed = false;
-        match self.suggest(commodities) {
-            Some(id) => {
-                if self.row_index(id).is_none() {
-                    self.insert_row(id, commodities);
-                    changed = true;
-                }
-                self.submit_failed = None;
+        if let Some(id) = self.suggest(commodities) {
+            if self.row_index(id).is_none() {
+                self.insert_row(id, commodities);
+                changed = true;
             }
-            None => {
-                self.submit_failed = Some(self.input.trim().to_owned());
-            }
+            self.clear_search();
         }
-
-        self.input.clear();
-        self.cursor = 0;
         changed
+    }
+
+    /// Empty the Search box, the caret with it.
+    fn clear_search(&mut self) {
+        self.search.value.clear();
+        self.search.cursor = 0;
     }
 
     fn row_index(&self, commod_id: u64) -> Option<usize> {
@@ -638,7 +640,7 @@ impl ProfitsApp {
 
     pub fn focus_table_bottom(&mut self) {
         if self.rows.is_empty() {
-            self.focus = Focus::Button;
+            self.focus_table_top();
             return;
         }
         self.focus = Focus::Table;
@@ -646,18 +648,29 @@ impl ProfitsApp {
         self.table_state.select_column(Some(FIRST_COL));
     }
 
+    /// The Inventory, at its first row — or with no row to rest on, the box
+    /// itself, whose keys then lead out of it. An empty Inventory is still the
+    /// page's topmost widget and still the one the search belongs to, so it
+    /// keeps the focus rather than handing it to the search.
     pub fn focus_table_top(&mut self) {
+        self.focus = Focus::Table;
         if self.rows.is_empty() {
-            self.focus_input();
+            self.table_state.select(None);
+            self.table_state.select_column(None);
             return;
         }
-        self.focus = Focus::Table;
         self.table_state.select(Some(0));
         self.table_state.select_column(Some(FIRST_COL));
     }
 
+    /// Open the search and put the page's cursor in it. Only `/` and a click on
+    /// its row come here: the search is not a stop on the page's focus ring, so
+    /// the row invites one until the user asks for one. A summoned search
+    /// starts empty, since what was typed into the last one is not on show
+    /// to be built on.
     pub fn focus_input(&mut self) {
         self.focus = Focus::Input;
+        self.clear_search();
         self.table_state.select(None);
         self.table_state.select_column(None);
     }
@@ -670,54 +683,11 @@ impl ProfitsApp {
 
     // -- input manipulation --
 
-    pub fn input_insert_char(&mut self, c: char) {
-        self.input.insert(self.cursor, c);
-        self.cursor += c.len_utf8();
-        self.submit_failed = None;
+    /// What the page no longer stands behind once the query is edited: the
+    /// error the last calculation raised, which answered a page the user has
+    /// since moved on from.
+    fn query_changed(&mut self) {
         self.calc_error = None;
-    }
-
-    pub fn input_delete_char_before(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        let prev = self.input[.. self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-        self.input.remove(prev);
-        self.cursor = prev;
-        self.submit_failed = None;
-        self.calc_error = None;
-    }
-
-    pub fn input_delete_char_at(&mut self) {
-        if self.cursor < self.input.len() {
-            self.input.remove(self.cursor);
-            self.submit_failed = None;
-            self.calc_error = None;
-        }
-    }
-
-    pub fn input_move_left(&mut self) {
-        if self.cursor == 0 {
-            return;
-        }
-        self.cursor = self.input[.. self.cursor]
-            .char_indices()
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0);
-    }
-
-    pub fn input_move_right(&mut self) {
-        if self.cursor < self.input.len() {
-            self.cursor += self.input[self.cursor ..]
-                .chars()
-                .next()
-                .map_or(0, |c| c.len_utf8());
-        }
     }
 
     // -- table helpers --
@@ -737,13 +707,15 @@ impl ProfitsApp {
         }
     }
 
-    pub fn table_down(&mut self) {
-        if let Some(row) = self.table_state.selected() {
-            if row + 1 < self.rows.len() {
+    /// Move the row cursor down. False where there was no row below it to move
+    /// to, which is the caller's cue to leave the table.
+    pub fn table_down(&mut self) -> bool {
+        match self.table_state.selected() {
+            Some(row) if row + 1 < self.rows.len() => {
                 self.table_state.select(Some(row + 1));
-            } else {
-                self.focus_input();
+                true
             }
+            _ => false,
         }
     }
 
@@ -1146,6 +1118,15 @@ impl ProfitsApp {
         if key.code == KeyCode::Esc {
             return self.handle_esc(shared);
         }
+        // `/` summons the search wherever the page's cursor is, so the one key
+        // opens every search in the app. An open search has the letters, and a
+        // popup has the keys outright.
+        if key.code == KeyCode::Char('/')
+            && !matches!(self.focus, Focus::Input | Focus::Popup)
+        {
+            self.focus_input();
+            return InputResult::Consumed;
+        }
 
         match self.focus {
             Focus::Input => self.handle_input_key(key, shared),
@@ -1158,6 +1139,13 @@ impl ProfitsApp {
 
     fn handle_esc(&mut self, shared: &SharedState) -> InputResult {
         if self.popup.is_none() {
+            // The search dismisses itself before the page hands focus back,
+            // landing where ↑ out of it lands: the Inventory, whose foot it
+            // sits at, with or without rows in it.
+            if self.focus == Focus::Input {
+                self.focus_table_bottom();
+                return InputResult::Consumed;
+            }
             return InputResult::Exit;
         }
 
@@ -1187,26 +1175,19 @@ impl ProfitsApp {
             }
             _ => {
                 self.popup = None;
-                self.focus = Focus::Input;
+                self.focus_table_top();
             }
         }
         InputResult::Consumed
     }
 
-    /// Dismiss an informational "Ok" popup (PriceBlock / ProfitResult). After a
-    /// PriceBlock the user needs to fill prices, so land back in the inventory
-    /// table; otherwise return to the search box.
+    /// Dismiss an informational "Ok" popup (PriceBlock / ProfitResult), landing
+    /// back in the Inventory — after a PriceBlock because the user has prices
+    /// to fill in, and otherwise because the search is not a place the page
+    /// may put the cursor by itself.
     pub fn dismiss_ok_popup(&mut self) {
-        let to_table = matches!(
-            self.popup,
-            Some(PopupKind::PriceBlock { .. })
-        ) && !self.rows.is_empty();
         self.popup = None;
-        if to_table {
-            self.focus_table_top();
-        } else {
-            self.focus_input();
-        }
+        self.focus_table_top();
     }
 
     fn handle_input_key(
@@ -1220,19 +1201,21 @@ impl ProfitsApp {
                     return InputResult::RebuildIslands;
                 }
             }
-            KeyCode::Backspace => self.input_delete_char_before(),
-            KeyCode::Delete => self.input_delete_char_at(),
-            KeyCode::Left => self.input_move_left(),
-            KeyCode::Right => self.input_move_right(),
-            KeyCode::Home => self.cursor = 0,
-            KeyCode::End => self.cursor = self.input.len(),
+            KeyCode::Backspace => {
+                self.search.delete_char_before();
+                self.query_changed();
+            }
+            KeyCode::Delete => {
+                self.search.delete_char_at();
+                self.query_changed();
+            }
+            KeyCode::Left => self.search.move_left(),
+            KeyCode::Right => self.search.move_right(),
+            KeyCode::Home => self.search.cursor = 0,
+            KeyCode::End => self.search.cursor = self.search.value.len(),
             KeyCode::Up => {
-                // The inventory table sits directly above the search box; ↑
-                // from here climbs into it (or to the top bar
-                // when empty).
-                if self.rows.is_empty() {
-                    return InputResult::Exit;
-                }
+                // The search sits at the Inventory's foot; ↑ from it dismisses
+                // it into the Inventory, rows or no rows.
                 self.focus_table_bottom();
             }
             KeyCode::Down => {
@@ -1242,7 +1225,10 @@ impl ProfitsApp {
                     self.focus_panel(i);
                 }
             }
-            KeyCode::Char(c) => self.input_insert_char(c),
+            KeyCode::Char(c) => {
+                self.search.insert_char(c);
+                self.query_changed();
+            }
             _ => {}
         }
         InputResult::Consumed
@@ -1256,13 +1242,24 @@ impl ProfitsApp {
         match key.code {
             KeyCode::Up => {
                 // The inventory table is the topmost widget; ↑ from the first
-                // row returns to the top bar.
-                if self.table_state.selected() == Some(0) {
+                // row — or from a table with no rows at all — returns to the
+                // top bar.
+                if self.table_state.selected().unwrap_or(0) == 0 {
                     return InputResult::Exit;
                 }
                 self.table_up();
             }
-            KeyCode::Down => self.table_down(),
+            // Down out of the last row leaves the table for the Parameters
+            // below it. The search's row is at the Inventory's foot but is not
+            // passed through on the way: it is summoned, never arrived at.
+            KeyCode::Down => {
+                if !self.table_down()
+                    && let Some(i) =
+                        self.first_visible_panel(shared.market_supported)
+                {
+                    self.focus_panel(i);
+                }
+            }
             KeyCode::Left => {
                 if let Some(col) = self.table_state.selected_column()
                     && FIRST_COL < col
@@ -1357,8 +1354,9 @@ impl ProfitsApp {
                     shared.market_supported,
                 ) {
                     Some(prev) => self.focus = Focus::Panel(prev),
-                    // Above the first parameter sits the Search box.
-                    None => self.focus_input(),
+                    // Above the first parameter sits the Inventory, which the
+                    // search's row belongs to rather than stands between.
+                    None => self.focus_table_bottom(),
                 }
             }
             KeyCode::Down => {
@@ -1501,7 +1499,7 @@ impl ProfitsApp {
                     self.rows.remove(row_idx);
                     self.popup = None;
                     if self.rows.is_empty() {
-                        self.focus_input();
+                        self.focus_table_top();
                     } else {
                         self.focus = Focus::Table;
                         let new_sel = if row_idx < self.rows.len() {
@@ -1532,7 +1530,7 @@ impl ProfitsApp {
             }
             Some(PopupKind::ProfitResult(_)) => {
                 self.popup = None;
-                self.focus = Focus::Input;
+                self.focus_table_top();
             }
             Some(PopupKind::HoldImport(_)) => {
                 return self.commit_hold_import(yes_side, shared.commodities);
@@ -1609,7 +1607,7 @@ impl ProfitsApp {
                             self.rows.remove(row_idx);
                             self.popup = None;
                             if self.rows.is_empty() {
-                                self.focus_input();
+                                self.focus_table_top();
                             } else {
                                 self.focus = Focus::Table;
                                 let new_sel = if row_idx < self.rows.len() {
@@ -1756,6 +1754,75 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// The search is summoned, never arrived at: a fresh page, an empty
+    /// Inventory, and walking the focus ring all leave it closed, and `/` is
+    /// what opens it from wherever the cursor was.
+    #[test]
+    fn only_a_slash_puts_the_cursor_in_the_search() {
+        let commodities = commodities();
+        let offers = HashMap::new();
+        let islands: Vec<String> = Vec::new();
+        let shared = SharedState {
+            commodities: &commodities,
+            cached_offers: &offers,
+            available_islands: &islands,
+            ocean_geo: None,
+            loading: false,
+            market_supported: false,
+            pillage_gross: 0,
+            pillage_stolen: 0,
+            pillage_chest: 0,
+        };
+        let press = |app: &mut ProfitsApp, code: KeyCode| {
+            app.handle_key(
+                KeyEvent::new(
+                    code,
+                    crossterm::event::KeyModifiers::NONE,
+                ),
+                &shared,
+            )
+        };
+
+        let mut app = ProfitsApp::new();
+        assert_eq!(app.focus, Focus::Table, "a fresh page");
+        app.focus_table_top();
+        assert_eq!(
+            app.focus,
+            Focus::Table,
+            "an empty Inventory"
+        );
+
+        // Down out of an empty Inventory reaches the Parameters, not the
+        // search. Which field is the first depends on what the market has
+        // unlocked, so the page itself says which one to expect.
+        let first =
+            Focus::Panel(app.first_visible_panel(false).expect("a field"));
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.focus, first);
+        // And back up again, still not through it.
+        press(&mut app, KeyCode::Up);
+        assert_eq!(app.focus, Focus::Table);
+
+        // A row to walk changes nothing: the ring skips the search both ways.
+        app.rows = vec![InventoryRow::new(1)];
+        app.focus_table_top();
+        press(&mut app, KeyCode::Down);
+        assert_eq!(app.focus, first);
+
+        press(&mut app, KeyCode::Char('/'));
+        assert_eq!(
+            app.focus,
+            Focus::Input,
+            "slash opens it"
+        );
+        // Esc dismisses it back into the Inventory rather than off the page.
+        assert!(matches!(
+            press(&mut app, KeyCode::Esc),
+            InputResult::Consumed
+        ));
+        assert_eq!(app.focus, Focus::Table);
     }
 
     #[test]

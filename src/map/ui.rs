@@ -817,13 +817,17 @@ pub fn render(
     } = ctx;
     // The chart is a viewport onto a larger map: it pans rather than shrinks,
     // so what it needs is a viewport worth sailing in, the row its sideways
-    // scrollbar lies along, the row a search box takes when one is open
+    // scrollbar lies along, the rows a search box takes when one is open
     // (counted whether or not it is, so opening one cannot lose the page),
     // the box around them all, and the page's hint row below the box.
     if crate::utils::too_short(
         frame,
         area,
-        crate::utils::SCROLL_MIN_ROWS + crate::utils::SCROLLBAR_H + 1 + 2 + 1,
+        crate::utils::SCROLL_MIN_ROWS
+            + crate::utils::SCROLLBAR_H
+            + crate::utils::SEARCH_H
+            + 2
+            + 1,
     ) {
         return;
     }
@@ -890,16 +894,14 @@ pub fn render(
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // the row under the map is the search box's, and is laid out only while
-    // one is open: with none the chart has the row, and where the cursor is
-    // and which leagues leave it are read off the drawing itself.
+    // the row under the map is the search's, held for it whether one is open or
+    // not: unopened, it is what says a search can be had at all.
     let rows = Layout::vertical([
         Constraint::Min(0),
-        Constraint::Length(u16::from(app.search.is_some())),
+        Constraint::Length(crate::utils::SEARCH_H),
     ])
     .split(inner);
 
-    let mut status: Line = Line::from("");
     match (ocean, map) {
         (None, _) => {
             crate::utils::render_notice(
@@ -924,31 +926,31 @@ pub fn render(
         }
         (Some(_), Some(map)) => {
             draw_map(frame, rows[0], app, map, regions);
-            if let Some(search) = &app.search {
-                let hit = app.search_hit(map).map_or("no match", |p| p.name);
-                let label = "Search: ";
-                if focused {
-                    let x = rows[1].x
-                        + label.len() as u16
-                        + search.value[.. search.cursor].chars().count() as u16;
-                    frame.set_cursor_position((x, rows[1].y));
+            match &app.search {
+                Some(search) => {
+                    // what Enter would jump to is what the query found
+                    let hit =
+                        app.search_hit(map).map_or("no match", |p| p.name);
+                    crate::utils::render_search(
+                        frame,
+                        rows[1],
+                        search,
+                        (!search.value.is_empty()).then_some(
+                            crate::utils::SearchAnswer::Resolved(hit),
+                        ),
+                        focused,
+                    );
                 }
-                status = Line::from(vec![
-                    Span::styled(label, Style::default().bold()),
-                    Span::styled(
-                        search.value.clone(),
-                        Style::default().bg(Color::White).fg(Color::Black),
-                    ),
-                    Span::styled(
-                        format!("  -> {hit}"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
-                ]);
+                None => {
+                    crate::utils::render_search_invite(
+                        frame,
+                        rows[1],
+                        "search for an island",
+                    )
+                }
             }
         }
     }
-
-    frame.render_widget(Paragraph::new(status), rows[1]);
 
     if app.help {
         render_help(frame, area, app, regions);

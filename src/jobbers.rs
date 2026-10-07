@@ -878,7 +878,10 @@ pub struct PiratePopup {
 #[derive(Clone)]
 pub struct TrophyPopup {
     pub name: String,
-    pub search: String,
+    /// The open filter, if any. Summoned by `/` the way the Map's island
+    /// search is, so the keys mean what they mean elsewhere in the popup until
+    /// one is asked for.
+    pub search: Option<crate::utils::PromptField>,
     pub offset: usize,
     pub view_h: usize,
 }
@@ -4618,11 +4621,37 @@ fn render_trophy_popup(
     let inner = block.inner(popup);
     frame.render_widget(block, popup);
 
+    // What the filter let through, said as the words carry on from the ones
+    // typed: the grid answers in full, but a long one cannot be counted at a
+    // glance. With nothing typed there is nothing to answer.
+    let filter = tp.search.as_ref().map(|s| s.value.trim().to_lowercase());
+    let tally = filter.as_ref().filter(|f| !f.is_empty()).map(|needle| {
+        let all: Vec<&String> = cached
+            .map(|c| {
+                c.trophies
+                    .sections
+                    .iter()
+                    .flat_map(|s| &s.trophies)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let shown = all
+            .iter()
+            .filter(|t| trophy_matches(&t.to_lowercase(), needle))
+            .count();
+        format!(
+            "reveals {shown} of {} trophies",
+            all.len()
+        )
+    });
+
     let rows = Layout::vertical([
-        Constraint::Length(u16::from(has_trophies)), // search
-        Constraint::Min(0),                          // scroll area
-        Constraint::Length(1),                       // blank
-        Constraint::Length(1),                       // Close
+        Constraint::Min(0), // scroll area
+        // the filter's row, which says how to open one while none is. It sits
+        // under the grid it filters and above the blank the buttons keep.
+        Constraint::Length(u16::from(has_trophies) * crate::utils::SEARCH_H),
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // Close
     ])
     .split(inner);
 
@@ -4636,83 +4665,90 @@ fn render_trophy_popup(
     });
 
     if has_trophies {
-        // Search box (typed text shows live; the placeholder is muted).
-        let search_line = if tp.search.is_empty() {
-            Line::from(vec![
-                Span::styled("Search: ", Style::default().bold()),
-                Span::styled(
-                    "type to filter…",
-                    Style::default().fg(Color::DarkGray).italic(),
-                ),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled("Search: ", Style::default().bold()),
-                Span::raw(tp.search.clone()),
-            ])
-        };
-        frame.render_widget(Paragraph::new(search_line), rows[0]);
+        match &tp.search {
+            // The popup is modal, so an open filter always has the letters.
+            Some(search) => {
+                crate::utils::render_search(
+                    frame,
+                    rows[1],
+                    search,
+                    tally.as_deref().map(crate::utils::SearchAnswer::Reading),
+                    true,
+                );
+            }
+            None => {
+                crate::utils::render_search_invite(
+                    frame,
+                    rows[1],
+                    "filter these trophies",
+                )
+            }
+        }
     }
 
     crate::utils::render_close_button(frame, rows[3]);
+    regions.push(ClickRegion {
+        rect: rows[3],
+        target: ClickTarget::JobberTrophyClose,
+    });
 
     // All the category lines, laid out for a view `inner_w` columns wide.
     let build = |inner_w: usize| {
         let mut lines: Vec<Line> = Vec::new();
-        match cached {
-            None => {
-                lines.push(
-                    Line::from(Span::styled(
-                        "Trophies not loaded yet.",
-                        Style::default().fg(Color::DarkGray),
-                    ))
-                    .centered(),
-                )
-            }
-            Some(c) => {
-                // Two blank lines separate one group from the next.
-                let mut first = true;
-                for section in &c.trophies.sections {
-                    let sec =
-                        trophy_section_lines(section, &tp.search, inner_w);
-                    if sec.is_empty() {
-                        continue;
-                    }
-                    if !first {
-                        lines.push(Line::from(""));
-                    }
-                    first = false;
-                    lines.extend(sec);
+        if let Some(c) = cached {
+            // Two blank lines separate one group from the next.
+            let mut first = true;
+            for section in &c.trophies.sections {
+                let sec = trophy_section_lines(
+                    section,
+                    filter.as_deref().unwrap_or(""),
+                    inner_w,
+                );
+                if sec.is_empty() {
+                    continue;
                 }
-                if lines.is_empty() {
-                    lines.push(
-                        Line::from(Span::styled(
-                            if has_trophies {
-                                "No matching trophies."
-                            } else {
-                                "No trophies."
-                            },
-                            Style::default().fg(Color::DarkGray),
-                        ))
-                        .centered(),
-                    );
+                if !first {
+                    lines.push(Line::from(""));
                 }
+                first = false;
+                lines.extend(sec);
             }
         }
         lines
     };
 
     // Record the view height so the key handler can scroll by half a page.
-    let view_h = rows[1].height as usize;
+    let grid = rows[0];
+    let view_h = grid.height as usize;
     tp.view_h = view_h;
     // The grid reflows into whatever width it is given, so it is laid out again
     // once the scrollbar's column turns out to be wanted. Laying it out one
     // column narrower can only lengthen it, so a bar never un-needs itself.
-    let mut lines = build(rows[1].width as usize);
+    let mut lines = build(grid.width as usize);
     if view_h < lines.len() {
         lines = build(
-            rows[1].width.saturating_sub(crate::utils::SCROLLBAR_W) as usize,
+            grid.width.saturating_sub(crate::utils::SCROLLBAR_W) as usize,
         );
+    }
+
+    // No grid to draw is one line to say, so it is said in the middle of the
+    // room the grid would have had rather than at the top of it — there is
+    // nothing above it for it to sit under.
+    if lines.is_empty() {
+        let notice = match (cached.is_some(), has_trophies) {
+            (false, _) => "Trophies not loaded yet.",
+            (true, true) => "No matching trophies.",
+            (true, false) => "No trophies.",
+        };
+        crate::utils::render_notice(
+            frame,
+            grid,
+            &[(
+                notice,
+                Style::default().fg(Color::DarkGray),
+            )],
+        );
+        return;
     }
 
     // Clamp scroll, then render the visible window beside its bar.
@@ -4723,7 +4759,7 @@ fn render_trophy_popup(
     let body = crate::utils::render_scrollbar(
         frame,
         regions,
-        rows[1],
+        grid,
         crate::clickmap::ScrollView::JobberTrophies,
         tp.offset,
         lines.len(),
@@ -4731,11 +4767,6 @@ fn render_trophy_popup(
     let visible: Vec<Line> =
         lines.into_iter().skip(tp.offset).take(view_h).collect();
     frame.render_widget(Paragraph::new(visible), body);
-
-    regions.push(ClickRegion {
-        rect: rows[3],
-        target: ClickTarget::JobberTrophyClose,
-    });
 }
 
 #[cfg(test)]
