@@ -44,7 +44,7 @@
 //! - **Below the head** come the colony, what the island exports, what its
 //!   archipelago forages and the gems its palace buys, each section left out
 //!   when there is nothing to say. This is the part that scrolls, under the
-//!   convention every scrolling view keeps (see `UI_CONVENTIONS.md`, Rule 4).
+//!   convention every scrolling view keeps (see `.UI_CONVENTIONS.md`, Rule 4).
 //! - Facts yoweb or the geography is the source of are **underlined**, so a
 //!   value is told apart from the words that introduce it.
 //! - A line too long for the column **wraps** with its continuation two columns
