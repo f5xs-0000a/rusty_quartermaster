@@ -302,6 +302,19 @@ pub enum EncounterKind {
     // boarders here, parallel to zombies (Cursed Isles).
 }
 
+impl EncounterKind {
+    /// Whether a fight under this encounter is fought by only part of the
+    /// crew.
+    ///
+    /// Atlantis is one: a dragoon boards a ship that goes on being sailed
+    /// around it, so whoever answers the fray is some of the crew and never
+    /// reliably all of it. A winners list from such a fight confirms the
+    /// names on it and says nothing whatever about the names off it.
+    pub fn partial_fray(self) -> bool {
+        matches!(self, Self::Atlantis)
+    }
+}
+
 /// A Cursed Isles island wave is either a swordfight or a rumble, and the two
 /// alternate. Classified from the enemy family seen — cultists/homunculi are
 /// swordfight foes; zombies, Enlightened Ones and Vargas are rumble foes — so
@@ -2359,9 +2372,19 @@ impl GameState {
         }
     }
 
-    /// A battle ended with `summary` like `Winners: a, b, Playerone.`. When the
-    /// player is among the listed side, that side *is* the crew aboard, so we
-    /// overwrite the crewmate set with it (minus ourselves and NPC swabbies).
+    /// A battle ended with `summary` like `Winners: a, b, Playerone.`. When
+    /// the player is among the listed side, that side is the crew that fought,
+    /// which on an ordinary pillage is the crew aboard: the crewmate set is
+    /// overwritten with it (minus ourselves and NPC swabbies).
+    ///
+    /// Where the fray is only part of the crew's
+    /// ([`EncounterKind::partial_fray`]) the list is read as a floor instead.
+    /// The names in it are confirmed aboard and join the roster; the rest are
+    /// left exactly as they stood, because being absent from a fight is no
+    /// evidence of being absent from the ship. The cost is that a crewmate or
+    /// mercenary who really did leave such a run lingers until something else
+    /// says they went, which is the right way round: we would rather carry
+    /// someone who has gone than drop someone who is below decks.
     fn on_battle_end(&mut self, summary: &str) {
         let Some((_, list)) = summary.split_once(':') else {
             return;
@@ -2416,16 +2439,32 @@ impl GameState {
             .map(|n| n.to_string())
             .collect();
 
+        // Whether the fray was the whole crew's. Where it was not, each figure
+        // the list re-truths becomes a floor: a name is added, a count is
+        // raised, and nothing is taken away.
+        let partial = self
+            .current_vessel()
+            .is_some_and(|v| v.encounter.partial_fray());
+
         if let Some(v) = self.current_vessel_mut() {
-            v.crewmates = new_crew;
-            v.swabbies = swabbies;
-            v.mercenaries = mercenaries;
+            if partial {
+                v.crewmates.extend(new_crew);
+                v.swabbies = v.swabbies.max(swabbies);
+                v.mercenaries.extend(mercenaries);
+            } else {
+                v.crewmates = new_crew;
+                v.swabbies = swabbies;
+                v.mercenaries = mercenaries;
+            }
             // Ground truth: backfill every crew sample since the last
             // checkpoint (or the voyage start) to this confirmed
             // mercenary count, then advance the checkpoint. So each
             // inter-win stretch is attributed the count confirmed
             // at its close — correcting the invisible initial hire and any
-            // mid-voyage hires we couldn't see live.
+            // mid-voyage hires we couldn't see live. Off a partial fray the
+            // count is a floor rather than a confirmation, and one that only
+            // ever rises, so the stretch still gets the best figure the run
+            // has reached.
             let confirmed = v.mercenaries.len() as u32;
             if let Some(voy) = v.current_voyage.as_mut() {
                 let from = voy.merc_checkpoint.min(voy.crew_samples.len());
@@ -3639,6 +3678,39 @@ mod tests {
         assert!(!v.crewmates.contains("Playerone"));
         assert!(!v.crewmates.contains("A swabbie"));
         assert!(!v.crewmates.contains("Mateseven")); // overwritten
+    }
+
+    /// A dragoon boards a ship that is still being sailed, so the fray is
+    /// whoever was free for it. Those in it are confirmed aboard; those who
+    /// were elsewhere on the ship stay aboard, and the NPC count can only be
+    /// raised by what the fray showed.
+    #[test]
+    fn an_atlantis_fray_confirms_who_fought_and_drops_nobody() {
+        let mut gs = GameState::new();
+        gs.player_name = Some(Arc::from("Playerone"));
+        gs.process_line("[01:00:00] Going aboard the Test Vessel...");
+        gs.process_line("[01:00:01] Mateseven has come aboard.");
+        gs.process_line(
+            "[01:01:00] Ye hear a splash, and the sound of foreign footsteps.",
+        );
+        gs.process_line(
+            "[01:02:00] Game over.  Winners: Mateone, Playerone, A swabbie.",
+        );
+        let v = gs.current_vessel().unwrap();
+        // the one who fought is now known to be aboard
+        assert!(v.crewmates.contains("Mateone"));
+        // and the one who was below decks is still aboard
+        assert!(v.crewmates.contains("Mateseven"));
+        assert!(!v.crewmates.contains("Playerone"));
+        assert!(!v.crewmates.contains("A swabbie"));
+        assert_eq!(v.swabbies, 1);
+
+        // a second fray that nobody but us answered takes nothing away
+        gs.process_line("[01:10:00] Game over.  Winners: Playerone.");
+        let v = gs.current_vessel().unwrap();
+        assert!(v.crewmates.contains("Mateone"));
+        assert!(v.crewmates.contains("Mateseven"));
+        assert_eq!(v.swabbies, 1);
     }
 
     #[test]
