@@ -38,6 +38,7 @@ use crate::{
         LAIR_WAVE_GROWTH,
         LAIR_WAVE_HI,
         LAIR_WAVE_LO,
+        Vessel,
         WaveKind,
         WaveRecord,
         island_wave_band,
@@ -1129,10 +1130,32 @@ fn name_colour(cache: &PirateCache, name: &str) -> Style {
     )
 }
 
-/// Columns a crew-rank tag spends, and the blank between it and the longest
-/// name beside it.
+/// Columns a tag spends, the blank between two of them, and the blank between
+/// the strip of them and the longest name beside it.
 const TAG_W: usize = 2;
+const TAG_SEP: usize = 1;
 const TAG_GAP: usize = 2;
+
+/// The tags a row ends in, left to right, each of [`TAG_W`] columns. Only the
+/// tags a row has earned are in it: the strip is laid against the row's right
+/// edge, so a row with fewer of them has the rest of the line instead of a
+/// column held empty.
+type Tags = Vec<(&'static str, Style)>;
+
+/// Columns a strip of `tags` spends, separators and all.
+fn strip_w(tags: &Tags) -> usize {
+    tags.len() * TAG_W + tags.len().saturating_sub(1) * TAG_SEP
+}
+
+/// Columns `tags` add to the width a row asks for: the strip, and the blank
+/// that holds it off the name. A row with no tags asks for neither.
+fn tags_w(tags: &Tags) -> usize {
+    if tags.is_empty() {
+        0
+    } else {
+        TAG_GAP + strip_w(tags)
+    }
+}
 
 /// The crew our own pirate sails with, if the cache has them and they sail with
 /// one. This is what a roster measures another pirate's crew against.
@@ -1173,6 +1196,30 @@ fn crew_tag(
         CrewRank::CabinPerson => Some(("CP", plain)),
         CrewRank::JobbingPirate | CrewRank::Other(_) => None,
     }
+}
+
+/// The tags an Aboard row ends in, left to right: the mark for a pirate we have
+/// planked off this vessel before, then their rank in our crew. A pirate who
+/// has earned one of them and not the other wears only that one, at the row's
+/// right edge, no column being held for the tag they lack.
+fn aboard_tags(
+    cache: &PirateCache,
+    my_crew: Option<&str>,
+    vessel: Option<&Vessel>,
+    name: &str,
+) -> Tags {
+    let mut tags = Tags::new();
+    if planked_before(vessel, name) {
+        tags.push(("!P", Style::default()));
+    }
+    tags.extend(crew_tag(cache, my_crew, name));
+    tags
+}
+
+/// Whether we have planked `name` off this vessel already. They are aboard
+/// again if a roster is asking, the plank having taken them off it.
+fn planked_before(vessel: Option<&Vessel>, name: &str) -> bool {
+    vessel.is_some_and(|v| v.planked_by_us.contains(name))
 }
 
 /// Experience emphasis: bold from Broad, bold+italic from Sublime.
@@ -1412,16 +1459,15 @@ pub fn render(
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at
     // title. The Aboard pane leads with a "Pirates (n):" header and indents
-    // each name two spaces. A crewmate's row also ends in a rank tag, which the
-    // width counts so the longest name keeps the two blanks before it.
+    // each name two spaces. A row may also end in tags, whose columns the width
+    // counts so the longest name among them keeps the two blanks before its
+    // strip.
     let my_crew = my_crew_name(state, cache);
     let aboard_cw = aboard_set
         .iter()
         .map(|n| {
-            let tagged = crew_tag(cache, my_crew.as_deref(), n).is_some();
-            n.chars().count()
-                + ABOARD_INDENT
-                + if tagged { TAG_GAP + TAG_W } else { 0 }
+            let tags = aboard_tags(cache, my_crew.as_deref(), vessel, n);
+            n.chars().count() + ABOARD_INDENT + tags_w(&tags)
         })
         .max()
         .unwrap_or(0)
@@ -1452,9 +1498,10 @@ pub fn render(
             v.planked_by_us
                 .iter()
                 .map(|n| {
-                    let tagged =
-                        crew_tag(cache, my_crew.as_deref(), n).is_some();
-                    n.chars().count() + if tagged { TAG_GAP + TAG_W } else { 0 }
+                    let tags: Tags = crew_tag(cache, my_crew.as_deref(), n)
+                        .into_iter()
+                        .collect();
+                    n.chars().count() + tags_w(&tags)
                 })
                 .max()
                 .unwrap_or(0)
@@ -3228,7 +3275,7 @@ fn render_panes(
                 let mut aboard: Vec<&String> = aboard_set.iter().collect();
                 aboard.sort_unstable();
                 let header = Line::from(Span::raw(aboard_header(aboard.len())));
-                let names: Vec<(Line, Option<(&str, Style)>)> = aboard
+                let names: Vec<(Line, Tags)> = aboard
                     .iter()
                     .map(|n| {
                         (
@@ -3236,7 +3283,7 @@ fn render_panes(
                                 Span::raw(" ".repeat(ABOARD_INDENT)),
                                 Span::styled((*n).clone(), style_for(n)),
                             ]),
-                            crew_tag(cache, my_crew.as_deref(), n),
+                            aboard_tags(cache, my_crew.as_deref(), vessel, n),
                         )
                     })
                     .collect();
@@ -3284,7 +3331,7 @@ fn render_panes(
                                 style_for(name),
                             ),
                             pirate: Some(i),
-                            tag: None,
+                            tags: Vec::new(),
                         }
                     })
                     .collect();
@@ -3316,7 +3363,9 @@ fn render_panes(
                                 style_for(n),
                             )),
                             pirate: Some(i),
-                            tag: crew_tag(cache, my_crew.as_deref(), n),
+                            tags: crew_tag(cache, my_crew.as_deref(), n)
+                                .into_iter()
+                                .collect(),
                         }
                     })
                     .collect();
@@ -3351,7 +3400,7 @@ fn render_panes(
                                 style_for(name),
                             ),
                             pirate: Some(i),
-                            tag: None,
+                            tags: Vec::new(),
                         }
                     })
                     .collect();
@@ -3407,22 +3456,24 @@ fn enthralled_line(
     ])
 }
 
-/// `line` with `tag` drawn at the right edge of a row `width` columns wide: the
-/// line is padded out to it, so the tags of a roster stand in one column. A row
-/// with no tag is its line unchanged.
-fn with_tag(
-    line: &Line<'static>,
-    tag: Option<(&'static str, Style)>,
-    width: u16,
-) -> Line<'static> {
+/// `line` with its `tags` laid against the right edge of a row `width` columns
+/// wide: the line is padded out to the strip, and each slot is drawn in the
+/// columns it owns whether it holds a tag or not. A row with no slots is its
+/// line unchanged.
+fn with_tags(line: &Line<'static>, tags: &Tags, width: u16) -> Line<'static> {
     let mut line = line.clone();
-    if let Some((tag, style)) = tag {
-        let written: usize =
-            line.spans.iter().map(|s| s.content.chars().count()).sum();
-        let pad =
-            (width as usize).saturating_sub(written + tag.chars().count());
-        line.spans.push(Span::raw(" ".repeat(pad)));
-        line.spans.push(Span::styled(tag, style));
+    if tags.is_empty() {
+        return line;
+    }
+    let written: usize =
+        line.spans.iter().map(|s| s.content.chars().count()).sum();
+    let pad = (width as usize).saturating_sub(written + strip_w(tags));
+    line.spans.push(Span::raw(" ".repeat(pad)));
+    for (i, (tag, style)) in tags.iter().enumerate() {
+        if 0 < i {
+            line.spans.push(Span::raw(" ".repeat(TAG_SEP)));
+        }
+        line.spans.push(Span::styled(*tag, *style));
     }
     line
 }
@@ -3433,8 +3484,8 @@ struct PaneRow {
     /// The pirate the row names, or `None` for a row that is no pirate's and
     /// so cannot be selected or clicked.
     pirate: Option<usize>,
-    /// Drawn at the row's right edge (see [`with_tag`]).
-    tag: Option<(&'static str, Style)>,
+    /// Drawn at the row's right edge (see [`with_tags`]).
+    tags: Tags,
 }
 
 /// Render a single pane: a bordered, auto-scrolling list of pirate rows. The
@@ -3507,7 +3558,7 @@ fn render_pane(
             1,
         );
         let is_sel = page_focused && active && row.pirate == Some(sel);
-        let line = with_tag(&row.line, row.tag, tag_edge);
+        let line = with_tags(&row.line, &row.tags, tag_edge);
         let para = if is_sel {
             Paragraph::new(line)
                 .style(Style::default().bg(Color::White).fg(Color::Black))
@@ -3540,10 +3591,7 @@ fn render_aboard_pane(
     frame: &mut Frame,
     area: Rect,
     header: Line<'static>,
-    names: Vec<(
-        Line<'static>,
-        Option<(&'static str, Style)>,
-    )>,
+    names: Vec<(Line<'static>, Tags)>,
     footers: Vec<Line<'static>>,
     sel: usize,
     offset: &mut usize,
@@ -3619,7 +3667,7 @@ fn render_aboard_pane(
     // bar or no bar.
     let tag_edge = inner.width.saturating_sub(crate::utils::SCROLLBAR_W);
 
-    for (vis, (line, tag)) in
+    for (vis, (line, tags)) in
         names.iter().enumerate().skip(*offset).take(body_h)
     {
         let row_area = Rect::new(
@@ -3629,7 +3677,7 @@ fn render_aboard_pane(
             1,
         );
         let is_sel = page_focused && active && vis == sel;
-        let line = with_tag(line, *tag, tag_edge);
+        let line = with_tags(line, tags, tag_edge);
         let para = if is_sel {
             Paragraph::new(line)
                 .style(Style::default().bg(Color::White).fg(Color::Black))
@@ -5049,26 +5097,107 @@ mod tests {
         assert_eq!(crew_tag(&ours, None, "Playerone"), None);
     }
 
-    /// The tag is laid against the right edge of the row it is given, so a
-    /// column of them lines up however long the names are.
+    /// Tags are laid against the right edge of the row they are given, so a
+    /// roster's strips end in one column however long the names are and however
+    /// many tags each row has earned.
     #[test]
-    fn a_tag_is_laid_against_the_right_edge() {
-        let row = |name: &str| {
+    fn tags_are_laid_against_the_right_edge() {
+        let ca = ("Ca", Style::default());
+        let plank = ("!P", Style::default());
+        let row = |name: &str, tags: Tags| {
             let line = Line::from(Span::raw(name.to_owned()));
-            let tagged = with_tag(
-                &line,
-                Some(("Ca", Style::default())),
-                12,
-            );
-            tagged
+            with_tags(&line, &tags, 12)
                 .spans
                 .iter()
                 .map(|s| s.content.as_ref())
                 .collect::<String>()
         };
-        assert_eq!(row("Playerone"), "Playerone Ca");
-        assert_eq!(row("Mate"), "Mate      Ca");
-        // Nothing to pad with leaves the tag where it will fit.
-        assert_eq!(row("Playertwelve"), "PlayertwelveCa");
+
+        assert_eq!(
+            row("Playerone", vec![ca]),
+            "Playerone Ca"
+        );
+        assert_eq!(row("Mate", vec![ca]), "Mate      Ca");
+        assert_eq!(
+            row("Mate", vec![plank, ca]),
+            "Mate   !P Ca"
+        );
+        // One tag ends where two of them end: no column is held for the tag a
+        // row has not earned.
+        assert_eq!(row("Mate", vec![plank]), "Mate      !P");
+        // Nothing to pad with leaves the tags where they will fit, and a row of
+        // no tags spends nothing at all - the blank before the strip included.
+        assert_eq!(
+            row("Playertwelve", vec![ca]),
+            "PlayertwelveCa"
+        );
+        assert_eq!(row("Mate", Vec::new()), "Mate");
+    }
+
+    /// A row asks for its tags' columns and the blank before them, and for
+    /// neither when it wears none.
+    #[test]
+    fn a_row_asks_only_for_the_tags_it_wears() {
+        let tag = ("Ca", Style::default());
+        assert_eq!(tags_w(&Vec::new()), 0);
+        assert_eq!(tags_w(&vec![tag]), TAG_GAP + TAG_W);
+        assert_eq!(
+            tags_w(&vec![tag, tag]),
+            TAG_GAP + TAG_W + TAG_SEP + TAG_W,
+        );
+    }
+
+    /// The plank mark is worn by a pirate we planked off this vessel who is
+    /// aboard again, whether or not they are one of ours.
+    #[test]
+    fn the_plank_mark_marks_a_pirate_we_planked_before() {
+        let plank = ("!P", Style::default());
+        let pirate = ("Pi", Style::default());
+        let mut vessel = Vessel::default();
+        vessel.planked_by_us.insert("Playertwo".to_owned());
+        let ours = crewed("Playertwo", "Pirate", OUR_CREW);
+        let theirs = crewed("Playertwo", "Pirate", "The Other Crew");
+
+        // Planked and ours: the mark, then the rank.
+        assert_eq!(
+            aboard_tags(
+                &ours,
+                Some(OUR_CREW),
+                Some(&vessel),
+                "Playertwo"
+            ),
+            vec![plank, pirate],
+        );
+        // Planked and not ours: the mark alone.
+        assert_eq!(
+            aboard_tags(
+                &theirs,
+                Some(OUR_CREW),
+                Some(&vessel),
+                "Playertwo"
+            ),
+            vec![plank],
+        );
+        // Ours and never planked: the rank alone.
+        let clean = Vessel::default();
+        assert_eq!(
+            aboard_tags(
+                &ours,
+                Some(OUR_CREW),
+                Some(&clean),
+                "Playertwo"
+            ),
+            vec![pirate],
+        );
+        // Neither: no tags, and so no columns spent on them.
+        assert_eq!(
+            aboard_tags(
+                &ours,
+                Some(OUR_CREW),
+                Some(&clean),
+                "Playerone"
+            ),
+            Tags::new(),
+        );
     }
 }

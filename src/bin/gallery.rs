@@ -768,6 +768,37 @@ fn cache_greenie(shell: &mut AppShell, name: &str) {
     cache_jobber(shell, name, None);
 }
 
+/// Bring a roster aboard holding every crew rank, with one pirate of another
+/// crew and one jobbing with ours, and cache them all — including the pirate
+/// this run planks, so the Planked pane has a crewmate in it. Our own pirate is
+/// cached too: their crew is what a rank tag is measured against, and the whole
+/// roster goes untagged while the cache is without them.
+fn crew_roster(shell: &mut AppShell) {
+    const CREW: &str = "The Example Crew";
+    const RANKS: [(&str, &str, &str); 8] = [
+        ("Matea", "Captain", CREW),
+        ("Mateb", "Senior Officer", CREW),
+        ("Matec", "Fleet Officer", CREW),
+        ("Mated", "Officer", CREW),
+        ("Matee", "Pirate", CREW),
+        ("Matef", "Cabin Person", CREW),
+        ("Mateg", "Jobbing Pirate", CREW),
+        ("Mateh", "Officer", "The Other Crew"),
+    ];
+
+    cache_pirate(shell, ME, 0);
+    set_crew(shell, ME, "Fleet Officer", CREW);
+    for (i, (name, rank, crew)) in RANKS.iter().enumerate() {
+        shell.chatlog.process_line(&format!(
+            "[01:00:30] {name} has come aboard."
+        ));
+        cache_pirate(shell, name, i);
+        set_crew(shell, name, rank, crew);
+    }
+    cache_pirate(shell, "Matefour", 0);
+    set_crew(shell, "Matefour", "Pirate", CREW);
+}
+
 /// Re-crew a cached pirate, which is what the Aboard pane's rank tags read. A
 /// pirate the cache has not got yet is left alone, there being nothing to crew.
 fn set_crew(shell: &mut AppShell, name: &str, rank: &str, crew: &str) {
@@ -1595,38 +1626,41 @@ fn jobbers_states(states: &mut Vec<State>) {
 
     // The Aboard and Planked panes tag our own crew with each pirate's rank.
     // Every rank is aboard here, with one pirate of another crew and one
-    // jobbing with ours — neither of which a tag speaks for.
+    // jobbing with ours — neither of which a tag speaks for. Nobody aboard has
+    // been planked, so the pane spends no column on the plank mark: this is the
+    // narrower of the two Aboard panes.
     states.push(state(
         "jobbers-crew-ranks",
         "Jobbers, crew ranks tagged on the roster",
         |shell| {
-            const CREW: &str = "The Example Crew";
-            const RANKS: [(&str, &str, &str); 8] = [
-                ("Matea", "Captain", CREW),
-                ("Mateb", "Senior Officer", CREW),
-                ("Matec", "Fleet Officer", CREW),
-                ("Mated", "Officer", CREW),
-                ("Matee", "Pirate", CREW),
-                ("Matef", "Cabin Person", CREW),
-                ("Mateg", "Jobbing Pirate", CREW),
-                ("Mateh", "Officer", "The Other Crew"),
-            ];
             feed(shell, PILLAGE);
-            // Our own pirate's crew is what the tags are measured against, so
-            // the roster goes untagged until the cache has them.
-            cache_pirate(shell, ME, 0);
-            set_crew(shell, ME, "Fleet Officer", CREW);
-            for (i, (name, rank, crew)) in RANKS.iter().enumerate() {
+            crew_roster(shell);
+            open(shell, AppId::Chatlog, true);
+        },
+    ));
+
+    // The same roster with the plank mark's column up, which puts every shape a
+    // row's tag strip takes in one dump: a crewmate we planked and took back
+    // aboard wears both tags, a planked pirate of another crew wears the mark
+    // alone with the rank's columns left empty beside it, a crewmate we never
+    // planked wears the rank alone, and the rest wear neither.
+    states.push(state(
+        "jobbers-plank-marks",
+        "Jobbers, plank marks on pirates taken back aboard",
+        |shell| {
+            feed(shell, PILLAGE);
+            crew_roster(shell);
+            // This run planked Matefour, one of ours. Mateh sails with another
+            // crew, so the mark is all the strip has to say about them.
+            shell.chatlog.process_line(
+                "[01:51:00] Playerone forced Mateh to walk the plank.",
+            );
+            for (at, name) in [("01:52:00", "Matefour"), ("01:53:00", "Mateh")]
+            {
                 shell.chatlog.process_line(&format!(
-                    "[01:00:30] {name} has come aboard."
+                    "[{at}] {name} has come aboard."
                 ));
-                cache_pirate(shell, name, i);
-                set_crew(shell, name, rank, crew);
             }
-            // The pirate this run planks is one of ours too, Planked being the
-            // other pane that tags.
-            cache_pirate(shell, "Matefour", 0);
-            set_crew(shell, "Matefour", "Pirate", CREW);
             open(shell, AppId::Chatlog, true);
         },
     ));
