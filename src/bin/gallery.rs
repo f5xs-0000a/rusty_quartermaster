@@ -1250,6 +1250,7 @@ fn profits_states(states: &mut Vec<State>) {
             shell.profits.popup = Some(PopupKind::ReQueryConfirm {
                 yes_focused: true,
             });
+            shell.profits.focus = Focus::Popup;
         },
     ));
     states.push(state(
@@ -1262,6 +1263,7 @@ fn profits_states(states: &mut Vec<State>) {
                 name: "Rum".to_owned(),
                 yes_focused: false,
             });
+            shell.profits.focus = Focus::Popup;
         },
     ));
     states.push(state(
@@ -1273,6 +1275,7 @@ fn profits_states(states: &mut Vec<State>) {
                 missing: vec!["Hemp".to_owned(), "Cloth".to_owned()],
                 ocean_wide_focused: true,
             });
+            shell.profits.focus = Focus::Popup;
         },
     ));
     states.push(state(
@@ -1284,6 +1287,7 @@ fn profits_states(states: &mut Vec<State>) {
                 need_buy: vec!["Iron".to_owned()],
                 need_sell: vec!["Hemp".to_owned(), "Cloth".to_owned()],
             });
+            shell.profits.focus = Focus::Popup;
         },
     ));
     states.push(state(
@@ -1307,6 +1311,7 @@ fn profits_states(states: &mut Vec<State>) {
                 crew_donation: 466,
                 add_to_booty: 7_932,
             }));
+            shell.profits.focus = Focus::Popup;
         },
     ));
     states.push(state(
@@ -1320,6 +1325,7 @@ fn profits_states(states: &mut Vec<State>) {
                 yes_focused: true,
                 resume: Focus::Table,
             }));
+            shell.profits.focus = Focus::Popup;
         },
     ));
 }

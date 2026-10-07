@@ -555,6 +555,16 @@ four commodity rows and shows six when no tooltip is up.
 `profits::ui::inventory_tests::what_the_page_needs_does_not_move_with_the_focus`
 holds this.
 
+A popup is the exception to the slack: it is drawn over the page and takes
+nothing from it, so a page's transient strip keeps its rows for as long as one is
+up. Were the strip to give them up - the focus-bound tooltip having nothing to
+say while a prompt owns the keyboard - the Inventory would gain a pair of
+commodity rows the moment the prompt opened and lose them again on its way out,
+which reads as the table growing under the popup.
+`profits::ui::inventory_tests::a_popup_does_not_move_the_page_under_it` holds
+this, and `120x40-profits-popup-delete` read against `120x40-profits-rows` shows
+it: the two differ only in the popup itself and in the strip's words.
+
 Content the *data* drives moves the requirement where nothing can scroll it out
 of the way — an understaffed ship adds a warning line to the Voyage box, a
 swabbie tally adds the row the Aboard pane pins under its names — exactly as it

@@ -163,11 +163,16 @@ pub fn render(
     // reserved for nothing is a commodity row it loses. The search's row, which
     // the Inventory keeps at its foot, is not of that kind: it holds the
     // invitation to open one while none is open, so it is never idle.
-    let tooltip_h = if build_tooltip(app, shared).is_some() {
-        TOOLTIP_H // up to two lines once it wraps
-    } else {
-        0
-    };
+    //
+    // A popup is the exception: it is drawn over the page and takes nothing
+    // from it, so the strip keeps its rows for as long as one is up. The page
+    // beneath a popup is the page the user left, not a wider one.
+    let tooltip_h =
+        if build_tooltip(app, shared).is_some() || app.popup.is_some() {
+            TOOLTIP_H // up to two lines once it wraps
+        } else {
+            0
+        };
 
     // Room the page must have, counting the rows the tooltip takes when it has
     // something to say even while it has not: what the page needs cannot move
@@ -1603,7 +1608,14 @@ fn render_popup(
 mod inventory_tests {
     use ratatui::{Terminal, backend::TestBackend, layout::Rect};
 
-    use super::{Focus, InventoryRow, P_RESTOCK_RATE, ProfitsApp, render};
+    use super::{
+        Focus,
+        InventoryRow,
+        P_RESTOCK_RATE,
+        PopupKind,
+        ProfitsApp,
+        render,
+    };
     use crate::{
         api::Commodity,
         app::SharedState,
@@ -1624,6 +1636,17 @@ mod inventory_tests {
         height: u16,
         focus: Focus,
     ) -> (Vec<ClickRegion>, Rect, String) {
+        draw_state(names, width, height, focus, None)
+    }
+
+    /// As [`draw_at`], with `popup` raised over the page.
+    fn draw_state(
+        names: &[&str],
+        width: u16,
+        height: u16,
+        focus: Focus,
+        popup: Option<PopupKind>,
+    ) -> (Vec<ClickRegion>, Rect, String) {
         let commodities: Vec<Commodity> = names
             .iter()
             .enumerate()
@@ -1641,6 +1664,7 @@ mod inventory_tests {
         app.table_state.select(Some(0));
         app.table_state.select_column(Some(0));
         app.focus = focus;
+        app.popup = popup;
 
         let mut regions = Vec::new();
         let mut terminal =
@@ -1719,6 +1743,41 @@ mod inventory_tests {
                 );
             }
         }
+    }
+
+    /// A popup is drawn over the page, so the page keeps the shape it had while
+    /// one is up. The tooltip's rows are the page's whether a prompt owns the
+    /// keyboard or not, or the Inventory would gain a pair of commodity rows
+    /// the moment a prompt opened and lose them again on its way out.
+    #[test]
+    fn a_popup_does_not_move_the_page_under_it() {
+        let names = ["Rum", "Iron", "Hemp", "Cloth", "Swill"];
+        let row_of = |screen: &String, text: &str| {
+            screen
+                .lines()
+                .position(|line| line.contains(text))
+                .expect("the page draws the Hold Stats box")
+        };
+
+        let page = draw_at(&names, 80, 30, Focus::Table).2;
+        let prompted = draw_state(
+            &names,
+            80,
+            30,
+            Focus::Popup,
+            Some(PopupKind::DeleteConfirm {
+                row_idx: 0,
+                name: "Rum".to_owned(),
+                yes_focused: true,
+            }),
+        )
+        .2;
+
+        assert_eq!(
+            row_of(&page, "Hold Stats"),
+            row_of(&prompted, "Hold Stats"),
+            "the boxes under the Inventory must not move as a popup opens",
+        );
     }
 
     /// A cell you cannot see is a cell you must not be able to click, however
