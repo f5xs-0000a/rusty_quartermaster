@@ -740,10 +740,10 @@ Three things that read like notices are deliberately not ones:
   working content rather than a stand-in for it, and it stays on the row where
   its box plot would have been.
 
-## Rule 6: Table headers are centered
+## Rule 6: Table headers are centered and underlined
 
 A column header sits centered over its column, whatever the column's contents
-are aligned to.
+are aligned to, and is drawn bold and underlined over its own text.
 
 The alignment only shows when a column is wider than its own header, which is
 the case worth getting right: a column sized to its widest value leaves a
@@ -767,20 +767,69 @@ numeric cells are right-aligned under centered headers, which is intended: a
 column of figures reads down its right edge, while the header names the whole
 column.
 
+### The rule is over the text, never over the cell
+
+The underline is what makes this worth stating. A header styled over the cell
+it sits in carries that style through the blanks that center it, so the rule
+under one header runs the column's whole width and a row of them reads as one
+long rule across the table — a border where the table wanted a header. The
+style goes on the header's own text and the blanks either side of it are spans
+of their own.
+
+A head centered inside a line comes from
+[`crate::utils::centered_head`](src/utils.rs), which hands back those three
+spans. A head that a widget centers by other means — a `Cell` holding a
+centered `Line`, or a `Paragraph::centered` in a rect of its own — styles the
+`Span` inside it and is already right.
+
+Where a header is marked for something else as well, the mark belongs inside
+the same span: the Tokens and Chests board writes `↓ Σ` on the column it is
+ranked by, and the arrow is underlined with the head because it is one label.
+A hover or selection highlight is the exception that does not displace it —
+the Winrate matrix underlines a hovered header too, since a highlight says
+where the mouse is and has no business saying what the column is.
+
 ### Where this applies
 
-The app has five column-bearing widgets, and only one is a ratatui `Table`:
+The app has eight column-bearing widgets, and only one is a ratatui `Table`:
 
 | widget | columns built by |
 | ------ | ---------------- |
 | Profits Inventory | `Table` |
 | Jobbers Skill Leaderboard | per-column rects |
+| Jobbers Tokens and Chests | one line per row, cells measured by hand |
 | Voyage Ship Winrate matrix | a drawn grid |
+| Voyage Ship/Voyage/Historical rates | one line per row, columns padded by hand |
+| Voyage Sea Battles tally | a three-column line, heads greyed |
 | Jobbers skill distribution | a drawn grid |
 | Damage calculator | three columns, whose centre column is row labels rather than headers |
 
-All but the Inventory already centered their headers; it is the only one the
-rule changed.
+The last two name nothing and so underline nothing. The Damage calculator's
+centre column is row labels. The skill distribution's axes are standings, and
+they carry an emphasis of their own that says something else: every standing
+but Able is bold, Able being the floor every pirate starts on and so saying
+nothing about them. A tick on an axis is not a header over a column.
+
+The Sea Battles tally is the one head row that keeps no rule, and that is
+deliberate: its `Wins / Losses / Disengages` are greyed because the counts
+under them are what the section is for. A head held back on purpose is not a
+head to underline — the rule marks a column's name, it does not override a
+widget that has chosen to play its names down.
+
+### Verifying
+
+Centering is read off the `.txt` dump. The underline is a modifier, which the
+text grid necessarily drops, so it is read off `STYLES-<size>.txt`: every
+header is its own run, `mod=BOLD | UNDERLINED`, spanning exactly its own
+columns and no more.
+
+```
+row   8  cols  37-43   fg=Reset bg=Reset mod=BOLD | UNDERLINED  "T. Haul"
+row  17  cols  52-57   fg=Reset bg=Reset mod=BOLD | UNDERLINED  "Pirate"
+row  17  cols  82-84   fg=Reset bg=Reset mod=BOLD | UNDERLINED  "↓ Σ"
+```
+
+A run wider than its header's text is the mistake this rule exists to catch.
 
 ## Rule 7: Popups are small, centered, and carry their own way out
 

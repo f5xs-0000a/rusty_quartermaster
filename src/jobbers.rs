@@ -4231,10 +4231,11 @@ fn board_head_line(
 
     // The name's head stands centered over its column, where the names
     // themselves are read down the left.
-    let pad = names.saturating_sub(BOARD_NAME_HEAD.len());
-    spans.push(Span::raw(" ".repeat(pad / 2)));
-    spans.push(Span::styled(BOARD_NAME_HEAD, style));
-    spans.push(Span::raw(" ".repeat(pad - pad / 2)));
+    spans.extend(crate::utils::centered_head(
+        BOARD_NAME_HEAD,
+        names,
+        style,
+    ));
 
     for (col, width) in cells.iter().enumerate() {
         let head = board.heads.get(col).copied().unwrap_or(BOARD_SUM_HEAD);

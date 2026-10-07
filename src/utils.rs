@@ -441,6 +441,31 @@ pub fn bar_slots(width: u16, labels: &[u16], padding: u16) -> Vec<u16> {
     slots
 }
 
+/// A column's head, centered across `width` and styled over its own text:
+/// the blanks that center it are spans of their own and carry none of the
+/// style.
+///
+/// What this is for is the underline every head in the app wears. A head
+/// styled over the whole cell it sits in carries that style through the
+/// blanks around it, which turns the rule under one head into a rule the
+/// column's whole width, and a row of them into one long rule. Styling the
+/// text alone keeps a head's rule to the head.
+pub fn centered_head(
+    label: &'static str,
+    width: usize,
+    style: ratatui::style::Style,
+) -> Vec<ratatui::text::Span<'static>> {
+    use ratatui::text::Span;
+
+    // The odd column goes to the right, as `{:^width$}` puts it.
+    let pad = width.saturating_sub(label.chars().count());
+    vec![
+        Span::raw(" ".repeat(pad / 2)),
+        Span::styled(label, style),
+        Span::raw(" ".repeat(pad - pad / 2)),
+    ]
+}
+
 /// Columns a boxed widget spends on its frame: a border and a blank column on
 /// each side, the blanks holding the contents off the border.
 pub const BOX_MARGIN: u16 = 2 * (1 + PADDING);

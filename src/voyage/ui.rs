@@ -1890,20 +1890,24 @@ fn ship_winrate_table(
     let left_pad = width.saturating_sub(table_w) / 2;
     let pad = || Span::raw(" ".repeat(left_pad));
 
-    let bold = Style::default().bold();
     let mut lines = Vec::new();
-    // Header row — every header centered over its column.
-    let mut head = vec![
-        pad(),
-        Span::styled(format!("{:^ship_w$}", "Ship"), bold),
-        Span::raw(" "),
-        Span::styled(format!("{:^voy_w$}", "Voyage"), bold),
-    ];
+    // Header row — every header centered over its column, underlined over its
+    // own text.
+    let style = Style::default().bold().underlined();
+    let mut head = vec![pad()];
+    head.extend(crate::utils::centered_head(
+        "Ship", ship_w, style,
+    ));
+    head.push(Span::raw(" "));
+    head.extend(crate::utils::centered_head(
+        "Voyage", voy_w, style,
+    ));
     if show_hist {
         head.push(Span::raw(" "));
-        head.push(Span::styled(
-            format!("{:^hist_w$}", "Historical"),
-            bold,
+        head.extend(crate::utils::centered_head(
+            "Historical",
+            hist_w,
+            style,
         ));
     }
     lines.push(Line::from(head));
@@ -2092,7 +2096,11 @@ fn render_winrate_popup(
     let bottom = inner.y + inner.height;
     let col_x = |c: u16| grid_x + c * stride;
 
-    // Column headers (enemy hull tags).
+    // Column headers (enemy hull tags). A head is underlined wherever one is
+    // drawn, the hovered one included: a highlight says where the mouse is
+    // and has no business saying what the tag is.
+    let head = bold.underlined();
+    let head_hl = hl.underlined();
     for c in 0 .. n as u16 {
         let x = col_x(c);
         if x + cw > right {
@@ -2102,7 +2110,7 @@ fn render_winrate_popup(
         frame.render_widget(
             Paragraph::new(Line::from(Span::styled(
                 abbr(c as usize),
-                if hot { hl } else { bold },
+                if hot { head_hl } else { head },
             )))
             .centered(),
             Rect::new(x, inner.y, cw, 1),
@@ -2120,13 +2128,18 @@ fn render_winrate_popup(
         let hist_y = if is_cur { y + 1 } else { y };
         let row_hot = hover.is_some_and(|(hr, _)| hr == r);
 
-        // Hull tag on the historical line — colored for our current hull.
+        // Hull tag on the historical line — colored for our current hull,
+        // and a head like the ones along the top.
         if hist_y < bottom {
-            let base = if is_cur { cur_style().bold() } else { bold };
+            let base = if is_cur {
+                cur_style().bold().underlined()
+            } else {
+                head
+            };
             frame.render_widget(
                 Paragraph::new(Line::from(Span::styled(
                     abbr(r),
-                    if row_hot { hl } else { base },
+                    if row_hot { head_hl } else { base },
                 ))),
                 Rect::new(inner.x, hist_y, lw, 1),
             );

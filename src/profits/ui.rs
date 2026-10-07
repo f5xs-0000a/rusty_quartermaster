@@ -454,12 +454,14 @@ fn render_inventory(
     // width is their header's own length, this changes nothing; the Item
     // column is as wide as the longest name, and its header would otherwise
     // drift to the far left of it.
-    let header = Row::new(
-        header_cells
-            .into_iter()
-            .map(|cell| Cell::new(Line::from(cell).centered())),
-    )
-    .style(Style::default().bold());
+    //
+    // Each head is styled over its own text rather than over the cell it sits
+    // in, so the rule under it is the head's own width and the blanks either
+    // side of a centered one carry none of it.
+    let head = Style::default().bold().underlined();
+    let header = Row::new(header_cells.into_iter().map(|cell| {
+        Cell::new(Line::from(Span::styled(cell, head)).centered())
+    }));
 
     let rows: Vec<Row> = app
         .rows
