@@ -4886,6 +4886,25 @@ mod jobber_room_tests {
         }
     }
 
+    /// A Gunnery standing nobody aboard holds says nothing a missing row does
+    /// not, and the rows are worth more to the panes below.
+    #[test]
+    fn the_vikings_box_leaves_out_a_standing_nobody_holds() {
+        let mut shell = with_roster(4);
+        shell.jobbers_ui.voyage_type = crate::jobbers::VoyageType::Vikings;
+        let rows = rows_needed(&mut shell);
+        let text = screen(&mut shell, rows + 10);
+        // Nobody's Gunnery has been looked up, so that is the only row.
+        assert!(text.contains("Gunnery Standing"));
+        assert!(text.contains("Not looked up yet"));
+        for standing in ["Able", "Master", "Legendary", "Ultimate"] {
+            assert!(
+                !text.contains(standing),
+                "{standing} is listed with nobody holding it",
+            );
+        }
+    }
+
     #[test]
     fn what_the_page_needs_does_not_move_with_the_roster() {
         assert_eq!(

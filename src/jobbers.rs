@@ -268,25 +268,25 @@ const CAROUSING_SKILLS: &[Skill] = &[
 pub enum VoyageType {
     #[default]
     Pillage,
-    Atlantis,
-    CursedIsles,
     Vampirates,
     Vikings,
-    HauntedSeas,
-    Blockade,
     Flotilla,
+    Blockade,
+    Atlantis,
+    HauntedSeas,
+    CursedIsles,
 }
 
 /// Every voyage type, in picker order.
 pub const VOYAGE_TYPES: &[VoyageType] = &[
     VoyageType::Pillage,
-    VoyageType::Atlantis,
-    VoyageType::CursedIsles,
     VoyageType::Vampirates,
     VoyageType::Vikings,
-    VoyageType::HauntedSeas,
-    VoyageType::Blockade,
     VoyageType::Flotilla,
+    VoyageType::Blockade,
+    VoyageType::Atlantis,
+    VoyageType::HauntedSeas,
+    VoyageType::CursedIsles,
 ];
 
 impl VoyageType {
@@ -294,13 +294,13 @@ impl VoyageType {
     pub fn name(self) -> &'static str {
         match self {
             VoyageType::Pillage => "Pillage",
-            VoyageType::Atlantis => "Atlantis",
-            VoyageType::CursedIsles => "Cursed Isles",
             VoyageType::Vampirates => "Vampirates",
             VoyageType::Vikings => "Vikings",
-            VoyageType::HauntedSeas => "Haunted Seas",
-            VoyageType::Blockade => "Blockade",
             VoyageType::Flotilla => "Flotilla",
+            VoyageType::Blockade => "Blockade",
+            VoyageType::Atlantis => "Atlantis",
+            VoyageType::HauntedSeas => "Haunted Seas",
+            VoyageType::CursedIsles => "Cursed Isles",
         }
     }
 
@@ -312,13 +312,13 @@ impl VoyageType {
         matches!(
             self,
             VoyageType::Pillage
-                | VoyageType::Atlantis
-                | VoyageType::CursedIsles
                 | VoyageType::Vampirates
                 | VoyageType::Vikings
-                | VoyageType::HauntedSeas
-                | VoyageType::Blockade
                 | VoyageType::Flotilla
+                | VoyageType::Blockade
+                | VoyageType::Atlantis
+                | VoyageType::HauntedSeas
+                | VoyageType::CursedIsles
         )
     }
 
@@ -328,13 +328,13 @@ impl VoyageType {
     pub fn top_jobbers(self) -> &'static [JobberColumn] {
         match self {
             VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
-            VoyageType::Atlantis
-            | VoyageType::HauntedSeas
-            | VoyageType::Flotilla => ATLANTIS_TOP_JOBBERS,
-            VoyageType::Blockade => BLOCKADE_TOP_JOBBERS,
-            VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
             VoyageType::Vampirates => VAMPIRATES_TOP_JOBBERS,
             VoyageType::Vikings => VIKINGS_TOP_JOBBERS,
+            VoyageType::Blockade => BLOCKADE_TOP_JOBBERS,
+            VoyageType::Flotilla
+            | VoyageType::Atlantis
+            | VoyageType::HauntedSeas => ATLANTIS_TOP_JOBBERS,
+            VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
         }
     }
 
@@ -344,13 +344,13 @@ impl VoyageType {
     pub fn panes(self) -> &'static [JobberPane] {
         match self {
             VoyageType::Pillage => PILLAGE_PANES,
-            VoyageType::Atlantis
-            | VoyageType::HauntedSeas
-            | VoyageType::Blockade
-            | VoyageType::Flotilla => ATLANTIS_PANES,
-            VoyageType::CursedIsles => CURSED_ISLES_PANES,
             VoyageType::Vampirates => VAMPIRATES_PANES,
             VoyageType::Vikings => VIKINGS_PANES,
+            VoyageType::Flotilla
+            | VoyageType::Blockade
+            | VoyageType::Atlantis
+            | VoyageType::HauntedSeas => ATLANTIS_PANES,
+            VoyageType::CursedIsles => CURSED_ISLES_PANES,
         }
     }
 
@@ -1461,7 +1461,9 @@ pub fn render(
         // A breakdown of the crew's Gunnery standing: a "Gunnery Standing"
         // header followed by one indented row per standing (highest
         // first) with the count aboard, then a final "Not queried yet"
-        // row for pirates whose Gunnery stat hasn't been fetched.
+        // row for pirates whose Gunnery stat hasn't been fetched. A standing
+        // nobody aboard holds is left out: a count of nought says the same as
+        // the row's absence and the rows are worth more to the panes below.
         let mut counts = [0u32; 9];
         let mut unqueried = 0u32;
         for name in &aboard_set {
@@ -1471,17 +1473,25 @@ pub fn render(
             }
         }
         let mut rows = vec![StatRow::new("Gunnery Standing", "")];
-        rows.extend(STANDINGS.iter().rev().map(|s| {
-            StatRow::new(
-                format!("  {s}"),
-                counts[*s as usize].to_string(),
-            )
-        }));
-        rows.push(StatRow::styled(
-            "  Not looked up yet",
-            unqueried.to_string(),
-            Style::default().fg(Color::DarkGray).italic(),
-        ));
+        rows.extend(
+            STANDINGS
+                .iter()
+                .rev()
+                .filter(|s| 0 < counts[**s as usize])
+                .map(|s| {
+                    StatRow::new(
+                        format!("  {s}"),
+                        counts[*s as usize].to_string(),
+                    )
+                }),
+        );
+        if 0 < unqueried {
+            rows.push(StatRow::styled(
+                "  Not looked up yet",
+                unqueried.to_string(),
+                Style::default().fg(Color::DarkGray).italic(),
+            ));
+        }
         Some(StatsBox {
             title: "Vikings Statistics",
             rows,
@@ -2197,13 +2207,15 @@ fn render_per_fight_popup(
     }
 
     if fights.is_empty() {
-        frame.render_widget(
-            Paragraph::new(Span::styled(
+        // Nothing to graph until a fight has been had: the notice stands in
+        // for the whole of the popup, so it is centered in all of it.
+        crate::utils::render_notice(
+            frame,
+            inner,
+            &[(
                 "No fights recorded yet this run.",
                 Style::default().fg(Color::DarkGray),
-            ))
-            .centered(),
-            inner,
+            )],
         );
         return;
     }

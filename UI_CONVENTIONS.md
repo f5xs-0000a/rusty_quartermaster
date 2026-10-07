@@ -595,11 +595,11 @@ a staffing warning, a stats box the voyage has filled:
 | Map | 11 | a four-row viewport, its sideways bar, the search row, its border, the hint under it |
 | Damage | 13 | the grid is one fixed block; nothing scrolls |
 | Voyage | 14 | pinned header and footer around a four-row body |
+| Jobbers, Vikings | 20 | leaderboard beside the panes, under a stats box listing only the standings held |
 | Jobbers, Atlantis | 23 | Voyage box, Skill Leaderboard, the panes |
 | Jobbers, Pillage | 24 | the same, and the swabbie tally its Aboard pane pins |
 | Jobbers; Haunted Seas, Blockade, Flotilla | 24 | Atlantis's boxes, on a roster with a swabbie tally |
 | Profits | 29 | four boxes stacked under the Inventory's nine rows |
-| Jobbers, Vikings | 29 | leaderboard beside the panes, under its stats box |
 | Jobbers, Vampirates | 31 | the Vampirates Stats box and the distribution button |
 | Jobbers, Cursed Isles | 32 | the Fight Statistics box, the tallest of them |
 
@@ -933,9 +933,9 @@ with no `> ` prefix:
 ```
 ┌─── Voyage Type ───┐          ┌─── Voyage Type ───┐
 │ Pillage           │          │   Pillage         │
-│ Atlantis          │          │   Atlantis        │
-│ Cursed Isles      │ ← hl     │ > Cursed Isles    │ ← hl
 │ Vampirates        │          │   Vampirates      │
+│ Atlantis          │ ← hl     │ > Atlantis        │ ← hl
+│ Cursed Isles      │          │   Cursed Isles    │
 └───────────────────┘          └───────────────────┘
 ```
 
@@ -951,7 +951,7 @@ by its title rather than by its longest entry:
 ```
 ┌─── Voyage Type ───┐          ┌─── Voyage Type ───┐
 │   Pillage         │          │ Pillage           │
-│   Atlantis        │          │ Atlantis          │
+│   Vampirates      │          │ Vampirates        │
 │   Cursed Isles    │          │ Cursed Isles      │
 └───────────────────┘          └───────────────────┘
    block centered                 flush left, box

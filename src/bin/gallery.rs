@@ -1431,20 +1431,6 @@ fn jobbers_states(states: &mut Vec<State>) {
             JobberFocus::Aboard,
         ),
         (
-            "jobbers-atlantis",
-            "Jobbers, Atlantis layout (Aboard/Planked)",
-            ATLANTIS,
-            VoyageType::Atlantis,
-            JobberFocus::Aboard,
-        ),
-        (
-            "jobbers-cursed-isles",
-            "Jobbers, Cursed Isles layout (Enthralled + Fight Statistics)",
-            CURSED_ISLES,
-            VoyageType::CursedIsles,
-            JobberFocus::Enthralled,
-        ),
-        (
             "jobbers-vampirates",
             "Jobbers, Vampirates layout (filling leaderboard)",
             VAMPIRATES,
@@ -1458,14 +1444,14 @@ fn jobbers_states(states: &mut Vec<State>) {
             VoyageType::Vikings,
             JobberFocus::Planked,
         ),
-        // No tell says either of these is under way, so the log is an
-        // ordinary pillage and the voyage type is the quartermaster's word
-        // for it.
+        // No tell says a flotilla, a blockade or the Haunted Seas is under
+        // way, so the log is an ordinary pillage and the voyage type is the
+        // quartermaster's word for it.
         (
-            "jobbers-haunted-seas",
-            "Jobbers, Haunted Seas layout (Atlantis's, picked by hand)",
+            "jobbers-flotilla",
+            "Jobbers, Flotilla layout (Atlantis's, picked by hand)",
             PILLAGE,
-            VoyageType::HauntedSeas,
+            VoyageType::Flotilla,
             JobberFocus::Aboard,
         ),
         (
@@ -1476,11 +1462,25 @@ fn jobbers_states(states: &mut Vec<State>) {
             JobberFocus::Aboard,
         ),
         (
-            "jobbers-flotilla",
-            "Jobbers, Flotilla layout (Atlantis's, picked by hand)",
-            PILLAGE,
-            VoyageType::Flotilla,
+            "jobbers-atlantis",
+            "Jobbers, Atlantis layout (Aboard/Planked)",
+            ATLANTIS,
+            VoyageType::Atlantis,
             JobberFocus::Aboard,
+        ),
+        (
+            "jobbers-haunted-seas",
+            "Jobbers, Haunted Seas layout (Atlantis's, picked by hand)",
+            PILLAGE,
+            VoyageType::HauntedSeas,
+            JobberFocus::Aboard,
+        ),
+        (
+            "jobbers-cursed-isles",
+            "Jobbers, Cursed Isles layout (Enthralled + Fight Statistics)",
+            CURSED_ISLES,
+            VoyageType::CursedIsles,
+            JobberFocus::Enthralled,
         ),
     ] {
         states.push(state(slug, description, move |shell| {
@@ -1652,6 +1652,21 @@ fn jobbers_states(states: &mut Vec<State>) {
         "Jobbers, per-fight advantage graph",
         |shell| {
             feed(shell, CURSED_ISLES);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::CursedIsles;
+            shell.jobbers_ui.per_fight_popup = Some(PerFightPopup {
+                idx: 0,
+                axis: AxisMode::Time,
+            });
+        },
+    ));
+    // The same graph asked for before a fight has been had: a run with no
+    // wave fought yet, so the popup has nothing to plot.
+    states.push(state(
+        "jobbers-popup-per-fight-empty",
+        "Jobbers, per-fight advantage graph with no fight yet",
+        |shell| {
+            feed(shell, PILLAGE);
             open(shell, AppId::Chatlog, true);
             shell.jobbers_ui.voyage_type = VoyageType::CursedIsles;
             shell.jobbers_ui.per_fight_popup = Some(PerFightPopup {
