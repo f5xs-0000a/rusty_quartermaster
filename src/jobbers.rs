@@ -1106,6 +1106,28 @@ fn standing_style(s: Standing) -> Style {
     }
 }
 
+/// The colour a pirate's name is drawn in: green for a greenie, plain for
+/// everyone else. A name's *emphasis* answers a different question — bold for a
+/// crewmate, bold+italic for the player — so callers add that on top of this.
+fn greenie_colour(greenie: bool) -> Style {
+    if greenie {
+        Style::default().fg(Color::Green)
+    } else {
+        Style::default()
+    }
+}
+
+/// [`greenie_colour`] for a name the cache can answer for. A pirate the cache
+/// has nothing on is drawn plain: nothing is known of them yet, which is not
+/// the same as knowing them to be green.
+fn name_colour(cache: &PirateCache, name: &str) -> Style {
+    greenie_colour(
+        cache
+            .get_cached(name)
+            .is_some_and(crate::pirate::CachedPirate::is_greenie),
+    )
+}
+
 /// Experience emphasis: bold from Broad, bold+italic from Sublime.
 fn experience_style(e: Experience) -> Style {
     if e >= Experience::Sublime {
@@ -2871,7 +2893,13 @@ fn render_skill_dist_popup(
         Line::from(""),
     ];
     for e in &here {
-        lines.push(Line::from(e.name.clone()).centered());
+        lines.push(
+            Line::from(Span::styled(
+                e.name.clone(),
+                name_colour(cache, &e.name),
+            ))
+            .centered(),
+        );
     }
     if !note_lines.is_empty() {
         lines.push(Line::from(""));
@@ -3102,22 +3130,21 @@ fn render_panes(
         .map(|p| p.crew_name.clone())
         .filter(|c| !c.is_empty());
     let style_for = |name: &str| -> Style {
+        // Green says what the pirate is, emphasis says who they are to us, so
+        // the two stack rather than compete for the name.
+        let colour = name_colour(cache, name);
         let is_player = state
             .player_name
             .as_deref()
             .is_some_and(|me| name.eq_ignore_ascii_case(me));
         if is_player {
-            return Style::default().bold().italic();
+            return colour.bold().italic();
         }
         let is_crewmate = match (&my_crew, cache.get(name)) {
             (Some(mine), Some(p)) => p.crew_name.eq_ignore_ascii_case(mine),
             _ => false,
         };
-        if is_crewmate {
-            Style::default().bold()
-        } else {
-            Style::default()
-        }
+        if is_crewmate { colour.bold() } else { colour }
     };
 
     let vessel = selected.and_then(|k| state.vessels.get(k));
@@ -3570,6 +3597,9 @@ struct RankedJobber {
     standing: Standing,
     /// The winning skill's marker (e.g. `C`/`P`), set only for merged columns.
     marker: Option<char>,
+    /// Whether the name is drawn green (see [`greenie_colour`]). Decided where
+    /// the row is built, the cache being at hand there and not at the panel.
+    greenie: bool,
 }
 
 /// A Top Jobbers column paired with its ranked jobbers — all the sizing and
@@ -3613,7 +3643,8 @@ fn rank_columns(
             let mut rows: Vec<RankedJobber> = aboard
                 .iter()
                 .filter_map(|n| {
-                    let info = cache.get(n)?;
+                    let entry = cache.get_cached(n)?;
+                    let info = &entry.basic;
                     // Best of the column's skills for this pirate: highest
                     // standing, then experience.
                     let (skill, rec) = col
@@ -3630,6 +3661,7 @@ fn rank_columns(
                         experience: rec.experience,
                         standing: rec.standing,
                         marker: col.merged().then(|| skill.marker()),
+                        greenie: entry.is_greenie(),
                     })
                 })
                 .collect();
@@ -3709,10 +3741,10 @@ fn leaderboard_row_spans(
     name_w: usize,
     show_codes: bool,
 ) -> Vec<Span<'static>> {
-    let mut spans = vec![Span::raw(format!(
-        "{:<name_w$}",
-        truncate(&j.name, name_w)
-    ))];
+    let mut spans = vec![Span::styled(
+        format!("{:<name_w$}", truncate(&j.name, name_w)),
+        greenie_colour(j.greenie),
+    )];
     if show_codes {
         spans.push(Span::raw(" ".repeat(NAME_CODE_GAP)));
         spans.push(Span::styled(
@@ -4364,7 +4396,10 @@ fn render_pirate_popup(
         Paragraph::new(
             Line::from(Span::styled(
                 pp.name.clone(),
-                Style::default().bold(),
+                greenie_colour(
+                    cached.is_some_and(crate::pirate::CachedPirate::is_greenie),
+                )
+                .bold(),
             ))
             .centered(),
         ),

@@ -568,6 +568,110 @@ impl Trophies {
     pub fn has_trophy(&self, name: &str) -> bool {
         self.sections.iter().any(|s| s.has_trophy(name))
     }
+
+    /// Whether any trophy on the shelf was awarded for skill (see
+    /// [`is_skill_trophy`]).
+    pub fn has_skill_trophy(&self) -> bool {
+        self.sections
+            .iter()
+            .flat_map(|s| s.trophies.iter())
+            .any(|t| is_skill_trophy(t))
+    }
+}
+
+/// The puzzles the greenie test reads experience from: the duties a report
+/// rates, which is the set of station keys [`crate::duty::station_skill`]
+/// names. The officer puzzles are not among them — a pirate is set to a duty
+/// station, and navigating is not one.
+const DUTY_PUZZLES: [Skill; 7] = [
+    Skill::Sailing,
+    Skill::Rigging,
+    Skill::Carpentry,
+    Skill::Patching,
+    Skill::Bilging,
+    Skill::Gunning,
+    Skill::TreasureHaul,
+];
+
+/// Trophy families awarded for skill, matched on the name's opening words. Both
+/// are ocean-wide standing: holding Ultimate in a puzzle, and standing at the
+/// top of that list. The game writes the latter with its own glyph, so the
+/// prefix carries it.
+const SKILL_TROPHY_FAMILIES: [&str; 2] = ["Ultimate ", "#1 "];
+
+/// Trophies awarded for skill rather than for experience or for time served,
+/// named one by one. They fall into four groups, in order: a single Frenetic
+/// scored; every duty report of a blockade at Excellent, then at Incredible;
+/// maneuver tokens earned while holding those two ratings, three volume tiers
+/// per puzzle; and fifteen level-ten challenge missions won.
+///
+/// Each is an exception to the Broad test: the skill one of these takes cannot
+/// be come by without having played before, so holding it says the pirate has
+/// the experience their puzzle standings do not show.
+const SKILL_TROPHIES: [&str; 45] = [
+    "Coffin Carpenter",
+    "Heroic Hauler",
+    "Frenetic Forager",
+    "Iron Coils",
+    "Iron Hammer",
+    "Iron Pump",
+    "Iron Spool",
+    "Iron Tackle",
+    "Steel Coils",
+    "Steel Hammer",
+    "Steel Pump",
+    "Steel Spool",
+    "Steel Tackle",
+    "Seal of Bilge",
+    "Water Marble",
+    "Seal of the Pump",
+    "Seal of Carpentry",
+    "Wooden Stair",
+    "Seal of the Hammer",
+    "Seal of Patching",
+    "Thread Ball",
+    "Seal of the Spool",
+    "Seal of Rigging",
+    "Rope Knot",
+    "Seal of the Sheets",
+    "Seal of Sails",
+    "Wind Marble",
+    "Seal of the Tackle",
+    "Pillars of Bilge",
+    "Towers of Water",
+    "Spires of the Pump",
+    "Pillars of Carpentry",
+    "Towers of Wood",
+    "Spires of the Hammer",
+    "Pillars of Patching",
+    "Towers of Thread",
+    "Spires of the Spool",
+    "Pillars of Rigging",
+    "Towers of Rope",
+    "Spires of the Sheets",
+    "Pillars of Sails",
+    "Towers of Wind",
+    "Spires of the Tackle",
+    "Fencer",
+    "Scrapper",
+];
+
+/// Whether `name` is a trophy that marks skill, which is what disqualifies a
+/// greenie: one of [`SKILL_TROPHIES`], or a member of a family in
+/// [`SKILL_TROPHY_FAMILIES`].
+///
+/// Matched without regard to case, so a page that prints a name differently
+/// than we wrote it down cannot quietly pass the test.
+fn is_skill_trophy(name: &str) -> bool {
+    let name = name.trim();
+    let in_family = SKILL_TROPHY_FAMILIES.iter().any(|family| {
+        name.get(.. family.len())
+            .is_some_and(|head| head.eq_ignore_ascii_case(family))
+    });
+    in_family
+        || SKILL_TROPHIES
+            .iter()
+            .any(|trophy| name.eq_ignore_ascii_case(trophy))
 }
 
 /// A cached pirate plus when each part was last fetched from yoweb. Basic info
@@ -585,6 +689,35 @@ pub struct CachedPirate {
     pub basic_fetched_at: DateTime<Utc>,
     /// When the trophy list was last fetched.
     pub trophies_fetched_at: DateTime<Utc>,
+}
+
+impl CachedPirate {
+    /// Whether this pirate is a **greenie**: one the game has yet to see puzzle
+    /// well. Both halves must hold.
+    ///
+    /// No duty puzzle ([`DUTY_PUZZLES`]) has carried them as far as
+    /// [`Experience::Broad`]. Experience is the half that reads as "has done
+    /// this before" — it never decays, and it is what the game itself gates a
+    /// greenie's duty report on, showing one "Learning" where a pirate further
+    /// along is told Booched from Poor.
+    ///
+    /// And no trophy of theirs was awarded for skill
+    /// ([`Trophies::has_skill_trophy`]). Such a trophy takes skill no new
+    /// pirate has, so it stands as prior experience with the game and the Broad
+    /// test no longer speaks for them.
+    ///
+    /// A pirate whose pages have not landed yet looks like a greenie by this
+    /// test, holding neither experience nor trophies — so callers that draw the
+    /// answer should ask it only of a pirate the cache has.
+    pub fn is_greenie(&self) -> bool {
+        let broad_somewhere = DUTY_PUZZLES.iter().any(|puzzle| {
+            self.basic
+                .skills
+                .get(puzzle)
+                .is_some_and(|rec| Experience::Broad <= rec.experience)
+        });
+        !broad_somewhere && !self.trophies.has_skill_trophy()
+    }
 }
 
 /// Which yoweb pages a (re)fetch should pull. The basic page and the trophy
@@ -1436,5 +1569,142 @@ mod tests {
         assert_eq!(rank, "");
         assert_eq!(role, None);
         assert_eq!(name, "");
+    }
+
+    /// A cached pirate carrying `skills` and one unnamed section of `trophies`.
+    fn pirate(
+        skills: &[(Skill, Experience)],
+        trophies: &[&str],
+    ) -> CachedPirate {
+        CachedPirate {
+            basic: BasicInfo {
+                name: "Playerone".to_owned(),
+                crew_rank: "Pirate".to_owned(),
+                crew_role: None,
+                crew_name: "The Example Crew".to_owned(),
+                flag_rank: "Member".to_owned(),
+                flag_name: "Example Flag".to_owned(),
+                reputation: HashMap::new(),
+                skills: skills
+                    .iter()
+                    .map(|&(skill, experience)| {
+                        (
+                            skill,
+                            SkillRecord {
+                                experience,
+                                standing: Standing::Able,
+                                archipelago: None,
+                            },
+                        )
+                    })
+                    .collect(),
+            },
+            trophies: Trophies {
+                sections: vec![TrophySection {
+                    category: String::new(),
+                    trophies: trophies
+                        .iter()
+                        .map(|t| (*t).to_owned())
+                        .collect(),
+                }],
+            },
+            basic_fetched_at: DateTime::<Utc>::MIN_UTC,
+            trophies_fetched_at: DateTime::<Utc>::MIN_UTC,
+        }
+    }
+
+    #[test]
+    fn a_pirate_shy_of_a_broad_is_a_greenie() {
+        let green = pirate(
+            &[
+                (Skill::Sailing, Experience::Narrow),
+                (Skill::Bilging, Experience::Apprentice),
+            ],
+            &["First Voyage Home"],
+        );
+        assert!(green.is_greenie());
+    }
+
+    #[test]
+    fn one_broad_in_one_duty_puzzle_is_enough() {
+        for experience in [
+            Experience::Broad,
+            Experience::Expert,
+            Experience::Transcendent,
+        ] {
+            let seasoned = pirate(
+                &[
+                    (Skill::Sailing, Experience::Narrow),
+                    (Skill::Gunning, experience),
+                ],
+                &[],
+            );
+            assert!(
+                !seasoned.is_greenie(),
+                "a {experience} gunner is no greenie",
+            );
+        }
+    }
+
+    /// A puzzle no duty report rates says nothing about a greenie: carousing
+    /// and crafting are not duties, however far they are taken.
+    #[test]
+    fn experience_outside_the_duty_puzzles_does_not_count() {
+        let drinker = pirate(
+            &[
+                (
+                    Skill::Drinking,
+                    Experience::Transcendent,
+                ),
+                (Skill::Weaving, Experience::Sublime),
+            ],
+            &[],
+        );
+        assert!(drinker.is_greenie());
+    }
+
+    #[test]
+    fn a_trophy_for_skill_outs_a_pirate_with_no_broad() {
+        for trophy in [
+            "Steel Pump",           // every report of a blockade at Incredible
+            "Coffin Carpenter",     // a Frenetic scored
+            "Spires of the Hammer", // maneuvers held at Incredible
+            "Fencer",               // fifteen level-ten missions
+            "Ultimate Bilger",      // ocean-wide standing
+            "#1 Sailor",
+            "steel pump", // however the page prints it
+        ] {
+            let skilled = pirate(
+                &[(Skill::Sailing, Experience::Narrow)],
+                &[trophy],
+            );
+            assert!(
+                !skilled.is_greenie(),
+                "{trophy} is no greenie's trophy",
+            );
+        }
+    }
+
+    /// Trophies for experience and for time served leave a greenie green — and
+    /// so does one for a single duty report, which is rated against the
+    /// pirate's own standing.
+    #[test]
+    fn other_trophies_leave_a_greenie_green() {
+        for trophy in [
+            "Incredible Bilger",
+            "Broad Sailor",
+            "Silver Crab",
+            "Jade Monkey",
+            "Barfly",
+        ] {
+            let green = pirate(
+                &[(Skill::Sailing, Experience::Narrow)],
+                &[trophy],
+            );
+            assert!(
+                green.is_greenie(),
+                "{trophy} does not speak for a pirate's skill",
+            );
+        }
     }
 }

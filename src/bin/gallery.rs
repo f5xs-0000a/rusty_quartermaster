@@ -758,6 +758,19 @@ fn feed(shell: &mut AppShell, lines: &[&str]) {
 /// remainder), which is what makes these states show the scrolling that a real
 /// pirate's pages need.
 fn cache_pirate(shell: &mut AppShell, name: &str, shift: usize) {
+    cache_jobber(shell, name, Some(shift));
+}
+
+/// Put `name` in the cache as a greenie: no duty puzzle has carried them as far
+/// as a Broad, and nothing on their trophy shelf was awarded for skill. Their
+/// name is drawn green wherever a roster names them.
+fn cache_greenie(shell: &mut AppShell, name: &str) {
+    cache_jobber(shell, name, None);
+}
+
+/// The body of both: `shift` starts the pirate that far along the skill
+/// ladders, or, as `None`, holds every skill at a greenie's.
+fn cache_jobber(shell: &mut AppShell, name: &str, shift: Option<usize>) {
     use std::collections::HashMap;
 
     use chrono::Utc;
@@ -841,7 +854,12 @@ fn cache_pirate(shell: &mut AppShell, name: &str, shift: usize) {
         .iter()
         .enumerate()
         .map(|(i, &s)| {
-            let (experience, standing) = LADDER[(i + shift) % LADDER.len()];
+            // A greenie is shy of a Broad in every puzzle a duty report rates,
+            // so there is no ladder to walk for one.
+            let (experience, standing) = match shift {
+                Some(shift) => LADDER[(i + shift) % LADDER.len()],
+                None => (Experience::Narrow, Standing::Able),
+            };
             (
                 s,
                 SkillRecord {
@@ -1556,6 +1574,28 @@ fn jobbers_states(states: &mut Vec<State>) {
                 // Stats are what the leaderboard ranks, so a roster without
                 // them would leave it empty however long the roster is.
                 cache_pirate(shell, name, i);
+            }
+            open(shell, AppId::Chatlog, true);
+        },
+    ));
+
+    // Greenies among the crew: every other name on the roster is one, so the
+    // green reads against the names beside it — in the Aboard pane and in the
+    // ranking, where a greenie sits at the foot of every column.
+    states.push(state(
+        "jobbers-greenies",
+        "Jobbers with greenies among the roster",
+        |shell| {
+            feed(shell, PILLAGE);
+            for (i, name) in LONG_ROSTER.iter().enumerate() {
+                shell.chatlog.process_line(&format!(
+                    "[01:00:30] {name} has come aboard."
+                ));
+                if i % 2 == 0 {
+                    cache_greenie(shell, name);
+                } else {
+                    cache_pirate(shell, name, i);
+                }
             }
             open(shell, AppId::Chatlog, true);
         },
