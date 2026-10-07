@@ -52,7 +52,7 @@
 //! - The column's **width** is [`metadata_width`]: the ocean's longest island
 //!   name and kind of island, so neither ever wraps.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use ratatui::{
     Frame,
@@ -69,7 +69,7 @@ use crate::{
     map::{
         MOVE_KEYS,
         MapApp,
-        data::{Chart, Heading, Map, Point},
+        data::{Chart, Heading, Map, Place, Point},
     },
     utils::offset_title,
 };
@@ -173,6 +173,10 @@ struct Canvas {
     /// The cells league points keep to themselves: no name is written in one,
     /// blank though it is.
     kept: Vec<bool>,
+    /// Where each archipelago's name ended up, by name: the cell its block of
+    /// rows sits around. A view that wants to show a name has no other way of
+    /// knowing where the drawing put it.
+    captions: Vec<(&'static str, (usize, usize))>,
 }
 
 impl Canvas {
@@ -182,6 +186,7 @@ impl Canvas {
             h,
             cells: vec![(' ', Paint::Sea); w * h],
             kept: vec![false; w * h],
+            captions: Vec::new(),
         }
     }
 
@@ -239,23 +244,50 @@ impl Canvas {
     }
 
     /// Whether a block of `rows`, each centred in the widest row's width, can
-    /// sit with its top-left at `(x, y)`: every letter on a cell that can
-    /// carry one, and [`LABEL_GAP`] blank cells either side of every row. The
-    /// gap may fall on a cell a point keeps, or run off the canvas edge; no
-    /// row may do either.
-    fn fits(&self, x: usize, y: usize, rows: &[String]) -> bool {
+    /// sit with its top-left at `(x, y)` with `pad` columns and rows of blank
+    /// water around it: every letter on a cell that can carry one, and nothing
+    /// drawn anywhere else in the box the block and its padding make. The box
+    /// may fall on cells a point keeps, or run off the canvas edge; no letter
+    /// may do either.
+    fn fits(
+        &self,
+        x: usize,
+        y: usize,
+        rows: &[String],
+        (pad_x, pad_y): (usize, usize),
+    ) -> bool {
         let w = block_width(rows);
         if self.w < x + w || self.h < y + rows.len() {
             return false;
         }
-        rows.iter().enumerate().all(|(i, row)| {
-            let (rx, n) = (x + indent(row, w), row.chars().count());
-            let y = y + i;
-            let lo = rx.saturating_sub(LABEL_GAP);
-            let hi = (rx + n + LABEL_GAP).min(self.w);
-            (rx .. rx + n).all(|cx| self.is_writable(cx, y))
-                && (lo .. rx).chain(rx + n .. hi).all(|cx| self.is_free(cx, y))
-        })
+        let (lo_x, hi_x) = (
+            x.saturating_sub(pad_x),
+            (x + w + pad_x).min(self.w),
+        );
+        let (lo_y, hi_y) = (
+            y.saturating_sub(pad_y),
+            (y + rows.len() + pad_y).min(self.h),
+        );
+        for cy in lo_y .. hi_y {
+            // where the letters lie, on the rows that carry any
+            let letters =
+                cy.checked_sub(y).and_then(|i| rows.get(i)).map(|row| {
+                    let rx = x + indent(row, w);
+                    rx .. rx + row.chars().count()
+                });
+            for cx in lo_x .. hi_x {
+                let free = if letters.as_ref().is_some_and(|l| l.contains(&cx))
+                {
+                    self.is_writable(cx, cy)
+                } else {
+                    self.is_free(cx, cy)
+                };
+                if !free {
+                    return false;
+                }
+            }
+        }
+        true
     }
 
     /// The cheapest spot of [`label_spots`] where a block of `rows` for the
@@ -268,7 +300,7 @@ impl Canvas {
         rows: &[String],
     ) -> Option<(usize, usize)> {
         label_spots(cx, cy, block_width(rows), rows.len())
-            .filter(|&(x, y, _)| self.fits(x, y, rows))
+            .filter(|&(x, y, _)| self.fits(x, y, rows, (LABEL_GAP, 0)))
             .min_by_key(|&(_, _, cost)| cost)
             .map(|(x, y, _)| (x, y))
     }
@@ -316,6 +348,99 @@ impl Canvas {
         }
         false
     }
+
+    /// Write `text` as near `(tx, ty)` as the rules allow, the middle of the
+    /// block of rows brought to that cell. This is how a name that belongs to
+    /// a stretch of water rather than to a mark is placed: it is not beside
+    /// anything, so the nearest spot in any direction will do, counting a row
+    /// as [`CELL_W`] / [`CELL_H`] columns since a cell is taller than it is
+    /// wide.
+    ///
+    /// Of two spots as near, one whose middle `on_its_own` accepts wins: a
+    /// name is read as naming the water it sits on, so it is kept on its own
+    /// where it can be. It is given [`CAPTION_PAD`] of blank water around it
+    /// first; with no room for that within [`CAPTION_REACH`] leagues it
+    /// settles for the clearance a name beside a mark keeps, and failing even
+    /// that it is placed beside the middle like any other name. Returns the
+    /// cell the name ended up around.
+    fn caption(
+        &mut self,
+        (tx, ty): (usize, usize),
+        text: &str,
+        paint: Paint,
+        on_its_own: impl Fn((usize, usize)) -> bool,
+    ) -> Option<(usize, usize)> {
+        let rows = label_rows(text);
+        let (w, h) = (block_width(&rows), rows.len());
+        let middle = |(x, y): (usize, usize)| (x + w / 2, y + h / 2);
+        // the top-left that brings the block's middle to the cell asked for
+        let (ox, oy) = (
+            tx as isize - (w / 2) as isize,
+            ty as isize - (h / 2) as isize,
+        );
+        let mut elsewhere = None;
+        for &(dx, dy) in caption_offsets() {
+            let (Ok(x), Ok(y)) = (
+                usize::try_from(ox + dx),
+                usize::try_from(oy + dy),
+            ) else {
+                continue;
+            };
+            if !self.fits(x, y, &rows, CAPTION_PAD) {
+                continue;
+            }
+            if on_its_own(middle((x, y))) {
+                self.write_block(x, y, &rows, paint);
+                return Some(middle((x, y)));
+            }
+            elsewhere.get_or_insert((x, y));
+        }
+        // nowhere on its own water has the room: the nearest water that does
+        // is better than none
+        if let Some((x, y)) = elsewhere {
+            self.write_block(x, y, &rows, paint);
+            return Some(middle((x, y)));
+        }
+        // no water within reach can hold it at all: the name is worth more
+        // than the room around it, so it goes beside the middle like any
+        // other name
+        self.label(tx, ty, text, paint).then_some((tx, ty))
+    }
+}
+
+/// How far a caption's block may be carried from where it belongs, and in
+/// what order to try: nearest first within [`CAPTION_REACH`] leagues. A row
+/// counts as [`CELL_W`] / [`CELL_H`] columns, a cell being that much taller
+/// than it is wide, so the distance is the distance as it looks; of two spots
+/// as near, the one below and to the right comes first, as it does for a name
+/// beside a mark. The order is the same every time, so it is worked out once.
+fn caption_offsets() -> &'static [(isize, isize)] {
+    static ORDER: std::sync::OnceLock<Vec<(isize, isize)>> =
+        std::sync::OnceLock::new();
+    ORDER.get_or_init(|| {
+        let (reach_x, reach_y) = (
+            CAPTION_REACH * CELL_W,
+            CAPTION_REACH * CELL_H,
+        );
+        let mut spots = Vec::new();
+        for dy in -(reach_y as isize) ..= reach_y as isize {
+            for dx in -(reach_x as isize) ..= reach_x as isize {
+                let (down, across) = (dy.unsigned_abs(), dx.unsigned_abs());
+                let cost = (down * CELL_W / CELL_H).pow(2) + across.pow(2);
+                spots.push((
+                    cost,
+                    dy < 0,
+                    down,
+                    dx < 0,
+                    across,
+                    dx,
+                    dy,
+                ));
+            }
+        }
+        spots.sort_unstable();
+        spots.into_iter().map(|spot| (spot.5, spot.6)).collect()
+    })
 }
 
 /// The widest row of a label block, which is the width the block takes.
@@ -420,6 +545,131 @@ fn label_spots(
         .map(|(x, y, cost)| (x as usize, y as usize, cost))
 }
 
+/// How far a caption may be carried from the middle of its archipelago to
+/// find room for itself, in leagues. The furthest any name on any ocean has
+/// to go is twelve, so this leaves a few leagues of slack.
+const CAPTION_REACH: usize = 16;
+
+/// Blank water a caption keeps around itself, in columns and in rows - three
+/// leagues of it either way, a cell being twice as tall as it is wide. A name
+/// beside a mark says which mark by sitting next to it, and keeps
+/// [`LABEL_GAP`]; a name standing for a whole archipelago has nothing to sit
+/// next to, so it takes the open water instead, and is read as the water's
+/// rather than as some mark's it was wedged against. Nothing drawn may stand
+/// inside it - no point, and no league running to one.
+const CAPTION_PAD: (usize, usize) = (12, 6);
+
+/// The island nearest `p`, by league rather than by cell: a league is the
+/// same distance east as it is south-east, however many cells the drawing
+/// spends on each. Ties go to the island named first, so the same map always
+/// draws the same.
+fn nearest_island(map: &Map, p: Point) -> Option<&'static Place> {
+    map.islands.iter().min_by_key(|island| {
+        let (dx, dy) = (
+            i64::from(island.x) - i64::from(p.0),
+            i64::from(island.y) - i64::from(p.1),
+        );
+        (dx * dx + dy * dy, island.name)
+    })
+}
+
+/// Which archipelago owns each stretch of a map's water, and where the middle
+/// of each one is.
+///
+/// Every cell of the grid is given to the island nearest it - a Voronoi
+/// diagram of the ocean's islands - and the cells of islands sharing an
+/// archipelago read as one region, so an archipelago's region is the water its
+/// own land is the nearest to. A region's middle is the mean of the league
+/// points in it, which is the water that is actually sailed rather than the
+/// empty corners of the grid the diagram also hands out.
+struct Regions {
+    /// The archipelago owning each grid cell, row by row, as wide and as tall
+    /// as the map's extent.
+    cells: Vec<Option<&'static str>>,
+    w: usize,
+    /// The canvas cell at the middle of each archipelago's region.
+    middle: BTreeMap<&'static str, (usize, usize)>,
+}
+
+impl Regions {
+    /// The archipelago whose water a grid cell is, if any.
+    fn owner(&self, (x, y): Point) -> Option<&'static str> {
+        if self.w <= x as usize {
+            return None;
+        }
+        self.cells
+            .get(y as usize * self.w + x as usize)
+            .copied()
+            .flatten()
+    }
+}
+
+/// The regions of every compiled map, worked out on first use: they are the
+/// same for a map every time it is drawn, and a diagram costs an island
+/// lookup for every cell of the grid.
+fn regions_of(map: &'static Map) -> Option<&'static Regions> {
+    static ALL: std::sync::OnceLock<Vec<(&'static str, Regions)>> =
+        std::sync::OnceLock::new();
+    ALL.get_or_init(|| {
+        crate::map::data::MAPS
+            .iter()
+            .map(|map| (map.ocean, build_regions(map)))
+            .collect()
+    })
+    .iter()
+    .find(|(ocean, _)| *ocean == map.ocean)
+    .map(|(_, regions)| regions)
+}
+
+fn build_regions(map: &'static Map) -> Regions {
+    // the map says which island a cell belongs to, the geography which
+    // archipelago the island belongs to
+    let geo = bare::BARE.ocean(map.ocean);
+    let arch_of = |island: &'static Place| {
+        geo.and_then(|geo| geo.island(island.name))
+            .map(|(arch, _)| arch.name.as_str())
+    };
+    let (max_x, max_y) = map.extent();
+    let (w, h) = (max_x as usize + 1, max_y as usize + 1);
+    let mut cells = vec![None; w * h];
+    for y in 0 .. h {
+        for x in 0 .. w {
+            cells[y * w + x] =
+                nearest_island(map, (x as u16, y as u16)).and_then(arch_of);
+        }
+    }
+    let mut sums: BTreeMap<&'static str, (usize, usize, usize)> =
+        BTreeMap::new();
+    for point in map.points() {
+        let Some(arch) = cells[point.1 as usize * w + point.0 as usize] else {
+            continue;
+        };
+        let (x, y) = cell_of(point);
+        let sum = sums.entry(arch).or_default();
+        *sum = (sum.0 + x, sum.1 + y, sum.2 + 1);
+    }
+    Regions {
+        cells,
+        w,
+        middle: sums
+            .into_iter()
+            .map(|(arch, (x, y, n))| (arch, (x / n, y / n)))
+            .collect(),
+    }
+}
+
+/// The grid point a canvas cell belongs to: [`cell_of`] read backwards, each
+/// cell going to the nearest point's row and column.
+fn point_of((x, y): (usize, usize)) -> Point {
+    let round = |cell: usize, margin: usize, size: usize| {
+        ((cell.saturating_sub(margin) + size / 2) / size) as u16
+    };
+    (
+        round(x, MARGIN_X, CELL_W),
+        round(y, MARGIN_Y, CELL_H),
+    )
+}
+
 /// Canvas cell of a grid point.
 fn cell_of((x, y): Point) -> (usize, usize) {
     (
@@ -428,7 +678,20 @@ fn cell_of((x, y): Point) -> (usize, usize) {
     )
 }
 
-fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
+/// Where each archipelago's name is drawn on `map`, as the grid point nearest
+/// the middle of the name. Only the drawing knows: a name goes to the middle
+/// of its own water if there is room for it there, and to the nearest water
+/// that has room if there is not.
+#[allow(dead_code)] // the gallery centres a view on each name
+pub fn caption_points(map: &'static Map) -> Vec<(&'static str, Point)> {
+    build_canvas(map, &MapApp::new())
+        .captions
+        .into_iter()
+        .map(|(arch, cell)| (arch, point_of(cell)))
+        .collect()
+}
+
+fn build_canvas(map: &'static Map, app: &MapApp) -> Canvas {
     let (max_x, max_y) = map.extent();
     let mut canvas = Canvas::new(
         max_x as usize * CELL_W + 1 + 2 * MARGIN_X,
@@ -484,9 +747,33 @@ fn build_canvas(map: &Map, app: &MapApp) -> Canvas {
         let (x, y) = cell_of(island.at());
         canvas.label(x, y, island.drawn(), Paint::Name);
     }
-    for region in map.labels {
-        let (x, y) = cell_of(region.at());
-        canvas.label(x, y, region.drawn(), Paint::Region);
+    // the islands are named first: a mark's own name has the better claim on
+    // the water beside it than the name of the whole archipelago has
+    let regions = regions_of(map);
+    for label in map.labels {
+        let arch = label.name.strip_suffix(" Archipelago");
+        let middle = regions
+            .zip(arch)
+            .and_then(|(regions, arch)| regions.middle.get(arch).copied());
+        let Some(middle) = middle else {
+            // an archipelago the geography does not know: the wiki's own
+            // placement is all there is to go on
+            let (x, y) = cell_of(label.at());
+            canvas.label(x, y, label.drawn(), Paint::Region);
+            continue;
+        };
+        let at = canvas.caption(
+            middle,
+            label.drawn(),
+            Paint::Region,
+            |cell| {
+                regions.and_then(|regions| regions.owner(point_of(cell)))
+                    == arch
+            },
+        );
+        if let (Some(arch), Some(at)) = (arch, at) {
+            canvas.captions.push((arch, at));
+        }
     }
     canvas
 }
@@ -1906,6 +2193,100 @@ mod tests {
         // the figure rides the frame, closed by the house-style run
         app.pirate = Some("Someone".to_owned());
         assert!(draw(&mut app).contains(&format!(" {tally} ───")));
+    }
+
+    /// A name standing for a whole archipelago stands in open water:
+    /// [`CAPTION_PAD`] of blank cells around it on every ocean, with nothing
+    /// drawn inside that box - no point, and no league running to one.
+    #[test]
+    fn an_archipelago_name_stands_in_open_water() {
+        let (pad_x, pad_y) = CAPTION_PAD;
+        for map in crate::map::data::MAPS {
+            let canvas = build_canvas(map, &MapApp::new());
+            for &(arch, (mx, my)) in &canvas.captions {
+                let label = map
+                    .labels
+                    .iter()
+                    .find(|label| {
+                        label.name.strip_suffix(" Archipelago") == Some(arch)
+                    })
+                    .unwrap_or_else(|| panic!("{arch} on the map"));
+                let rows = label_rows(label.drawn());
+                let (w, h) = (block_width(&rows), rows.len());
+                let (x, y) = (mx - w / 2, my - h / 2);
+                for cy in
+                    y.saturating_sub(pad_y) .. (y + h + pad_y).min(canvas.h)
+                {
+                    for cx in
+                        x.saturating_sub(pad_x) .. (x + w + pad_x).min(canvas.w)
+                    {
+                        let letter = cy
+                            .checked_sub(y)
+                            .and_then(|i| rows.get(i))
+                            .is_some_and(|row| {
+                                let rx = x + indent(row, w);
+                                (rx .. rx + row.chars().count()).contains(&cx)
+                            });
+                        assert!(
+                            letter || canvas.is_free(cx, cy),
+                            "{}: {arch} has {:?} at ({cx},{cy}), inside the \
+                             water its name keeps",
+                            map.ocean,
+                            canvas.get(cx, cy).map(|(ch, _)| ch)
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    /// Every archipelago's name is drawn on water its own islands are the
+    /// nearest land to, so a name names the stretch of sea it sits on. The
+    /// middle of that water is where a name is wanted; how far it ends up
+    /// from the middle is what `dump_caption_placement` is for.
+    #[test]
+    fn every_archipelago_is_named_on_its_own_water() {
+        for map in crate::map::data::MAPS {
+            let regions = regions_of(map).expect("the map's regions");
+            for (arch, at) in caption_points(map) {
+                assert_eq!(
+                    regions.owner(at),
+                    Some(arch),
+                    "{}: {arch} is named at {at:?}, which is not its water",
+                    map.ocean
+                );
+            }
+        }
+    }
+
+    /// Prints where every archipelago's name landed and how far that is from
+    /// the middle of its water, for judging the placing across the oceans:
+    /// `cargo test dump_caption_placement -- --ignored --nocapture`.
+    #[test]
+    #[ignore = "prints the caption placement for inspection"]
+    fn dump_caption_placement() {
+        for map in crate::map::data::MAPS {
+            let Some(regions) = regions_of(map) else {
+                continue;
+            };
+            for (arch, at) in caption_points(map) {
+                let Some(&middle) = regions.middle.get(arch) else {
+                    continue;
+                };
+                let middle = point_of(middle);
+                let (dx, dy) = (
+                    at.0 as i32 - middle.0 as i32,
+                    at.1 as i32 - middle.1 as i32,
+                );
+                let own = regions.owner(at) == Some(arch);
+                println!(
+                    "{:9} {arch:24} middle {middle:?} drawn {at:?} off by \
+                     ({dx},{dy}){}",
+                    map.ocean,
+                    if own { "" } else { " - NOT ITS OWN WATER" }
+                );
+            }
+        }
     }
 
     /// Prints the whole canvas, for eyeballing the drawing:

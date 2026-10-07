@@ -47,7 +47,10 @@ use rusty_quartermaster::{
         TrophyPopup,
         VoyageType,
     },
-    map::data::{Chart, Heading, Map},
+    map::{
+        data::{Chart, Heading, Map},
+        ui::caption_points,
+    },
     ocean::Ocean,
     profits::{Focus, HoldImport, InventoryRow, PopupKind, ProfitResult},
     utils::{FieldKind, PromptField},
@@ -1019,10 +1022,18 @@ fn cursor_on_island(
 /// A shell sitting on the Map page of `dump_ocean()`, cursor on an island,
 /// with the ocean's island list already fetched.
 fn map_shell() -> AppShell {
+    map_shell_of(Ocean::Emerald)
+}
+
+/// A shell sitting on the Map page of one ocean, cursor on its first island,
+/// with that ocean's island list already fetched.
+fn map_shell_of(ocean: Ocean) -> AppShell {
     let mut shell = attached_shell();
-    shell.ocean = Some(Ocean::Emerald);
+    shell.ocean = Some(ocean);
     open(&mut shell, AppId::Map, true);
-    let first = dump_ocean().islands.first().expect("an island");
+    let map = Map::for_ocean(ocean.name())
+        .unwrap_or_else(|| panic!("{} map", ocean.name()));
+    let first = map.islands.first().expect("an island");
     shell.map.cursor = Some((first.x, first.y));
     // A pirate is what the memorization tally is keyed to; without one the
     // chart asks for it instead, which `map-no-pirate` covers.
@@ -2059,6 +2070,62 @@ fn map_states(states: &mut Vec<State>) {
             shell.map.help_scroll = usize::MAX;
         },
     ));
+    archipelago_states(states);
+}
+
+/// One state per archipelago, the view centred on where its name is drawn, so
+/// every caption on an ocean can be read where it landed. The German and
+/// Spanish oceans are left out: their maps are the English ones' twins, and
+/// the placing is what these states are for.
+fn archipelago_states(states: &mut Vec<State>) {
+    const OCEANS: [Ocean; 5] = [
+        Ocean::Emerald,
+        Ocean::Meridian,
+        Ocean::Cerulean,
+        Ocean::Obsidian,
+        Ocean::Ice,
+    ];
+    for ocean in OCEANS {
+        let map = Map::for_ocean(ocean.name())
+            .unwrap_or_else(|| panic!("{} map", ocean.name()));
+        for (arch, point) in caption_points(map) {
+            // a slug and a description outlive the gallery run either way, so
+            // leaking the two strings costs nothing and keeps `State` plain
+            let slug: &'static str = Box::leak(
+                format!(
+                    "map-arch-{}-{}",
+                    slug_of(ocean.name()),
+                    slug_of(arch)
+                )
+                .into_boxed_str(),
+            );
+            let description: &'static str = Box::leak(
+                format!(
+                    "Map of {}, centred on {arch}",
+                    ocean.name()
+                )
+                .into_boxed_str(),
+            );
+            states.push(state(slug, description, move |shell| {
+                *shell = map_shell_of(ocean);
+                shell.map.cursor = Some(point);
+            }));
+        }
+    }
+}
+
+/// A name as it goes into a file name: lowercase, one dash for each run of
+/// anything else.
+fn slug_of(name: &str) -> String {
+    let mut slug = String::new();
+    for ch in name.chars() {
+        if ch.is_ascii_alphanumeric() {
+            slug.push(ch.to_ascii_lowercase());
+        } else if !slug.ends_with('-') {
+            slug.push('-');
+        }
+    }
+    slug.trim_matches('-').to_owned()
 }
 
 fn states() -> Vec<State> {
