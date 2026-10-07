@@ -671,6 +671,69 @@ const ATLANTIS_REPORTS: [&str; 2] = [
                 "Matethree":{"performance":4,"m.treasure_hauled":[5,1,0]}}}"#,
 ];
 
+/// One pirate's duties over an Atlantis, a station to the line and a report
+/// to the character: the rank the report gave them there, or `.` for an
+/// interval it did not rate them at that station at all. An interval every
+/// line leaves out is one that rated them at nothing.
+///
+/// Longer than any popup can show at once, so the states built from it show
+/// the window walking a run.
+const TIMELAPSE_RUN: [(&str, &str); 3] = [
+    (
+        "sail",
+        "342.......35.0132..453.31..4502.13..4.52",
+    ),
+    (
+        "carpentry",
+        "...540313.....2.....34.....1..3.....0...",
+    ),
+    (
+        "haul",
+        ".........34.2.....3...4..5........34..2.",
+    ),
+];
+
+/// Copy [`TIMELAPSE_RUN`] onto the run under way, a report an interval, the
+/// newest a few minutes old and the rest a dozen minutes apart.
+///
+/// Another pirate is rated in every one of them, so an interval that rated
+/// `name` at nothing is still a report of the run - which is the only way a
+/// column of nothing can be told from an interval nobody copied. Their rank
+/// walks, no two reports of a run being the same report.
+fn timelapse_reports(shell: &mut AppShell, name: &str) {
+    let now = chrono::Utc::now();
+    let reports = TIMELAPSE_RUN[0].1.len();
+    assert!(
+        TIMELAPSE_RUN
+            .iter()
+            .all(|(_, ranks)| ranks.len() == reports),
+        "every station reads the same run"
+    );
+    for at in 0 .. reports {
+        let mut stations = vec![format!(
+            r#""bilge":{{"Matethree":{{"performance":{}}}}}"#,
+            at % 6
+        )];
+        for (key, ranks) in TIMELAPSE_RUN {
+            let Some(rank) =
+                ranks[at ..].chars().next().filter(char::is_ascii_digit)
+            else {
+                continue;
+            };
+            stations.push(format!(
+                r#""{key}":{{"{name}":{{"performance":{rank}}}}}"#
+            ));
+        }
+        let text = format!("{{{}}}", stations.join(","));
+        let report = rusty_quartermaster::duty::parse(&text).expect("report");
+        let back = 8 + 12 * (reports - 1 - at) as i64;
+        shell.take_duty_report(
+            &report,
+            now - chrono::Duration::minutes(back),
+        );
+    }
+}
+
 /// A Cursed Isles run: the fog tell, a raft phase, then two island waves so
 /// the Enthralled pane and Fight Statistics both have numbers.
 const CURSED_ISLES: &[&str] = &[
@@ -1633,6 +1696,54 @@ fn jobbers_states(states: &mut Vec<State>) {
         }));
     }
 
+    // The Duty Timelapse: what the run's reports said about one pirate, a duty
+    // to the row and a report to the column, read above the note and the
+    // standings. The window sits at the newest report unless it is walked
+    // back, and the line under it dates whichever report the pointer is over.
+    for (slug, description, back, hover) in [
+        (
+            "jobbers-popup-timelapse",
+            "Jobbers, pirate popup with the Duty Timelapse",
+            0,
+            None,
+        ),
+        (
+            "jobbers-popup-timelapse-hover",
+            "Jobbers, Duty Timelapse dating the report under the pointer",
+            0,
+            Some(19),
+        ),
+        (
+            "jobbers-popup-timelapse-walked",
+            "Jobbers, Duty Timelapse walked back, over a note",
+            // as far back as the run goes, whatever the window holds
+            usize::MAX,
+            None,
+        ),
+    ] {
+        states.push(state(slug, description, move |shell| {
+            feed(shell, ATLANTIS);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::Atlantis;
+            timelapse_reports(shell, "Matetwo");
+            cache_pirate(shell, "Matetwo", 0);
+            // the run's own word on a pirate is read above what we have
+            // written down about them
+            let note = Some(match back {
+                0 => String::new(),
+                _ => NOTE.to_owned(),
+            });
+            shell.jobbers_ui.pirate_popup = Some(PiratePopup {
+                name: "Matetwo".to_owned(),
+                button: 2, // Close, as a freshly-opened popup marks
+                note,
+                timelapse_back: back,
+                timelapse_hover: hover,
+                ..PiratePopup::default()
+            });
+        }));
+    }
+
     states.push(state(
         "jobbers-greedy-focus",
         "Jobbers, Greedy pane focused",
@@ -1802,6 +1913,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
         },
     ));
@@ -1818,6 +1930,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
         },
     ));
@@ -1840,6 +1953,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(NOTE.to_owned()),
+                ..PiratePopup::default()
             });
         },
     ));
@@ -1858,6 +1972,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(NOTE.to_owned()),
+                ..PiratePopup::default()
             });
             let mut field = PromptField::new("Note", FieldKind::Paragraph);
             field.value = NOTE.to_owned();
@@ -1887,6 +2002,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
             shell.jobbers_ui.note_popup = Some(NotePopup {
                 name: "Matetwo".to_owned(),
@@ -1941,6 +2057,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(long.clone()),
+                ..PiratePopup::default()
             });
             let mut field = PromptField::new("Note", FieldKind::Paragraph);
             field.value = long;
@@ -1966,6 +2083,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),
@@ -1988,6 +2106,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
             shell.jobbers_ui.trophy_popup = Some(TrophyPopup {
                 name: "Matetwo".to_owned(),
@@ -2010,6 +2129,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
             let mut search = PromptField::new("Search", FieldKind::Text);
             search.value = "Gun".to_owned();
@@ -2035,6 +2155,7 @@ fn jobbers_states(states: &mut Vec<State>) {
                 offset: 0,
                 view_h: 0,
                 note: Some(String::new()),
+                ..PiratePopup::default()
             });
             let mut search = PromptField::new("Search", FieldKind::Text);
             search.value = "Nosuchtrophy".to_owned();

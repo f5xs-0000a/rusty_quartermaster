@@ -19,6 +19,12 @@ pub enum ScrollView {
     JobberBoard,
     /// The skill tables in the pirate-stats popup. Keeps its own window.
     JobberPirateSkills,
+    /// The Duty Timelapse's strip in the same popup, a window on a run of
+    /// reports wider than the popup. Counted in reports, and kept at the
+    /// newest end unless the user has walked it back. Its bar is what walks
+    /// it: the wheel over the popup is the body's, there being one thing a
+    /// wheel can mean in a popup that scrolls.
+    JobberPirateTimelapse,
     /// The category grid in the trophies popup. Keeps its own window.
     JobberTrophies,
     /// The text in the note editor, for a note longer than the box it grew to.
@@ -124,6 +130,10 @@ pub enum ClickTarget {
         idx: usize,
     },
     JobberPirateSeeTrophies,
+    /// One report's column in the Pirate popup's Duty Timelapse, carrying
+    /// which report of the run it is. The pointer over it dates that report,
+    /// in the line under the strip.
+    JobberPirateTimelapse(usize),
     /// The Pirate popup's Add / Edit Note button, which opens the note editor.
     JobberPirateNote,
     JobberPirateClose,

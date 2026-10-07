@@ -936,7 +936,7 @@ pub struct PerFightPopup {
 /// tables, which are taller than a short window can hold — the vertical scroll
 /// offset (in rendered lines) and the last-rendered view height (so Page
 /// Up/Down can scroll by half a page).
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct PiratePopup {
     pub name: String,
     /// Which of [`pirate_popup_buttons`] is marked, left to right.
@@ -949,6 +949,13 @@ pub struct PiratePopup {
     /// nowhere to file them, so the popup then offers nothing and shows
     /// nothing.
     pub note: Option<String>,
+    /// Reports the Duty Timelapse is walked back from the newest. Counted
+    /// from that end rather than from the oldest so the strip goes on showing
+    /// the latest reports as more of them arrive.
+    pub timelapse_back: usize,
+    /// Which report the pointer is over, if any — the one the line under the
+    /// strip is dating. `None` dates the run instead.
+    pub timelapse_hover: Option<usize>,
 }
 
 /// What the note editor's keys are going to: the text itself, or one of the
@@ -2260,7 +2267,18 @@ pub fn render(
     // layer of its own, so only the topmost of them answers to the mouse.
     if let Some(pp) = ui.pirate_popup.as_mut() {
         regions.layer();
-        render_pirate_popup(frame, pp, cache, focused, regions);
+        let timelapse = selected
+            .as_ref()
+            .and_then(|key| state.vessels.get(key))
+            .and_then(|vessel| pirate_timelapse(vessel, &pp.name));
+        render_pirate_popup(
+            frame,
+            pp,
+            cache,
+            timelapse.as_ref(),
+            focused,
+            regions,
+        );
     }
     if let Some(tp) = ui.trophy_popup.as_mut() {
         regions.layer();
@@ -3970,6 +3988,24 @@ fn latest_run(vessel: &Vessel) -> Option<&crate::voyage::Voyage> {
         .or_else(|| vessel.voyages.last())
 }
 
+/// One pirate's run of ratings for the Duty Timelapse, or `None` where no
+/// report of the run rated them.
+///
+/// The timelapse watches a run the file has not taken yet: the one under way,
+/// or one put into port and not written down. It is a view and not a record,
+/// so it is never rebuilt from the file - the reports themselves are kept with
+/// the voyage, and a run that is written is a run whose rewards are settled.
+fn pirate_timelapse(
+    vessel: &Vessel,
+    name: &str,
+) -> Option<crate::duty::Timelapse> {
+    let run = vessel
+        .current_voyage
+        .as_ref()
+        .or_else(|| vessel.voyages.iter().rev().find(|run| !run.saved))?;
+    crate::duty::timelapse(&run.duty_reports, name)
+}
+
 /// Columns each of a board's figure cells takes, in column order with the
 /// sum's last: its head and whatever its widest figure needs.
 fn board_cells(board: &Board) -> Vec<usize> {
@@ -5201,6 +5237,291 @@ fn skill_row(
     ])
 }
 
+// ---------------------------------------------------------------------------
+// Duty Timelapse
+// ---------------------------------------------------------------------------
+
+/// Head of the Duty Timelapse section.
+const TIMELAPSE_TITLE: &str = "Duty Timelapse";
+/// Columns between a duty's name and its run of marks.
+const TIMELAPSE_GAP: usize = 2;
+/// Reports the section asks the popup for room for. A run longer than this
+/// walks its strip rather than widening the popup past what the rest of it
+/// needs, the newest reports being the ones a reward turns on.
+const TIMELAPSE_ASK: usize = 16;
+/// Every fifth report is ticked under the strip, a dense run of marks being
+/// hard to count by eye.
+const TIMELAPSE_TICK: usize = 5;
+
+/// Columns one report takes in the strip: its mark, and the space that keeps
+/// a run of marks from crowding itself.
+pub const TIMELAPSE_CELL: usize = 2;
+
+/// Columns a window of `reports` reports draws: a cell each, less the space
+/// the last of them has nothing to be kept from.
+fn timelapse_strip_w(reports: usize) -> usize {
+    (reports * TIMELAPSE_CELL).saturating_sub(1)
+}
+
+/// Rows the section takes: its head, the ruler, a row to the duty, the strip's
+/// bar, the line dating a report, and a blank before what follows.
+fn timelapse_height(timelapse: &crate::duty::Timelapse) -> u16 {
+    timelapse.duties.len() as u16 + 5
+}
+
+/// The widest duty name in the section, which is the column they share.
+fn timelapse_label_w(timelapse: &crate::duty::Timelapse) -> usize {
+    timelapse
+        .duties
+        .iter()
+        .map(|duty| duty.label.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// How wide the section would like the popup's body to be: its names, and room
+/// for [`TIMELAPSE_ASK`] reports of the run however long the run is.
+fn timelapse_ask_w(timelapse: &crate::duty::Timelapse) -> usize {
+    timelapse_strip_w(timelapse.copied.len().min(TIMELAPSE_ASK))
+        + TIMELAPSE_GAP
+        + timelapse_label_w(timelapse)
+}
+
+/// What the line under the strip says: the report under the pointer and how
+/// long ago it was copied, or — with the pointer elsewhere — the run itself.
+fn timelapse_dating(
+    timelapse: &crate::duty::Timelapse,
+    hover: Option<usize>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let clock = |at: chrono::DateTime<chrono::Utc>| {
+        at.with_timezone(&chrono::Local).format("%H:%M").to_string()
+    };
+    let reports = timelapse.copied.len();
+    match hover.and_then(|at| timelapse.copied.get(at).map(|c| (at, *c))) {
+        Some((at, copied)) => {
+            format!(
+                "report {} of {} \u{b7} {} \u{b7} {}",
+                at + 1,
+                reports,
+                clock(copied),
+                ago(copied, now)
+            )
+        }
+        None => {
+            let first = timelapse.copied.first().copied();
+            let last = timelapse.copied.last().copied();
+            match (first, last) {
+                (Some(first), Some(last)) if first < last => {
+                    format!(
+                        "{reports} reports \u{b7} {} to {}",
+                        clock(first),
+                        clock(last)
+                    )
+                }
+                (Some(first), _) => {
+                    format!(
+                        "{reports} report(s) \u{b7} {}",
+                        clock(first)
+                    )
+                }
+                _ => String::new(),
+            }
+        }
+    }
+}
+
+/// How long before `now` something happened, as a line of text says it.
+fn ago(
+    from: chrono::DateTime<chrono::Utc>,
+    now: chrono::DateTime<chrono::Utc>,
+) -> String {
+    let delta = now.signed_duration_since(from);
+    let (minutes, hours, days) = (
+        delta.num_minutes(),
+        delta.num_hours(),
+        delta.num_days(),
+    );
+    if minutes < 1 {
+        return "just now".to_owned();
+    }
+    if minutes < 60 {
+        return format!("{minutes}m ago");
+    }
+    if hours < 24 {
+        return format!("{hours}h{}m ago", minutes - hours * 60);
+    }
+    format!("{days}d ago")
+}
+
+/// How a rating is set where a run of them is read side by side. The case the
+/// mark is written in carries the ladder, and the two best are the two the
+/// section is read for, so they are the two it emphasises.
+fn timelapse_style(mark: Option<crate::duty::Performance>) -> Style {
+    use crate::duty::Performance;
+
+    match mark {
+        None => Style::default().fg(Color::DarkGray),
+        Some(Performance::Excellent | Performance::Incredible) => {
+            Style::default().bold().italic()
+        }
+        Some(_) => Style::default(),
+    }
+}
+
+/// Draw the Duty Timelapse into `area`, a window on the run's reports.
+///
+/// `body_w` is the field the popup centers its sections in, which this one is
+/// centered in too even though it does not scroll with them: the strip and the
+/// tables under it read as one column of the popup.
+fn render_timelapse(
+    frame: &mut Frame,
+    regions: &mut ClickMap,
+    area: Rect,
+    body_w: usize,
+    timelapse: &crate::duty::Timelapse,
+    pp: &mut PiratePopup,
+    now: chrono::DateTime<chrono::Utc>,
+) {
+    let reports = timelapse.copied.len();
+    let label_w = timelapse_label_w(timelapse);
+    // The strip takes what the body leaves beside the names, as many reports
+    // as fit a cell each, and the run scrolls through it.
+    let room = body_w.saturating_sub(TIMELAPSE_GAP + label_w);
+    let strip_w = ((room + 1) / TIMELAPSE_CELL).min(reports).max(1);
+    let drawn = timelapse_strip_w(strip_w);
+    let last = reports.saturating_sub(strip_w);
+    pp.timelapse_back = pp.timelapse_back.min(last);
+    let left = last - pp.timelapse_back;
+    // The duty is named to the right of its own run of marks, where the eye
+    // already is: the newest report is the rightmost, so the name is beside
+    // what is read first rather than a line's width away from it.
+    let indent = body_w.saturating_sub(drawn + TIMELAPSE_GAP + label_w) / 2;
+    let strip_x = area.x + indent as u16;
+
+    let rows = Layout::vertical([
+        Constraint::Length(1),                             // head
+        Constraint::Length(1),                             // ruler
+        Constraint::Length(timelapse.duties.len() as u16), // the duties
+        Constraint::Length(1),                             // the strip's bar
+        Constraint::Length(1),                             // dating
+        Constraint::Min(0),                                // blank
+    ])
+    .split(area);
+
+    frame.render_widget(
+        Paragraph::new(
+            Line::from(Span::styled(
+                TIMELAPSE_TITLE,
+                Style::default().bold().underlined(),
+            ))
+            .centered(),
+        ),
+        rows[0],
+    );
+
+    // The ruler ticks every fifth report of the run, not of the window, so it
+    // says where in the run the window is sitting.
+    let ticks: String = (left .. left + strip_w)
+        .map(|at| {
+            if (at + 1) % TIMELAPSE_TICK == 0 {
+                "|"
+            } else {
+                " "
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join(" ");
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::raw(" ".repeat(indent)),
+            Span::styled(
+                ticks,
+                Style::default().fg(Color::DarkGray),
+            ),
+        ])),
+        rows[1],
+    );
+
+    let duties: Vec<Line> = timelapse
+        .duties
+        .iter()
+        .map(|duty| {
+            let mut spans = vec![Span::raw(" ".repeat(indent))];
+            for (col, mark) in
+                duty.marks[left .. left + strip_w].iter().enumerate()
+            {
+                if 0 < col {
+                    spans.push(Span::raw(" "));
+                }
+                spans.push(Span::styled(
+                    mark.map_or(".", crate::duty::Performance::mark),
+                    timelapse_style(*mark),
+                ));
+            }
+            spans.push(Span::raw(format!(
+                "{}{}",
+                " ".repeat(TIMELAPSE_GAP),
+                duty.label
+            )));
+            Line::from(spans)
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(duties), rows[2]);
+
+    // A report answers to the pointer over the whole of its cell, the space
+    // beside its mark included and every duty of it: there is one thing to
+    // say about a report however many rows it crosses.
+    for col in 0 .. strip_w {
+        regions.push(ClickRegion {
+            rect: Rect {
+                x: strip_x + (col * TIMELAPSE_CELL) as u16,
+                y: rows[2].y,
+                width: TIMELAPSE_CELL as u16,
+                height: rows[2].height,
+            },
+            target: ClickTarget::JobberPirateTimelapse(left + col),
+        });
+    }
+
+    // The bar lies under the strip and is counted in the columns the strip
+    // draws rather than in reports, so its thumb covers what the window
+    // covers. A report is [`TIMELAPSE_CELL`] of those columns.
+    crate::utils::render_hscrollbar(
+        frame,
+        regions,
+        Rect {
+            x: strip_x,
+            width: drawn as u16,
+            ..rows[3]
+        },
+        crate::clickmap::ScrollView::JobberPirateTimelapse,
+        left * TIMELAPSE_CELL,
+        timelapse_strip_w(reports),
+    );
+
+    // The line dating a report is centered on the strip it dates, not on the
+    // popup: it is read as part of the timeline. Where the strip is too
+    // narrow to hold it, it is nudged back inside the body.
+    let dating = timelapse_dating(timelapse, pp.timelapse_hover, now);
+    let dating_w = dating.chars().count() as u16;
+    let dating_x = (strip_x + drawn as u16 / 2)
+        .saturating_sub(dating_w / 2)
+        .min((area.x + body_w as u16).saturating_sub(dating_w))
+        .max(area.x);
+    frame.render_widget(
+        Paragraph::new(Line::from(Span::styled(
+            dating,
+            Style::default().fg(Color::DarkGray),
+        ))),
+        Rect {
+            x: dating_x,
+            width: dating_w,
+            ..rows[4]
+        },
+    );
+}
+
 /// The pirate-stats popup: name, crew/flag boxes, three skill tables, and the
 /// [See Trophies] / [Close] buttons. Sized to its content, with the skill
 /// tables scrolling when the window cannot hold all of them.
@@ -5239,11 +5560,15 @@ fn render_pirate_popup(
     frame: &mut Frame,
     pp: &mut PiratePopup,
     cache: &PirateCache,
+    timelapse: Option<&crate::duty::Timelapse>,
     page_focused: bool,
     regions: &mut ClickMap,
 ) {
     let screen = frame.area();
     let cached = cache.get_cached(&pp.name);
+    // Read once, so the width the section is given and the line it draws are
+    // measured against the same moment.
+    let now = chrono::Utc::now();
 
     // Buttons line (always present); compute its width up front. Each is as
     // wide as the longest label, with a gap between them and at each end.
@@ -5427,12 +5752,26 @@ fn render_pirate_popup(
         .max("No skills recorded.".len());
 
     // --- Geometry ---
+    // The Duty Timelapse stands above everything the body scrolls, the note
+    // included: it is the run's own word on the pirate, which is what the
+    // popup is opened for while a run is on. It asks for room for its names,
+    // some of its reports, and the widest line it could date one with.
+    let timelapse_h = timelapse.map_or(0, timelapse_height);
+    let timelapse_w = timelapse.map_or(0, |tl| {
+        timelapse_ask_w(tl).max(
+            (0 .. tl.copied.len())
+                .map(|at| timelapse_dating(tl, Some(at), now).chars().count())
+                .max()
+                .unwrap_or(0),
+        )
+    });
     // The skill tables scroll, so their section carries the scrollbar's column
     // whether or not the window is short enough to need the bar: the popup is
     // then the same width however tall the terminal is.
     let content_w = (pp.name.chars().count())
         .max(affil_w as usize)
         .max(skills_block_w + crate::utils::SCROLLBAR_W as usize)
+        .max(timelapse_w + crate::utils::SCROLLBAR_W as usize)
         .max(buttons_w) as u16;
     let box_w = (content_w + 4).min(screen.width.max(1));
     // The note is read above the standings, under a heading of its own. It
@@ -5487,9 +5826,18 @@ fn render_pirate_popup(
                 .alignment(line.alignment.unwrap_or(Alignment::Left))
         }))
         .collect();
-    // name + gap + affil + gap + body + gap + buttons, plus borders(2).
-    let box_h = (1 + 1 + affil_h + 1 + scroll_lines.len() as u16 + 1 + 1 + 2)
-        .min(screen.height.max(1));
+    // name + gap + affil + gap + timelapse + body + gap + buttons, plus
+    // borders(2).
+    let box_h = (1
+        + 1
+        + affil_h
+        + 1
+        + timelapse_h
+        + scroll_lines.len() as u16
+        + 1
+        + 1
+        + 2)
+    .min(screen.height.max(1));
     let x = screen.x + screen.width.saturating_sub(box_w) / 2;
     let y = screen.y + screen.height.saturating_sub(box_h) / 2;
     let popup = Rect::new(x, y, box_w, box_h);
@@ -5503,13 +5851,14 @@ fn render_pirate_popup(
     frame.render_widget(block, popup);
 
     let rows = Layout::vertical([
-        Constraint::Length(1),       // name
-        Constraint::Length(1),       // gap
-        Constraint::Length(affil_h), // crew | flag
-        Constraint::Length(1),       // gap
-        Constraint::Min(0),          // the note and the standings, scrolling
-        Constraint::Length(1),       // gap
-        Constraint::Length(1),       // buttons
+        Constraint::Length(1),           // name
+        Constraint::Length(1),           // gap
+        Constraint::Length(affil_h),     // crew | flag
+        Constraint::Length(1),           // gap
+        Constraint::Length(timelapse_h), // the Duty Timelapse
+        Constraint::Min(0),              // the note and the standings
+        Constraint::Length(1),           // gap
+        Constraint::Length(1),           // buttons
     ])
     .split(inner);
 
@@ -5544,15 +5893,32 @@ fn render_pirate_popup(
         affil_cols[2],
     );
 
+    // The timelapse is centered in the body's field rather than the popup's,
+    // so the strip and the tables under it read as one column.
+    if let Some(timelapse) = timelapse {
+        render_timelapse(
+            frame,
+            regions,
+            Rect {
+                width: body_w as u16,
+                ..rows[4]
+            },
+            body_w,
+            timelapse,
+            pp,
+            now,
+        );
+    }
+
     // The note and the standings are the one part of the popup that scrolls, so
     // a window too short for them shows a bar beside them rather than cutting
     // them off. Clamp the offset to what is left to show.
-    pp.view_h = rows[4].height as usize;
+    pp.view_h = rows[5].height as usize;
     pp.offset = pp.offset.min(scroll_lines.len().saturating_sub(pp.view_h));
     let body = crate::utils::render_scrollbar(
         frame,
         regions,
-        rows[4],
+        rows[5],
         crate::clickmap::ScrollView::JobberPirateSkills,
         pp.offset,
         scroll_lines.len(),
@@ -5573,7 +5939,7 @@ fn render_pirate_popup(
     pp.button = pp.button.min(buttons.len().saturating_sub(1));
     for (rect, (_, target)) in crate::utils::render_buttons(
         frame,
-        rows[6],
+        rows[7],
         &labels,
         page_focused.then_some(pp.button),
     )

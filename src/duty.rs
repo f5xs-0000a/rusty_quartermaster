@@ -32,8 +32,11 @@
 //!
 //! What the reports counted is read back per pirate over a whole run
 //! ([`maneuvers`], [`treasure`]), which is what the Jobbers page's Tokens and
-//! Chests box ranks. The ratings have no reader yet: a rating is relative to
-//! the pirate's own standing, so it ranks nobody against anybody.
+//! Chests box ranks. The ratings are read back per pirate over time instead
+//! ([`timelapse`]), which is what the Pirate popup's Duty Timelapse draws: a
+//! rating is relative to the pirate's own standing, so it ranks nobody
+//! against anybody, and reading one pirate's own run of them is the one
+//! reading it carries.
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -293,6 +296,25 @@ impl Performance {
         }
     }
 
+    /// The one character a rating is written as where a run of them is read
+    /// side by side, as in the Pirate popup's Duty Timelapse.
+    ///
+    /// The ladder is `b p F G E I`, the rank's own order, and the case is the
+    /// ladder: what falls short of Fine is set in lower case and reads as the
+    /// smaller mark it is. A rank we have no word for is a question mark,
+    /// which is what we have to say about it.
+    pub fn mark(self) -> &'static str {
+        match self {
+            Self::Unknown(_) => "?",
+            Self::Booched => "b",
+            Self::Poor => "p",
+            Self::Fine => "F",
+            Self::Good => "G",
+            Self::Excellent => "E",
+            Self::Incredible => "I",
+        }
+    }
+
     /// The rating a rank stands for. A rank we have no word for is the rank
     /// itself: a report is the only record its interval will ever have, and
     /// one line we cannot read the rating of is no reason to lose the rest.
@@ -451,10 +473,116 @@ fn tally<const N: usize>(
         .collect()
 }
 
+/// One duty's ratings for one pirate across a run, a column to the report.
+///
+/// `marks` is as long as the run's reports, `None` where that report did not
+/// rate the pirate at this duty - they worked another, or they worked none.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DutyRun {
+    /// The duty as it is read: its [`duty_tag`] where we know the key, else
+    /// the key the report spelled, so a station we cannot name still shows.
+    pub label: String,
+    pub marks: Vec<Option<Performance>>,
+}
+
+/// What a run's reports said about one pirate, duty by duty and report by
+/// report: the shape the Duty Timelapse is drawn from.
+///
+/// A rating is standing-relative, so it ranks a pirate against themselves and
+/// no one else. Read over time it does exactly that, which is the one reading
+/// it carries: a pirate who booches once against their own bar had a bad
+/// interval, and a pirate who booches every interval is telling us something.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Timelapse {
+    /// When each report was copied, in the order they were.
+    pub copied: Vec<DateTime<Utc>>,
+    /// The duties the pirate was rated at, in the order the reports first
+    /// listed them, which is the game's own duty order.
+    pub duties: Vec<DutyRun>,
+}
+
+/// Read `reports` back as one pirate's run of ratings, or `None` where no
+/// report of the run rated them at all.
+///
+/// Every report is a column, the ones that rated the pirate at nothing
+/// included: a column of nothing is the run saying they were not at a station
+/// it rated, which is the whole of what an idler looks like from here. What
+/// the run never had a report for is no column, so a gap means one thing.
+pub fn timelapse(reports: &[CopiedReport], name: &str) -> Option<Timelapse> {
+    let mut copied = Vec::with_capacity(reports.len());
+    let mut duties: Vec<DutyRun> = Vec::new();
+    for report in reports {
+        let col = copied.len();
+        copied.push(report.copied_at);
+        for station in &report.stations {
+            let Some(entry) = station
+                .pirates
+                .iter()
+                .find(|pirate| pirate.name.eq_ignore_ascii_case(name))
+            else {
+                continue;
+            };
+            let label = station
+                .skill()
+                .and_then(duty_tag)
+                .map_or_else(|| station.key.clone(), str::to_owned);
+            let at = match duties.iter().position(|duty| duty.label == label) {
+                Some(at) => at,
+                None => {
+                    duties.push(DutyRun {
+                        label,
+                        marks: Vec::new(),
+                    });
+                    duties.len() - 1
+                }
+            };
+            // the first line a station gives a pirate is the one kept, a
+            // station listing them twice being a report we cannot read as two
+            // ratings of one interval
+            if col < duties[at].marks.len() {
+                continue;
+            }
+            duties[at].marks.resize(col, None);
+            duties[at].marks.push(Some(entry.performance));
+        }
+    }
+    if duties.is_empty() {
+        return None;
+    }
+    for duty in &mut duties {
+        duty.marks.resize(copied.len(), None);
+    }
+    Some(Timelapse {
+        copied,
+        duties,
+    })
+}
+
 /// The duty a report's station key names. `None` for a key we have not seen
 /// on a capture yet: the set grows with the encounter (foraging on a Cursed
 /// Isles landing or a forage expedition, navigating at a league point), and a
 /// station we cannot name is still worth keeping.
+/// The short name a duty is read under where its column of them stands beside
+/// a run of marks, as in the Duty Timelapse. Navigating is told from battle
+/// navigation, the game reporting the two at stations of their own.
+///
+/// `None` for a skill that is no duty station, which no report can name.
+pub fn duty_tag(skill: Skill) -> Option<&'static str> {
+    Some(match skill {
+        Skill::Sailing => "Sail",
+        Skill::Carpentry => "Carp",
+        Skill::Rigging => "Rig",
+        Skill::Bilging => "Bilge",
+        Skill::Patching => "Patch",
+        Skill::Gunning => "Gun",
+        Skill::TreasureHaul => "THaul",
+        Skill::Foraging => "Forage",
+        Skill::Navigating => "DNav",
+        Skill::BattleNavigation => "BNav",
+        _ => return None,
+    })
+}
+
 pub fn station_skill(key: &str) -> Option<Skill> {
     match key {
         "sail" => Some(Skill::Sailing),
@@ -1034,5 +1162,89 @@ mod tests {
             )
             .is_none()
         );
+    }
+
+    /// A pirate's run reads a duty to the row and a report to the column, the
+    /// rows in the order the reports first listed the stations. Foo sails and
+    /// hauls, and an interval spent at only one of the two leaves the other
+    /// row saying nothing for it rather than shifting what follows.
+    #[test]
+    fn a_pirates_run_is_read_duty_by_duty() {
+        let at = DateTime::UNIX_EPOCH;
+        let sailed_only =
+            parse(r#"{"sail":{"Foo":{"performance":0}}}"#).expect("report");
+        let run = vec![
+            CopiedReport::new(&parse(REPORT).expect("report"), at),
+            CopiedReport::new(&sailed_only, at),
+        ];
+
+        let read = timelapse(&run, "Foo").expect("timelapse");
+        let rows: Vec<_> = read
+            .duties
+            .iter()
+            .map(|duty| {
+                (
+                    duty.label.as_str(),
+                    duty.marks
+                        .iter()
+                        .map(|mark| mark.map_or(".", Performance::mark))
+                        .collect::<String>(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            rows,
+            vec![("Sail", "Eb".to_owned()), ("THaul", "F.".to_owned())]
+        );
+        assert_eq!(read.copied.len(), 2);
+    }
+
+    /// Every report of the run is a column, one that rated the pirate at
+    /// nothing included. That column is what an idler looks like from here,
+    /// and it reads across every row at once.
+    #[test]
+    fn a_report_that_rated_them_at_nothing_is_still_a_column() {
+        let at = DateTime::UNIX_EPOCH;
+        let others =
+            parse(r#"{"bilge":{"Bar":{"performance":3}}}"#).expect("report");
+        let run = vec![
+            CopiedReport::new(&parse(REPORT).expect("report"), at),
+            CopiedReport::new(&others, at),
+            CopiedReport::new(&parse(REPORT).expect("report"), at),
+        ];
+
+        let read = timelapse(&run, "Foo").expect("timelapse");
+        let sailing = &read.duties[0];
+        assert_eq!(sailing.label, "Sail");
+        assert_eq!(
+            sailing.marks,
+            vec![
+                Some(Performance::Excellent),
+                None,
+                Some(Performance::Excellent),
+            ]
+        );
+        // And a pirate no report of the run rated has no run to read.
+        assert_eq!(timelapse(&run, "Nobody"), None);
+    }
+
+    /// The marks are the rank's own order, the case carrying the ladder: what
+    /// falls short of Fine is set lower.
+    #[test]
+    fn the_marks_ladder_follows_the_ranks() {
+        let ladder = [
+            Performance::Booched,
+            Performance::Poor,
+            Performance::Fine,
+            Performance::Good,
+            Performance::Excellent,
+            Performance::Incredible,
+        ];
+        assert!(ladder.is_sorted());
+        assert_eq!(
+            ladder.map(Performance::mark).concat(),
+            "bpFGEI"
+        );
+        assert_eq!(Performance::Unknown(6).mark(), "?");
     }
 }

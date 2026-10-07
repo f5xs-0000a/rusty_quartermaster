@@ -2964,6 +2964,7 @@ impl AppShell {
                 offset: 0,
                 view_h: 0,
                 note,
+                ..PiratePopup::default()
             });
         }
     }
@@ -3031,6 +3032,7 @@ impl AppShell {
             offset: 0,
             view_h: 0,
             note,
+            ..PiratePopup::default()
         });
     }
 
@@ -3506,6 +3508,17 @@ impl AppShell {
                             _ => None,
                         };
                 }
+                // Live hover over the Duty Timelapse dates the report under
+                // the pointer; off the strip, the line dates the run.
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    pp.timelapse_hover =
+                        match self.click_regions.hit(mouse.column, mouse.row) {
+                            Some(ClickTarget::JobberPirateTimelapse(at)) => {
+                                Some(at)
+                            }
+                            _ => None,
+                        };
+                }
                 // Live hover over a Profit Breakdown row parks the tooltip
                 // cursor.
                 if matches!(
@@ -3549,6 +3562,17 @@ impl AppShell {
                 let last = total.saturating_sub(bar.height as usize);
                 if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
                     pp.offset = hit.resolve(pp.offset, last);
+                }
+            }
+            // The timelapse counts its window back from the newest report
+            // while its bar counts the columns the strip draws, so the bar's
+            // reckoning is turned around and scaled on the way in and out.
+            ScrollView::JobberPirateTimelapse => {
+                let cell = crate::jobbers::TIMELAPSE_CELL;
+                let last = total.saturating_sub(bar.width as usize);
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    let left = last.saturating_sub(pp.timelapse_back * cell);
+                    pp.timelapse_back = (last - hit.resolve(left, last)) / cell;
                 }
             }
             ScrollView::JobberTrophies => {
@@ -4049,6 +4073,13 @@ impl AppShell {
                     pp.button = 0;
                 }
                 self.open_trophy_popup();
+            }
+            // Clicking a report dates it, the same as hovering it: a terminal
+            // that reports no motion still has a way to ask.
+            ClickTarget::JobberPirateTimelapse(at) => {
+                if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
+                    pp.timelapse_hover = Some(at);
+                }
             }
             ClickTarget::JobberPirateNote => {
                 if let Some(pp) = self.jobbers_ui.pirate_popup.as_mut() {
@@ -5614,11 +5645,13 @@ mod jobber_room_tests {
     }
 }
 
-/// The Tokens and Chests box as the page draws it, and the keys that reach
-/// it. What belongs on each board is [`crate::jobbers`]'s own to test; these
-/// are about the layout the box brings with it.
+/// What a run's duty reports bring to the Jobbers page - the Tokens and
+/// Chests box, and the Duty Timelapse in the Pirate popup - as the page draws
+/// them, and the keys and the mouse that reach them. What belongs on a board
+/// or in a timelapse is [`crate::jobbers`]'s and [`crate::duty`]'s own to
+/// test; these are about the layout they bring with them.
 #[cfg(test)]
-mod jobber_board_tests {
+mod jobber_duty_tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     use super::{APP_LIST, AppId, AppShell, JobberFocus, KeyCode, KeyEvent};
@@ -5952,6 +5985,112 @@ mod jobber_board_tests {
             shell.jobbers_ui.focus,
             JobberFocus::Board
         );
+    }
+
+    /// Two intervals of a run: Matetwo at the sails in both, and at the haul
+    /// in the second only. Each interval counts something, so the box that
+    /// ranks the figures is drawn beside the panes as well.
+    const TWO_INTERVALS: [&str; 2] = [
+        r#"{"sail":{"Matetwo":{"performance":5,
+            "maneuver_tokens":[4,1,0,2,0,0,0]}}}"#,
+        r#"{"sail":{"Matetwo":{"performance":0}},
+            "haul":{"Matetwo":{"performance":3,
+            "m.treasure_hauled":[2,1,0]}}}"#,
+    ];
+
+    /// An Atlantis run of `reports`, with the Pirate popup open on Matetwo
+    /// over whatever is written down about them.
+    fn popup_over_run(reports: &[&str], note: &str) -> AppShell {
+        let mut shell = aboard_atlantis(None);
+        for text in reports {
+            let report = crate::duty::parse(text).expect("report");
+            shell.take_duty_report(&report, chrono::Utc::now());
+        }
+        shell.jobbers_ui.pirate_popup = Some(crate::jobbers::PiratePopup {
+            name: "Matetwo".to_owned(),
+            note: Some(note.to_owned()),
+            ..crate::jobbers::PiratePopup::default()
+        });
+        shell
+    }
+
+    /// The timelapse reads a duty to the row and a report to the column, the
+    /// rows in the order the reports first listed the stations and each named
+    /// to the right of its own marks. A duty the interval did not rate them
+    /// at says nothing for it, and the section is read above the note, being
+    /// the run's own word on the pirate.
+    #[test]
+    fn the_popup_reads_the_run_duty_by_duty() {
+        let mut shell = popup_over_run(&TWO_INTERVALS, "Fine gunner.");
+        let text = screen(&mut shell);
+
+        assert!(text.contains("I b  Sail"));
+        assert!(text.contains(". G  THaul"));
+        assert!(
+            row_of(&text, "Duty Timelapse") < row_of(&text, "Note"),
+            "the run is read above what we have written down",
+        );
+    }
+
+    /// A pirate no report of the run rated has no section at all: a heading
+    /// over nothing says less than the room it takes.
+    #[test]
+    fn no_report_of_them_no_timelapse() {
+        let mut shell = popup_over_run(&[], "");
+        assert!(!screen(&mut shell).contains("Duty Timelapse"));
+
+        // nor one whose reports rated somebody else
+        let mut shell = popup_over_run(
+            &[r#"{"sail":{"Matethree":{"performance":3}}}"#],
+            "",
+        );
+        assert!(!screen(&mut shell).contains("Duty Timelapse"));
+    }
+
+    /// The timelapse watches a run the file has not taken yet. The reports
+    /// themselves are kept, and the box that ranks them stays, but the view
+    /// of them is not rebuilt for a run that is written and settled.
+    #[test]
+    fn a_written_run_is_no_longer_watched() {
+        let mut shell = popup_over_run(&TWO_INTERVALS, "");
+        assert!(screen(&mut shell).contains("Duty Timelapse"));
+
+        let key = shell
+            .chatlog
+            .vessels
+            .keys()
+            .next()
+            .cloned()
+            .expect("the vessel");
+        let vessel = shell.chatlog.vessels.get_mut(&key).expect("the vessel");
+        let mut run = vessel.current_voyage.take().expect("the run");
+        run.saved = true;
+        vessel.voyages.push(run);
+
+        let text = screen(&mut shell);
+        assert!(!text.contains("Duty Timelapse"));
+        assert!(
+            text.contains("Tokens and Chests"),
+            "the figures the reports carried are read as before",
+        );
+    }
+
+    /// The pointer over a report dates it, in the line under the strip. With
+    /// the pointer elsewhere that line dates the run instead.
+    #[test]
+    fn the_mouse_dates_the_report_it_is_over() {
+        let mut shell = popup_over_run(&TWO_INTERVALS, "");
+        let text = screen(&mut shell);
+        assert!(text.contains("2 reports"));
+
+        let first = region(&shell, |target| {
+            matches!(
+                target,
+                crate::clickmap::ClickTarget::JobberPirateTimelapse(0)
+            )
+        });
+        click(&mut shell, first);
+        assert!(screen(&mut shell).contains("report 1 of 2"));
     }
 }
 
