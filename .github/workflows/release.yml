@@ -1,93 +1,141 @@
 name: Release
 
-# Fully automated releases via release-please:
-#   1. Every push to the main branch, release-please maintains a "Release PR"
-#      that bumps the version in Cargo.toml (+ Cargo.lock) and updates
-#      CHANGELOG.md from the Conventional-Commit history (feat:/fix:/…).
-#   2. Merging that PR cuts a GitHub Release + tag.
-#   3. Only then does the build matrix run, compiling the Windows .exe and Linux
-#      binary and uploading them to the just-created release.
+# A release is cut from a tag: push `v0.1.0` and the two binaries follow it.
 #
-# The build is gated on `release_created` because a tag pushed by the Actions
-# bot does NOT trigger a separate `on: push: tags` workflow — so the binaries
-# must be built in the same run that creates the release.
+# Nothing watches the branch. The previous wiring waited on release-please to
+# read Conventional-Commit subjects (`feat:`, `fix:`) off the history and open a
+# Release PR, and this repo writes prose subjects, so in 200-odd commits it
+# never found a reason to cut anything and the build matrix was skipped every
+# time. A tag says the same thing without the ceremony.
+#
+# `workflow_dispatch` runs the same jobs against a tag that already exists, for
+# repeating a build without moving the tag.
 on:
   push:
-    branches: [main, master]
+    tags: ["v*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and publish"
+        required: true
 
 permissions:
-  contents: write # create the release + tag, upload assets
-  pull-requests: write # open/update the Release PR
+  contents: write # create the release, upload its assets
+
+# Two pushes must not race for the same release; a half-uploaded one is worse
+# than a slow one, so the running job finishes rather than being cancelled.
+concurrency:
+  group: release-${{ inputs.tag || github.ref }}
+  cancel-in-progress: false
 
 env:
   CARGO_TERM_COLOR: always
   BIN_NAME: rusty_quartermaster
 
 jobs:
-  release-please:
-    runs-on: ubuntu-latest
-    outputs:
-      release_created: ${{ steps.rp.outputs.release_created }}
-      tag_name: ${{ steps.rp.outputs.tag_name }}
-    steps:
-      - uses: googleapis/release-please-action@v4
-        id: rp
-        with:
-          token: ${{ secrets.GITHUB_TOKEN }}
-          config-file: release-please-config.json
-          manifest-file: .release-please-manifest.json
-
   build:
     name: Build (${{ matrix.target }})
-    needs: release-please
-    if: ${{ needs.release-please.outputs.release_created == 'true' }}
+    runs-on: ${{ matrix.os }}
     strategy:
+      # Each target is worth seeing on its own: one failing should not hide
+      # whether the other built.
       fail-fast: false
       matrix:
         include:
-          - os: windows-latest
-            target: x86_64-pc-windows-msvc
-            ext: .exe
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             ext: ""
-    runs-on: ${{ matrix.os }}
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: .exe
+
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@v7
         with:
-          targets: ${{ matrix.target }}
+          ref: ${{ inputs.tag || github.ref }}
 
-      - name: Cache cargo build
-        uses: Swatinem/rust-cache@v2
+      # rustup comes with the runner images, so the toolchain needs no action of
+      # its own: one less thing in the chain that builds what people download.
+      - name: Toolchain
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          rustup target add ${{ matrix.target }}
+          rustc -vV
 
-      - name: Build release
-        run: cargo build --release --locked --target ${{ matrix.target }}
+      # A tag that names a version had better name the version the crate
+      # reports, since that is what people downloading it will believe. A tag
+      # that names a date instead says nothing about the version and is left to
+      # say it: only a `1.2.3`-shaped tag is held to the crate.
+      #
+      # `cargo pkgid` ends in either `#<version>` or `#<name>@<version>`,
+      # depending on whether the checkout directory happens to be named after
+      # the package, so the version is what is left after both separators.
+      - name: A version tag and Cargo.toml agree
+        shell: bash
+        run: |
+          tag="${{ inputs.tag || github.ref_name }}"
+          version="${tag#v}"
+          pkgid=$(cargo pkgid)
+          crate="${pkgid##*#}"
+          crate="${crate##*@}"
+          if [[ ! $version =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::notice::tag ${tag} names no version; crate is ${crate}"
+          elif [ "$version" != "$crate" ]; then
+            echo "::error::tag ${tag} does not match Cargo.toml ${crate}"
+            exit 1
+          else
+            echo "tag ${tag} matches Cargo.toml ${crate}"
+          fi
 
-      # Stage the binary under a per-target name so the two artifacts don't
-      # collide as release assets.
-      - name: Stage binary (Unix)
-        if: runner.os != 'Windows'
+      # Each runner builds for its own host, so the MSVC binary is a native
+      # build: no Windows SDK to fetch, and nothing cross-compiled.
+      - name: Build
+        run: >-
+          cargo build --release --locked
+          --target ${{ matrix.target }} --bin ${{ env.BIN_NAME }}
+
+      # CI has tested every push, but the tag is what ships, so it is tested as
+      # built, on both platforms.
+      - name: Test
+        run: cargo test --locked --target ${{ matrix.target }}
+
+      # One name per platform, so the two assets cannot collide on the release.
+      # `shell: bash` is Git Bash on the Windows runner, which is why this is
+      # one step rather than one per platform.
+      - name: Stage the binary under its platform's name
+        shell: bash
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/${BIN_NAME}${{ matrix.ext }}" \
              "dist/${BIN_NAME}-${{ matrix.target }}${{ matrix.ext }}"
 
-      - name: Stage binary (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          New-Item -ItemType Directory -Force -Path dist | Out-Null
-          Copy-Item "target/${{ matrix.target }}/release/${env:BIN_NAME}${{ matrix.ext }}" `
-                    "dist/${env:BIN_NAME}-${{ matrix.target }}${{ matrix.ext }}"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ env.BIN_NAME }}-${{ matrix.target }}
+          path: dist/${{ env.BIN_NAME }}-${{ matrix.target }}${{ matrix.ext }}
+          if-no-files-found: error
 
-      # Attach the binary to the release release-please just created. The
-      # explicit path (built from matrix values, substituted before the shell
-      # runs) keeps this one command identical on bash and pwsh.
-      - name: Upload binary to release
+  release:
+    name: Publish
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+
+      # The release is made once, with both binaries already in hand, so
+      # neither platform races the other to create it. `upload --clobber` is
+      # the re-run path, replacing the assets on a release already published.
+      - name: Publish the release with both binaries
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: gh release upload "${{ needs.release-please.outputs.tag_name }}" "dist/${{ env.BIN_NAME }}-${{ matrix.target }}${{ matrix.ext }}" --clobber
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          ls -l dist
+          gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --title "$TAG" --generate-notes dist/* \
+            || gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" \
+                 --clobber dist/*
