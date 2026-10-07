@@ -789,6 +789,80 @@ pub fn is_player_name(name: &str) -> bool {
     })
 }
 
+/// How short and how long a pirate's base name is — the name before any
+/// ocean-merge suffix. The game takes 2 to 12 characters.
+pub const NAME_MIN: usize = 2;
+pub const NAME_MAX: usize = 12;
+
+/// The suffixes an ocean merge leaves on a name, the only thing a base name is
+/// ever followed by.
+pub const NAME_SUFFIXES: [&str; 2] = ["East", "West"];
+
+/// Columns the longest name spans: the base, the dash and the suffix (both
+/// suffixes run to the same length).
+pub const NAME_COLS: u16 = (NAME_MAX + 1 + NAME_SUFFIXES[0].len()) as u16;
+
+/// A name split into its base and the suffix it carries, or `None` when it is
+/// shaped like neither — a second dash means it is no name at all.
+fn name_parts(name: &str) -> Option<(&str, Option<&str>)> {
+    match name.split_once('-') {
+        None => Some((name, None)),
+        Some((base, suffix)) if !suffix.contains('-') => {
+            Some((base, Some(suffix)))
+        }
+        Some(_) => None,
+    }
+}
+
+/// Whether `base` is spelled out of the letters a name is made of, and runs no
+/// longer than one.
+fn name_letters(base: &str) -> bool {
+    base.len() <= NAME_MAX && base.chars().all(|c| c.is_ascii_alphabetic())
+}
+
+/// Whether `name` is a whole pirate name: [`NAME_MIN`] to [`NAME_MAX`] letters,
+/// optionally followed by one of [`NAME_SUFFIXES`]. Letters are all it is made
+/// of — no spaces, no digits, no punctuation but the suffix's own dash.
+///
+/// This is the stricter sibling of [`is_player_name`], which classifies a name
+/// read out of a log (where the length is whatever the game wrote); here the
+/// name is one the user is still typing, so every rule the game holds it to
+/// applies.
+pub fn is_name_complete(name: &str) -> bool {
+    let Some((base, suffix)) = name_parts(name) else {
+        return false;
+    };
+    NAME_MIN <= base.len()
+        && name_letters(base)
+        && suffix.is_none_or(|s| {
+            NAME_SUFFIXES.iter().any(|w| s.eq_ignore_ascii_case(w))
+        })
+}
+
+/// Whether `name` could still grow into a whole one, which is what an editor
+/// asks of a keystroke before taking it. It holds for the unfinished forms a
+/// name is reached through — a base still short of its two letters, a suffix
+/// half spelled — and for nothing else.
+pub fn is_name_partial(name: &str) -> bool {
+    let Some((base, suffix)) = name_parts(name) else {
+        return false;
+    };
+    if !name_letters(base) {
+        return false;
+    }
+    match suffix {
+        // the dash follows a base the user has finished, and what follows it
+        // is one of the two words on its way to being spelled
+        Some(s) => {
+            NAME_MIN <= base.len()
+                && NAME_SUFFIXES.iter().any(|w| {
+                    s.len() <= w.len() && w[.. s.len()].eq_ignore_ascii_case(s)
+                })
+        }
+        None => true,
+    }
+}
+
 /// Whether `name` is one of the special characters (Brigand Kings, "Mother o'
 /// Nyght", ...) in [`SPECIAL_NAMES`], matched case-insensitively against the
 /// *whole* name. Callers use this to exclude specials as atomic units rather
@@ -1397,6 +1471,40 @@ mod tests {
         assert!(!is_player_name("-jane")); // empty part
         assert!(!is_player_name("a-b-c")); // too many dashes
         assert!(!is_player_name("Bob123")); // digits
+    }
+
+    #[test]
+    fn a_whole_name_is_letters_and_at_most_one_suffix() {
+        assert!(is_name_complete("Ab")); // the shortest there is
+        assert!(is_name_complete("Playerone"));
+        assert!(is_name_complete("Abcdefghijkl")); // the longest base
+        assert!(is_name_complete("Playerone-East"));
+        assert!(is_name_complete("playerone-west")); // case is normalized later
+
+        assert!(!is_name_complete("A")); // a letter short
+        assert!(!is_name_complete("Abcdefghijklm")); // a letter long
+        assert!(!is_name_complete("Player one")); // a space is no letter
+        assert!(!is_name_complete("Player1")); // nor a digit
+        assert!(!is_name_complete("Playerone-North")); // no such merge
+        assert!(!is_name_complete("Playerone-")); // nor an empty one
+        assert!(!is_name_complete("One-Two-East")); // one dash at the most
+    }
+
+    #[test]
+    fn a_partial_name_is_one_a_name_grows_out_of() {
+        assert!(is_name_partial("")); // nothing typed yet
+        assert!(is_name_partial("A")); // on its way to two letters
+        assert!(is_name_partial("Playerone-")); // the dash before the suffix
+        assert!(is_name_partial("Playerone-E"));
+        assert!(is_name_partial("Playerone-wes"));
+        assert!(is_name_partial("Playerone-East"));
+
+        assert!(!is_name_partial("Abcdefghijklm")); // past the longest base
+        assert!(!is_name_partial("A-")); // a suffix on an unfinished base
+        assert!(!is_name_partial("Playerone-N")); // no suffix starts that way
+        assert!(!is_name_partial("Playerone-Easts")); // nor ends that way
+        assert!(!is_name_partial("Player one"));
+        assert!(!is_name_partial("Player1"));
     }
 
     #[test]

@@ -12,14 +12,14 @@ use crossterm::{
 };
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Clear, Padding, Paragraph},
+    widgets::{Clear, Paragraph},
 };
 
 use crate::{
     cache::OceanCache,
     ocean::Ocean,
-    pirate::{FetchPlan, PirateUpdate},
-    utils::{FieldKind, PromptField, offset_title},
+    pirate::{FetchPlan, NAME_COLS, PirateUpdate},
+    utils::{BOX_MARGIN, CHOICE_MARGIN, FieldKind, PromptField, titled_block},
 };
 
 // ---------------------------------------------------------------------------
@@ -110,6 +110,26 @@ impl Setup {
         self.grid.keys().filter(|&&(_, c)| c == col).count()
     }
 
+    /// Columns the longest ocean name in the grid spans, which is the width of
+    /// the block of names a column holds.
+    fn widest_name(&self) -> u16 {
+        self.grid
+            .values()
+            .map(|o| o.name().len() as u16)
+            .max()
+            .unwrap_or(0)
+    }
+
+    /// Rows the ocean picker spans: its tallest column, the "Don't Choose" row
+    /// under the grid, and its own frame.
+    fn picker_height(&self) -> u16 {
+        let tallest = (0 .. self.column_count())
+            .map(|c| self.column_height(c))
+            .max()
+            .unwrap_or(0);
+        tallest as u16 + 1 + 2
+    }
+
     /// Keep the selected row inside the current column's bounds (used after a
     /// column switch, since columns can differ in height).
     fn clamp_row(&mut self) {
@@ -180,7 +200,7 @@ pub fn preview(
 ) {
     let grid = ocean_grid();
     let (ocean_row, ocean_col) = ocean_pos(&grid, ocean);
-    let mut field = PromptField::new("Pirate name", FieldKind::Text);
+    let mut field = PromptField::new("Pirate name", FieldKind::PirateName);
     field.value = name.to_owned();
     field.cursor = name.len();
     render(
@@ -216,7 +236,7 @@ async fn run(
     let grid = ocean_grid();
     let (ocean_row, ocean_col) =
         ocean.map(|o| ocean_pos(&grid, o)).unwrap_or((0, 0));
-    let mut name = PromptField::new("Pirate name", FieldKind::Text);
+    let mut name = PromptField::new("Pirate name", FieldKind::PirateName);
     if let Some(u) = &user {
         name.value = u.clone();
         name.cursor = u.len();
@@ -362,6 +382,10 @@ async fn run(
                             // Proceed without identifying a pirate.
                             return Ok(Some((ocean, None, None)));
                         }
+                        if let Some(refusal) = name_refusal(&trimmed) {
+                            state.status = Some(refusal.to_owned());
+                            continue;
+                        }
                         match ocean {
                             // No ocean → nothing to verify against; take the
                             // name as-is.
@@ -444,6 +468,23 @@ fn cached_player<'a>(
     oceans.get(ocean.name())?.players.get(&norm)
 }
 
+/// Why `name` is no name the game would hand out, said as a refusal; `None`
+/// when it is one.
+///
+/// The field takes only what a name could still grow out of, so what is left to
+/// catch when the user is done typing is a name that is merely unfinished: too
+/// short, or a suffix part-spelled.
+fn name_refusal(name: &str) -> Option<&'static str> {
+    if crate::pirate::is_name_complete(name) {
+        return None;
+    }
+    if name.contains('-') {
+        Some("Arr, finish yer '-East' or '-West'.")
+    } else {
+        Some("Arr, a pirate's name runs two letters at the least.")
+    }
+}
+
 /// Context-sensitive help for the bottom region. Always ends by advertising
 /// that Esc quits.
 fn tooltip_lines(state: &Setup) -> Vec<String> {
@@ -492,24 +533,53 @@ fn tooltip_lines(state: &Setup) -> Vec<String> {
     lines
 }
 
+/// Columns the prose under the fields asks for. It wraps, so it reads at any
+/// width; this is the width at which its longest line takes a second row and no
+/// more, which keeps the dialog from running a sentence down a narrow column
+/// without opening it wider than that buys.
+const PROSE_W: u16 = 31;
+
+/// Rows the prose is given: what the most it ever says wraps to at [`PROSE_W`],
+/// which is the four lines of the nameless hint, two of them taking a second
+/// row.
+const PROSE_H: u16 = 6;
+
 fn render(frame: &mut Frame, state: &Setup) {
-    let area = centered(frame.area(), 48, 16);
+    // every box is as wide as its own contents need and the dialog is as wide
+    // as the widest of them, the prose having a say of its own; its height is
+    // the three regions' heights, so nothing it draws is ever clipped
+    let cols = state.column_count() as u16;
+    let names_w = state.widest_name();
+    // the picker asks for a column either side of its names, which is the
+    // least a column can be; what it draws is whatever the box ends up with
+    let (ocean_block, ocean_w) = titled_block(
+        "Ocean",
+        (names_w + CHOICE_MARGIN) * cols,
+    );
+    let (name_block, name_w) = titled_block("Who Are Ye?", NAME_COLS);
+    let (block, width) = titled_block(
+        "Choose Yer Pirate",
+        ocean_w.max(name_w).max(PROSE_W),
+    );
+    // the picker's columns divide the box between them and fill it, which they
+    // cannot do while it has a column to spare, so the dialog takes the columns
+    // that round them up
+    let spare = (width - 2 * BOX_MARGIN) % cols;
+    let width = width + (cols - spare) % cols;
+
+    // [ ocean picker | name field | prose ], inside the dialog's own frame
+    let heights = [state.picker_height(), 1 + 2, PROSE_H];
+    let area = centered(
+        frame.area(),
+        width,
+        heights.iter().sum::<u16>() + 2,
+    );
     frame.render_widget(Clear, area);
 
-    let block = Block::default()
-        .borders(Borders::ALL)
-        .padding(Padding::horizontal(1))
-        .title(Line::from("Choose Yer Pirate").centered());
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // [ ocean box (7) | name box (3) | tooltip/status (rest) ]
-    let rows = Layout::vertical([
-        Constraint::Length(7),
-        Constraint::Length(3),
-        Constraint::Min(3),
-    ])
-    .split(inner);
+    let rows = Layout::vertical(heights.map(Constraint::Length)).split(inner);
 
     // Focused boxes get a bright border; idle ones stay muted.
     let border_for = |focused: bool| {
@@ -531,32 +601,40 @@ fn render(frame: &mut Frame, state: &Setup) {
         }
     };
 
-    // -- Ocean picker: two columns + a full-width "Don't Choose" row --
-    let ocean_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_for(ocean_focused))
-        .title(offset_title("Ocean").0);
+    // -- Ocean picker: two columns of cells + a "Don't Choose" row --
+    let ocean_block = ocean_block.border_style(border_for(ocean_focused));
     let ocean_inner = ocean_block.inner(rows[0]);
     frame.render_widget(ocean_block, rows[0]);
 
     let oc = Layout::vertical([Constraint::Min(1), Constraint::Length(1)])
         .split(ocean_inner);
-    let cols = state.column_count();
+    // a column takes its share of the box and all of it, so the highlight on
+    // the row the user is on spans the column
     let col_areas = Layout::horizontal(
-        std::iter::repeat_n(Constraint::Ratio(1, cols as u32), cols)
-            .collect::<Vec<_>>(),
+        std::iter::repeat_n(
+            Constraint::Ratio(1, cols as u32),
+            cols as usize,
+        )
+        .collect::<Vec<_>>(),
     )
     .split(oc[0]);
-    for c in 0 .. cols {
-        let width = col_areas[c].width as usize;
+    for c in 0 .. cols as usize {
+        let col_w = col_areas[c].width as usize;
+        // the names are read down their left edge, so they stay flush with one
+        // another and the block of them is what sits centered in the column
+        let indent = col_w.saturating_sub(names_w as usize) / 2;
         let lines: Vec<Line> = (0 .. state.column_height(c))
             .map(|r| {
                 let ocean = state.grid[&(r, c)];
                 let selected = !state.dont_choose
                     && c == state.ocean_col
                     && r == state.ocean_row;
-                // Pad to the column width so the highlight spans the cell.
-                let label = format!("{:<width$}", format!(" {ocean}"));
+                let label = format!(
+                    "{:indent$}{:<rest$}",
+                    "",
+                    ocean.name(),
+                    rest = col_w - indent,
+                );
                 Line::from(Span::styled(
                     label,
                     cell_style(selected),
@@ -567,20 +645,16 @@ fn render(frame: &mut Frame, state: &Setup) {
     }
     frame.render_widget(
         Paragraph::new(Line::from(Span::styled(
-            "Don't Choose",
+            " Don't Choose ",
             cell_style(state.dont_choose),
         )))
         .centered(),
         oc[1],
     );
 
-    // -- Name field, boxed with inner horizontal padding --
+    // -- Name field, the name centered in it --
     let name_focused = state.field == Field::Name;
-    let name_block = Block::default()
-        .borders(Borders::ALL)
-        .border_style(border_for(name_focused))
-        .padding(Padding::horizontal(1))
-        .title(offset_title("Who Are Ye?").0);
+    let name_block = name_block.border_style(border_for(name_focused));
     let name_inner = name_block.inner(rows[1]);
     frame.render_widget(name_block, rows[1]);
     let name_span = if state.name.value.is_empty() && !name_focused {
@@ -595,13 +669,17 @@ fn render(frame: &mut Frame, state: &Setup) {
         )
     };
     frame.render_widget(
-        Paragraph::new(Line::from(name_span)),
+        Paragraph::new(Line::from(name_span)).centered(),
         name_inner,
     );
     if name_focused {
+        // the caret rides the centered name, so it counts from where the name
+        // begins rather than from the field's own edge
+        let typed = state.name.value.chars().count() as u16;
+        let start = name_inner.x + name_inner.width.saturating_sub(typed) / 2;
         let prefix =
             state.name.value[.. state.name.cursor].chars().count() as u16;
-        frame.set_cursor_position((name_inner.x + prefix, name_inner.y));
+        frame.set_cursor_position((start + prefix, name_inner.y));
     }
 
     // -- Bottom: verification status takes precedence over the tooltip --
@@ -671,6 +749,142 @@ mod tests {
             })
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    /// The screen in a given state, for the prose it would say there.
+    fn state(
+        ocean: Ocean,
+        field: Field,
+        dont_choose: bool,
+        name: &str,
+        query_market: bool,
+    ) -> Setup {
+        let grid = ocean_grid();
+        let (ocean_row, ocean_col) = ocean_pos(&grid, ocean);
+        let mut value = PromptField::new("Pirate name", FieldKind::PirateName);
+        value.value = name.to_owned();
+        Setup {
+            field,
+            grid,
+            ocean_col,
+            ocean_row,
+            dont_choose,
+            name: value,
+            status: None,
+            verifying: false,
+            query_market,
+        }
+    }
+
+    #[test]
+    fn the_field_takes_only_what_a_name_could_become() {
+        let mut field = PromptField::new("Pirate name", FieldKind::PirateName);
+        for c in "Playerone".chars() {
+            field.insert_char(c);
+        }
+        // neither a space nor a digit is in any name
+        field.insert_char(' ');
+        field.insert_char('7');
+        assert_eq!(field.value, "Playerone");
+        // the base runs to twelve letters and no further
+        for c in "abcdef".chars() {
+            field.insert_char(c);
+        }
+        assert_eq!(field.value, "Playeroneabc");
+        // and what follows the dash is one of the two suffixes, spelled out
+        for c in "-Ea".chars() {
+            field.insert_char(c);
+        }
+        assert_eq!(field.value, "Playeroneabc-Ea");
+        field.insert_char('r');
+        assert_eq!(field.value, "Playeroneabc-Ea");
+        assert_eq!(
+            name_refusal(&field.value),
+            Some("Arr, finish yer '-East' or '-West'.")
+        );
+        for c in "st".chars() {
+            field.insert_char(c);
+        }
+        assert_eq!(name_refusal(&field.value), None);
+    }
+
+    #[test]
+    fn a_name_too_short_is_refused_with_its_own_reason() {
+        assert_eq!(
+            name_refusal("A"),
+            Some("Arr, a pirate's name runs two letters at the least.")
+        );
+        assert_eq!(name_refusal("Ab"), None);
+    }
+
+    #[test]
+    fn the_title_is_offset_from_the_corner() {
+        let screen = screen("Playerone", None);
+        let top = screen
+            .lines()
+            .find(|l| l.contains("Choose Yer Pirate"))
+            .expect("a top border");
+        assert!(
+            top.contains("┌─── Choose Yer Pirate ─"),
+            "the title is not offset:\n{top}"
+        );
+    }
+
+    #[test]
+    fn the_name_is_centered_in_its_field() {
+        let screen = screen("Playerone", None);
+        let row = screen
+            .lines()
+            .find(|l| l.contains("Playerone"))
+            .expect("the name field");
+        // What is between the name and the border is the same on both sides,
+        // bar the one column an odd number of them cannot halve.
+        let (left, rest) = row.split_once("Playerone").expect("the name");
+        let before = left.len() - left.trim_end().len();
+        let after = rest.len() - rest.trim_start().len();
+        assert!(
+            before.abs_diff(after) <= 1,
+            "the name sits off-center:\n{row}"
+        );
+    }
+
+    /// Nothing the prose says outgrows the rows it is given. The dialog is a
+    /// fixed size, so a sentence that did would be clipped rather than wrapped.
+    #[test]
+    fn the_prose_fits_the_rows_it_is_given() {
+        // the longest name the field takes: a full base and a suffix
+        let longest = "Abcdefghijkl-East";
+        for ocean in Ocean::LIVE {
+            for (field, dont_choose, name) in [
+                (Field::Ocean, true, ""),
+                (Field::Ocean, false, ""),
+                (Field::Name, false, ""),
+                (Field::Name, false, longest),
+            ] {
+                for query_market in [false, true] {
+                    let state = state(
+                        ocean,
+                        field,
+                        dont_choose,
+                        name,
+                        query_market,
+                    );
+                    let rows: usize = tooltip_lines(&state)
+                        .iter()
+                        .map(|line| {
+                            crate::utils::wrap_words(line, PROSE_W as usize)
+                                .len()
+                        })
+                        .sum();
+                    assert!(
+                        rows <= PROSE_H as usize,
+                        "{ocean} with {name:?} says {rows} rows of prose, \
+                         where {PROSE_H} fit:\n{:#?}",
+                        tooltip_lines(&state)
+                    );
+                }
+            }
+        }
     }
 
     #[test]

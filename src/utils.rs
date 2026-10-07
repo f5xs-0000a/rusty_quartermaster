@@ -11,6 +11,11 @@ pub enum FieldKind {
     /// Free text that may run to several lines. The newline is the one control
     /// character it takes, a line having to be started somehow.
     Paragraph,
+    /// A pirate's name, spelled the way the game spells one: letters and at
+    /// most one `-East`/`-West`, so no spaces and no digits. Every keystroke
+    /// has to leave behind something a name could still grow out of, which is
+    /// what keeps the field inside the length as well.
+    PirateName,
 }
 
 #[derive(Clone)]
@@ -47,6 +52,11 @@ impl PromptField {
             }
             FieldKind::Text => !c.is_control(),
             FieldKind::Paragraph => c == '\n' || !c.is_control(),
+            FieldKind::PirateName => {
+                let mut grown = self.value.clone();
+                grown.insert(self.cursor, c);
+                crate::pirate::is_name_partial(&grown)
+            }
         }
     }
 
