@@ -1458,6 +1458,30 @@ fn jobbers_states(states: &mut Vec<State>) {
             VoyageType::Vikings,
             JobberFocus::Planked,
         ),
+        // No tell says either of these is under way, so the log is an
+        // ordinary pillage and the voyage type is the quartermaster's word
+        // for it.
+        (
+            "jobbers-haunted-seas",
+            "Jobbers, Haunted Seas layout (Atlantis's, picked by hand)",
+            PILLAGE,
+            VoyageType::HauntedSeas,
+            JobberFocus::Aboard,
+        ),
+        (
+            "jobbers-blockade",
+            "Jobbers, Blockade layout (Atlantis's, less the treasure haulers)",
+            PILLAGE,
+            VoyageType::Blockade,
+            JobberFocus::Aboard,
+        ),
+        (
+            "jobbers-flotilla",
+            "Jobbers, Flotilla layout (Atlantis's, picked by hand)",
+            PILLAGE,
+            VoyageType::Flotilla,
+            JobberFocus::Aboard,
+        ),
     ] {
         states.push(state(slug, description, move |shell| {
             feed(shell, log);

@@ -597,6 +597,7 @@ a staffing warning, a stats box the voyage has filled:
 | Voyage | 14 | pinned header and footer around a four-row body |
 | Jobbers, Atlantis | 23 | Voyage box, Skill Leaderboard, the panes |
 | Jobbers, Pillage | 24 | the same, and the swabbie tally its Aboard pane pins |
+| Jobbers; Haunted Seas, Blockade, Flotilla | 24 | Atlantis's boxes, on a roster with a swabbie tally |
 | Profits | 29 | four boxes stacked under the Inventory's nine rows |
 | Jobbers, Vikings | 29 | leaderboard beside the panes, under its stats box |
 | Jobbers, Vampirates | 31 | the Vampirates Stats box and the distribution button |

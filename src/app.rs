@@ -4863,6 +4863,29 @@ mod jobber_room_tests {
     /// its box spends on top of them.
     const LEADERBOARD_MIN: usize = crate::utils::SCROLL_MIN_ROWS as usize + 3;
 
+    /// A voyage type the picker offers is one the page can crew: it names the
+    /// type being sailed and lays out the boxes for it, rather than saying the
+    /// type is still to come.
+    #[test]
+    fn every_voyage_type_the_picker_offers_is_laid_out() {
+        for voyage in crate::jobbers::VOYAGE_TYPES {
+            let mut shell = with_roster(4);
+            shell.jobbers_ui.voyage_type = *voyage;
+            let rows = rows_needed(&mut shell);
+            let text = screen(&mut shell, rows + 10);
+            let name = voyage.name();
+            assert!(
+                text.contains(name),
+                "{name} is not named on its page"
+            );
+            assert!(
+                !text.contains("Coming Soon"),
+                "{name} has no layout of its own",
+            );
+            assert_eq!(leaderboard_rows(&text), LEADERBOARD_MIN);
+        }
+    }
+
     #[test]
     fn what_the_page_needs_does_not_move_with_the_roster() {
         assert_eq!(

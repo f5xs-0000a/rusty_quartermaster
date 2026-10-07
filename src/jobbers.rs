@@ -133,8 +133,9 @@ const PILLAGE_TOP_JOBBERS: &[JobberColumn] = &[
     },
 ];
 
-/// Top Jobbers columns for an Atlantis run: treasure haulers, gunners, and
-/// battle navigators.
+/// Top Jobbers columns for an Atlantis run: treasure haulers, gunners, battle
+/// navigators, and carpenters. The Haunted Seas and a flotilla are crewed from
+/// the same stations.
 const ATLANTIS_TOP_JOBBERS: &[JobberColumn] = &[
     JobberColumn {
         label: None,
@@ -147,6 +148,27 @@ const ATLANTIS_TOP_JOBBERS: &[JobberColumn] = &[
     JobberColumn {
         label: None,
         skills: &[Skill::BattleNavigation],
+    },
+    JobberColumn {
+        label: None,
+        skills: &[Skill::Carpentry],
+    },
+];
+
+/// Top Jobbers columns for a blockade: an Atlantis run's without the treasure
+/// haulers, there being no booty to carry off a blockade.
+const BLOCKADE_TOP_JOBBERS: &[JobberColumn] = &[
+    JobberColumn {
+        label: None,
+        skills: &[Skill::Gunning],
+    },
+    JobberColumn {
+        label: None,
+        skills: &[Skill::BattleNavigation],
+    },
+    JobberColumn {
+        label: None,
+        skills: &[Skill::Carpentry],
     },
 ];
 
@@ -233,11 +255,15 @@ const CAROUSING_SKILLS: &[Skill] = &[
     Skill::Poker,
 ];
 
-/// The kind of voyage being crewed. Pillage, Atlantis, and Cursed Isles are
-/// implemented; the rest are picker stubs that fall back to a "coming soon"
-/// placeholder. Each type drives its own Top Jobbers columns
-/// ([`VoyageType::top_jobbers`]) and bottom panes ([`VoyageType::panes`]), so
-/// the enum can grow without disturbing the existing data model.
+/// The kind of voyage being crewed. Each type drives its own Top Jobbers
+/// columns ([`VoyageType::top_jobbers`]) and bottom panes
+/// ([`VoyageType::panes`]), so the enum can grow without disturbing the
+/// existing data model; a type with neither of its own falls back to a "coming
+/// soon" placeholder ([`VoyageType::implemented`]).
+///
+/// Which of them the chat log can tell apart is a separate matter: a dragoon
+/// boarding says Atlantis, a lair says Vampirates, and the rest are the
+/// quartermaster's own word, chosen in the picker.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum VoyageType {
     #[default]
@@ -246,6 +272,9 @@ pub enum VoyageType {
     CursedIsles,
     Vampirates,
     Vikings,
+    HauntedSeas,
+    Blockade,
+    Flotilla,
 }
 
 /// Every voyage type, in picker order.
@@ -255,6 +284,9 @@ pub const VOYAGE_TYPES: &[VoyageType] = &[
     VoyageType::CursedIsles,
     VoyageType::Vampirates,
     VoyageType::Vikings,
+    VoyageType::HauntedSeas,
+    VoyageType::Blockade,
+    VoyageType::Flotilla,
 ];
 
 impl VoyageType {
@@ -266,12 +298,16 @@ impl VoyageType {
             VoyageType::CursedIsles => "Cursed Isles",
             VoyageType::Vampirates => "Vampirates",
             VoyageType::Vikings => "Vikings",
+            VoyageType::HauntedSeas => "Haunted Seas",
+            VoyageType::Blockade => "Blockade",
+            VoyageType::Flotilla => "Flotilla",
         }
     }
 
     /// Whether the full jobbers layout (Top Jobbers + the panes) is wired up
-    /// for this voyage type. Pillage, Atlantis, and Cursed Isles are, for
-    /// now.
+    /// for this voyage type. Every one of them is, so far; a type added
+    /// without columns and panes of its own draws the placeholder instead, and
+    /// is said to be coming in the picker.
     pub fn implemented(self) -> bool {
         matches!(
             self,
@@ -280,6 +316,9 @@ impl VoyageType {
                 | VoyageType::CursedIsles
                 | VoyageType::Vampirates
                 | VoyageType::Vikings
+                | VoyageType::HauntedSeas
+                | VoyageType::Blockade
+                | VoyageType::Flotilla
         )
     }
 
@@ -289,7 +328,10 @@ impl VoyageType {
     pub fn top_jobbers(self) -> &'static [JobberColumn] {
         match self {
             VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
-            VoyageType::Atlantis => ATLANTIS_TOP_JOBBERS,
+            VoyageType::Atlantis
+            | VoyageType::HauntedSeas
+            | VoyageType::Flotilla => ATLANTIS_TOP_JOBBERS,
+            VoyageType::Blockade => BLOCKADE_TOP_JOBBERS,
             VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
             VoyageType::Vampirates => VAMPIRATES_TOP_JOBBERS,
             VoyageType::Vikings => VIKINGS_TOP_JOBBERS,
@@ -302,7 +344,10 @@ impl VoyageType {
     pub fn panes(self) -> &'static [JobberPane] {
         match self {
             VoyageType::Pillage => PILLAGE_PANES,
-            VoyageType::Atlantis => ATLANTIS_PANES,
+            VoyageType::Atlantis
+            | VoyageType::HauntedSeas
+            | VoyageType::Blockade
+            | VoyageType::Flotilla => ATLANTIS_PANES,
             VoyageType::CursedIsles => CURSED_ISLES_PANES,
             VoyageType::Vampirates => VAMPIRATES_PANES,
             VoyageType::Vikings => VIKINGS_PANES,
@@ -347,7 +392,9 @@ impl VoyageType {
 const PILLAGE_PANES: &[JobberPane] =
     &[JobberPane::Aboard, JobberPane::Greedy, JobberPane::Planked];
 
-/// Bottom panes for an Atlantis run: aboard and planked, no greedy tally.
+/// Bottom panes for an Atlantis run: aboard and planked, no greedy tally. The
+/// Haunted Seas, a blockade and a flotilla are crewed the same way, none of
+/// them having greedy brigands to bash.
 const ATLANTIS_PANES: &[JobberPane] =
     &[JobberPane::Aboard, JobberPane::Planked];
 
