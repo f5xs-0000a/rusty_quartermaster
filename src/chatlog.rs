@@ -2743,6 +2743,38 @@ impl GameState {
         Some(self.aboard(&key))
     }
 
+    /// Keep a copied duty report with the run under way, starting that run if
+    /// the report is the first we have seen of it. A rated interval is
+    /// evidence of a voyage being worked, which is all a voyage needs to be
+    /// one: a run that never fights a battle, as most voyages outside a
+    /// pillage never do, is a run on the strength of its reports alone.
+    ///
+    /// Answers whether the report was kept. It is not when there is no vessel
+    /// under us to have a run, nor when it repeats the run's last report: the
+    /// same report reaches the clipboard twice often enough, the interval it
+    /// covers happened once, and the copy that first brought it is the one
+    /// that dates it.
+    pub fn note_duty_report(
+        &mut self,
+        report: &crate::duty::DutyReport,
+        copied_at: chrono::DateTime<chrono::Utc>,
+    ) -> bool {
+        let Some(voyage) = self.ensure_voyage() else {
+            return false;
+        };
+        if voyage
+            .duty_reports
+            .last()
+            .is_some_and(|last| last.holds(report))
+        {
+            return false;
+        }
+        voyage.duty_reports.push(crate::duty::CopiedReport::new(
+            report, copied_at,
+        ));
+        true
+    }
+
     /// Record pirates as aboard the current vessel, returning how many were
     /// news to its roster. Ourselves is counted apart from the crewmates
     /// everywhere it matters, so our own name is never one of them.
@@ -3162,6 +3194,42 @@ mod tests {
             !gs.take_booty_divided(),
             "the signal is one-shot"
         );
+    }
+
+    /// A voyage that fights nothing is a voyage all the same. A duty report
+    /// starts the run when nothing else has, the port order closes it like
+    /// any other, and the reports are what the run has on record.
+    #[test]
+    fn a_duty_report_is_all_a_run_needs_to_be_one() {
+        let mut gs = GameState::new();
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Evading.",
+        ] {
+            gs.process_line(line);
+        }
+        let report =
+            crate::duty::parse(r#"{"bilge":{"Foo":{"performance":3}}}"#)
+                .expect("a report");
+        let copied = chrono::Utc::now();
+        assert!(gs.note_duty_report(&report, copied));
+        // the same report again is the same interval, however it reached us
+        assert!(!gs.note_duty_report(
+            &report,
+            copied + chrono::Duration::minutes(5)
+        ));
+        gs.process_line(
+            "[01:29:00] Playerone issued an order to put into port.",
+        );
+
+        let v = &gs.vessels["Test Vessel"];
+        assert!(v.current_voyage.is_none());
+        let voyage = v.voyages.last().expect("a finished run");
+        assert!(voyage.ported_at.is_some());
+        assert!(voyage.battles.is_empty());
+        assert_eq!(voyage.duty_reports.len(), 1);
+        assert_eq!(voyage.duty_reports[0].copied_at, copied);
     }
 
     #[test]

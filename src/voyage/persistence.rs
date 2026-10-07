@@ -16,6 +16,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
+    duty::CopiedReport,
     ships::SHIPS,
     voyage::{
         Battle,
@@ -328,6 +329,12 @@ pub struct SavedVoyage {
     pub booty_goods: Option<Vec<SavedBootyGood>>,
     #[serde(default)]
     pub battles: Vec<SavedBattle>,
+    /// The duty reports copied during the run, in the order they were copied.
+    /// Each is one rated interval and dates itself, so this is the one part of
+    /// a voyage that can stand alone: a run with reports and no battles is a
+    /// run, which is what a voyage outside a pillage usually looks like.
+    #[serde(default)]
+    pub duty_reports: Vec<CopiedReport>,
 }
 
 fn outcome_str(o: BattleOutcome) -> &'static str {
@@ -421,6 +428,10 @@ pub fn from_voyage(
         } else {
             Vec::new()
         },
+        // the reports go with the run unasked: the save prompt offers the
+        // parts a run can be read without, and these are the only record of
+        // their intervals that will ever exist
+        duty_reports: v.duty_reports.clone(),
     }
 }
 
@@ -702,6 +713,7 @@ impl SavedVoyage {
                 .iter()
                 .map(|b| b.to_battle(our_ship))
                 .collect(),
+            duty_reports: self.duty_reports.clone(),
             crew_samples: Vec::new(),
             merc_checkpoint: 0,
             poisoned: self.poisoned,
@@ -1041,6 +1053,50 @@ mod tests {
         );
         assert_eq!(saved.duration_secs, Some(600));
         assert!(saved.divvied);
+    }
+
+    /// A run that fought nothing but worked its stations is a run. Its duty
+    /// reports are the whole of its record, so they go to the file and come
+    /// back from it whole - and they go whatever the save prompt was left
+    /// saying, there being nothing else to read the run by.
+    #[test]
+    fn a_voyage_of_reports_and_no_battles_is_kept_whole() {
+        let copied = chrono::Utc::now();
+        let report = crate::duty::parse(
+            r#"{"bilge":{"Foo":{"performance":3}},
+                "sail":{"Bar":{"performance":4,
+                "maneuver_tokens":[1,0,0,0,0,0,0]}}}"#,
+        )
+        .expect("a report");
+        let voyage = Voyage {
+            duty_reports: vec![crate::duty::CopiedReport::new(&report, copied)],
+            ..Voyage::default()
+        };
+        let saved = from_voyage(
+            &voyage,
+            Some("Test Vessel"),
+            Some("Sloop"),
+            None,
+            SaveParts {
+                engagements: false,
+                damage: false,
+                melee: false,
+                consumption: false,
+                booty: false,
+            },
+            true,
+        );
+        assert!(saved.battles.is_empty());
+        assert_eq!(saved.duty_reports.len(), 1);
+
+        let text = serde_json::to_string(&saved).expect("written");
+        let read: SavedVoyage = serde_json::from_str(&text).expect("read back");
+        assert_eq!(read.duty_reports, saved.duty_reports);
+        let back = read.to_voyage();
+        assert!(back.battles.is_empty());
+        assert_eq!(back.duty_reports.len(), 1);
+        assert_eq!(back.duty_reports[0].copied_at, copied);
+        assert!(back.duty_reports[0].holds(&report));
     }
 
     #[test]

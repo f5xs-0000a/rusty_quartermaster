@@ -2059,7 +2059,9 @@ fn jobbers_states(states: &mut Vec<State>) {
             let text = format!("{{\"sail\":{{{}}}}}", rated.join(","));
             let report =
                 rusty_quartermaster::duty::parse(&text).expect("report");
-            shell.take_duty_report(&report);
+            // the copy's time never reaches the screen, and the gallery has
+            // no persistence file for it to be written to
+            shell.take_duty_report(&report, chrono::Utc::now());
             shell.surface_roster_import();
         },
     ));

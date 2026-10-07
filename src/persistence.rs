@@ -2,8 +2,9 @@
 //! learned, across every pirate they play.
 //!
 //! Set by `--persistence` (default: `ypp_persistence.json` next to the
-//! executable), it holds the completed-voyage history and, per ocean, what
-//! each of the user's pirates has memorized. This is the counterpart to
+//! executable), it holds the completed-voyage history, every duty report
+//! copied off the clipboard, and, per ocean, what each of the user's pirates
+//! has memorized. This is the counterpart to
 //! [`crate::cache`], which holds data about the *game* (market prices, other
 //! players, island lists) and can be thrown away and refetched; nothing in
 //! here can be recovered from anywhere else, so every write goes through
@@ -17,9 +18,13 @@ use std::{
     path::Path,
 };
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-use crate::voyage::persistence::SavedVoyage;
+use crate::{
+    duty::{CopiedReport, DutyReport, UnreadCopy},
+    voyage::persistence::SavedVoyage,
+};
 
 /// Everything in the persistence file.
 #[derive(Serialize, Deserialize, Default)]
@@ -30,6 +35,18 @@ pub struct SavedPersistence {
     /// Per-ocean knowledge, keyed by ocean name (e.g. `"Emerald"`).
     #[serde(default)]
     pub oceans: HashMap<String, OceanMemory>,
+    /// Duty reports copied with no vessel under us to have a run, oldest
+    /// first. A report belongs to its voyage and is written inside it; these
+    /// are the strays, kept rather than dropped because a rated interval
+    /// cannot be had again once the clipboard moves on.
+    #[serde(default)]
+    pub stray_duty_reports: Vec<CopiedReport>,
+    /// Copies that were shaped like a duty report but would not read as one,
+    /// oldest first. Kept verbatim because the shape that defeats the parser
+    /// is the one worth reading over later, and kept apart from any voyage
+    /// because we cannot say what they record; see [`UnreadCopy`].
+    #[serde(default)]
+    pub unread_duty_reports: Vec<UnreadCopy>,
 }
 
 /// What the user's pirates know about one ocean, keyed by normalized pirate
@@ -58,6 +75,51 @@ pub struct PirateMemory {
 }
 
 impl SavedPersistence {
+    /// Keep a duty report that found no voyage to join, under the moment it
+    /// was copied. Answers whether it was kept.
+    ///
+    /// A report equal to the last stray is that same report reaching the
+    /// clipboard a second time - copied again, or re-copied after something
+    /// else took its place - and the interval it covers happened once. It is
+    /// not kept twice, and the copy that first brought it keeps the date: the
+    /// report was made then, whatever hour we were shown it again.
+    pub fn file_stray_duty_report(
+        &mut self,
+        report: &DutyReport,
+        copied_at: DateTime<Utc>,
+    ) -> bool {
+        if self
+            .stray_duty_reports
+            .last()
+            .is_some_and(|last| last.holds(report))
+        {
+            return false;
+        }
+        self.stray_duty_reports
+            .push(CopiedReport::new(report, copied_at));
+        true
+    }
+
+    /// Keep the text of a copy that was shaped like a duty report but would
+    /// not read as one, under the moment it was copied. Answers whether it
+    /// was kept, on the same terms as [`Self::file_stray_duty_report`].
+    pub fn file_unread_duty_report(
+        &mut self,
+        text: &str,
+        copied_at: DateTime<Utc>,
+    ) -> bool {
+        if self
+            .unread_duty_reports
+            .last()
+            .is_some_and(|last| last.holds(text))
+        {
+            return false;
+        }
+        self.unread_duty_reports
+            .push(UnreadCopy::new(text, copied_at));
+        true
+    }
+
     /// Take `pirate`'s memorized league points on `ocean` out of the file,
     /// leaving the ocean's other pirates in place. Empty for a pirate the
     /// file has never seen.
@@ -164,6 +226,48 @@ pub fn save(path: &Path, saved: &SavedPersistence) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One interval, one entry. The same stray copied twice is kept once, and
+    /// the first copy's hour is the one that stands - a report is dated by
+    /// when it was made, not by when the clipboard handed it over again.
+    #[test]
+    fn a_stray_report_copied_twice_is_kept_once() {
+        let mut saved = SavedPersistence::default();
+        let report =
+            crate::duty::parse(r#"{"bilge":{"Foo":{"performance":3}}}"#)
+                .expect("a report");
+        let later =
+            crate::duty::parse(r#"{"bilge":{"Foo":{"performance":5}}}"#)
+                .expect("a report");
+        let copied = Utc::now();
+        let again = copied + chrono::Duration::minutes(5);
+
+        assert!(saved.file_stray_duty_report(&report, copied));
+        assert!(!saved.file_stray_duty_report(&report, again));
+        assert_eq!(saved.stray_duty_reports.len(), 1);
+        assert_eq!(
+            saved.stray_duty_reports[0].copied_at,
+            copied
+        );
+
+        // a different report is a different interval, however soon it lands
+        assert!(saved.file_stray_duty_report(&later, again));
+        assert_eq!(saved.stray_duty_reports.len(), 2);
+        assert_eq!(
+            saved.stray_duty_reports[1].copied_at,
+            again
+        );
+
+        // and the one we could not read is kept on the same terms
+        assert!(saved.file_unread_duty_report("verbatim", copied));
+        assert!(!saved.file_unread_duty_report("verbatim", again));
+        assert!(saved.file_unread_duty_report("other", again));
+        assert_eq!(saved.unread_duty_reports.len(), 2);
+        assert_eq!(
+            saved.unread_duty_reports[0].copied_at,
+            copied
+        );
+    }
 
     /// Two of the user's pirates on one ocean keep their own memorization:
     /// one's marks never answer for the other's, and taking one out leaves

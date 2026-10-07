@@ -36,7 +36,7 @@ mod clipboard;
 mod commodities;
 mod damage;
 // the model is richer than the roster is interested in: the token shapes,
-// chest tiers and ratings are parsed and wait for a reader
+// chest tiers and ratings are parsed, filed, and wait for a reader
 #[allow(dead_code)]
 mod duty;
 mod hold;
@@ -147,9 +147,10 @@ struct Args {
     ///
     /// When set, the clipboard is checked about once a second. A copied hold
     /// has Profits ask before filling the Stock column from it; a copied duty
-    /// report folds the pirates it names into the current vessel's roster,
-    /// asking first when it looks too unlike the vessel we think we're on.
-    /// Off by default: the clipboard is never read.
+    /// report is written to the persistence file under the time it was
+    /// copied, and folds the pirates it names into the current vessel's
+    /// roster, asking first when it looks too unlike the vessel we think
+    /// we're on. Off by default: the clipboard is never read.
     #[arg(long)]
     clipboard: bool,
 }
@@ -464,7 +465,7 @@ async fn main() -> io::Result<()> {
 
     // -- Clipboard: take a copied hold or duty report (opt-in) --
     let (clip_tx, mut clip_rx) =
-        tokio::sync::mpsc::unbounded_channel::<clipboard::Copied>();
+        tokio::sync::mpsc::unbounded_channel::<clipboard::Stamped>();
     if args.clipboard {
         clipboard::spawn_watcher(clip_tx);
     }
@@ -528,12 +529,16 @@ async fn main() -> io::Result<()> {
             shell.feed_chat_line(&line);
         }
 
-        while let Ok(copied) = clip_rx.try_recv() {
-            match copied {
+        while let Ok(stamped) = clip_rx.try_recv() {
+            match stamped.copied {
                 clipboard::Copied::Hold(hold) => shell.queue_hold_import(&hold),
                 clipboard::Copied::Duty(report) => {
-                    shell.take_duty_report(&report)
+                    shell.take_duty_report(&report, stamped.at)
                 }
+                clipboard::Copied::UnreadDuty {
+                    text,
+                    names,
+                } => shell.take_unread_duty_report(&text, &names, stamped.at),
             }
         }
         shell.surface_hold_import();

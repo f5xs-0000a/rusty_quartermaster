@@ -23,16 +23,26 @@
 //! unrecognized key keeps its spelling instead of failing the parse, so a
 //! report from an encounter we have yet to capture still reads.
 //!
-//! Nothing routes a report into the app yet. This is the parsed model.
+//! A copied report belongs to the voyage that was under way when it was
+//! copied: it joins that run as a [`CopiedReport`] and reaches disk with it.
+//! A run whose only record is a duty report is a run all the same, which is
+//! what most voyages that never fight a battle look like. The report also
+//! folds the pirates it names into the vessel's roster, for which see
+//! `AppShell::take_duty_report`.
+//!
+//! Nothing reads the kept ones yet: the ratings and figures are parsed,
+//! filed, and waiting for a reader.
 
 use std::{collections::BTreeSet, fmt, marker::PhantomData};
 
+use chrono::{DateTime, Utc};
 use serde::{
     Deserialize,
     Deserializer,
+    Serialize,
     de::{MapAccess, Visitor},
 };
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::pirate::Skill;
 
@@ -84,7 +94,10 @@ pub enum ChestTier {
 /// another pirate. The game also shows greenies one "Learning" in place of
 /// both [`Booched`](Self::Booched) and [`Poor`](Self::Poor), so the bottom
 /// two are not reliably told apart.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize,
+)]
+#[serde(rename_all = "lowercase")]
 pub enum Performance {
     Booched,
     Poor,
@@ -100,7 +113,8 @@ pub enum Performance {
 /// expedition rates carpentry on a three-wide array of its own (coffin holes
 /// closed with no extra piece, with one, and with two), which is exactly as
 /// wide as the chest tiers the same report carries under treasure haul.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum Metric {
     /// Maneuver tokens earned, indexed by [`TokenShape::slot`].
     Maneuvers([u32; MANEUVER_SLOTS]),
@@ -110,8 +124,9 @@ pub enum Metric {
     /// Chests hauled, indexed by [`ChestTier::slot`].
     TreasureHauled([u32; TREASURE_SLOTS]),
     /// A figure we have no reading for yet, kept whole so a new encounter's
-    /// numbers survive the parse and can be studied. Clipboard text: hold it
-    /// for diagnosis, never render it.
+    /// numbers survive the parse and can be studied. Clipboard text: it is
+    /// held for diagnosis and written to the user's own persistence file,
+    /// never rendered.
     Unknown {
         key: String,
         value: Value,
@@ -119,23 +134,23 @@ pub enum Metric {
 }
 
 /// One pirate's line under a station.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Entry {
     pub name: String,
     pub performance: Performance,
     /// Empty when the station rated the pirate without counting anything,
-    /// which is what an omitted figure means: none of it.
+    /// which is what an omitted figure means: none of it. Written only when
+    /// something was counted, the way the report itself writes it.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub metrics: Vec<Metric>,
 }
 
 /// One station's lines.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Station {
     /// The key as the report spelled it, kept so a station we cannot name is
     /// still identifiable.
     pub key: String,
-    /// The duty that key names, where we recognize it; see [`station_skill`].
-    pub skill: Option<Skill>,
     /// The pirates rated here, in the order the report listed them, which is
     /// by descending performance. That order is finer than [`Performance`]:
     /// the game quantizes the word it shows, so two pirates on the same word
@@ -143,11 +158,58 @@ pub struct Station {
     pub pirates: Vec<Entry>,
 }
 
+/// A top-level field of a report that is not a station: whatever the game put
+/// beside the duties, under its own name and whole.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Extra {
+    pub key: String,
+    pub value: Value,
+}
+
 /// One duty report, as the clipboard carried it.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DutyReport {
     /// The stations the report listed, in its own order.
     pub stations: Vec<Station>,
+    /// Anything the report carried beside its stations. No capture has shown
+    /// one yet; a header, a sequence number or a vessel would land here
+    /// instead of costing us the report, and would be waiting to be read when
+    /// we noticed it.
+    #[serde(default)]
+    pub extras: Vec<Extra>,
+}
+
+/// A duty report and when it was copied: one interval of one voyage, as it
+/// sits on the run and as the file keeps it.
+///
+/// The report names no vessel, encounter or time of its own, so the copy's
+/// time is all that places it. The interval a report covers ends when the
+/// player takes the copy, which puts the two within a keystroke of each
+/// other, and which voyage it belongs to is whichever one was under way then.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CopiedReport {
+    pub copied_at: DateTime<Utc>,
+    #[serde(default)]
+    pub stations: Vec<Station>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub extras: Vec<Extra>,
+}
+
+/// A copy that was shaped like a duty report but would not read as one, kept
+/// verbatim.
+///
+/// The parse is all-or-nothing by design, so a report carrying one figure we
+/// cannot read is lost whole, and the blob is then the only record of the
+/// shape that defeated us - which is the shape worth having. The text is
+/// written to the user's own persistence file and goes nowhere else: it is
+/// clipboard text, so it is never logged and never drawn.
+///
+/// Unlike a [`CopiedReport`] this joins no voyage. We cannot read it, so we
+/// cannot say what it records; it is kept for the reading, not for the run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnreadCopy {
+    pub copied_at: DateTime<Utc>,
+    pub text: String,
 }
 
 impl TokenShape {
@@ -200,10 +262,56 @@ impl Performance {
     }
 }
 
+impl Station {
+    /// The duty this station's key names, where we recognize it. Read off the
+    /// key rather than stored beside it, so one mapping answers for every
+    /// report however it reached us; see [`station_skill`].
+    pub fn skill(&self) -> Option<Skill> {
+        station_skill(&self.key)
+    }
+}
+
+impl UnreadCopy {
+    /// Keep `text` verbatim under the moment it was copied.
+    pub fn new(text: &str, copied_at: DateTime<Utc>) -> Self {
+        Self {
+            copied_at,
+            text: text.to_owned(),
+        }
+    }
+
+    /// Whether this is the copy `text` is, the time aside.
+    pub fn holds(&self, text: &str) -> bool {
+        self.text == text
+    }
+}
+
+impl CopiedReport {
+    /// Keep `report` under the moment it was copied.
+    pub fn new(report: &DutyReport, copied_at: DateTime<Utc>) -> Self {
+        Self {
+            copied_at,
+            stations: report.stations.clone(),
+            extras: report.extras.clone(),
+        }
+    }
+
+    /// Whether this is the report `report` is. The time is no part of the
+    /// answer: a report that reaches the clipboard twice is one report, and
+    /// the copy that first brought it is the one that dates it.
+    ///
+    /// The stations settle it. Whatever an [`Extra`] turns out to hold, we
+    /// cannot read it, so we cannot have it decide that one rated interval is
+    /// two.
+    pub fn holds(&self, report: &DutyReport) -> bool {
+        self.stations == report.stations
+    }
+}
+
 impl DutyReport {
     /// The report's line-up for one duty, if it listed that station.
     pub fn station(&self, skill: Skill) -> Option<&Station> {
-        self.stations.iter().find(|s| s.skill == Some(skill))
+        self.stations.iter().find(|s| s.skill() == Some(skill))
     }
 
     /// Every pirate the report names, once each however many stations rated
@@ -239,18 +347,27 @@ pub fn station_skill(key: &str) -> Option<Skill> {
 /// Parse the duty report JSON the game copies to the clipboard. `None` for
 /// anything that isn't shaped like one.
 pub fn parse(text: &str) -> Option<DutyReport> {
-    let raw: Ordered<Ordered<Ordered<Value>>> =
-        serde_json::from_str(text.trim()).ok()?;
+    let raw: Ordered<TopLevel> = serde_json::from_str(text.trim()).ok()?;
     let mut stations = Vec::with_capacity(raw.0.len());
+    let mut extras = Vec::new();
     let mut rated = 0;
-    for (key, listed) in raw.0 {
+    for (key, value) in raw.0 {
+        let listed = match value {
+            TopLevel::Station(listed) => listed,
+            TopLevel::Other(value) => {
+                extras.push(Extra {
+                    key,
+                    value,
+                });
+                continue;
+            }
+        };
         let mut pirates = Vec::with_capacity(listed.0.len());
         for (name, fields) in listed.0 {
             pirates.push(entry(name, fields)?);
         }
         rated += pirates.len();
         stations.push(Station {
-            skill: station_skill(&key),
             key,
             pirates,
         });
@@ -259,7 +376,58 @@ pub fn parse(text: &str) -> Option<DutyReport> {
     // JSON shares; a report always has somebody to rate.
     (0 < rated).then_some(DutyReport {
         stations,
+        extras,
     })
+}
+
+/// A top-level value of a report: the pirates a station rated, or anything
+/// else the game wrote beside the duties.
+///
+/// A station's line-up is read into [`Ordered`] maps, which keep the order
+/// the report wrote them in, because a station ranks its pirates by their
+/// place in the list. Anything that is not a map of maps is no station, and
+/// is kept as it came rather than taking the report down with it.
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum TopLevel {
+    Station(Ordered<Ordered<Value>>),
+    Other(Value),
+}
+
+/// The pirate names a blob lists, if the blob is shaped like a duty report we
+/// failed to read. `None` for anything we have no business keeping.
+///
+/// This is the net under [`parse`], which rejects a whole report over one
+/// figure it cannot read rather than half-understand it. Two of the three
+/// tests a blob has to pass are here:
+///
+/// - **is it JSON, and an object?** Nothing else can be a report.
+/// - **are most of its keys stations we know?** Most of its *keys*, not most of
+///   the stations there are: a report lists only the stations that were worked,
+///   so a run spent bilging is one key long. The test is the one the roster
+///   uses for the same kind of question, `2 * known < listed`.
+///
+/// The third is the caller's, because only the caller knows who we have
+/// sailed with: do these names include somebody of ours? Hence the names
+/// rather than a yes or no. They are the keys under each station, so a blob
+/// whose stations hold something other than a list of pirates yields none and
+/// is kept for nothing.
+pub fn suspect(text: &str) -> Option<BTreeSet<String>> {
+    let listed: Map<String, Value> = serde_json::from_str(text.trim()).ok()?;
+    let known = listed
+        .keys()
+        .filter(|key| station_skill(key).is_some())
+        .count();
+    if known == 0 || 2 * known < listed.len() {
+        return None;
+    }
+    let names: BTreeSet<String> = listed
+        .values()
+        .filter_map(Value::as_object)
+        .flat_map(Map::keys)
+        .cloned()
+        .collect();
+    (!names.is_empty()).then_some(names)
 }
 
 /// One pirate's line. `None` for a line we only half understand, which would
@@ -385,7 +553,7 @@ mod tests {
         let listed: Vec<_> = report
             .stations
             .iter()
-            .map(|s| (s.key.as_str(), s.skill))
+            .map(|s| (s.key.as_str(), s.skill()))
             .collect();
         assert_eq!(
             listed,
@@ -470,7 +638,7 @@ mod tests {
         let report = parse(text).expect("report");
         let station = &report.stations[0];
         assert_eq!(station.key, "forage");
-        assert_eq!(station.skill, None);
+        assert_eq!(station.skill(), None);
         assert_eq!(
             station.pirates[0].metrics,
             vec![Metric::Unknown {
@@ -487,6 +655,134 @@ mod tests {
             report.names(),
             BTreeSet::from(["Bar", "Baz", "Foo", "Qux", "Test Example"])
         );
+    }
+
+    /// A kept report reads back as the one that was kept. The file is where a
+    /// report lives until something reads it, so every figure has to survive
+    /// the trip, and the time it was copied has to come back with it.
+    #[test]
+    fn a_kept_report_reads_back_whole() {
+        let report = parse(REPORT).expect("report");
+        let copied_at = Utc::now();
+        let filed = CopiedReport::new(&report, copied_at);
+        let text = serde_json::to_string(&filed).expect("written");
+        let read: CopiedReport =
+            serde_json::from_str(&text).expect("read back");
+        assert_eq!(read, filed);
+        assert_eq!(read.copied_at, copied_at);
+        assert!(read.holds(&report));
+        // a rating is filed as the word it stands for, and a line that
+        // counted nothing says nothing about figures
+        assert!(text.contains(r#""performance":"excellent""#));
+        assert!(!text.contains(r#""metrics":[]"#));
+    }
+
+    /// Whatever the report carries that we have no reading for is kept where
+    /// it was found: a figure under a pirate, a station we cannot name, and a
+    /// field beside the stations that is no station at all. A header of some
+    /// kind would cost us the whole report if it were not kept.
+    #[test]
+    fn what_we_cannot_read_is_kept_where_it_was_found() {
+        let text = r#"{"vessel":"Test Vessel","sequence":7,
+            "forage":{"Foo":{"performance":3,"m.gathered":[1,2]}}}"#;
+        let report = parse(text).expect("report");
+        assert_eq!(
+            report.extras,
+            vec![
+                Extra {
+                    key: "vessel".to_owned(),
+                    value: Value::from("Test Vessel"),
+                },
+                Extra {
+                    key: "sequence".to_owned(),
+                    value: Value::from(7),
+                },
+            ]
+        );
+        let station = &report.stations[0];
+        assert_eq!(station.key, "forage");
+        assert_eq!(station.skill(), None);
+        assert_eq!(
+            station.pirates[0].metrics,
+            vec![Metric::Unknown {
+                key: "m.gathered".to_owned(),
+                value: Value::from(vec![1, 2]),
+            }]
+        );
+
+        // and all of it survives being kept
+        let kept = CopiedReport::new(&report, Utc::now());
+        let text = serde_json::to_string(&kept).expect("written");
+        let read: CopiedReport =
+            serde_json::from_str(&text).expect("read back");
+        assert_eq!(read, kept);
+    }
+
+    /// A report carrying one figure we cannot read is rejected whole, and
+    /// that is the blob worth keeping: it is the only evidence of the shape
+    /// that defeated the parse. It passes its names up so the caller can ask
+    /// whether the crew is one of ours.
+    #[test]
+    fn a_report_we_cannot_read_is_still_recognized_as_one() {
+        // a maneuver figure of a width we don't take it for
+        let text = r#"{"sail":{"Foo":{"performance":3,
+            "maneuver_tokens":[1,1,1,1,1,1]},
+            "Bar":{"performance":2}},
+            "bilge":{"Baz":{"performance":5}}}"#;
+        assert!(parse(text).is_none());
+        assert_eq!(
+            suspect(text),
+            Some(BTreeSet::from([
+                "Bar".to_owned(),
+                "Baz".to_owned(),
+                "Foo".to_owned(),
+            ]))
+        );
+
+        // a rating off the end of the scale, and a station we cannot name
+        // alongside two we can
+        let text = r#"{"sail":{"Foo":{"performance":9}},
+            "bilge":{"Bar":{"performance":2}},
+            "forage":{"Baz":{"performance":2}}}"#;
+        assert!(parse(text).is_none());
+        assert_eq!(
+            suspect(text),
+            Some(BTreeSet::from([
+                "Bar".to_owned(),
+                "Baz".to_owned(),
+                "Foo".to_owned(),
+            ]))
+        );
+    }
+
+    /// The net is narrow on purpose: a blob kept for study is clipboard text,
+    /// so anything that isn't plainly about duties stays out of the file.
+    #[test]
+    fn other_json_is_not_kept_for_a_report() {
+        // the hold, the other thing the clipboard carries: JSON, an object,
+        // and not one key of it a station
+        assert_eq!(
+            suspect(r#"{"contents":[{"Foo":84}],"coffers":0}"#),
+            None
+        );
+        // one station key is not most of them
+        assert_eq!(
+            suspect(
+                r#"{"sail":{"Foo":{"performance":3}},"width":80,
+                "height":24,"theme":"dark"}"#
+            ),
+            None
+        );
+        // shaped right, but it rates nobody
+        assert_eq!(
+            suspect(r#"{"sail":{},"bilge":{}}"#),
+            None
+        );
+        assert_eq!(suspect(r#"{"sail":[1,2,3]}"#), None);
+        // not an object, or not JSON at all
+        assert_eq!(suspect(r#"["sail","bilge"]"#), None);
+        assert_eq!(suspect("hello"), None);
+        assert_eq!(suspect(""), None);
     }
 
     #[test]

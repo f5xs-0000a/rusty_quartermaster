@@ -443,6 +443,12 @@ pub struct Voyage {
     pub current_battle: Option<Battle>,
     /// Resolved battles, in chronological order.
     pub battles: Vec<Battle>,
+    /// Duty reports copied off the clipboard during this run, in the order
+    /// they were copied, one per interval the game rated. A run that fights
+    /// nothing still works its stations, so these and the battles are
+    /// independent records: either on its own makes the run one worth
+    /// keeping. Persisted with the voyage.
+    pub duty_reports: Vec<crate::duty::CopiedReport>,
     /// Headcount samples at each crew change while underway (sail-time first).
     /// Drives the time-weighted average crew behind the per-crew stats.
     pub crew_samples: Vec<CrewSample>,

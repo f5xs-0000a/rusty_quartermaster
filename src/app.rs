@@ -1865,12 +1865,18 @@ impl AppShell {
         }
     }
 
-    /// A duty report landed on the clipboard: fold the pirates it names into
-    /// the current vessel's roster.
+    /// A duty report landed on the clipboard: keep it, and fold the pirates
+    /// it names into the current vessel's roster.
     ///
-    /// Only players are taken. NPCs are left to the winners roster of a won
-    /// fight, which names them and is the only thing that does, so it stays
-    /// the sole ground truth for the swabbie tally and the mercenaries.
+    /// Keeping it comes first and comes unasked. It is the one record of an
+    /// interval that cannot be had again, it answers to no prompt and to no
+    /// vessel being known, and the roster question below is a separate one
+    /// about what we believe, which a report may lose and still be worth
+    /// keeping.
+    ///
+    /// Only players join the roster. NPCs are left to the winners roster of a
+    /// won fight, which names them and is the only thing that does, so it
+    /// stays the sole ground truth for the swabbie tally and the mercenaries.
     ///
     /// A report names whoever puzzled long enough to be rated during one
     /// interval, so it can only ever add: a pirate it leaves out may simply
@@ -1880,7 +1886,12 @@ impl AppShell {
     /// stragglers are ours to have missed, while hardly any means a stale
     /// clipboard or another ship's report, which is worth asking about rather
     /// than folding in unasked.
-    pub fn take_duty_report(&mut self, report: &crate::duty::DutyReport) {
+    pub fn take_duty_report(
+        &mut self,
+        report: &crate::duty::DutyReport,
+        copied_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        self.keep_duty_report(report, copied_at);
         let Some(aboard) = self.chatlog.current_aboard() else {
             return;
         };
@@ -1908,6 +1919,90 @@ impl AppShell {
             return;
         }
         self.fold_into_roster(&missing);
+    }
+
+    /// Write a copied report into the persistence file under the time it was
+    /// copied, which is the time it was made: the interval a report covers
+    /// ends when the player takes the copy. Nothing else dates it, so that
+    /// time is taken where the clipboard changed and carried here untouched,
+    /// however long anything in between took.
+    ///
+    /// A report belongs to the voyage that was under way when it was copied,
+    /// and goes to disk with that run. A copy taken with no vessel under us
+    /// has no run to belong to and nothing later to carry it, so it is kept
+    /// on its own and written at once.
+    fn keep_duty_report(
+        &mut self,
+        report: &crate::duty::DutyReport,
+        copied_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if self.chatlog.current_vessel().is_some() {
+            if self.chatlog.note_duty_report(report, copied_at) {
+                crate::diag!("duty: report kept with the run");
+            }
+            return;
+        }
+        if !self.persistence.file_stray_duty_report(report, copied_at) {
+            return;
+        }
+        self.save_persistence();
+        crate::diag!(
+            "duty: report kept with no run under it ({} such)",
+            self.persistence.stray_duty_reports.len()
+        );
+    }
+
+    /// Keep the text of a copy that was shaped like a duty report but would
+    /// not read as one, provided it names somebody of ours.
+    ///
+    /// Three things have to hold before clipboard text is written anywhere,
+    /// two of them settled in [`crate::duty::suspect`] - it is JSON, and
+    /// most of its keys are stations - and the last of them here: it names a
+    /// crewmate we have logged, or our own pirate. A crew we have never
+    /// sailed with is somebody else's business, whatever it is shaped like.
+    pub fn take_unread_duty_report(
+        &mut self,
+        text: &str,
+        names: &std::collections::BTreeSet<String>,
+        copied_at: chrono::DateTime<chrono::Utc>,
+    ) {
+        if !self.names_one_of_ours(names) {
+            return;
+        }
+        if !self.persistence.file_unread_duty_report(text, copied_at) {
+            return;
+        }
+        self.save_persistence();
+        crate::diag!(
+            "duty: a report we could not read was kept verbatim ({} on record)",
+            self.persistence.unread_duty_reports.len()
+        );
+    }
+
+    /// Whether any of `names` is somebody we have logged: a crewmate aboard
+    /// the current vessel, or the pirate we are playing. Our own name alone
+    /// is enough, since a solo run has no crewmates to recognize.
+    fn names_one_of_ours(
+        &self,
+        names: &std::collections::BTreeSet<String>,
+    ) -> bool {
+        let aboard = self.chatlog.current_aboard().unwrap_or_default();
+        let me = self.chatlog.player_name.clone();
+        names.iter().any(|name| {
+            me.as_deref()
+                .is_some_and(|me| me.eq_ignore_ascii_case(name))
+                || aboard.iter().any(|mate| mate.eq_ignore_ascii_case(name))
+        })
+    }
+
+    /// Write the whole persistence file, the live memorization folded in
+    /// first so the map marks in it survive a write made for something else.
+    fn save_persistence(&mut self) {
+        let Some(path) = self.persistence_path.clone() else {
+            return;
+        };
+        self.save_memorization();
+        crate::persistence::save(&path, &self.persistence);
     }
 
     /// Record a duty report's pirates as aboard, leaving a note of how many
@@ -2101,12 +2196,7 @@ impl AppShell {
             saved
         };
         self.persistence.voyages.push(saved);
-        // the memorization in the same file has to survive this write, so
-        // the whole of it goes out, not just the history
-        if let Some(path) = self.persistence_path.clone() {
-            self.save_memorization();
-            crate::persistence::save(&path, &self.persistence);
-        }
+        self.save_persistence();
     }
 
     // -- Sea Battles popup (per-fight log) --
@@ -4829,6 +4919,12 @@ mod topbar_tests {
         shell
     }
 
+    /// A report delivered the way the clipboard watcher delivers one. Which
+    /// moment it was copied is nothing to the roster, so these take now.
+    fn deliver(shell: &mut AppShell, names: &[&str]) {
+        shell.take_duty_report(&report(names), chrono::Utc::now());
+    }
+
     fn report(names: &[&str]) -> crate::duty::DutyReport {
         let rated: Vec<String> = names
             .iter()
@@ -4841,12 +4937,10 @@ mod topbar_tests {
     #[test]
     fn a_report_that_mostly_agrees_adds_the_stragglers() {
         let mut shell = with_a_crew();
-        shell.take_duty_report(&report(&[
-            "Mateone",
-            "Matetwo",
-            "Matethree",
-            "Matefour",
-        ]));
+        deliver(
+            &mut shell,
+            &["Mateone", "Matetwo", "Matethree", "Matefour"],
+        );
         assert!(shell.jobbers_ui.roster_popup.is_none());
         assert!(shell.jobbers_ui.pending_roster.is_none());
         assert!(
@@ -4861,13 +4955,16 @@ mod topbar_tests {
     #[test]
     fn a_report_that_hardly_agrees_asks_first() {
         let mut shell = with_a_crew();
-        shell.take_duty_report(&report(&[
-            "Mateone",
-            "Strangerone",
-            "Strangertwo",
-            "Strangerthree",
-            "Strangerfour",
-        ]));
+        deliver(
+            &mut shell,
+            &[
+                "Mateone",
+                "Strangerone",
+                "Strangertwo",
+                "Strangerthree",
+                "Strangerfour",
+            ],
+        );
         // Nothing moves until it is answered.
         let aboard = shell.chatlog.current_aboard().expect("aboard");
         assert!(!aboard.contains("Strangerone"));
@@ -4888,7 +4985,10 @@ mod topbar_tests {
     #[test]
     fn declining_the_prompt_leaves_the_roster_alone() {
         let mut shell = with_a_crew();
-        shell.take_duty_report(&report(&["Strangerone", "Strangertwo"]));
+        deliver(
+            &mut shell,
+            &["Strangerone", "Strangertwo"],
+        );
         shell.surface_roster_import();
         shell.resolve_roster_prompt(false);
         let aboard = shell.chatlog.current_aboard().expect("aboard");
@@ -4899,12 +4999,10 @@ mod topbar_tests {
     #[test]
     fn npcs_are_left_to_the_winners_roster() {
         let mut shell = with_a_crew();
-        shell.take_duty_report(&report(&[
-            "Mateone",
-            "Matetwo",
-            "Matethree",
-            "Test Example",
-        ]));
+        deliver(
+            &mut shell,
+            &["Mateone", "Matetwo", "Matethree", "Test Example"],
+        );
         let aboard = shell.chatlog.current_aboard().expect("aboard");
         assert!(!aboard.contains("Test Example"));
         assert_eq!(aboard.len(), 4);
@@ -4915,11 +5013,10 @@ mod topbar_tests {
     #[test]
     fn a_report_of_the_crew_we_hold_changes_nothing() {
         let mut shell = with_a_crew();
-        shell.take_duty_report(&report(&[
-            "Mateone",
-            "Matetwo",
-            "Playerone",
-        ]));
+        deliver(
+            &mut shell,
+            &["Mateone", "Matetwo", "Playerone"],
+        );
         assert!(shell.jobbers_ui.pending_roster.is_none());
         assert_eq!(
             shell.chatlog.current_aboard().expect("aboard").len(),
@@ -4927,12 +5024,141 @@ mod topbar_tests {
         );
     }
 
+    /// A report with no vessel under it is nothing to the roster and has no
+    /// run to join, and is kept all the same: it records an interval that was
+    /// puzzled, which it does not stop doing because we cannot say which ship
+    /// sailed it.
     #[test]
-    fn a_report_with_no_vessel_under_it_is_ignored() {
+    fn a_report_with_no_vessel_under_it_is_still_kept() {
         let mut shell = AppShell::new(Vec::new());
-        shell.take_duty_report(&report(&["Strangerone"]));
+        deliver(&mut shell, &["Strangerone"]);
         assert!(shell.jobbers_ui.pending_roster.is_none());
         assert!(shell.jobbers_ui.roster_popup.is_none());
+        assert_eq!(
+            shell.persistence.stray_duty_reports.len(),
+            1
+        );
+    }
+
+    /// The reports kept with the run under way.
+    fn kept(shell: &AppShell) -> Vec<crate::duty::CopiedReport> {
+        shell
+            .chatlog
+            .current_vessel()
+            .and_then(|v| v.current_voyage.as_ref())
+            .map(|voyage| voyage.duty_reports.clone())
+            .unwrap_or_default()
+    }
+
+    /// A report joins the voyage it was copied on, and starts one if it is the
+    /// first thing we have seen of the run. The copy's hour is what dates it,
+    /// so it survives everything between the copy and the keeping - and a
+    /// report handed to us twice keeps the hour that first brought it.
+    #[test]
+    fn a_report_joins_the_run_under_the_hour_it_was_copied() {
+        let mut shell = with_a_crew();
+        let copied = chrono::Utc::now();
+        let again = copied + chrono::Duration::minutes(5);
+        let report = report(&["Mateone", "Matetwo"]);
+        // nothing has sailed yet: the report is all the run there is
+        assert!(kept(&shell).is_empty());
+
+        shell.take_duty_report(&report, copied);
+        shell.take_duty_report(&report, again);
+        assert_eq!(kept(&shell).len(), 1);
+        assert_eq!(kept(&shell)[0].copied_at, copied);
+
+        // the next interval is its own report, and dated its own copy
+        shell.take_duty_report(&self::report(&["Mateone"]), again);
+        assert_eq!(kept(&shell).len(), 2);
+        assert_eq!(kept(&shell)[1].copied_at, again);
+        // and a run of reports is no stray
+        assert!(shell.persistence.stray_duty_reports.is_empty());
+    }
+
+    /// A run that fought nothing and worked its stations saves like any
+    /// other: the prompt is offered for it, and what reaches the file is the
+    /// reports, there being nothing else of it to keep.
+    #[test]
+    fn a_run_of_reports_and_no_battles_saves() {
+        let mut shell = AppShell::new(Vec::new());
+        shell.chatlog.attached = true;
+        shell.chatlog.player_name = Some(std::sync::Arc::from("Playerone"));
+        for line in [
+            "====== 2026/06/16 ======",
+            "[01:00:00] Going aboard the Test Vessel...",
+            "[01:00:05] This vessel is now Evading.",
+            "[01:00:10] Playerone issued an order to set the vessel to sail.",
+        ] {
+            shell.feed_chat_line(line);
+        }
+        deliver(&mut shell, &["Mateone", "Matetwo"]);
+        shell.feed_chat_line(
+            "[01:30:00] Playerone issued an order to put into port.",
+        );
+
+        assert!(shell.build_voyage_view().saveable);
+        shell.save_displayed_voyage(
+            crate::voyage::persistence::SaveParts::default(),
+        );
+        assert_eq!(shell.persistence.voyages.len(), 1);
+        assert!(shell.persistence.voyages[0].battles.is_empty());
+        assert_eq!(
+            shell.persistence.voyages[0].duty_reports.len(),
+            1
+        );
+    }
+
+    /// A copy we could not read is kept only once it names somebody of ours.
+    /// Our own pirate alone is enough; a crew we have never sailed with is
+    /// somebody else's report, whatever it is shaped like.
+    #[test]
+    fn a_report_we_cannot_read_is_kept_for_a_crew_of_ours() {
+        // a rating off the end of the scale: shaped like a report, unreadable
+        let unreadable = |name: &str| {
+            format!(r#"{{"sail":{{{name:?}:{{"performance":9}}}}}}"#)
+        };
+        let names =
+            |name: &str| std::collections::BTreeSet::from([name.to_owned()]);
+        let copied = chrono::Utc::now();
+
+        let mut shell = with_a_crew();
+        let mate = unreadable("Matetwo");
+        shell.take_unread_duty_report(&mate, &names("Matetwo"), copied);
+        assert_eq!(
+            shell.persistence.unread_duty_reports.len(),
+            1
+        );
+        assert_eq!(
+            shell.persistence.unread_duty_reports[0].text,
+            mate
+        );
+        assert_eq!(
+            shell.persistence.unread_duty_reports[0].copied_at,
+            copied
+        );
+
+        // ourselves, however the copy spelled the name
+        shell.take_unread_duty_report(
+            &unreadable("playerone"),
+            &names("playerone"),
+            copied,
+        );
+        assert_eq!(
+            shell.persistence.unread_duty_reports.len(),
+            2
+        );
+
+        // and nobody we know: not ours to keep
+        shell.take_unread_duty_report(
+            &unreadable("Strangerone"),
+            &names("Strangerone"),
+            copied,
+        );
+        assert_eq!(
+            shell.persistence.unread_duty_reports.len(),
+            2
+        );
     }
 }
 
