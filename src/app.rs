@@ -2557,13 +2557,16 @@ impl AppShell {
         // The voyage box's bottom row: Unpoison when poisoned, else Voyage
         // Type.
         let box_bottom = if poisoned { Unpoison } else { VoyageType };
+        // Whether the Skill Leaderboard is part of this layout at all; where
+        // it is not, the keys walk the page as though it had said its piece.
+        let ranks = self.jobbers_ui.voyage_type.ranks_skills();
         // What ↑ out of the top of the pane row reaches: the Skill
         // Distribution button where one is drawn, else the voyage box's
         // bottom row where the leaderboard is beside the panes rather than
-        // over them, else the leaderboard itself.
+        // over them or is not drawn at all, else the leaderboard itself.
         let above_row = if self.jobbers_ui.voyage_type.tracks_vampirates() {
             SkillDist
-        } else if panes_beside {
+        } else if panes_beside || !ranks {
             box_bottom
         } else {
             Leaderboard
@@ -2578,8 +2581,9 @@ impl AppShell {
             first_pane
         };
         // Descending out of the voyage box lands on the Skill Leaderboard first
-        // (when the layout is implemented), then the button / panes below it.
-        let into_content = if implemented {
+        // (where the layout is implemented and ranks anything), then the
+        // button / panes below it.
+        let into_content = if implemented && ranks {
             Some(Leaderboard)
         } else {
             after_box
@@ -5614,12 +5618,20 @@ mod jobber_room_tests {
                 "{name} has no layout of its own",
             );
             // Vikings stands the leaderboard beside the panes, where it takes
-            // their height; everywhere else it is its ranking's own.
-            let rows = leaderboard_rows(&text);
-            assert!(
-                LEADERBOARD_MIN <= rows,
-                "{name} gives the leaderboard {rows} rows",
-            );
+            // their height; everywhere else it is its ranking's own. A type
+            // that ranks no skills has no such box to measure.
+            if voyage.ranks_skills() {
+                let rows = leaderboard_rows(&text);
+                assert!(
+                    LEADERBOARD_MIN <= rows,
+                    "{name} gives the leaderboard {rows} rows",
+                );
+            } else {
+                assert!(
+                    !text.contains("Skill Leaderboard"),
+                    "{name} ranks nothing but draws the box anyway",
+                );
+            }
         }
     }
 
@@ -5802,18 +5814,21 @@ mod jobber_duty_tests {
         assert!(row < row_of(&text, "Planked"));
     }
 
-    /// With no figures counted the Tokens and Chests box is not drawn at all,
-    /// while the Boochers box stands as it always does - with nothing under
+    /// With no figures counted both boxes stand as they always do: the one
+    /// with its columns over an empty ranking, the other with nothing under
     /// either of its headings, which is itself worth reading.
     #[test]
-    fn no_figures_no_board_but_the_boochers_box_stands() {
+    fn the_boxes_stand_before_the_run_has_filled_them() {
         let mut shell = aboard_atlantis(None);
         let text = screen(&mut shell);
-        assert!(!text.contains("Tokens and Chests"));
-        assert!(text.contains("Boochers"));
+        let row = row_of(&text, "Aboard");
+        assert_eq!(row, row_of(&text, "Tokens and Chests"));
+        assert_eq!(row, row_of(&text, "Boochers"));
         assert!(!text.contains("Idlers"));
-        // Aboard keeps the row; Planked is under the box standing over it.
-        assert!(row_of(&text, "Aboard") < row_of(&text, "Planked"));
+        // nobody is ranked, but what would rank them is read
+        assert!(text.contains("Pirate"));
+        // Planked is under the Boochers box standing over it.
+        assert!(row < row_of(&text, "Planked"));
     }
 
     /// The figures reach the screen ranked, each board under its own tab.
@@ -5831,6 +5846,29 @@ mod jobber_duty_tests {
         shell.jobbers_ui.board_tab = crate::jobbers::BoardTab::Treasures;
         let text = screen(&mut shell);
         assert!(text.contains("Matethree"));
+    }
+
+    /// A voyage type that ranks no skills has no Skill Leaderboard, and the
+    /// keys walk the page as though it had never been there: down out of the
+    /// voyage box lands in the pane row, and up out of the row returns to it.
+    #[test]
+    fn a_layout_that_ranks_nothing_is_walked_without_it() {
+        let mut shell = aboard_atlantis(Some(REPORT));
+        shell.jobbers_ui.voyage_type = crate::jobbers::VoyageType::CursedIsles;
+        let text = screen(&mut shell);
+        assert!(!text.contains("Skill Leaderboard"));
+
+        shell.jobbers_ui.focus = JobberFocus::VoyageType;
+        press(&mut shell, KeyCode::Down);
+        assert_eq!(
+            shell.jobbers_ui.focus,
+            JobberFocus::Aboard
+        );
+        press(&mut shell, KeyCode::Up);
+        assert_eq!(
+            shell.jobbers_ui.focus,
+            JobberFocus::VoyageType
+        );
     }
 
     /// A box with one board to show is titled for that board and draws no

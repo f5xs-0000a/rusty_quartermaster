@@ -175,32 +175,6 @@ const BLOCKADE_TOP_JOBBERS: &[JobberColumn] = &[
     },
 ];
 
-/// Top Jobbers columns for a Cursed Isles run: foragers and battle navigators,
-/// the two merged station columns Sail+Rig (Sailing/Rigging) and Carp+Patch
-/// (Carpentry/Patching), and bilgers.
-const CURSED_ISLES_TOP_JOBBERS: &[JobberColumn] = &[
-    JobberColumn {
-        label: None,
-        skills: &[Skill::Foraging],
-    },
-    JobberColumn {
-        label: None,
-        skills: &[Skill::BattleNavigation],
-    },
-    JobberColumn {
-        label: Some("Sail+Rig"),
-        skills: &[Skill::Sailing, Skill::Rigging],
-    },
-    JobberColumn {
-        label: Some("Carp+Patch"),
-        skills: &[Skill::Carpentry, Skill::Patching],
-    },
-    JobberColumn {
-        label: None,
-        skills: &[Skill::Bilging],
-    },
-];
-
 /// Top Jobbers columns for a Vampirates run: treasure haulers, carpenters, and
 /// swordfighters. Unlike the other voyage types this list is the headline (it
 /// grows to fill the page — see [`VoyageType::top_jobbers_fills`]).
@@ -328,6 +302,11 @@ impl VoyageType {
     /// The Top Jobbers columns this voyage type ranks, in display order. Each
     /// is one or more skills (merged columns rank by a jobber's best of
     /// them); new voyage types override this with the columns they need.
+    ///
+    /// None at all is an answer too, and the Cursed Isles gives it: every
+    /// station is worked there and ranking all of them asked for a window
+    /// wider than the page has any business asking for, so the box is left
+    /// off and the figures the reports counted are what the run is read by.
     pub fn top_jobbers(self) -> &'static [JobberColumn] {
         match self {
             VoyageType::Pillage => PILLAGE_TOP_JOBBERS,
@@ -337,8 +316,14 @@ impl VoyageType {
             VoyageType::Flotilla
             | VoyageType::Atlantis
             | VoyageType::HauntedSeas => ATLANTIS_TOP_JOBBERS,
-            VoyageType::CursedIsles => CURSED_ISLES_TOP_JOBBERS,
+            VoyageType::CursedIsles => &[],
         }
+    }
+
+    /// Whether this voyage type ranks the crew's skills at all, which is
+    /// whether the Skill Leaderboard is part of its layout.
+    pub fn ranks_skills(self) -> bool {
+        !self.top_jobbers().is_empty()
     }
 
     /// The bottom panes this voyage type shows, in left-to-right order. Pillage
@@ -1551,6 +1536,10 @@ pub fn render(
     if ui.focus == JobberFocus::Board && boards.is_none() {
         ui.focus = JobberFocus::VoyageType;
     }
+    // Nor is the Skill Leaderboard, on a voyage type that ranks nothing.
+    if ui.focus == JobberFocus::Leaderboard && !ui.voyage_type.ranks_skills() {
+        ui.focus = JobberFocus::VoyageType;
+    }
     // The Skill Distribution button is only focusable on voyage types that show
     // it.
     if ui.focus == JobberFocus::SkillDist
@@ -1623,8 +1612,17 @@ pub fn render(
     // one row so the box never collapses flat.
     let view_cap = ui.leaderboard_size.unwrap_or(5).max(1);
     let view_rows = total_rows.min(view_cap).max(1);
-    let top_h = view_rows as u16 + 3;
-    let top_panel_w = top_panel_width(&top_columns);
+    // A voyage type that ranks nothing has no box, so it asks for neither the
+    // rows nor the columns of one.
+    let ranks = ui.voyage_type.ranks_skills();
+    let top_h = match ranks {
+        true => view_rows as u16 + 3,
+        false => 0,
+    };
+    let top_panel_w = match ranks {
+        true => top_panel_width(&top_columns),
+        false => 0,
+    };
 
     // Per-pane natural widths: content + borders(2) + padding(2), floored at
     // title. The Aboard pane leads with a "Pirates (n):" header and indents
@@ -2077,7 +2075,10 @@ pub fn render(
     // The same floor for the Skill Leaderboard, whose header and borders are
     // the 3 rows `top_h` adds to its ranking. A window capped below the floor
     // can never show four rows, so there the cap is the floor.
-    let top_min = crate::utils::SCROLL_MIN_ROWS.min(view_cap as u16) + 3;
+    let top_min = match ranks {
+        true => crate::utils::SCROLL_MIN_ROWS.min(view_cap as u16) + 3,
+        false => 0,
+    };
 
     // Room the page must have: the rows the boxes that cannot scroll come to,
     // and a scrollable view's worth for each that can, whatever those views
@@ -2224,14 +2225,16 @@ pub fn render(
         if let Some(s) = &stats {
             render_stats_box(frame, rows[1], s, focused);
         }
-        render_top_panel(
-            frame,
-            rows[2],
-            &top_columns,
-            ui,
-            focused,
-            regions,
-        );
+        if ranks {
+            render_top_panel(
+                frame,
+                rows[2],
+                &top_columns,
+                ui,
+                focused,
+                regions,
+            );
+        }
         // Fight Statistics (Cursed Isles) sits between the leaderboard and the
         // panes; collapses to zero height (rendering nothing) on other
         // voyage types.
@@ -3850,8 +3853,8 @@ pub struct Board {
     pub ties: Vec<usize>,
 }
 
-/// Both of the box's leaderboards, each present only where the run has that
-/// figure to show. Never both absent: the box is not drawn then.
+/// Both of the box's leaderboards, each present where the voyage type counts
+/// that figure at all. Never both absent: the box is not drawn then.
 pub struct Boards {
     pub tokens: Option<Board>,
     pub treasures: Option<Board>,
@@ -4053,22 +4056,22 @@ pub fn marks(state: &GameState, selected: Option<&Arc<str>>) -> Marks {
 }
 
 /// The Tokens and Chests boards for the selected vessel, or `None` where the
-/// box is not drawn at all.
+/// box is no part of this layout.
 ///
-/// Two things have to hold. The voyage type must count something — tokens
+/// One thing decides it: whether the voyage type counts something — tokens
 /// ([`VoyageType::board_tokens`]), chests ([`VoyageType::hauls_chests`]), or
-/// both — since the box is no part of the layout of one that counts neither.
-/// And a report of the run must have carried some, because a board of nobody
-/// says nothing worth the room.
+/// both. A type that counts neither has no box; one that counts either has it
+/// from the start, standing empty until the reports fill it, the way the
+/// panes stand over rosters nobody has joined yet.
 ///
-/// The picker's word is enough for the first of them. Only Atlantis and the
-/// Cursed Isles ever announce themselves in the log, and a flotilla, a
-/// blockade and the Haunted Seas would then be the only voyages whose figures
-/// could never be read — so what the reports themselves carry is the tell.
+/// The picker's word is the whole of the gate. Only Atlantis and the Cursed
+/// Isles ever announce themselves in the log, so a tell would leave a
+/// flotilla, a blockade and the Haunted Seas unable to show figures they
+/// plainly have.
 ///
-/// Until both hold the figures are still kept: every copied report joins the
-/// run and reaches disk whatever the page is drawing, so the board that
-/// finally appears has everything set aside before it in its sums.
+/// Figures are kept whatever is drawn: every copied report joins the run and
+/// reaches disk whatever page is up, so a board has everything set aside
+/// before it in its sums.
 pub fn boards(
     state: &GameState,
     selected: Option<&Arc<str>>,
@@ -4078,68 +4081,67 @@ pub fn boards(
     if shapes.is_empty() && !voyage_type.hauls_chests() {
         return None;
     }
-    let vessel = selected.and_then(|key| state.vessels.get(key))?;
-    let reports = &latest_run(vessel)?.duty_reports;
+    // A vessel with no run of its own counts as a run of no reports: the box
+    // is the layout's, not the run's.
+    let reports: &[crate::duty::CopiedReport] = selected
+        .and_then(|key| state.vessels.get(key))
+        .and_then(latest_run)
+        .map_or(&[], |run| &run.duty_reports);
 
     // The isles' flower leads its columns and is what that board opens on;
     // every other token column counts the same kind of thing as its
     // neighbours, so the sum is the whole of what they say.
-    let tokens = (!shapes.is_empty())
-        .then(|| {
-            board(
-                BoardTab::Tokens,
-                shapes
-                    .iter()
-                    .map(|shape| (shape.glyph(), shape.slot()))
-                    .collect(),
-                crate::duty::maneuvers(reports),
-                if voyage_type.tracks_cursed_isles() {
-                    BoardKey::Figure(0)
-                } else {
-                    BoardKey::Sum
-                },
-                Vec::new(),
-            )
-        })
-        .flatten();
-    let treasures = voyage_type
-        .hauls_chests()
-        .then(|| {
-            // A chest is worth more than a locker and a locker more than a
-            // box, and the isles' chests are foraged for between waves
-            // rather than hauled out of a hold - so there whoever brought
-            // the biggest ones back is read first, and a tie on those falls
-            // to the tier below. What the tiers are worth against each other
-            // we do not know, so the sum stays an honest count of chests and
-            // the ranking carries the reading instead.
-            let (opens, ties) = match voyage_type.tracks_cursed_isles() {
-                true => {
-                    (
-                        BoardKey::Figure(CHEST_TIERS.len() - 1),
-                        (0 .. CHEST_TIERS.len()).rev().collect(),
-                    )
-                }
-                false => (BoardKey::Sum, Vec::new()),
-            };
-            board(
-                BoardTab::Treasures,
-                CHEST_TIERS
-                    .iter()
-                    .map(|tier| (tier.initial(), tier.slot()))
-                    .collect(),
-                crate::duty::treasure(reports),
-                opens,
-                ties,
-            )
-        })
-        .flatten();
-    (tokens.is_some() || treasures.is_some()).then_some(Boards {
+    let tokens = (!shapes.is_empty()).then(|| {
+        board(
+            BoardTab::Tokens,
+            shapes
+                .iter()
+                .map(|shape| (shape.glyph(), shape.slot()))
+                .collect(),
+            crate::duty::maneuvers(reports),
+            if voyage_type.tracks_cursed_isles() {
+                BoardKey::Figure(0)
+            } else {
+                BoardKey::Sum
+            },
+            Vec::new(),
+        )
+    });
+    let treasures = voyage_type.hauls_chests().then(|| {
+        // A chest is worth more than a locker and a locker more than a box,
+        // and the isles' chests are foraged for between waves rather than
+        // hauled out of a hold - so there whoever brought the biggest ones
+        // back is read first, and a tie on those falls to the tier below.
+        // What the tiers are worth against each other we do not know, so the
+        // sum stays an honest count of chests and the ranking carries the
+        // reading instead.
+        let (opens, ties) = match voyage_type.tracks_cursed_isles() {
+            true => {
+                (
+                    BoardKey::Figure(CHEST_TIERS.len() - 1),
+                    (0 .. CHEST_TIERS.len()).rev().collect(),
+                )
+            }
+            false => (BoardKey::Sum, Vec::new()),
+        };
+        board(
+            BoardTab::Treasures,
+            CHEST_TIERS
+                .iter()
+                .map(|tier| (tier.initial(), tier.slot()))
+                .collect(),
+            crate::duty::treasure(reports),
+            opens,
+            ties,
+        )
+    });
+    Some(Boards {
         tokens,
         treasures,
     })
 }
 
-/// A board of `counted`, or `None` where nobody counted any.
+/// A board of `counted`, its rows empty where nobody counted any.
 ///
 /// `columns` names each column and the slot of the figure it shows, so a
 /// board shows the slots its encounter pays and leaves the game's spare ones
@@ -4152,7 +4154,7 @@ fn board<const N: usize>(
     counted: Vec<crate::duty::Counted<N>>,
     opens: BoardKey,
     ties: Vec<usize>,
-) -> Option<Board> {
+) -> Board {
     let rows: Vec<BoardRow> = counted
         .into_iter()
         .map(|counted| {
@@ -4170,15 +4172,13 @@ fn board<const N: usize>(
         })
         .filter(|row| 0 < row.sum)
         .collect();
-    (!rows.is_empty()).then(|| {
-        Board {
-            tab,
-            heads: columns.into_iter().map(|(head, _)| head).collect(),
-            rows,
-            opens,
-            ties,
-        }
-    })
+    Board {
+        tab,
+        heads: columns.into_iter().map(|(head, _)| head).collect(),
+        rows,
+        opens,
+        ties,
+    }
 }
 
 /// The run a vessel's figures are read from: the one under way, or the last it
@@ -7018,19 +7018,30 @@ mod board_tests {
         assert!(chests.ties.is_empty());
     }
 
-    /// And on the figures: an Atlantis run whose reports have rated people
-    /// without counting anything has nothing to put on a board.
+    /// The figures gate nothing: a run whose reports counted none of them -
+    /// or a vessel with no run at all - stands the same boards, empty. The box
+    /// belongs to the layout, and what it has is what the run has handed it.
     #[test]
-    fn a_run_with_no_figures_has_no_board() {
+    fn a_run_with_no_figures_stands_its_boards_empty() {
         let (mut state, key) = a_run();
         copy(
             &mut state,
             r#"{"bilge":{"Foo":{"performance":4}}}"#,
         );
-        assert!(boards(&state, Some(&key), VoyageType::Atlantis).is_none());
+        let read =
+            boards(&state, Some(&key), VoyageType::Atlantis).expect("boards");
+        assert_eq!(
+            read.tabs(),
+            vec![BoardTab::Tokens, BoardTab::Treasures]
+        );
+        for tab in read.tabs() {
+            assert!(read.tab_board(tab).expect("board").rows.is_empty());
+        }
+        assert!(boards(&state, None, VoyageType::Atlantis).is_some());
     }
 
-    /// Nor is it the Atlantis box on another voyage type's page.
+    /// The layout is the whole of the gate, though: no box on a voyage type
+    /// that counts neither figure.
     #[test]
     fn another_layout_has_no_board() {
         let (mut state, key) = a_run();
