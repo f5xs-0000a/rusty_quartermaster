@@ -558,6 +558,11 @@ pub struct GameState {
     pub self_confirmed: bool,
     /// True once a chat log has been attached via `--chat-log`.
     pub attached: bool,
+    /// True while the clipboard is being watched (`--clipboard`), which is
+    /// what a copied duty report arrives through. Nothing reads a report
+    /// without it, so a view that waits on one says so rather than waiting on
+    /// something that can never come.
+    pub clipboard: bool,
 
     /// Every vessel we've been aboard this session, keyed by ship name.
     pub vessels: HashMap<Arc<str>, Vessel>,
@@ -653,6 +658,7 @@ impl GameState {
             player_name: None,
             self_confirmed: false,
             attached: false,
+            clipboard: false,
             vessels: HashMap::new(),
             current: None,
             online: HashSet::new(),

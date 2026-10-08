@@ -1732,6 +1732,21 @@ fn jobbers_states(states: &mut Vec<State>) {
         }));
     }
 
+    // The box standing before anything has filled it, with the clipboard
+    // being watched: what it waits on is a copied report. The layout states
+    // above show the other notice, none of them watching the clipboard.
+    states.push(state(
+        "jobbers-board-uncopied",
+        "Jobbers, the figures box with no report copied yet",
+        |shell| {
+            feed(shell, ATLANTIS);
+            open(shell, AppId::Chatlog, true);
+            shell.chatlog.clipboard = true;
+            shell.jobbers_ui.voyage_type = VoyageType::Atlantis;
+            shell.jobbers_ui.focus = JobberFocus::Board;
+        },
+    ));
+
     // The same box on the Cursed Isles, whose boards are read differently:
     // the flower leads the token columns and the board opens ranked on it,
     // and the foraged chests are ranked by the biggest tier a pirate brought

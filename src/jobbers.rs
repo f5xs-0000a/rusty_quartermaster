@@ -1181,14 +1181,17 @@ pub fn tooltip(
             vec!["Press Enter to view the skill distribution plot."]
         }
         JobberFocus::Board => {
-            // Tab is worth reading only where there is a board to flip to.
+            // Tab is worth reading only where there is a board to flip to,
+            // and a bare box has neither a ranking nor a list of its own.
+            let bare = boards.is_some_and(Boards::bare);
             let many = boards.is_some_and(|boards| 1 < boards.tabs().len());
-            vec![match many {
-                true => {
+            vec![match (bare, many) {
+                (true, _) => "\u{2190}/\u{2192} panes",
+                (false, true) => {
                     "Tab: boards \u{00b7} s: ranking \u{00b7} \
                      \u{2190}/\u{2192} panes \u{00b7} \u{2191}/\u{2193} scroll"
                 }
-                false => {
+                (false, false) => {
                     "s: ranking \u{00b7} \u{2190}/\u{2192} panes \u{00b7} \
                      \u{2191}/\u{2193} scroll"
                 }
@@ -3777,6 +3780,31 @@ fn board_box_title(boards: &Boards) -> &'static str {
 /// Blank columns either side of a tab's label within its slot.
 const BOARD_TAB_PADDING: u16 = 1;
 
+/// What the box reads in place of a ranking, and how much of the box it
+/// stands in place of.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum BoardNotice {
+    /// A copied duty report would fill the boards, and none has been copied
+    /// yet. The boards stand as they are - tabs, columns and all - with the
+    /// notice under them: everything they promise is a report away.
+    Uncopied,
+    /// A report copied without `--clipboard` is never read, so nothing can
+    /// fill them at all. A tab or a column would then promise what the
+    /// session cannot deliver, so the notice is the whole of the box and
+    /// names the one thing that would change that.
+    Unwatched,
+}
+
+impl BoardNotice {
+    /// The line the box reads.
+    pub fn line(self) -> &'static str {
+        match self {
+            Self::Uncopied => "No duty report copied yet.",
+            Self::Unwatched => "Sail with --clipboard to fill it.",
+        }
+    }
+}
+
 /// Which leaderboard the Tokens and Chests box is showing.
 #[derive(Default, Clone, Copy, PartialEq, Eq, Debug)]
 pub enum BoardTab {
@@ -3858,6 +3886,10 @@ pub struct Board {
 pub struct Boards {
     pub tokens: Option<Board>,
     pub treasures: Option<Board>,
+    /// What the box reads while no report has filled a board: what has to
+    /// happen for one to arrive. `None` once anything has been counted, a
+    /// ranking being its own answer.
+    pub notice: Option<BoardNotice>,
 }
 
 impl Board {
@@ -3959,6 +3991,13 @@ impl Boards {
             .position(|tab| *tab == showing)
             .map_or(0, |i| (i + 1) % tabs.len());
         tabs.get(next).copied().unwrap_or(showing)
+    }
+
+    /// Whether the box is its notice and nothing else - no strip, no column
+    /// heads, no ranking under them. Only the unread clipboard reads so: see
+    /// [`BoardNotice::Unwatched`].
+    pub fn bare(&self) -> bool {
+        self.notice == Some(BoardNotice::Unwatched)
     }
 
     /// The tab the box draws: the one asked for, or the first on the strip
@@ -4135,9 +4174,21 @@ pub fn boards(
             ties,
         )
     });
+    // A box with nothing on any of its boards is waiting on a copied duty
+    // report, and whether one can arrive at all is the clipboard watcher's
+    // to say: without it a report is never read, however many are copied.
+    let counted = [&tokens, &treasures]
+        .into_iter()
+        .flatten()
+        .any(|board| !board.rows.is_empty());
+    let notice = (!counted).then_some(match state.clipboard {
+        true => BoardNotice::Uncopied,
+        false => BoardNotice::Unwatched,
+    });
     Some(Boards {
         tokens,
         treasures,
+        notice,
     })
 }
 
@@ -4289,21 +4340,42 @@ fn board_box_width(boards: &Boards) -> u16 {
         }
         false => 0,
     };
+    // The notice wraps to whatever room it is given, so its line is a floor
+    // and not a demand: a box wide enough to read it in one line reads it in
+    // one line, and the box does not change width when a report arrives and
+    // the boards take over the sizing. It stands where no bar ever does, the
+    // boards under it being empty.
+    let notice = boards.notice.map_or(0, |n| n.line().chars().count() as u16)
+        + crate::utils::BOX_MARGIN;
+    let title = offset_title_width(board_box_title(boards));
+    // A bare box is its notice under its title, and asks for nothing else.
+    if boards.bare() {
+        return notice.max(title);
+    }
     (board_content_width(boards)
         + crate::utils::BOX_MARGIN
         + crate::utils::SCROLLBAR_W)
         .max(strip + crate::utils::BOX_MARGIN)
-        .max(offset_title_width(board_box_title(
-            boards,
-        )))
+        .max(notice)
+        .max(title)
 }
 
 /// Rows the box cannot do without: its tab strip and the blank under it where
 /// it draws one, the column heads, a scrollable view's worth of ranking, and
 /// its borders.
+///
+/// A bare box asks for its notice and the blank over it instead, there being
+/// no ranking under it to keep room for.
 fn board_box_min_height(boards: &Boards) -> u16 {
-    let strip = 2 * u16::from(1 < boards.tabs().len());
-    strip + 1 + crate::utils::SCROLL_MIN_ROWS + 2
+    let inner = match boards.bare() {
+        true => 2,
+        false => {
+            2 * u16::from(1 < boards.tabs().len())
+                + 1
+                + crate::utils::SCROLL_MIN_ROWS
+        }
+    };
+    inner + 2
 }
 
 /// Title of the Boochers box, which reads both of its lists.
@@ -4453,6 +4525,15 @@ fn render_board_box(
         return;
     }
 
+    // A box that can never be filled is its notice alone: whatever a strip or
+    // a column would say of it would be a promise the session cannot keep.
+    if boards.bare() {
+        if let Some(notice) = boards.notice {
+            render_board_notice(frame, inner, notice);
+        }
+        return;
+    }
+
     // A tab the run has nothing for is no tab, so the box falls back to the
     // one it has rather than drawing a strip nothing is under.
     ui.board_tab = boards.showing(ui.board_tab);
@@ -4530,6 +4611,26 @@ fn render_board_box(
             ),
         );
     }
+    if let Some(notice) = boards.notice {
+        render_board_notice(frame, rows[3], notice);
+    }
+}
+
+/// Draw a [`BoardNotice`] as the notice it is: dim, wrapped to `area` and
+/// centred on both of its axes (see `UI_CONVENTIONS` Rule 5).
+///
+/// It is centred on the whole of `area` rather than on a list within it: no
+/// bar is drawn over an empty board, so the column one would have taken is
+/// the notice's to centre in as well.
+fn render_board_notice(frame: &mut Frame, area: Rect, notice: BoardNotice) {
+    crate::utils::render_notice(
+        frame,
+        area,
+        &[(
+            notice.line(),
+            Style::default().fg(Color::DarkGray),
+        )],
+    );
 }
 
 /// Render the tab strip: a slot per tab across the box, each label centered in

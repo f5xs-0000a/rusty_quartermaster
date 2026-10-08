@@ -469,6 +469,7 @@ async fn main() -> io::Result<()> {
     // -- Clipboard: take a copied hold or duty report (opt-in) --
     let (clip_tx, mut clip_rx) =
         tokio::sync::mpsc::unbounded_channel::<clipboard::Stamped>();
+    shell.chatlog.clipboard = args.clipboard;
     if args.clipboard {
         clipboard::spawn_watcher(clip_tx);
     }

@@ -5702,6 +5702,10 @@ mod jobber_duty_tests {
 
     use super::{APP_LIST, AppId, AppShell, JobberFocus, KeyCode, KeyEvent};
 
+    /// The head over the box's sum column, by which a drawn board is told
+    /// from a box standing without one.
+    const SUM_HEAD: &str = "\u{03a3}";
+
     /// Tokens at the sails and a haul below, one interval of an Atlantis run.
     const REPORT: &str = r#"{"sail":{"Matetwo":{"performance":4,
         "maneuver_tokens":[4,1,0,2,0,0,0]}},
@@ -5820,13 +5824,15 @@ mod jobber_duty_tests {
     #[test]
     fn the_boxes_stand_before_the_run_has_filled_them() {
         let mut shell = aboard_atlantis(None);
+        shell.chatlog.clipboard = true;
         let text = screen(&mut shell);
         let row = row_of(&text, "Aboard");
         assert_eq!(row, row_of(&text, "Tokens and Chests"));
         assert_eq!(row, row_of(&text, "Boochers"));
         assert!(!text.contains("Idlers"));
-        // nobody is ranked, but what would rank them is read
-        assert!(text.contains("Pirate"));
+        // nobody is ranked, but the column heads that would rank them are
+        // read - the sum's own among them
+        assert!(text.contains(SUM_HEAD));
         // Planked is under the Boochers box standing over it.
         assert!(row < row_of(&text, "Planked"));
     }
@@ -5846,6 +5852,44 @@ mod jobber_duty_tests {
         shell.jobbers_ui.board_tab = crate::jobbers::BoardTab::Treasures;
         let text = screen(&mut shell);
         assert!(text.contains("Matethree"));
+    }
+
+    /// A box with nothing on its boards says what would fill them: a copied
+    /// duty report, and - where the clipboard is going unread - the flag that
+    /// would let one in.
+    ///
+    /// Without the flag nothing can arrive at all, so the box is that line
+    /// and nothing else: a tab or a column there would promise what the
+    /// session cannot deliver.
+    #[test]
+    fn an_empty_box_names_what_would_fill_it() {
+        let mut shell = aboard_atlantis(None);
+        shell.jobbers_ui.focus = JobberFocus::Board;
+        let text = screen(&mut shell);
+        assert!(text.contains("Sail with --clipboard"));
+        assert!(text.contains("Tokens and Chests"));
+        assert!(!text.contains("Treasures"));
+        assert!(!text.contains(SUM_HEAD));
+        // The box can still be crossed to, and says so - but it has no
+        // ranking of its own to offer the keys.
+        assert!(!text.contains("s: ranking"));
+        assert!(text.contains("\u{2190}/\u{2192} panes"));
+
+        // With the clipboard read, the boards stand as they are and the
+        // notice is only what has not reached them yet.
+        shell.chatlog.clipboard = true;
+        let text = screen(&mut shell);
+        assert!(text.contains("No duty report copied yet."));
+        assert!(!text.contains("--clipboard"));
+        assert!(text.contains("Treasures"));
+        assert!(text.contains(SUM_HEAD));
+
+        // A board with figures on it is its own answer and says neither.
+        let mut shell = aboard_atlantis(Some(REPORT));
+        shell.chatlog.clipboard = true;
+        let text = screen(&mut shell);
+        assert!(!text.contains("copied yet"));
+        assert!(!text.contains("--clipboard"));
     }
 
     /// A voyage type that ranks no skills has no Skill Leaderboard, and the
