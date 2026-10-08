@@ -1816,6 +1816,31 @@ fn jobbers_states(states: &mut Vec<State>) {
         },
     ));
 
+    // The same box with greenies among the marked. A name the tallies have
+    // twice is read in the colour every roster reads it in, green among them;
+    // a name they have once is dimmed instead, the dim being the whole of
+    // what that name has to say and a colour under it saying nothing more.
+    states.push(state(
+        "jobbers-boochers-greenies",
+        "Jobbers, Boochers with greenies among the marked",
+        |shell| {
+            feed(shell, ATLANTIS);
+            open(shell, AppId::Chatlog, true);
+            shell.jobbers_ui.voyage_type = VoyageType::Atlantis;
+            // Matetwo is marked twice and Matethree once, so the two read
+            // differently on the same standing.
+            for name in ["Matetwo", "Matethree"] {
+                cache_greenie(shell, name);
+            }
+            for text in BOOCHED {
+                let report =
+                    rusty_quartermaster::duty::parse(text).expect("report");
+                shell.take_duty_report(&report, chrono::Utc::now());
+            }
+            shell.jobbers_ui.focus = JobberFocus::Boochers;
+        },
+    ));
+
     // The Duty Timelapse: what the run's reports said about one pirate, a duty
     // to the row and a report to the column, read above the note and the
     // standings. The window sits at the newest report unless it is walked
